@@ -99,7 +99,7 @@ final class FileSystemWatcherTests: XCTestCase {
         let watcher = FileSystemWatcher(root: tree.root, latency: 0.05) { change in
             if change.directories.contains(sub) { reported.fulfill() }
         }
-        watcher.start()
+        XCTAssertTrue(watcher.start(), "start() must report that the stream is running")
         defer { watcher.stop() }
 
         DispatchQueue.global().asyncAfter(deadline: .now() + 0.3) {

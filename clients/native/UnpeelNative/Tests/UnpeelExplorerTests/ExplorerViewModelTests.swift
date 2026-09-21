@@ -56,6 +56,17 @@ final class ExplorerViewModelTests: XCTestCase {
         )
     }
 
+    /// Services with a REAL watcher, so watcher lifecycle is observed
+    /// through the view model's own `hasActiveWatcher` rather than a fake.
+    private func watchingServices() -> ExplorerServices {
+        ExplorerServices(
+            scan: { directory, root in
+                try DirectoryScanner(ignore: NoIgnoreChecker()).scan(directory: directory, root: root)
+            },
+            makeWatcher: { root, handler in FileSystemWatcher(root: root, handler: handler) }
+        )
+    }
+
     private func makeViewModel(
         _ services: ExplorerServices? = nil,
         defaults: UserDefaults? = nil
@@ -332,6 +343,19 @@ final class ExplorerViewModelTests: XCTestCase {
         XCTAssertEqual(ExplorerPaths.depth("/r/src/a.swift"), 3)
     }
 
+    func testIsInsideDotGitMatchesWholeComponentsBelowTheRoot() {
+        XCTAssertTrue(ExplorerPaths.isInsideDotGit("/r/.git", root: "/r"))
+        XCTAssertTrue(ExplorerPaths.isInsideDotGit("/r/.git/refs/heads/main", root: "/r"))
+        XCTAssertTrue(ExplorerPaths.isInsideDotGit("/r/sub/.git/config", root: "/r"))
+        XCTAssertFalse(ExplorerPaths.isInsideDotGit("/r/src/.gitignore", root: "/r"))
+        XCTAssertFalse(ExplorerPaths.isInsideDotGit("/r/.github/workflows", root: "/r"))
+        XCTAssertFalse(ExplorerPaths.isInsideDotGit("/r/git/objects", root: "/r"))
+        XCTAssertFalse(ExplorerPaths.isInsideDotGit("/r", root: "/r"))
+        // Only components BELOW the root count: a root that itself lives in
+        // a `.git` directory still lists its own contents.
+        XCTAssertFalse(ExplorerPaths.isInsideDotGit("/r/.git/hooks", root: "/r/.git"))
+    }
+
     // MARK: - Review fixes
 
     func testFastContextSwitchDoesNotWipeSavedViewState() async throws {
@@ -511,6 +535,61 @@ final class ExplorerViewModelTests: XCTestCase {
         await viewModel.setContext(local(tree)).value
 
         XCTAssertGreaterThan(viewModel.restoreToken, before)
+    }
+
+    /// `.git` is never listed: `expand`/`reveal` must refuse it outright,
+    /// not merely hide its rows — expanding it would scan it into the model
+    /// and persist it into the saved expansion set.
+    func testRevealIntoDotGitDoesNothing() async throws {
+        let tree = try TempTree(); defer { tree.remove() }
+        let target = try tree.file(".git/refs/heads/main")
+        let viewModel = makeViewModel()
+        await viewModel.setContext(local(tree)).value
+
+        await viewModel.reveal(target).value
+
+        XCTAssertEqual(viewModel.model?.expanded, [])
+        XCTAssertEqual(viewModel.selection, [])
+        XCTAssertNil(viewModel.model?.directories[tree.path(".git")])
+    }
+
+    func testASavedDotGitExpansionIsNotReplayed() async throws {
+        let tree = try TempTree(); defer { tree.remove() }
+        try tree.file(".git/config")
+        try tree.file("src/a.txt")
+        let defaults = makeDefaults()
+        ExplorerStateStore(defaults: defaults).save(
+            RootViewState(expanded: [tree.path(".git"), tree.path("src")], selection: [], scrollOffset: 0),
+            forRoot: tree.root
+        )
+        let viewModel = makeViewModel(defaults: defaults)
+
+        await viewModel.setContext(local(tree)).value
+
+        XCTAssertEqual(viewModel.model?.expanded, [tree.path("src")])
+        XCTAssertNil(viewModel.model?.directories[tree.path(".git")])
+    }
+
+    /// Spec §3.5: a failed root leaves no FSEvents stream running, and a
+    /// successful retry builds a new one.
+    func testAFailedRootLoadTearsDownTheWatcherAndRetryRebuildsIt() async throws {
+        let tree = try TempTree(); defer { tree.remove() }
+        try tree.file("a.txt")
+        let viewModel = makeViewModel(watchingServices())
+
+        await viewModel.setContext(local(tree)).value
+        XCTAssertTrue(viewModel.hasActiveWatcher)
+
+        try FileManager.default.setAttributes([.posixPermissions: 0o000], ofItemAtPath: tree.root)
+        await viewModel.refresh().value
+        XCTAssertNotNil(viewModel.rootError)
+        XCTAssertFalse(viewModel.hasActiveWatcher)
+
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: tree.root)
+        await viewModel.retry().value
+
+        XCTAssertNil(viewModel.rootError)
+        XCTAssertTrue(viewModel.hasActiveWatcher)
     }
 
     func testRootUnavailableUsesTheSameMessageShapeForMissingAndUnreadableRoots() async throws {

@@ -44,6 +44,10 @@ struct ExplorerOutlineView: NSViewRepresentable {
         outline.allowsEmptySelection = true
         outline.style = .fullWidth
         outline.backgroundColor = .clear
+        // Necessary but not sufficient: it only redistributes width when the
+        // table's frame changes. `ExplorerNSOutlineView.fitColumnToClipView`
+        // is what actually sizes the single column on reloads and mounts —
+        // neither works without the other, so do not remove one alone.
         outline.columnAutoresizingStyle = .uniformColumnAutoresizingStyle
         outline.autosaveExpandedItems = false
         // The terminal panes live in this same app, so the local mask matters

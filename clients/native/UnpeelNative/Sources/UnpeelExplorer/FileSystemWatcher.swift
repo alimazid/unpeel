@@ -1,5 +1,6 @@
 import CoreServices
 import Foundation
+import os
 
 public struct FileSystemChange: Sendable, Equatable {
     /// Directories whose listing may have changed: each event path's parent,
@@ -79,9 +80,14 @@ private final class CallbackBox {
 /// `stop()` are therefore safe to call from any thread, including from
 /// inside this watcher's own handler, and from inside a *different*
 /// watcher's handler (each watcher's queue is identified by its own
-/// `queueKey`, so one watcher's queue is never mistaken for another's).
+/// `queueKey`, so one watcher's queue is never mistaken for another's) —
+/// provided the two watchers do not tear each other down CONCURRENTLY: two
+/// handlers each calling `stop()`/releasing the other at the same moment
+/// are two serial queues syncing onto each other, which deadlocks.
 public final class FileSystemWatcher: @unchecked Sendable {
     public typealias Handler = @Sendable (FileSystemChange) -> Void
+
+    private static let logger = Logger(subsystem: "com.unpeel.explorer", category: "watcher")
 
     private let root: String
     private let latency: TimeInterval
@@ -125,8 +131,17 @@ public final class FileSystemWatcher: @unchecked Sendable {
         DispatchQueue.getSpecific(key: queueKey) != nil
     }
 
-    public func start() {
-        onQueue { startLocked() }
+    /// True when a stream is running after the call — either newly created
+    /// or already in place. False only when `FSEventStreamCreate` failed,
+    /// which leaves the tree without automatic refresh.
+    @discardableResult
+    public func start() -> Bool {
+        var running = false
+        onQueue {
+            startLocked()
+            running = stream != nil
+        }
+        return running
     }
 
     public func stop() {
@@ -148,13 +163,14 @@ public final class FileSystemWatcher: @unchecked Sendable {
 
     /// Creates and starts the FSEvents stream. Must run on `queue`; split out
     /// of `start()` so the C-callback closure below is not nested inside the
-    /// `queue.sync` closure. Nesting it there crashes the Swift 6.2
-    /// strict-concurrency SIL pass ("SendNonSendable" region analysis aborts
-    /// on `&context` inout to a C function inside a doubly-nested closure);
-    /// as a single, non-capturing closure literal directly in a method body
-    /// it converts to `FSEventStreamCallback` without issue. A top-level
-    /// named function in the same role reproduces the same crash, so the
-    /// callback must stay an inline closure literal.
+    /// `queue.sync` closure. Observed with Swift 6.2.4: nesting it there
+    /// crashes the compiler in the strict-concurrency SIL pass (the
+    /// "SendNonSendable" region analysis aborts on `&context` passed inout
+    /// to a C function inside a doubly-nested closure), while as a single,
+    /// non-capturing closure literal directly in a method body it converts
+    /// to `FSEventStreamCallback` without issue. A top-level named function
+    /// in the same role reproduced the same crash, so the callback stays an
+    /// inline closure literal.
     private func startLocked() {
         guard stream == nil else { return }
         let box = Unmanaged.passRetained(CallbackBox(handler: handler))
@@ -190,6 +206,7 @@ public final class FileSystemWatcher: @unchecked Sendable {
             flags
         ) else {
             box.release()
+            Self.logger.error("FSEventStreamCreate returned nil; the tree will not refresh by itself")
             return
         }
         FSEventStreamSetDispatchQueue(created, queue)

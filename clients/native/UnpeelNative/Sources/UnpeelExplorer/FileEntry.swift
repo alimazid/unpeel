@@ -62,7 +62,7 @@ public struct DirectoryListing: Sendable, Equatable {
         self.entriesByPath = Dictionary(entries.map { ($0.path, $0) }, uniquingKeysWith: { first, _ in first })
     }
 
-    func entry(at path: String) -> FileEntry? {
+    public func entry(at path: String) -> FileEntry? {
         entriesByPath[path]
     }
 

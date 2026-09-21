@@ -134,6 +134,13 @@ struct ExplorerPanelHost: View {
             .onAppear { sync(resolvedContext) }
             .onChange(of: resolvedContext) { sync($0) }
             .onDisappear { viewModel.persistState() }
+            // Quitting does not dismantle the view hierarchy, so
+            // `onDisappear` never fires on termination: without this, the
+            // selection and scroll offset since the last expand/collapse or
+            // context switch (the only other things that persist) are lost.
+            .onReceive(NotificationCenter.default.publisher(for: NSApplication.willTerminateNotification)) { _ in
+                viewModel.persistState()
+            }
     }
 
     private func sync(_ context: ExplorerContext) {

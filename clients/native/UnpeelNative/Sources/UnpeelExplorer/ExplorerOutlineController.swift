@@ -49,6 +49,12 @@ public final class ExplorerOutlineController: NSObject,
     /// never notified about, so entries can go stale; `syncExpansion`
     /// re-checks each one against the view before acting on it.
     private var expandedPaths: Set<String> = []
+    /// Paths a menu Quick Look targeted when they differ from the current
+    /// selection. Previewing must not double as a selection change — the
+    /// folders of a mixed selection would visibly deselect — so the preview
+    /// reads this instead while it is set, and the next selection change
+    /// clears it.
+    private var quickLookOverridePaths: [String]?
     private var appliedFilter = VisibilityFilter()
     private var appliedRestoreToken = 0
     /// True while this controller changes the outline view itself, so its
@@ -74,7 +80,7 @@ public final class ExplorerOutlineController: NSObject,
         menu.delegate = self
         outlineView.menu = menu
         outlineView.keyCommandHandler = { [weak self] in self?.handleKeyCommand($0) ?? false }
-        outlineView.previewPaths = { [weak self] in self?.selectedFilePaths() ?? [] }
+        outlineView.previewPaths = { [weak self] in self?.previewPaths() ?? [] }
     }
 
     // MARK: - Applying model changes
@@ -167,6 +173,11 @@ public final class ExplorerOutlineController: NSObject,
         }
     }
 
+    /// Paths whose rows are hidden under a collapsed parent are left in
+    /// `viewModel.selection` by design: they have no row to select here, so
+    /// they are simply not represented in `rows`, and re-expanding the
+    /// parent brings them back. Reconciling the view model down to what is
+    /// visible is Phase 2's multi-select work.
     private func syncSelection(_ selection: [String]) {
         guard let outlineView else { return }
         let rows = IndexSet(
@@ -258,6 +269,8 @@ public final class ExplorerOutlineController: NSObject,
     /// icon — is reset up front rather than only touched by the branch that
     /// happens to need it; otherwise a value set for an entry (e.g. a
     /// broken-symlink tooltip) can leak into a note row reusing that view.
+    /// The label's truncation mode is set in BOTH branches for the same
+    /// reason: the two roles want different modes.
     func configure(_ cell: ExplorerRowCellView, for item: ExplorerItem) {
         cell.textField?.font = palette.rowFont
         cell.toolTip = nil
@@ -268,8 +281,13 @@ public final class ExplorerOutlineController: NSObject,
             let directory = String(item.path.dropLast(Self.noteSuffix.count))
             cell.textField?.stringValue = noteText(forDirectory: directory) ?? ""
             cell.restingTextColor = palette.secondaryText
+            // A sentence, not a filename: middle truncation would render
+            // "… 50 more items not shown" as "… 50…ot shown" at the panel's
+            // 180 pt minimum width.
+            cell.textField?.lineBreakMode = .byTruncatingTail
         case .entry:
             let entry = applied?.entry(at: item.path)
+            cell.textField?.lineBreakMode = .byTruncatingMiddle
             cell.imageView?.image = entry.map(icons.icon(for:))
             cell.textField?.stringValue = entry?.name ?? (item.path as NSString).lastPathComponent
             cell.restingTextColor = palette.text
@@ -299,6 +317,7 @@ public final class ExplorerOutlineController: NSObject,
     }
 
     public func outlineViewSelectionDidChange(_: Notification) {
+        quickLookOverridePaths = nil
         guard !isApplying else { return }
         viewModel.selection = selectedPaths()
         outlineView?.reloadQuickLookIfVisible()
@@ -339,6 +358,10 @@ public final class ExplorerOutlineController: NSObject,
 
     private func selectedFilePaths() -> [String] {
         viewModel.selection.filter { applied?.entry(at: $0)?.kind == .file }
+    }
+
+    private func previewPaths() -> [String] {
+        quickLookOverridePaths ?? selectedFilePaths()
     }
 
     private func menuTargetPaths() -> [String] {
@@ -468,7 +491,7 @@ public final class ExplorerOutlineController: NSObject,
         case .quickLook:
             let files = filesOnly(paths)
             guard !files.isEmpty else { return }
-            viewModel.selection = files
+            quickLookOverridePaths = files == selectedFilePaths() ? nil : files
             showQuickLookHook()
         case .sendToAgent:
             paths.forEach { actionHandler?.sendPathToAgent(path: $0) }

@@ -377,6 +377,63 @@ final class ExplorerOutlineControllerTests: XCTestCase {
         XCTAssertEqual(outline.previewPaths(), ["/r/a.txt"])
     }
 
+    /// Previewing must not double as a selection change: a menu Quick Look
+    /// on a mixed target set previews the files while the folders stay
+    /// selected, and a Quick Look on a path outside the selection previews
+    /// that path without stealing the selection from the rows the user
+    /// actually picked.
+    func testMenuQuickLookPreviewsFilesWithoutChangingTheSelection() {
+        let (controller, viewModel, suite) = makeController()
+        defer { UserDefaults().removePersistentDomain(forName: suite) }
+        let outline = ExplorerNSOutlineView()
+        outline.addTableColumn(NSTableColumn(identifier: NSUserInterfaceItemIdentifier("name")))
+        controller.attach(to: outline)
+        controller.apply(model: sampleModel(), filter: VisibilityFilter(), selection: [])
+        viewModel.selection = ["/r/src", "/r/a.txt"]
+
+        controller.perform(.quickLook, on: ["/r/src", "/r/a.txt"])
+
+        XCTAssertEqual(viewModel.selection, ["/r/src", "/r/a.txt"])
+        XCTAssertEqual(outline.previewPaths(), ["/r/a.txt"])
+
+        // Right-click Quick Look on a row outside the selection.
+        viewModel.selection = ["/r/src"]
+        controller.perform(.quickLook, on: ["/r/a.txt"])
+
+        XCTAssertEqual(viewModel.selection, ["/r/src"])
+        XCTAssertEqual(outline.previewPaths(), ["/r/a.txt"])
+
+        // The next selection change drops the override.
+        controller.outlineViewSelectionDidChange(Notification(name: NSOutlineView.selectionDidChangeNotification))
+        XCTAssertEqual(outline.previewPaths(), [])
+    }
+
+    /// Note rows ("… 50 more items not shown") must truncate at the TAIL —
+    /// middle truncation turns them into "… 50…ot shown" at the panel's
+    /// 180 pt minimum width — while entries keep middle truncation so a
+    /// long name's extension stays visible. Set on every `configure`, since
+    /// AppKit recycles cells between the two roles.
+    func testLineBreakModeFollowsTheRowRole() {
+        let (controller, _, suite) = makeController()
+        defer { UserDefaults().removePersistentDomain(forName: suite) }
+        controller.apply(model: sampleModel(truncated: 50), filter: VisibilityFilter(), selection: [])
+
+        let cell = ExplorerRowCellView()
+        cell.imageView = NSImageView()
+        cell.textField = NSTextField(labelWithString: "")
+
+        let noteItem = controller.children(of: root).last!
+        XCTAssertEqual(noteItem.role, .note)
+        controller.configure(cell, for: noteItem)
+        XCTAssertEqual(cell.textField?.lineBreakMode, .byTruncatingTail)
+
+        // The same recycled cell, now reused for an entry row.
+        let entryItem = controller.children(of: root).first!
+        XCTAssertEqual(entryItem.role, .entry)
+        controller.configure(cell, for: entryItem)
+        XCTAssertEqual(cell.textField?.lineBreakMode, .byTruncatingMiddle)
+    }
+
     /// A cell AppKit hands back for reuse may carry an entry's `toolTip`
     /// (the "points outside the project folder" message) from a previous
     /// row; the note branch must not leave it in place.

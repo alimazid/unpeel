@@ -38,7 +38,9 @@ public final class ExplorerViewModel: ObservableObject {
     @Published public var selection: [String] = []
     @Published public private(set) var filter: VisibilityFilter
     /// Bumped when a root's saved view state has been re-applied, so the
-    /// outline knows `scrollOffset` is now meaningful.
+    /// outline knows `scrollOffset` is now meaningful. `.remote`, `.none`
+    /// and failed opens deliberately do NOT bump it: there is no outline to
+    /// scroll in those states, and the next successful open bumps it anyway.
     @Published public private(set) var restoreToken = 0
     public var scrollOffset: Double = 0
 
@@ -95,14 +97,20 @@ public final class ExplorerViewModel: ObservableObject {
     private func teardown() {
         generation += 1
         loadTokens.removeAll()
-        watcher?.stop()
-        watcher = nil
+        stopWatcher()
         model = nil
         rootError = nil
         selection = []
         scrollOffset = 0
     }
 
+    /// Persistence is suppressed for the WHOLE window from the moment a
+    /// root starts opening until its restore finishes. The trade-off:
+    /// expansions and selections a user makes while a slow root is still
+    /// loading are not written back, but a half-replayed expansion set can
+    /// never overwrite the saved state it is in the middle of replaying —
+    /// losing a few seconds of interaction is recoverable, silently
+    /// truncating a root's remembered tree is not.
     private func open(_ context: ExplorerContext, generation current: Int) async {
         guard current == generation else { return }
         // Set before the first model is published (below), so `persistState`
@@ -137,13 +145,20 @@ public final class ExplorerViewModel: ObservableObject {
     }
 
     private func reportRootUnavailable(_ root: String, underlying error: (any Error)?) {
+        // Paths keep the default private redaction; only the error text,
+        // which names no path, is logged publicly.
         if let error {
-            Self.logger.error("root unavailable at \(root, privacy: .public): \(error.localizedDescription, privacy: .public)")
+            Self.logger.error("root unavailable at \(root): \(error.localizedDescription, privacy: .public)")
         } else {
-            Self.logger.error("root unavailable at \(root, privacy: .public)")
+            Self.logger.error("root unavailable at \(root)")
         }
         rootError = ExplorerError.rootUnavailable(root).localizedDescription
     }
+
+    /// Whether an FSEvents stream is currently owned by this view model.
+    /// Internal so the watcher's lifecycle can be asserted without widening
+    /// the public API.
+    internal var hasActiveWatcher: Bool { watcher != nil }
 
     private func startWatcher(root: String) {
         watcher = services.makeWatcher(root) { [weak self] change in
@@ -151,7 +166,14 @@ public final class ExplorerViewModel: ObservableObject {
                 self?.handleChange(change)
             }
         }
-        watcher?.start()
+        if let watcher, !watcher.start() {
+            Self.logger.error("file system watcher did not start; the tree will not refresh by itself")
+        }
+    }
+
+    private func stopWatcher() {
+        watcher?.stop()
+        watcher = nil
     }
 
     // MARK: - Loading
@@ -173,6 +195,9 @@ public final class ExplorerViewModel: ObservableObject {
             self.model = model.settingContents(.loaded(listing), for: directory)
         case .failure(let error) where directory == model.root:
             self.model = nil
+            // Spec §3.5: no stream keeps running behind the error state; a
+            // successful `retry()` builds a fresh one.
+            stopWatcher()
             reportRootUnavailable(model.root, underlying: error)
         case .failure(let error):
             self.model = model.settingContents(.failed(error.localizedDescription), for: directory)
@@ -190,7 +215,9 @@ public final class ExplorerViewModel: ObservableObject {
 
     @discardableResult
     public func expand(_ path: String) -> Task<Void, Never> {
-        guard let model, model.entry(at: path)?.isExpandable == true else { return Task {} }
+        guard let model, !ExplorerPaths.isInsideDotGit(path, root: model.root),
+              model.entry(at: path)?.isExpandable == true
+        else { return Task {} }
         let expanded = model.expanding(path)
         switch expanded.directories[path] {
         case .loaded?, .loading?:
@@ -202,6 +229,11 @@ public final class ExplorerViewModel: ObservableObject {
             let current = generation
             return Task {
                 await self.load(path, generation: current)
+                // Safe even when that load was discarded (a superseded
+                // generation, or a newer token for this directory):
+                // `persistState` writes only live main-actor state — the
+                // model and selection as they stand now — never this
+                // task's own result.
                 self.persistState()
             }
         }
@@ -248,9 +280,13 @@ public final class ExplorerViewModel: ObservableObject {
         // Every compared path must go through `CanonicalPath.resolve` — a
         // caller-supplied path may be a non-canonical alias (e.g. `/var/…`
         // for `/private/var/…`) that would never match `root` otherwise.
+        // `CanonicalPath.isInside` is not the test here: the resolved
+        // STRING is needed for the ancestor walk below anyway, and the
+        // root itself must not qualify (there is nothing to reveal), which
+        // `isInside` would accept.
         guard
             let root = model?.root, let resolved = CanonicalPath.resolve(path),
-            resolved.hasPrefix(root + "/")
+            resolved.hasPrefix(root + "/"), !ExplorerPaths.isInsideDotGit(resolved, root: root)
         else { return Task {} }
         let components = Array(ExplorerPaths.relative(resolved, to: root).split(separator: "/").dropLast())
         let ancestors = components.indices.map { index in

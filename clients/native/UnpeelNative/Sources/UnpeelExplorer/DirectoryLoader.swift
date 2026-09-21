@@ -25,6 +25,10 @@ public struct DirectoryLoader: Sendable {
     private static func entry(named name: String, in directory: String, root: String) -> FileEntry {
         let manager = FileManager.default
         let path = (directory as NSString).appendingPathComponent(name)
+        // Best effort by design: an entry whose attributes cannot be read
+        // (a race with a delete, a permission quirk) is treated as
+        // not-a-symlink, which only costs the symlink badge and the
+        // outside-root expandability check below.
         let attributes = try? manager.attributesOfItem(atPath: path)
         let isSymlink = (attributes?[.type] as? FileAttributeType) == .typeSymbolicLink
         var isDirectory: ObjCBool = false
