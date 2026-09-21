@@ -13,7 +13,7 @@ Spec: `docs/superpowers/specs/2026-09-21-native-file-explorer-design.md`
 ## Global Constraints
 
 - Platform floor: macOS 13 (`Package.swift` `.macOS(.v13)`); no API newer than macOS 13 without `#available`.
-- `UnpeelExplorer` may import **only** `Foundation`, `AppKit`, `SwiftUI`, `CoreServices`, `Quartz`, `UniformTypeIdentifiers`, `os`. It must never import `UnpeelShared`, `GhosttyTerminal`, `CUnpeelNativeBridge`, or reference `UnpeelStore`.
+- `UnpeelExplorer` may import **only** `Foundation`, `AppKit`, `SwiftUI`, `Combine`, `CoreServices`, `Quartz`, `UniformTypeIdentifiers`, `os`. It must never import `UnpeelShared`, `GhosttyTerminal`, `CUnpeelNativeBridge`, or reference `UnpeelStore`.
 - Existing files that may be edited — the complete list: `clients/native/UnpeelNative/Package.swift`, `Sources/UnpeelNative/Views/RootView.swift`, `Sources/UnpeelNative/AppDelegate.swift`. **`UnpeelStore.swift` must not be edited.** Everything else is new files.
 - Immutability: model types are `struct`s with `let` fields; reducers return new values. Local `var` copies inside a reducer are fine; mutating `self` or an argument is not.
 - Every path the explorer reads must be inside the current root after `realpath`. `.git` is never listed.
