@@ -6,13 +6,31 @@ public struct FileSystemChange: Sendable, Equatable {
     /// plus the path itself in case it is a directory.
     public let directories: Set<String>
     public let touchedGitignore: Bool
+    /// The kernel coalesced or dropped events, so `directories` no longer
+    /// describes everything that changed: every tracked directory is stale.
+    public let needsFullRescan: Bool
 
-    public init(directories: Set<String>, touchedGitignore: Bool) {
+    /// Flags that mean "what you were told is incomplete": the events below
+    /// a path were collapsed into one, or the queue overflowed in user space
+    /// or in the kernel, or the watched root itself moved.
+    private static let rescanFlags = UInt32(
+        kFSEventStreamEventFlagMustScanSubDirs
+            | kFSEventStreamEventFlagUserDropped
+            | kFSEventStreamEventFlagKernelDropped
+            | kFSEventStreamEventFlagRootChanged
+    )
+
+    public init(directories: Set<String>, touchedGitignore: Bool, needsFullRescan: Bool = false) {
         self.directories = directories
         self.touchedGitignore = touchedGitignore
+        self.needsFullRescan = needsFullRescan
     }
 
     public static func from(eventPaths: [String]) -> FileSystemChange {
+        from(eventPaths: eventPaths, eventFlags: [])
+    }
+
+    public static func from(eventPaths: [String], eventFlags: [UInt32]) -> FileSystemChange {
         let normalised = eventPaths.map { path in
             path.count > 1 && path.hasSuffix("/") ? String(path.dropLast()) : path
         }
@@ -21,7 +39,14 @@ public struct FileSystemChange: Sendable, Equatable {
             result.insert((path as NSString).deletingLastPathComponent)
         }
         let touched = normalised.contains { ($0 as NSString).lastPathComponent == ".gitignore" }
-        return FileSystemChange(directories: directories, touchedGitignore: touched)
+        // One dropped event invalidates the whole delivery, not just its own
+        // path, so the flags are OR'ed across the batch.
+        let combined = eventFlags.reduce(UInt32(0)) { $0 | $1 }
+        return FileSystemChange(
+            directories: directories,
+            touchedGitignore: touched,
+            needsFullRescan: combined & rescanFlags != 0
+        )
     }
 }
 
@@ -147,12 +172,16 @@ public final class FileSystemWatcher: @unchecked Sendable {
         )
         guard let created = FSEventStreamCreate(
             kCFAllocatorDefault,
-            { _, info, _, eventPaths, _, _ in
+            { _, info, numEvents, eventPaths, eventFlags, _ in
                 guard let info else { return }
                 let box = Unmanaged<CallbackBox>.fromOpaque(info).takeUnretainedValue()
                 let paths = unsafeBitCast(eventPaths, to: NSArray.self) as? [String] ?? []
                 guard !paths.isEmpty else { return }
-                box.handler(FileSystemChange.from(eventPaths: paths))
+                // `eventFlags` is `numEvents` long — the callback's own count
+                // parameter, never `paths.count`, which is a separately
+                // bridged array.
+                let flags = Array(UnsafeBufferPointer(start: eventFlags, count: numEvents))
+                box.handler(FileSystemChange.from(eventPaths: paths, eventFlags: flags))
             },
             &context,
             [root] as CFArray,

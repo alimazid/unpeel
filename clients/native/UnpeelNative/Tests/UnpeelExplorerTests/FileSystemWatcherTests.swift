@@ -1,3 +1,4 @@
+import CoreServices
 import XCTest
 @testable import UnpeelExplorer
 
@@ -45,6 +46,49 @@ final class FileSystemWatcherTests: XCTestCase {
 
     func testTrailingSlashesAreNormalised() {
         XCTAssertEqual(FileSystemChange.from(eventPaths: ["/r/docs/"]).directories, ["/r", "/r/docs"])
+    }
+
+    /// Under an event storm the kernel coalesces or drops events and flags
+    /// the surviving one; every descendant of that path is then stale, so
+    /// the change must ask for a full rescan rather than a targeted reload.
+    func testDroppedOrCoalescedEventFlagsRequestAFullRescan() {
+        let flags = [
+            kFSEventStreamEventFlagMustScanSubDirs,
+            kFSEventStreamEventFlagUserDropped,
+            kFSEventStreamEventFlagKernelDropped,
+            kFSEventStreamEventFlagRootChanged,
+        ]
+        for flag in flags {
+            let change = FileSystemChange.from(eventPaths: ["/r/src"], eventFlags: [UInt32(flag)])
+            XCTAssertTrue(change.needsFullRescan, "flag \(flag) must request a full rescan")
+            XCTAssertEqual(change.directories, ["/r", "/r/src"], "flag \(flag): paths still map as before")
+        }
+    }
+
+    func testOrdinaryEventFlagsDoNotRequestAFullRescan() {
+        let change = FileSystemChange.from(
+            eventPaths: ["/r/src/a.swift"],
+            eventFlags: [UInt32(kFSEventStreamEventFlagItemCreated | kFSEventStreamEventFlagItemIsFile)]
+        )
+
+        XCTAssertFalse(change.needsFullRescan)
+        XCTAssertEqual(change.directories, ["/r/src", "/r/src/a.swift"])
+    }
+
+    /// Flags are OR'ed across the batch: one dropped event invalidates the
+    /// whole delivery, not just its own path.
+    func testAFullRescanFlagAnywhereInTheBatchCounts() {
+        let change = FileSystemChange.from(
+            eventPaths: ["/r/a.txt", "/r/src"],
+            eventFlags: [UInt32(kFSEventStreamEventFlagItemCreated), UInt32(kFSEventStreamEventFlagKernelDropped)]
+        )
+
+        XCTAssertTrue(change.needsFullRescan)
+    }
+
+    func testPathOnlyMappingNeverRequestsAFullRescan() {
+        XCTAssertFalse(FileSystemChange.from(eventPaths: ["/r/docs"]).needsFullRescan)
+        XCTAssertFalse(FileSystemChange.from(eventPaths: ["/r/src"], eventFlags: []).needsFullRescan)
     }
 
     func testCreatingAFileReportsItsDirectory() throws {

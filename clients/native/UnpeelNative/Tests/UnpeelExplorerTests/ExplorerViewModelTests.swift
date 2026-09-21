@@ -227,6 +227,23 @@ final class ExplorerViewModelTests: XCTestCase {
         XCTAssertEqual(log.directories, [tree.root, tree.path("sub"), tree.root, tree.path("sub")])
     }
 
+    func testADroppedEventRescansEveryTrackedDirectory() async throws {
+        let tree = try TempTree(); defer { tree.remove() }
+        try tree.file("sub/a.txt")
+        let log = ScanLog()
+        let viewModel = makeViewModel(services(log: log))
+        await viewModel.setContext(local(tree)).value
+        await viewModel.expand(tree.path("sub")).value
+
+        // FSEvents names no usable directory when it drops events, so the
+        // tracked set — not `directories` — is what must be reloaded.
+        await viewModel.handleChange(
+            FileSystemChange(directories: [], touchedGitignore: false, needsFullRescan: true)
+        ).value
+
+        XCTAssertEqual(log.directories, [tree.root, tree.path("sub"), tree.root, tree.path("sub")])
+    }
+
     func testAVanishedExpandedFolderIsDropped() async throws {
         let tree = try TempTree(); defer { tree.remove() }
         try tree.file("sub/a.txt")

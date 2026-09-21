@@ -232,7 +232,11 @@ public final class ExplorerViewModel: ObservableObject {
     public func handleChange(_ change: FileSystemChange) -> Task<Void, Never> {
         guard let model else { return Task {} }
         let tracked = Set(model.directories.keys)
-        let targets = change.touchedGitignore ? tracked : tracked.intersection(change.directories)
+        // A dropped/coalesced event says nothing usable about WHICH paths
+        // changed, so — like a `.gitignore` edit — everything tracked is
+        // suspect.
+        let reloadEverything = change.touchedGitignore || change.needsFullRescan
+        let targets = reloadEverything ? tracked : tracked.intersection(change.directories)
         guard !targets.isEmpty else { return Task {} }
         return Task { await self.reload(targets) }
     }
