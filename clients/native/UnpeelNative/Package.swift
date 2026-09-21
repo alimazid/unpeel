@@ -42,9 +42,16 @@ let package = Package(
             path: "Sources/CUnpeelNativeBridge",
             publicHeadersPath: "include"
         ),
+        // VS Code-style file explorer (fork-only feature). Foundation/AppKit
+        // only: it must build and test without Ghostty or the Rust bridge.
+        .target(
+            name: "UnpeelExplorer",
+            path: "Sources/UnpeelExplorer"
+        ),
         .executableTarget(
             name: "UnpeelNative",
             dependencies: [
+                "UnpeelExplorer",
                 "CUnpeelNativeBridge",
                 .product(name: "UnpeelShared", package: "UnpeelShared"),
                 // Imported ONLY inside GhosttyBridge.swift (PRD §8 isolation
@@ -86,6 +93,11 @@ let package = Package(
                 "UnpeelNative",
             ],
             path: "Tests/UnpeelNativeTests"
+        ),
+        .testTarget(
+            name: "UnpeelExplorerTests",
+            dependencies: ["UnpeelExplorer"],
+            path: "Tests/UnpeelExplorerTests"
         ),
     ]
 )
