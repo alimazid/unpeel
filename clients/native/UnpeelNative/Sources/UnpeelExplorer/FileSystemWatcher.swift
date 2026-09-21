@@ -25,8 +25,17 @@ public struct FileSystemChange: Sendable, Equatable {
     }
 }
 
-/// Heap box the FSEvents stream itself owns via the context's retain count
-/// (see `startLocked()`). The C callback reads only this box — never the
+/// Heap box holding the handler, referenced by the FSEvents context's `info`
+/// pointer. The context's own `retain`/`release` callbacks are left `nil`;
+/// the single +1 that keeps this box alive is instead held by the watcher's
+/// `callbackBox` field (set in `startLocked()`), and dropped in `teardown()`
+/// — after `FSEventStreamInvalidate` — on `queue`. In the reentrant case
+/// where a handler invocation calls `stop()` on its own watcher (running
+/// `teardown()` synchronously before the handler returns), that field's
+/// retain is released while the callback is still executing; the box stays
+/// alive for the rest of the call anyway, because the callback's own
+/// `takeUnretainedValue()` local is itself a strong reference for the
+/// duration of that call. The C callback reads only this box — never the
 /// watcher — so the watcher can be deallocated at any time, from any thread,
 /// without the callback touching freed memory.
 private final class CallbackBox {
@@ -39,24 +48,29 @@ private final class CallbackBox {
 /// One recursive FSEvents stream on the explorer root. `root` must already be
 /// canonical (`CanonicalPath.resolve`) so reported paths compare equal to
 /// model paths. All stream state (`stream`, `callbackBox`) is mutated only
-/// while holding `queue`, either because the caller is already running on it
-/// (the FSEvents callback, or a handler that calls `stop()`) or via
-/// `queue.sync`. `start()` and `stop()` are safe to call from any thread,
-/// including from inside the handler itself.
+/// while holding `queue`, via `onQueue`: directly when already running on
+/// this watcher's own queue (its FSEvents callback, or its own handler
+/// calling `start()`/`stop()`), otherwise via `queue.sync`. `start()` and
+/// `stop()` are therefore safe to call from any thread, including from
+/// inside this watcher's own handler, and from inside a *different*
+/// watcher's handler (each watcher's queue is identified by its own
+/// `queueKey`, so one watcher's queue is never mistaken for another's).
 public final class FileSystemWatcher: @unchecked Sendable {
     public typealias Handler = @Sendable (FileSystemChange) -> Void
-
-    /// Identifies `queue` on whichever thread is currently running a block
-    /// submitted to it, so teardown can avoid a reentrant `queue.sync` (which
-    /// libdispatch treats as a fatal deadlock, not a hang) when it is already
-    /// executing there — e.g. a handler calling `stop()`, or the last strong
-    /// reference to the watcher being dropped from inside the handler.
-    private static let queueKey = DispatchSpecificKey<Void>()
 
     private let root: String
     private let latency: TimeInterval
     private let handler: Handler
     private let queue = DispatchQueue(label: "com.unpeel.explorer.fsevents")
+    /// Per-instance key: identifies *this* watcher's `queue`, not "some
+    /// watcher's queue". A `static` key would be set on every watcher's
+    /// queue and answer only "am I on any `FileSystemWatcher` queue", which
+    /// is the wrong question when one watcher's handler touches a second
+    /// watcher — it would make `onOwnQueue` return true on watcher A's queue
+    /// even when checked against watcher B, causing B's `stop()`/`deinit` to
+    /// mutate B's `stream`/`callbackBox` directly on A's queue instead of
+    /// hopping to B's own queue.
+    private let queueKey = DispatchSpecificKey<Void>()
     private var stream: FSEventStreamRef?
     /// Our balancing reference to the box retained by `FSEventStreamCreate`'s
     /// context; released exactly once, after the stream is fully torn down.
@@ -66,33 +80,44 @@ public final class FileSystemWatcher: @unchecked Sendable {
         self.root = root
         self.latency = latency
         self.handler = handler
-        queue.setSpecific(key: Self.queueKey, value: ())
+        queue.setSpecific(key: queueKey, value: ())
     }
 
     deinit {
         // The last strong reference can be dropped from any thread, including
-        // `queue` itself (e.g. a handler that was the sole owner). Tearing
-        // down here must therefore follow the same any-thread-safe path as
-        // `stop()` rather than assuming no other reference/access exists.
-        teardownFromAnyThread()
+        // `queue` itself (e.g. a handler that was the sole owner, or another
+        // watcher's handler dropping this one). Tearing down here must
+        // therefore follow the same any-thread-safe path as `stop()` rather
+        // than assuming no other reference/access exists.
+        onQueue { teardown() }
+    }
+
+    /// True only when the calling code is already running on *this*
+    /// watcher's own `queue` (e.g. inside its own handler). Internal rather
+    /// than private so it can be exercised directly from tests without
+    /// widening the public API.
+    internal var isOnOwnQueue: Bool {
+        DispatchQueue.getSpecific(key: queueKey) != nil
     }
 
     public func start() {
-        queue.sync { startLocked() }
+        onQueue { startLocked() }
     }
 
     public func stop() {
-        teardownFromAnyThread()
+        onQueue { teardown() }
     }
 
-    /// Runs `teardown()` directly if already on `queue` (avoids a reentrant
-    /// `queue.sync`, which libdispatch would trap as a deadlock), otherwise
+    /// Runs `body` directly if already on `queue` (avoids a reentrant
+    /// `queue.sync`, which libdispatch would trap as a deadlock — the same
+    /// hazard applies to `start()` and `stop()` alike, and to a second
+    /// watcher's handler calling either on this watcher), otherwise
     /// synchronously hands it to `queue`.
-    private func teardownFromAnyThread() {
-        if DispatchQueue.getSpecific(key: Self.queueKey) != nil {
-            teardown()
+    private func onQueue(_ body: () -> Void) {
+        if isOnOwnQueue {
+            body()
         } else {
-            queue.sync { teardown() }
+            queue.sync(execute: body)
         }
     }
 
