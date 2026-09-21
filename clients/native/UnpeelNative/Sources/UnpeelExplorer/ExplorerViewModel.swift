@@ -1,5 +1,6 @@
 import Combine
 import Foundation
+import os
 
 public enum ExplorerContext: Sendable, Equatable {
     /// No session is selected.
@@ -41,13 +42,28 @@ public final class ExplorerViewModel: ObservableObject {
     @Published public private(set) var restoreToken = 0
     public var scrollOffset: Double = 0
 
+    private static let logger = Logger(subsystem: "com.unpeel.explorer", category: "viewmodel")
+
     private let services: ExplorerServices
     private let stateStore: ExplorerStateStore
     private var watcher: FileSystemWatcher?
     /// Bumped on every context change; a load that finishes under an older
     /// generation belongs to a root that is no longer shown.
     private var generation = 0
-    private var isRestoring = false
+    /// The generation currently opening (initial load + saved-state replay),
+    /// or `nil` when none is. `persistState()` is suppressed while this
+    /// equals `generation` — i.e. while the *current, live* root is mid-open
+    /// — regardless of which generation's leftover continuation happens to
+    /// be the one calling it. A generation must only clear this for itself
+    /// (checked, never unconditionally), so an abandoned open can never
+    /// un-suppress persistence for the generation that superseded it.
+    private var restoringGeneration: Int?
+    /// Per-directory monotonically increasing token. A load's result is
+    /// applied only if its token is still the latest issued for that
+    /// directory, so an overlapping load that started earlier (e.g. a
+    /// pre-change scan) can never overwrite a later one's result, no matter
+    /// which one's scan happens to finish last.
+    private var loadTokens: [String: Int] = [:]
 
     public init(services: ExplorerServices = .live, stateStore: ExplorerStateStore) {
         self.services = services
@@ -69,6 +85,7 @@ public final class ExplorerViewModel: ObservableObject {
 
     @discardableResult
     public func retry() -> Task<Void, Never> {
+        persistState()
         let current = context
         teardown()
         let next = generation
@@ -77,6 +94,7 @@ public final class ExplorerViewModel: ObservableObject {
 
     private func teardown() {
         generation += 1
+        loadTokens.removeAll()
         watcher?.stop()
         watcher = nil
         model = nil
@@ -86,20 +104,50 @@ public final class ExplorerViewModel: ObservableObject {
     }
 
     private func open(_ context: ExplorerContext, generation current: Int) async {
-        guard current == generation, case .local(let requestedRoot, _) = context else { return }
+        guard current == generation else { return }
+        // Set before the first model is published (below), so `persistState`
+        // is suppressed for the whole window from here through the end of
+        // `restoreState` — not just while replaying saved expansions.
+        restoringGeneration = current
+        guard case .local(let requestedRoot, _) = context else {
+            finishOpening(current)
+            return
+        }
         guard let root = CanonicalPath.resolve(requestedRoot) else {
-            rootError = ExplorerError.rootUnavailable(requestedRoot).localizedDescription
+            reportRootUnavailable(requestedRoot, underlying: nil)
+            finishOpening(current)
             return
         }
         model = FileTreeModel(root: root).settingContents(.loading, for: root)
         startWatcher(root: root)
         await load(root, generation: current)
+        guard current == generation, model != nil else {
+            finishOpening(current)
+            return
+        }
         await restoreState(root: root, generation: current)
+        finishOpening(current)
+    }
+
+    /// Clears `restoringGeneration` only if it still names `current` — a
+    /// generation that has since been superseded must never clear the value
+    /// the generation that replaced it is relying on.
+    private func finishOpening(_ current: Int) {
+        if restoringGeneration == current { restoringGeneration = nil }
+    }
+
+    private func reportRootUnavailable(_ root: String, underlying error: (any Error)?) {
+        if let error {
+            Self.logger.error("root unavailable at \(root, privacy: .public): \(error.localizedDescription, privacy: .public)")
+        } else {
+            Self.logger.error("root unavailable at \(root, privacy: .public)")
+        }
+        rootError = ExplorerError.rootUnavailable(root).localizedDescription
     }
 
     private func startWatcher(root: String) {
         watcher = services.makeWatcher(root) { [weak self] change in
-            Task { @MainActor [weak self] in
+            Task { @MainActor in
                 self?.handleChange(change)
             }
         }
@@ -110,17 +158,22 @@ public final class ExplorerViewModel: ObservableObject {
 
     private func load(_ directory: String, generation current: Int) async {
         guard let root = model?.root else { return }
+        loadTokens[directory, default: 0] += 1
+        let token = loadTokens[directory]
         let scan = services.scan
         let result: Result<DirectoryListing, any Error> = await Task.detached(priority: .userInitiated) {
             Result { try scan(directory, root) }
         }.value
-        guard current == generation, let model, model.directories[directory] != nil else { return }
+        guard
+            current == generation, let model, model.directories[directory] != nil,
+            loadTokens[directory] == token
+        else { return }
         switch result {
         case .success(let listing):
             self.model = model.settingContents(.loaded(listing), for: directory)
         case .failure(let error) where directory == model.root:
             self.model = nil
-            rootError = error.localizedDescription
+            reportRootUnavailable(model.root, underlying: error)
         case .failure(let error):
             self.model = model.settingContents(.failed(error.localizedDescription), for: directory)
         }
@@ -188,14 +241,20 @@ public final class ExplorerViewModel: ObservableObject {
 
     @discardableResult
     public func reveal(_ path: String) -> Task<Void, Never> {
-        guard let root = model?.root, path.hasPrefix(root + "/") else { return Task {} }
-        let components = Array(ExplorerPaths.relative(path, to: root).split(separator: "/").dropLast())
+        // Every compared path must go through `CanonicalPath.resolve` — a
+        // caller-supplied path may be a non-canonical alias (e.g. `/var/…`
+        // for `/private/var/…`) that would never match `root` otherwise.
+        guard
+            let root = model?.root, let resolved = CanonicalPath.resolve(path),
+            resolved.hasPrefix(root + "/")
+        else { return Task {} }
+        let components = Array(ExplorerPaths.relative(resolved, to: root).split(separator: "/").dropLast())
         let ancestors = components.indices.map { index in
             root + "/" + components[...index].joined(separator: "/")
         }
         return Task {
             for ancestor in ancestors { await self.expand(ancestor).value }
-            if self.model?.entry(at: path) != nil { self.selection = [path] }
+            if self.model?.entry(at: resolved) != nil { self.selection = [resolved] }
         }
     }
 
@@ -207,17 +266,26 @@ public final class ExplorerViewModel: ObservableObject {
     }
 
     public func persistState() {
-        guard !isRestoring, let model else { return }
+        guard restoringGeneration != generation, let model else { return }
         stateStore.save(
             RootViewState(expanded: model.expanded.sorted(), selection: selection, scrollOffset: scrollOffset),
             forRoot: model.root
         )
     }
 
+    /// Replays a root's saved expansions, then applies its selection and
+    /// scroll offset. `restoringGeneration` (set by `open` before this runs)
+    /// already suppresses `persistState` for the whole call, so a partially
+    /// replayed expansion set is never written back as if it were final.
     private func restoreState(root: String, generation current: Int) async {
-        guard current == generation, let saved = stateStore.state(forRoot: root) else { return }
-        isRestoring = true
-        defer { isRestoring = false }
+        guard current == generation else { return }
+        guard let saved = stateStore.state(forRoot: root) else {
+            // No saved state is still a completed restore: the outline still
+            // needs a `restoreToken` bump so it resets scroll for this root
+            // instead of keeping the previous root's leftover offset.
+            restoreToken += 1
+            return
+        }
         let shallowFirst = saved.expanded.sorted { ExplorerPaths.depth($0) < ExplorerPaths.depth($1) }
         for path in shallowFirst {
             guard current == generation else { return }

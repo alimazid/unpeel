@@ -16,6 +16,20 @@ private final class ScanLog: @unchecked Sendable {
     }
 }
 
+/// Counts scan invocations per directory, so a test can make exactly one
+/// call (identified by its position in the sequence) slow while every other
+/// call to the same directory stays fast.
+private final class ScanCallCounter: @unchecked Sendable {
+    private let lock = NSLock()
+    private var counts: [String: Int] = [:]
+
+    func next(for directory: String) -> Int {
+        lock.lock(); defer { lock.unlock() }
+        counts[directory, default: 0] += 1
+        return counts[directory]!
+    }
+}
+
 @MainActor
 final class ExplorerViewModelTests: XCTestCase {
     private var suites: [String] = []
@@ -299,5 +313,203 @@ final class ExplorerViewModelTests: XCTestCase {
         XCTAssertEqual(ExplorerPaths.relative("/r", to: "/r"), ".")
         XCTAssertEqual(ExplorerPaths.relative("/r-other/a", to: "/r"), "/r-other/a")
         XCTAssertEqual(ExplorerPaths.depth("/r/src/a.swift"), 3)
+    }
+
+    // MARK: - Review fixes
+
+    func testFastContextSwitchDoesNotWipeSavedViewState() async throws {
+        let a = try TempTree(); defer { a.remove() }
+        let b = try TempTree(); defer { b.remove() }
+        try a.file("src/App.swift")
+        let defaults = makeDefaults()
+
+        // Establish A's saved state with an ordinary (non-racing) view model.
+        let setup = makeViewModel(defaults: defaults)
+        await setup.setContext(local(a)).value
+        await setup.expand(a.path("src")).value
+        setup.selection = [a.path("src/App.swift")]
+        setup.scrollOffset = 42
+        setup.persistState()
+
+        // A's own root scan is slow, so switching to B lands while `open(A)`
+        // is still publishing its `.loading` placeholder — before A ever
+        // reaches `restoreState`.
+        let viewModel = makeViewModel(services(delay: [a.root: 0.4]), defaults: defaults)
+        let openA = viewModel.setContext(local(a))
+        try await Task.sleep(nanoseconds: 100_000_000)
+        let openB = viewModel.setContext(local(b))
+        await openA.value
+        await openB.value
+
+        await viewModel.setContext(local(a)).value
+
+        XCTAssertEqual(viewModel.model?.expanded, [a.path("src")])
+        XCTAssertEqual(viewModel.selection, [a.path("src/App.swift")])
+        XCTAssertEqual(viewModel.scrollOffset, 42)
+    }
+
+    func testAbandonedRestoreDoesNotCorruptEitherRootsSavedState() async throws {
+        let a = try TempTree(); defer { a.remove() }
+        let b = try TempTree(); defer { b.remove() }
+        try a.file("src/views/App.swift")
+        try b.file("lib/utils/Helper.swift")
+        let defaults = makeDefaults()
+
+        let setupA = makeViewModel(defaults: defaults)
+        await setupA.setContext(local(a)).value
+        await setupA.expand(a.path("src")).value
+        await setupA.expand(a.path("src/views")).value
+        setupA.selection = [a.path("src/views/App.swift")]
+        setupA.scrollOffset = 10
+        setupA.persistState()
+        let savedA = RootViewState(
+            expanded: [a.path("src"), a.path("src/views")],
+            selection: [a.path("src/views/App.swift")],
+            scrollOffset: 10
+        )
+
+        let setupB = makeViewModel(defaults: defaults)
+        await setupB.setContext(local(b)).value
+        await setupB.expand(b.path("lib")).value
+        await setupB.expand(b.path("lib/utils")).value
+        setupB.selection = [b.path("lib/utils/Helper.swift")]
+        setupB.scrollOffset = 20
+        setupB.persistState()
+        let savedB = RootViewState(
+            expanded: [b.path("lib"), b.path("lib/utils")],
+            selection: [b.path("lib/utils/Helper.swift")],
+            scrollOffset: 20
+        )
+
+        // A's restore starts expanding "src" (slow); B is opened before that
+        // finishes, and B's own restore (also slow, on "lib") is still in
+        // flight when A's abandoned expand finally completes.
+        let viewModel = makeViewModel(
+            services(delay: [a.path("src"): 0.25, b.path("lib"): 0.3, b.path("lib/utils"): 0.05]),
+            defaults: defaults
+        )
+
+        let openA = viewModel.setContext(local(a))
+        try await Task.sleep(nanoseconds: 100_000_000)
+        let openB = viewModel.setContext(local(b))
+        await openA.value
+        await openB.value
+
+        let freshStore = ExplorerStateStore(defaults: defaults)
+        XCTAssertEqual(freshStore.state(forRoot: a.root), savedA)
+        XCTAssertEqual(freshStore.state(forRoot: b.root), savedB)
+    }
+
+    func testAStaleLoadOfTheSameDirectoryIsDiscarded() async throws {
+        let tree = try TempTree(); defer { tree.remove() }
+        try tree.file("a.txt")
+        let counter = ScanCallCounter()
+        let viewModel = makeViewModel(ExplorerServices(
+            scan: { directory, root in
+                // Capture the listing before sleeping, so a "stale" result
+                // reflects the directory's contents at the time the scan
+                // started, not when it finishes.
+                let listing = try DirectoryScanner(ignore: NoIgnoreChecker()).scan(directory: directory, root: root)
+                if directory == root, counter.next(for: directory) == 2 {
+                    Thread.sleep(forTimeInterval: 0.4)
+                }
+                return listing
+            },
+            makeWatcher: { _, _ in nil }
+        ))
+        await viewModel.setContext(local(tree)).value // call #1: fast initial load
+
+        // call #2: slow reload, started before "b.txt" exists
+        let slow = viewModel.handleChange(FileSystemChange(directories: [tree.root], touchedGitignore: false))
+        try await Task.sleep(nanoseconds: 100_000_000)
+        try tree.file("b.txt")
+        // call #3: fast reload, started after "b.txt" exists
+        let fast = viewModel.handleChange(FileSystemChange(directories: [tree.root], touchedGitignore: false))
+
+        await slow.value
+        await fast.value
+
+        XCTAssertEqual(
+            viewModel.model?.visibleChildren(of: tree.root, filter: everything).map(\.name).sorted(),
+            ["a.txt", "b.txt"]
+        )
+    }
+
+    func testRevealCanonicalizesANonCanonicalPath() async throws {
+        let tree = try TempTree(); defer { tree.remove() }
+        guard tree.root.hasPrefix("/private/") else {
+            throw XCTSkip("temp root is not under /private, cannot build a non-canonical alias")
+        }
+        let target = try tree.file("a/b/c.txt")
+        let alias = String(target.dropFirst("/private".count))
+        let viewModel = makeViewModel()
+        await viewModel.setContext(local(tree)).value
+
+        await viewModel.reveal(alias).value
+
+        XCTAssertEqual(viewModel.model?.expanded, [tree.path("a"), tree.path("a/b")])
+        XCTAssertEqual(viewModel.selection, [target])
+    }
+
+    func testRetryRecoversAfterTheRootIsCreated() async throws {
+        let tree = try TempTree(); defer { tree.remove() }
+        let missing = tree.path("not-yet")
+        let viewModel = makeViewModel()
+
+        await viewModel.setContext(.local(root: missing, projectRoot: tree.root)).value
+        XCTAssertNotNil(viewModel.rootError)
+        XCTAssertNil(viewModel.model)
+
+        try FileManager.default.createDirectory(atPath: missing, withIntermediateDirectories: true)
+        await viewModel.retry().value
+
+        XCTAssertNil(viewModel.rootError)
+        XCTAssertEqual(viewModel.model?.root, missing)
+    }
+
+    func testRefreshReportsAnErrorWhenTheRootBecomesUnreadableAndRetryRecovers() async throws {
+        let tree = try TempTree(); defer { tree.remove() }
+        try tree.file("a.txt")
+        let viewModel = makeViewModel()
+        await viewModel.setContext(local(tree)).value
+
+        try FileManager.default.setAttributes([.posixPermissions: 0o000], ofItemAtPath: tree.root)
+        await viewModel.refresh().value
+
+        XCTAssertNotNil(viewModel.rootError)
+        XCTAssertNil(viewModel.model)
+
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: tree.root)
+        await viewModel.retry().value
+
+        XCTAssertNil(viewModel.rootError)
+        XCTAssertEqual(viewModel.model?.visibleChildren(of: tree.root, filter: everything).map(\.name), ["a.txt"])
+    }
+
+    func testRestoreTokenAdvancesEvenWithNoSavedState() async throws {
+        let tree = try TempTree(); defer { tree.remove() }
+        let viewModel = makeViewModel()
+        let before = viewModel.restoreToken
+
+        await viewModel.setContext(local(tree)).value
+
+        XCTAssertGreaterThan(viewModel.restoreToken, before)
+    }
+
+    func testRootUnavailableUsesTheSameMessageShapeForMissingAndUnreadableRoots() async throws {
+        let tree = try TempTree(); defer { tree.remove() }
+        try tree.file("a.txt")
+        let missingRoot = tree.path("nope")
+        let missingViewModel = makeViewModel()
+        await missingViewModel.setContext(.local(root: missingRoot, projectRoot: tree.root)).value
+
+        let unreadableViewModel = makeViewModel()
+        await unreadableViewModel.setContext(local(tree)).value
+        try FileManager.default.setAttributes([.posixPermissions: 0o000], ofItemAtPath: tree.root)
+        await unreadableViewModel.refresh().value
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: tree.root)
+
+        XCTAssertEqual(missingViewModel.rootError, ExplorerError.rootUnavailable(missingRoot).localizedDescription)
+        XCTAssertEqual(unreadableViewModel.rootError, ExplorerError.rootUnavailable(tree.root).localizedDescription)
     }
 }
