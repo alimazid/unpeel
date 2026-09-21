@@ -43,6 +43,12 @@ public final class ExplorerOutlineController: NSObject,
     private var items: [String: ExplorerItem] = [:]
     private var childCache: [String: [ExplorerItem]] = [:]
     private var applied: FileTreeModel?
+    /// What the OUTLINE VIEW currently has expanded, maintained from its
+    /// expand/collapse notifications (which AppKit posts for programmatic
+    /// changes as well as user ones). Paths whose rows a reload dropped are
+    /// never notified about, so entries can go stale; `syncExpansion`
+    /// re-checks each one against the view before acting on it.
+    private var expandedPaths: Set<String> = []
     private var appliedFilter = VisibilityFilter()
     private var appliedRestoreToken = 0
     /// True while this controller changes the outline view itself, so its
@@ -83,6 +89,7 @@ public final class ExplorerOutlineController: NSObject,
         guard let model else {
             items = [:]
             childCache = [:]
+            expandedPaths = []
             outlineView?.reloadData()
             return
         }
@@ -97,6 +104,7 @@ public final class ExplorerOutlineController: NSObject,
         // selection until the next reload.
         if rootChanged {
             items = [:]
+            expandedPaths = []
         }
         if rootChanged || filterChanged {
             childCache = [:]
@@ -133,6 +141,13 @@ public final class ExplorerOutlineController: NSObject,
         viewModel.scrollOffset = offset
     }
 
+    /// Scales with the number of EXPANDED folders, not with the number of
+    /// rows: walking every row to ask `isItemExpanded` makes AppKit load
+    /// each row's lazy info, which calls back into `isItemExpandable` —
+    /// one full pass per `apply`, and `apply` runs on every published
+    /// change. `expandedPaths` tracks what the outline itself reports as
+    /// expanded (the notifications fire for programmatic changes too), so
+    /// only those need checking against the model.
     private func syncExpansion(_ model: FileTreeModel) {
         guard let outlineView else { return }
         let shallowFirst = model.expanded.sorted { ExplorerPaths.depth($0) < ExplorerPaths.depth($1) }
@@ -142,13 +157,13 @@ public final class ExplorerOutlineController: NSObject,
             else { continue }
             outlineView.expandItem(item)
         }
-        var row = 0
-        while row < outlineView.numberOfRows {
-            if let item = outlineView.item(atRow: row) as? ExplorerItem,
-               outlineView.isItemExpanded(item), !model.expanded.contains(item.path) {
-                outlineView.collapseItem(item)
-            }
-            row += 1
+        let stale = expandedPaths.subtracting(model.expanded)
+            .sorted { ExplorerPaths.depth($0) < ExplorerPaths.depth($1) }
+        for path in stale {
+            guard let item = items[path], outlineView.row(forItem: item) >= 0,
+                  outlineView.isItemExpanded(item)
+            else { continue }
+            outlineView.collapseItem(item)
         }
     }
 
@@ -270,12 +285,16 @@ public final class ExplorerOutlineController: NSObject,
     }
 
     public func outlineViewItemDidExpand(_ notification: Notification) {
-        guard !isApplying, let item = notification.userInfo?["NSObject"] as? ExplorerItem else { return }
+        guard let item = notification.userInfo?["NSObject"] as? ExplorerItem else { return }
+        expandedPaths.insert(item.path)
+        guard !isApplying else { return }
         viewModel.expand(item.path)
     }
 
     public func outlineViewItemDidCollapse(_ notification: Notification) {
-        guard !isApplying, let item = notification.userInfo?["NSObject"] as? ExplorerItem else { return }
+        guard let item = notification.userInfo?["NSObject"] as? ExplorerItem else { return }
+        expandedPaths.remove(item.path)
+        guard !isApplying else { return }
         viewModel.collapse(item.path)
     }
 
@@ -485,34 +504,10 @@ public final class ExplorerOutlineController: NSObject,
             .map(\.path)
     }
 
-    /// Resolves every target path to its `FileEntry`, indexing each
-    /// distinct parent directory's listing once (`FileTreeModel.entry(at:)`
-    /// linearly scans the parent's listing per call, so resolving a large
-    /// target set one path at a time — e.g. ⌘A in a 10,000-entry folder,
-    /// then right-click — is O(target count × directory size)). Order of
-    /// `paths` is preserved; unresolvable paths are dropped.
+    /// Resolves every target path to its `FileEntry`, preserving the order
+    /// of `paths` and dropping the ones that no longer exist.
     private func resolvedEntries(for paths: [String]) -> [(path: String, entry: FileEntry)] {
-        guard let applied else { return [] }
-        var indexByParent: [String: [String: FileEntry]] = [:]
-        var resolved: [(path: String, entry: FileEntry)] = []
-        resolved.reserveCapacity(paths.count)
-        for path in paths {
-            let parent = FileTreeModel.parent(of: path)
-            let index: [String: FileEntry]
-            if let cached = indexByParent[parent] {
-                index = cached
-            } else if case .loaded(let listing)? = applied.directories[parent] {
-                index = Dictionary(uniqueKeysWithValues: listing.entries.map { ($0.path, $0) })
-                indexByParent[parent] = index
-            } else {
-                index = [:]
-                indexByParent[parent] = index
-            }
-            if let entry = index[path] {
-                resolved.append((path, entry))
-            }
-        }
-        return resolved
+        paths.compactMap { path in applied?.entry(at: path).map { (path, $0) } }
     }
 
     private func copyToPasteboard(_ lines: [String]) {

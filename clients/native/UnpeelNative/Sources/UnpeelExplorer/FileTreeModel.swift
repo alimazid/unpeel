@@ -111,6 +111,6 @@ public struct FileTreeModel: Sendable, Equatable {
 
     public func entry(at path: String) -> FileEntry? {
         guard case .loaded(let listing)? = directories[Self.parent(of: path)] else { return nil }
-        return listing.entries.first { $0.path == path }
+        return listing.entry(at: path)
     }
 }

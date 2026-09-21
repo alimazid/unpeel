@@ -49,10 +49,26 @@ public struct DirectoryListing: Sendable, Equatable {
     public let entries: [FileEntry]
     /// Entries beyond the loader's cap that were not included.
     public let truncatedCount: Int
+    /// Path → entry, built once here. Every row the outline view draws,
+    /// expands or acts on resolves its path through `entry(at:)`, so
+    /// scanning `entries` per call would make one pass over a capped
+    /// 10,000-entry folder cost 10,000 × 10,000 comparisons.
+    private let entriesByPath: [String: FileEntry]
 
     public init(entries: [FileEntry], truncatedCount: Int = 0) {
         self.entries = entries
         self.truncatedCount = truncatedCount
+        // First wins, matching the scan this index replaced.
+        self.entriesByPath = Dictionary(entries.map { ($0.path, $0) }, uniquingKeysWith: { first, _ in first })
+    }
+
+    func entry(at path: String) -> FileEntry? {
+        entriesByPath[path]
+    }
+
+    /// The index is derived from `entries`, so it takes no part in equality.
+    public static func == (lhs: DirectoryListing, rhs: DirectoryListing) -> Bool {
+        lhs.truncatedCount == rhs.truncatedCount && lhs.entries == rhs.entries
     }
 }
 
