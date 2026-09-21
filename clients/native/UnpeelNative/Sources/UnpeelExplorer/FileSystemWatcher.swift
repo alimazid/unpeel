@@ -25,36 +25,75 @@ public struct FileSystemChange: Sendable, Equatable {
     }
 }
 
+/// Heap box the FSEvents stream itself owns via the context's retain count
+/// (see `startLocked()`). The C callback reads only this box — never the
+/// watcher — so the watcher can be deallocated at any time, from any thread,
+/// without the callback touching freed memory.
+private final class CallbackBox {
+    let handler: FileSystemWatcher.Handler
+    init(handler: @escaping FileSystemWatcher.Handler) {
+        self.handler = handler
+    }
+}
+
 /// One recursive FSEvents stream on the explorer root. `root` must already be
 /// canonical (`CanonicalPath.resolve`) so reported paths compare equal to
-/// model paths. All stream state is confined to `queue`.
+/// model paths. All stream state (`stream`, `callbackBox`) is mutated only
+/// while holding `queue`, either because the caller is already running on it
+/// (the FSEvents callback, or a handler that calls `stop()`) or via
+/// `queue.sync`. `start()` and `stop()` are safe to call from any thread,
+/// including from inside the handler itself.
 public final class FileSystemWatcher: @unchecked Sendable {
     public typealias Handler = @Sendable (FileSystemChange) -> Void
+
+    /// Identifies `queue` on whichever thread is currently running a block
+    /// submitted to it, so teardown can avoid a reentrant `queue.sync` (which
+    /// libdispatch treats as a fatal deadlock, not a hang) when it is already
+    /// executing there — e.g. a handler calling `stop()`, or the last strong
+    /// reference to the watcher being dropped from inside the handler.
+    private static let queueKey = DispatchSpecificKey<Void>()
 
     private let root: String
     private let latency: TimeInterval
     private let handler: Handler
     private let queue = DispatchQueue(label: "com.unpeel.explorer.fsevents")
     private var stream: FSEventStreamRef?
+    /// Our balancing reference to the box retained by `FSEventStreamCreate`'s
+    /// context; released exactly once, after the stream is fully torn down.
+    private var callbackBox: Unmanaged<CallbackBox>?
 
     public init(root: String, latency: TimeInterval = 0.15, handler: @escaping Handler) {
         self.root = root
         self.latency = latency
         self.handler = handler
+        queue.setSpecific(key: Self.queueKey, value: ())
     }
 
     deinit {
-        // No other reference exists here, so tear down without hopping queues.
-        teardown()
+        // The last strong reference can be dropped from any thread, including
+        // `queue` itself (e.g. a handler that was the sole owner). Tearing
+        // down here must therefore follow the same any-thread-safe path as
+        // `stop()` rather than assuming no other reference/access exists.
+        teardownFromAnyThread()
     }
 
     public func start() {
         queue.sync { startLocked() }
     }
 
-    /// Must not be called from inside the handler (it runs on `queue`).
     public func stop() {
-        queue.sync { teardown() }
+        teardownFromAnyThread()
+    }
+
+    /// Runs `teardown()` directly if already on `queue` (avoids a reentrant
+    /// `queue.sync`, which libdispatch would trap as a deadlock), otherwise
+    /// synchronously hands it to `queue`.
+    private func teardownFromAnyThread() {
+        if DispatchQueue.getSpecific(key: Self.queueKey) != nil {
+            teardown()
+        } else {
+            queue.sync { teardown() }
+        }
     }
 
     /// Creates and starts the FSEvents stream. Must run on `queue`; split out
@@ -68,9 +107,10 @@ public final class FileSystemWatcher: @unchecked Sendable {
     /// callback must stay an inline closure literal.
     private func startLocked() {
         guard stream == nil else { return }
+        let box = Unmanaged.passRetained(CallbackBox(handler: handler))
         var context = FSEventStreamContext(
             version: 0,
-            info: Unmanaged.passUnretained(self).toOpaque(),
+            info: box.toOpaque(),
             retain: nil,
             release: nil,
             copyDescription: nil
@@ -84,27 +124,35 @@ public final class FileSystemWatcher: @unchecked Sendable {
             kCFAllocatorDefault,
             { _, info, _, eventPaths, _, _ in
                 guard let info else { return }
-                let watcher = Unmanaged<FileSystemWatcher>.fromOpaque(info).takeUnretainedValue()
+                let box = Unmanaged<CallbackBox>.fromOpaque(info).takeUnretainedValue()
                 let paths = unsafeBitCast(eventPaths, to: NSArray.self) as? [String] ?? []
                 guard !paths.isEmpty else { return }
-                watcher.handler(FileSystemChange.from(eventPaths: paths))
+                box.handler(FileSystemChange.from(eventPaths: paths))
             },
             &context,
             [root] as CFArray,
             FSEventStreamEventId(kFSEventStreamEventIdSinceNow),
             latency,
             flags
-        ) else { return }
+        ) else {
+            box.release()
+            return
+        }
         FSEventStreamSetDispatchQueue(created, queue)
         FSEventStreamStart(created)
         stream = created
+        callbackBox = box
     }
 
+    /// Stops, invalidates and releases the stream, then releases our
+    /// balancing reference to its callback box. Must run on `queue`.
     private func teardown() {
         guard let stream else { return }
         FSEventStreamStop(stream)
         FSEventStreamInvalidate(stream)
         FSEventStreamRelease(stream)
         self.stream = nil
+        callbackBox?.release()
+        callbackBox = nil
     }
 }
