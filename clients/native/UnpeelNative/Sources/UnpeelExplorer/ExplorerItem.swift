@@ -6,7 +6,12 @@ public final class ExplorerItem: NSObject {
     public enum Role: Equatable {
         case entry
         /// A non-interactive line: a load failure or "… N more items".
-        case note(String)
+        /// Carries no text itself — `ExplorerOutlineController.noteText`
+        /// derives the current text live from the model, so a directory's
+        /// note row keeps one stable identity even as its message changes
+        /// (e.g. the truncated count growing) rather than losing identity
+        /// each time the text does.
+        case note
     }
 
     public let path: String

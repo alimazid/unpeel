@@ -14,13 +14,34 @@ public final class ExplorerNSOutlineView: NSOutlineView {
         super.keyDown(with: event)
     }
 
+    /// `QLPreviewPanel.shared()` creates the panel as a side effect, so
+    /// existence must be checked first — calling `.shared()` unconditionally
+    /// to read `.isVisible` would spin up a panel just to decide whether to
+    /// hide one that was never open.
     public func toggleQuickLook() {
+        if QLPreviewPanel.sharedPreviewPanelExists(), QLPreviewPanel.shared().isVisible {
+            QLPreviewPanel.shared().orderOut(nil)
+        } else {
+            showQuickLook()
+        }
+    }
+
+    /// Opens the panel the first time; reloads an already-open one so a
+    /// changed selection is reflected instead of the toggle hiding it.
+    public func showQuickLook() {
         guard let panel = QLPreviewPanel.shared() else { return }
-        if QLPreviewPanel.sharedPreviewPanelExists(), panel.isVisible {
-            panel.orderOut(nil)
+        if panel.isVisible {
+            panel.reloadData()
         } else {
             panel.makeKeyAndOrderFront(nil)
         }
+    }
+
+    /// Keeps an already-open panel in sync with a selection change without
+    /// creating or showing the panel when it isn't open.
+    public func reloadQuickLookIfVisible() {
+        guard QLPreviewPanel.sharedPreviewPanelExists(), QLPreviewPanel.shared().isVisible else { return }
+        QLPreviewPanel.shared().reloadData()
     }
 
     public override nonisolated func acceptsPreviewPanelControl(_: QLPreviewPanel!) -> Bool { true }

@@ -76,8 +76,19 @@ public final class ExplorerOutlineController: NSObject,
             outlineView?.reloadData()
             return
         }
-        if previous?.root != model.root || previousFilter != filter {
+        let rootChanged = previous?.root != model.root
+        let filterChanged = previousFilter != filter
+        // Item identity is path-based and filter-independent (a filter only
+        // changes which paths are children, never what a given path's item
+        // is) — clearing `items` here too would make `syncExpansion` and
+        // `syncSelection` below depend on `reloadData()` having already
+        // re-queried the data source synchronously to repopulate it, which
+        // AppKit does not guarantee, and could silently drop expansion and
+        // selection until the next reload.
+        if rootChanged {
             items = [:]
+        }
+        if rootChanged || filterChanged {
             childCache = [:]
             outlineView?.reloadData()
         } else if let previous {
@@ -147,18 +158,28 @@ public final class ExplorerOutlineController: NSObject,
         guard let model = applied else { return [] }
         let entries = model.visibleChildren(of: directory, filter: appliedFilter)
             .map { item(for: $0.path, role: .entry) }
-        let built = entries + noteRows(for: directory, in: model)
+        let built = entries + noteRows(for: directory)
         childCache[directory] = built
         return built
     }
 
-    private func noteRows(for directory: String, in model: FileTreeModel) -> [ExplorerItem] {
-        if case .failed(let message)? = model.directories[directory] {
-            return [item(for: directory + Self.noteSuffix, role: .note(message))]
+    private func noteRows(for directory: String) -> [ExplorerItem] {
+        guard noteText(forDirectory: directory) != nil else { return [] }
+        return [item(for: directory + Self.noteSuffix, role: .note)]
+    }
+
+    /// The live text for a directory's note row (a load failure, or a
+    /// truncated-count message), looked up by directory rather than stored
+    /// on the (identity-only) `.note` item — so the row's identity stays
+    /// stable across reloads even as this text changes.
+    func noteText(forDirectory directory: String) -> String? {
+        guard let applied else { return nil }
+        if case .failed(let message)? = applied.directories[directory] {
+            return message
         }
-        let hidden = model.truncatedCount(of: directory)
-        guard hidden > 0 else { return [] }
-        return [item(for: directory + Self.noteSuffix, role: .note("… \(hidden) more items not shown"))]
+        let hidden = applied.truncatedCount(of: directory)
+        guard hidden > 0 else { return nil }
+        return "… \(hidden) more items not shown"
     }
 
     private func item(for path: String, role: ExplorerItem.Role) -> ExplorerItem {
@@ -202,13 +223,26 @@ public final class ExplorerOutlineController: NSObject,
         guard let item = item as? ExplorerItem else { return nil }
         let cell = (outlineView.makeView(withIdentifier: Self.cellIdentifier, owner: self) as? NSTableCellView)
             ?? Self.makeCell()
+        configure(cell, for: item)
+        return cell
+    }
+
+    /// Populates a (possibly reused) cell from scratch. `makeView` may hand
+    /// back a cell AppKit recycled from a different row's item, so every
+    /// attribute one role can set — `toolTip`, dimmed `alphaValue`, the
+    /// icon — is reset up front rather than only touched by the branch that
+    /// happens to need it; otherwise a value set for an entry (e.g. a
+    /// broken-symlink tooltip) can leak into a note row reusing that view.
+    func configure(_ cell: NSTableCellView, for item: ExplorerItem) {
         cell.textField?.font = palette.rowFont
+        cell.toolTip = nil
+        cell.alphaValue = 1
+        cell.imageView?.image = nil
         switch item.role {
-        case .note(let text):
-            cell.imageView?.image = nil
-            cell.textField?.stringValue = text
+        case .note:
+            let directory = String(item.path.dropLast(Self.noteSuffix.count))
+            cell.textField?.stringValue = noteText(forDirectory: directory) ?? ""
             cell.textField?.textColor = palette.secondaryText
-            cell.alphaValue = 1
         case .entry:
             let entry = applied?.entry(at: item.path)
             cell.imageView?.image = entry.map(icons.icon(for:))
@@ -219,7 +253,6 @@ public final class ExplorerOutlineController: NSObject,
                 ? "This link points outside the project folder."
                 : nil
         }
-        return cell
     }
 
     public func outlineView(_: NSOutlineView, shouldSelectItem item: Any) -> Bool {
@@ -239,6 +272,7 @@ public final class ExplorerOutlineController: NSObject,
     public func outlineViewSelectionDidChange(_: Notification) {
         guard !isApplying else { return }
         viewModel.selection = selectedPaths()
+        outlineView?.reloadQuickLookIfVisible()
     }
 
     private static func makeCell() -> NSTableCellView {
@@ -278,14 +312,24 @@ public final class ExplorerOutlineController: NSObject,
         viewModel.selection.filter { applied?.entry(at: $0)?.kind == .file }
     }
 
-    /// The clicked row if it is outside the selection, else the selection.
     private func menuTargetPaths() -> [String] {
-        guard let outlineView, outlineView.clickedRow >= 0,
-              let clicked = outlineView.item(atRow: outlineView.clickedRow) as? ExplorerItem,
-              clicked.role == .entry
-        else { return [] }
-        let selection = selectedPaths()
-        return selection.contains(clicked.path) ? selection : [clicked.path]
+        let clickedPath: String?
+        if let outlineView, outlineView.clickedRow >= 0,
+           let clicked = outlineView.item(atRow: outlineView.clickedRow) as? ExplorerItem,
+           clicked.role == .entry {
+            clickedPath = clicked.path
+        } else {
+            clickedPath = nil
+        }
+        return Self.targetPaths(clicked: clickedPath, selection: selectedPaths())
+    }
+
+    /// The clicked item if it's outside the selection, else the whole
+    /// selection (in selection order). Pure so it's testable without
+    /// faking `NSOutlineView.clickedRow`, which has no public setter.
+    static func targetPaths(clicked: String?, selection: [String]) -> [String] {
+        guard let clicked else { return [] }
+        return selection.contains(clicked) ? selection : [clicked]
     }
 
     // MARK: - Clicks
@@ -314,45 +358,91 @@ public final class ExplorerOutlineController: NSObject,
 
     // MARK: - Context menu
 
+    /// Menu actions for a single path, expressed in terms of
+    /// `menuActions(forTargets:)` so the two can never disagree: `nil` (no
+    /// path under the cursor / no selection) is the same as an empty
+    /// target set.
     public func menuActions(for path: String?) -> [MenuAction?] {
-        guard let path, let entry = applied?.entry(at: path) else { return [.refresh] }
+        menuActions(forTargets: path.map { [$0] } ?? [])
+    }
+
+    /// Menu actions for the WHOLE target set, not just one representative
+    /// path — a mixed selection (a file and an expanded directory) must
+    /// offer "Open in Editor"/"Quick Look" (there's a file) AND "Collapse"
+    /// (there's an expanded directory), regardless of which one is first or
+    /// was clicked.
+    public func menuActions(forTargets paths: [String]) -> [MenuAction?] {
+        let resolved: [(path: String, entry: FileEntry)] = paths.compactMap { path in
+            applied?.entry(at: path).map { (path, $0) }
+        }
+        guard !resolved.isEmpty else { return [.refresh] }
+        let hasFile = resolved.contains { $0.entry.kind == .file }
+        let hasExpandedDirectory = resolved.contains {
+            $0.entry.kind == .directory && applied?.expanded.contains($0.path) == true
+        }
         let send: [MenuAction?] = actionHandler?.canSendToAgent == true ? [.sendToAgent, nil] : []
         let copy: [MenuAction?] = [.copyPath, .copyRelativePath, nil]
-        if entry.kind == .file {
-            return [.openInEditor, .revealInFinder, .quickLook, nil] + send + copy + [.refresh]
+        var actions: [MenuAction?] = hasFile
+            ? [.openInEditor, .revealInFinder, .quickLook, nil]
+            : [.revealInFinder, nil]
+        actions += send + copy + [.refresh]
+        if hasExpandedDirectory {
+            actions.append(.collapse)
         }
-        let collapse: [MenuAction?] = applied?.expanded.contains(path) == true ? [.collapse] : []
-        return [.revealInFinder, nil] + send + copy + [.refresh] + collapse
+        return actions
     }
 
     public func menuNeedsUpdate(_ menu: NSMenu) {
+        rebuildMenuItems(menu, forTargets: menuTargetPaths())
+    }
+
+    /// Builds the context menu for an explicit target set, captured once so
+    /// `performMenuItem` never re-reads `clickedRow` — which may have
+    /// changed, or reset to -1, by the time the user actually chooses an
+    /// item, well after `menuNeedsUpdate` ran. Internal so tests can drive
+    /// it directly, without faking a real AppKit click to set `clickedRow`.
+    func rebuildMenuItems(_ menu: NSMenu, forTargets paths: [String]) {
         menu.removeAllItems()
-        for action in menuActions(for: menuTargetPaths().first) {
+        for action in menuActions(forTargets: paths) {
             guard let action else {
                 menu.addItem(.separator())
                 continue
             }
             let item = NSMenuItem(title: action.title, action: #selector(performMenuItem(_:)), keyEquivalent: "")
             item.target = self
-            item.representedObject = action.rawValue
+            item.representedObject = MenuActionPayload(action: action, paths: paths)
             menu.addItem(item)
         }
     }
 
+    /// Captures a menu item's action and its target paths together, so the
+    /// paths acted on are exactly the ones the menu was built for.
+    private final class MenuActionPayload: NSObject {
+        let action: MenuAction
+        let paths: [String]
+
+        init(action: MenuAction, paths: [String]) {
+            self.action = action
+            self.paths = paths
+        }
+    }
+
     @objc private func performMenuItem(_ sender: NSMenuItem) {
-        guard let raw = sender.representedObject as? String, let action = MenuAction(rawValue: raw) else { return }
-        perform(action, on: menuTargetPaths())
+        guard let payload = sender.representedObject as? MenuActionPayload else { return }
+        perform(payload.action, on: payload.paths)
     }
 
     public func perform(_ action: MenuAction, on paths: [String]) {
         switch action {
         case .openInEditor:
-            paths.forEach { actionHandler?.openInEditor(path: $0) }
+            filesOnly(paths).forEach { actionHandler?.openInEditor(path: $0) }
         case .revealInFinder:
             NSWorkspace.shared.activateFileViewerSelecting(paths.map { URL(fileURLWithPath: $0) })
         case .quickLook:
-            viewModel.selection = paths
-            outlineView?.toggleQuickLook()
+            let files = filesOnly(paths)
+            guard !files.isEmpty else { return }
+            viewModel.selection = files
+            outlineView?.showQuickLook()
         case .sendToAgent:
             paths.forEach { actionHandler?.sendPathToAgent(path: $0) }
         case .copyPath:
@@ -363,10 +453,28 @@ public final class ExplorerOutlineController: NSObject,
         case .refresh:
             viewModel.refresh()
         case .collapse:
-            paths.forEach { path in
-                if let item = items[path] { outlineView?.collapseItem(item) }
-                viewModel.collapse(path)
+            for path in expandedDirectoriesOnly(paths) {
+                // If the outline already has this item expanded, collapsing
+                // it there is enough — `outlineViewItemDidCollapse` updates
+                // the view model. Writing `viewModel.collapse` as well
+                // would persist state twice for one user action.
+                if let outlineView, let item = items[path], outlineView.isItemExpanded(item) {
+                    outlineView.collapseItem(item)
+                } else {
+                    viewModel.collapse(path)
+                }
             }
+        }
+    }
+
+    private func filesOnly(_ paths: [String]) -> [String] {
+        paths.filter { applied?.entry(at: $0)?.kind == .file }
+    }
+
+    private func expandedDirectoriesOnly(_ paths: [String]) -> [String] {
+        paths.filter { path in
+            guard applied?.entry(at: path)?.kind == .directory else { return false }
+            return applied?.expanded.contains(path) == true
         }
     }
 
@@ -383,7 +491,8 @@ public final class ExplorerOutlineController: NSObject,
         guard !selection.isEmpty else { return false }
         switch command {
         case .quickLook:
-            outlineView?.toggleQuickLook()
+            guard !selectedFilePaths().isEmpty else { return false }
+            outlineView?.showQuickLook()
         case .open:
             for path in selection {
                 guard let entry = applied?.entry(at: path) else { continue }
