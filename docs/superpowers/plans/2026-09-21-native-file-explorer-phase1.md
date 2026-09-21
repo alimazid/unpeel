@@ -1,5 +1,7 @@
 # Native File Explorer — Phase 1 (Core Tree) Implementation Plan
 
+> **Status: executed (2026-09-21).** The code samples below are the plan as written, not the code as built — many were superseded by review-driven fixes. For what changed and why, read §7 of the spec and `docs/superpowers/verification/2026-09-21-explorer-phase1.md`; treat the source tree as authoritative.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Add a toggleable, resizable native file-tree column to the Unpeel Mac app that shows the selected local session's project, lazily loads folders, auto-refreshes from disk, and lets the user open, preview, reveal, copy, send, and drag files.

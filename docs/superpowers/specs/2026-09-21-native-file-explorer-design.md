@@ -1,7 +1,7 @@
 # Native File Explorer for the Mac app — Design
 
 Date: 2026-09-21
-Status: approved 2026-09-21
+Status: approved 2026-09-21; Phase 1 implemented — see §7 for what changed while building it
 Repo: `alimazid/unpeel` (fork of `unpeel-com/unpeel` at 0.7.3), branch `feat/native-file-explorer`
 
 ## 1. Goal
@@ -113,9 +113,16 @@ Copy Path, Copy Relative Path, Refresh, Collapse.
 Phase 2 adds: New File…, New Folder…, Rename…, Duplicate, Cut, Copy, Paste,
 Move to Trash.
 
-"Send Path to Agent" pastes the project-relative, shell-quoted path into the
-selected session's terminal without pressing Enter — the same result as
-dragging the row onto that terminal.
+"Send Path to Agent" pastes the path into the **focused pane's** terminal
+(the active pane of a split, else the selected session) without pressing
+Enter, through the terminal's own attach path (focus + bracketed paste), so
+the result is identical to dragging the row onto that terminal. The path is
+shortened against **that pane's working directory**, not the project root and
+not the explorer's root: two worktrees of one repository mirror each other, so
+shortening against the wrong basis yields a plausible relative path that
+silently names the other worktree's copy. A file outside the pane's directory
+falls through to the terminal's `~/…`/absolute form; image paths stay absolute
+(the terminal's existing rule, so agents attach them as images).
 
 ## 3. Architecture
 
@@ -161,15 +168,15 @@ Each unit has one purpose and is testable alone.
 | `FileEntry` | Immutable row value: `path`, `name`, `kind` (file/directory, following symlinks), `isSymlink`, `isHidden`, `isIgnored`, `isExpandable` | — |
 | `DirectoryLoader` | Read **one** directory off the main thread → sorted `[FileEntry]` (folders first, then `localizedStandardCompare`, matching VS Code's default). Never follows a directory symlink out of the root | FileManager |
 | `FileTreeModel` | Pure, immutable tree state: a flat map of directory path → contents (`loading` / `loaded` / `failed`) plus the expanded set, with reducers `settingContents`, `expanding`, `collapsing`, `collapsingAll`, `removingDirectory`. Flat rather than nested so a reload replaces one entry and an outline row is addressed by path. Every reducer returns a new model | `FileEntry` |
-| `FileSystemWatcher` | One FSEvents stream on the root; coalesces events (150 ms) into a set of changed directory URLs | CoreServices |
+| `FileSystemWatcher` | One FSEvents stream on the root; coalesces events (150 ms) into a `FileSystemChange`: a set of changed directory **paths** (`Set<String>`), a `touchedGitignore` flag, and a `needsFullRescan` flag raised when FSEvents reports dropped/coalesced events. The C callback reads only a heap box, never the watcher, so the watcher may be stopped or released from any thread, including its own handler | CoreServices |
 | `GitIgnoreChecker` / `DirectoryScanner` | Which paths are git-ignored: one `git check-ignore -z --stdin` per directory scan, no cache (a changed `.gitignore` triggers a rescan of every tracked directory). Not a git repo → nothing ignored | `git` CLI |
 | `FileIconProvider` | Icon per node: `NSWorkspace.icon(for: UTType)` keyed and cached by extension; folder open/closed variants | AppKit |
 | `ExplorerStateStore` | Persist/restore per-root expanded paths, selection, scroll offset, and the two visibility toggles in `UserDefaults` (`unpeel.explorer.*`), bounded to the 50 most recent roots | UserDefaults |
-| `ExplorerViewModel` | `@MainActor ObservableObject`. Owns the model, loader, watcher, ignore rules, state store. Public surface: `setContext(_:)`, `toggle(_:)`, `select(_:)`, `refresh()`, `collapseAll()`, `reveal(_:)` | all of the above |
+| `ExplorerViewModel` | `@MainActor ObservableObject`. Owns the model, loader, watcher, ignore rules, state store. Public surface: published `context`, `model`, `rootError`, `selection`, `filter`, `restoreToken`; `setContext(_:)`, `expand(_:)`, `collapse(_:)`, `collapseAll()`, `refresh()`, `retry()`, `handleChange(_:)`, `reveal(_:)`, `setFilter(_:)`, `persistState()`. All paths are `String`s. Loads are guarded by a context generation and a per-directory request token; persistence is suppressed from the moment a root starts opening until its saved state has been replayed | all of the above |
 | `ExplorerOutlineView` | `NSViewRepresentable` wrapping `NSScrollView` + `NSOutlineView`, with data source/delegate that diff-apply model changes (`insertItems`/`removeItems`/`reloadItem`) so expansion and selection survive refreshes | AppKit, view model |
 | `ExplorerPanelView` | SwiftUI shell: header, `⋯` menu, empty/error states, the outline view | view model |
-| `ExplorerActionHandler` (protocol) | Intents the library cannot perform itself: `openInEditor(URL)`, `sendPathToAgent(URL)`. Implemented by the app | — |
-| `ExplorerContext` (value) | `.none`, `.remote`, `.local(root: URL, projectRoot: URL)` | — |
+| `ExplorerActionHandler` (protocol) | Intents the library cannot perform itself: `canSendToAgent`, `openInEditor(path:)`, `sendPathToAgent(path:)`. Implemented by the app | — |
+| `ExplorerContext` (value) | `.none`, `.remote`, `.local(root: String, projectRoot: String)` | — |
 
 `ExplorerPalette` (a small struct of `NSColor`s/fonts) is injected by the app
 from `Theme` so the library never imports the app's theme code but still
@@ -344,7 +351,11 @@ detection; sort-order option (default / modified / type).
 - **Regression gate:** `clients/native/test-native.sh` and `swift build` stay
   green. Rust and protocol suites are untouched by this work and are not part
   of the gate.
-- Coverage target: ≥ 80% of `UnpeelExplorer` lines.
+- Coverage target: ≥ 80% of `UnpeelExplorer` lines, **excluding** the three
+  window-only view files (`ExplorerOutlineView`, `ExplorerPanelView`'s body,
+  `ExplorerNSOutlineView`'s Quick Look plumbing), which are covered by the
+  windowed XCTest harnesses and the runtime checklist instead. Phase 1 as
+  built: 73% raw, ≈ 88% with the exclusion (see the verification log).
 
 ## 6. Risks
 
@@ -355,3 +366,50 @@ detection; sort-order option (default / modified / type).
 | FSEvents storms while an agent runs `npm install` | 150 ms coalescing; only loaded directories reload; ignored folders stay collapsed by default |
 | Dev build interferes with the user's real Unpeel | Always verify with the blank-home dev script; never quit or signal the installed app |
 | Trademark | No distribution in scope; flagged in §1 |
+
+## 7. Phase 1 as built — what Phase 2 must know
+
+Phase 1 is implemented on `feat/native-file-explorer`. The plan's code samples
+were superseded in many places by review-driven fixes; the code and this
+section are authoritative, the plan's samples are not. Evidence:
+`docs/superpowers/verification/2026-09-21-explorer-phase1.md`.
+
+- **Root follows the selected session only.** Following pane focus was tried
+  and rejected: re-rooting tears down the watcher and rescans, so clicking
+  between panes in different worktrees rebuilt the tree each time, and focus
+  also covers the right-hand project panel. Pane focus decides only where
+  "Send Path to Agent" pastes.
+- **Session selection publishes separately.** `UnpeelStore.objectWillChange`
+  does not fire on a plain session switch; the host view also observes
+  `SessionSelectionState`.
+- **Entry lookup is O(1).** `DirectoryListing` carries a path index; anything
+  that resolves rows per-row (rendering, expansion sync, menus) must go
+  through it. A linear scan here hung the app on a 10,000-entry folder.
+- **The outline's single column is fitted in `layout()`.** AppKit re-tiles the
+  column to a content-derived width on every reload; without the fitter,
+  labels collapse to zero width.
+- **`.git`** is refused at three places: listing, expansion, and reveal.
+- **Row identity** is one `ExplorerItem` per path, kept across reloads and
+  filter changes; note rows derive their text live.
+- **Watcher safety** rests on design review and deterministic tests:
+  ThreadSanitizer does not run on this toolchain (Xcode 26.3).
+
+### Phase 2 backlog carried from Phase 1 reviews
+
+- Coalesce reload chains and skip collapsed directories on refresh: each
+  FSEvents batch starts its own sequential reload, one `git check-ignore`
+  process per directory. Decide this before Phase 3 adds git-status polling
+  to the same path.
+- `ExplorerContext.projectRoot` is unused but participates in equality.
+- `viewModel.selection` can be a superset of the outline's visible selection
+  (paths under a collapsed parent) — resolve with multi-select.
+- `items`/`childCache` and `loadTokens` grow until the root changes.
+- `DirectoryListing` equality is O(entries) per `apply`; a version stamp
+  would make it O(1).
+- `git` is resolved through `/usr/bin/env`; probe once and cache "unavailable".
+- Log, rather than drop, a failed state save and a failed `git` stdin write.
+- Store a note row's directory on the item instead of recovering it from the
+  path; poll instead of a fixed budget in the hosted rendering test; add
+  root/filter-change stages to the 10k performance test; test the scroll
+  observer's teardown; cache `resolvedContext`'s session lookup.
+- Keep saved expansions under a transiently failed ancestor.
