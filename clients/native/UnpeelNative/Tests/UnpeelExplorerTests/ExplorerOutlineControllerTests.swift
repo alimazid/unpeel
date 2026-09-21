@@ -174,6 +174,29 @@ final class ExplorerOutlineControllerTests: XCTestCase {
         XCTAssertEqual(handler.opened, ["/r/a.txt"])
     }
 
+    /// Regression: Space must CLOSE an already-open Quick Look panel (as in
+    /// Finder/Xcode/VS Code), so the key command must TOGGLE, while the
+    /// context-menu action must always SHOW (open, or refresh if already
+    /// open) rather than closing it out from under the user. Uses the
+    /// controller's injectable hooks so the real, process-wide
+    /// `QLPreviewPanel` is never touched.
+    func testQuickLookKeyCommandTogglesWhileMenuActionShows() {
+        let (controller, viewModel, suite) = makeController()
+        defer { UserDefaults().removePersistentDomain(forName: suite) }
+        controller.apply(model: sampleModel(), filter: VisibilityFilter(), selection: [])
+        viewModel.selection = ["/r/a.txt"]
+
+        var invoked: [String] = []
+        controller.toggleQuickLookHook = { invoked.append("toggle") }
+        controller.showQuickLookHook = { invoked.append("show") }
+
+        XCTAssertTrue(controller.handleKeyCommand(.quickLook))
+        XCTAssertEqual(invoked, ["toggle"])
+
+        controller.perform(.quickLook, on: ["/r/a.txt"])
+        XCTAssertEqual(invoked, ["toggle", "show"])
+    }
+
     // MARK: - Review fix: phase-1 probes (compile against the unfixed source)
 
     /// Bug: the current `.quickLook` case in `handleKeyCommand` never checks
@@ -215,7 +238,7 @@ final class ExplorerOutlineControllerTests: XCTestCase {
     /// → `viewModel.collapse` delegate path is genuinely exercised, and a
     /// double write (both the delegate path AND a direct `viewModel.collapse`
     /// call) would be observable as a redundant no-op rather than invisible.
-    func testPerformCollapseSkipsFilesAndDoesNotDoubleWrite() async throws {
+    func testPerformCollapseSkipsFiles() async throws {
         let tree = try TempTree()
         defer { tree.remove() }
         try tree.dir("src")

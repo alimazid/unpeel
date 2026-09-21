@@ -31,6 +31,14 @@ public final class ExplorerOutlineController: NSObject,
     public var pasteboard: NSPasteboard = .general
     public private(set) weak var outlineView: ExplorerNSOutlineView?
 
+    /// Routes the "Quick Look" key command and menu action through
+    /// overridable hooks — rather than calling `outlineView?.toggleQuickLook()`
+    /// / `.showQuickLook()` directly — so a test can observe which one the
+    /// controller requests without touching the real, process-wide
+    /// `QLPreviewPanel`. Defaulted in `init` to the real outline view calls.
+    var toggleQuickLookHook: () -> Void = {}
+    var showQuickLookHook: () -> Void = {}
+
     private let icons = FileIconProvider()
     private var items: [String: ExplorerItem] = [:]
     private var childCache: [String: [ExplorerItem]] = [:]
@@ -45,6 +53,8 @@ public final class ExplorerOutlineController: NSObject,
         self.viewModel = viewModel
         self.palette = palette
         super.init()
+        toggleQuickLookHook = { [weak self] in self?.outlineView?.toggleQuickLook() }
+        showQuickLookHook = { [weak self] in self?.outlineView?.showQuickLook() }
     }
 
     public func attach(to outlineView: ExplorerNSOutlineView) {
@@ -372,14 +382,12 @@ public final class ExplorerOutlineController: NSObject,
     /// (there's an expanded directory), regardless of which one is first or
     /// was clicked.
     public func menuActions(forTargets paths: [String]) -> [MenuAction?] {
-        let resolved: [(path: String, entry: FileEntry)] = paths.compactMap { path in
-            applied?.entry(at: path).map { (path, $0) }
-        }
+        let resolved = resolvedEntries(for: paths)
         guard !resolved.isEmpty else { return [.refresh] }
-        let hasFile = resolved.contains { $0.entry.kind == .file }
-        let hasExpandedDirectory = resolved.contains {
+        let hasFile = resolved.contains(where: { $0.entry.kind == .file })
+        let hasExpandedDirectory = resolved.contains(where: {
             $0.entry.kind == .directory && applied?.expanded.contains($0.path) == true
-        }
+        })
         let send: [MenuAction?] = actionHandler?.canSendToAgent == true ? [.sendToAgent, nil] : []
         let copy: [MenuAction?] = [.copyPath, .copyRelativePath, nil]
         var actions: [MenuAction?] = hasFile
@@ -442,7 +450,7 @@ public final class ExplorerOutlineController: NSObject,
             let files = filesOnly(paths)
             guard !files.isEmpty else { return }
             viewModel.selection = files
-            outlineView?.showQuickLook()
+            showQuickLookHook()
         case .sendToAgent:
             paths.forEach { actionHandler?.sendPathToAgent(path: $0) }
         case .copyPath:
@@ -468,14 +476,43 @@ public final class ExplorerOutlineController: NSObject,
     }
 
     private func filesOnly(_ paths: [String]) -> [String] {
-        paths.filter { applied?.entry(at: $0)?.kind == .file }
+        resolvedEntries(for: paths).filter { $0.entry.kind == .file }.map(\.path)
     }
 
     private func expandedDirectoriesOnly(_ paths: [String]) -> [String] {
-        paths.filter { path in
-            guard applied?.entry(at: path)?.kind == .directory else { return false }
-            return applied?.expanded.contains(path) == true
+        resolvedEntries(for: paths)
+            .filter { $0.entry.kind == .directory && applied?.expanded.contains($0.path) == true }
+            .map(\.path)
+    }
+
+    /// Resolves every target path to its `FileEntry`, indexing each
+    /// distinct parent directory's listing once (`FileTreeModel.entry(at:)`
+    /// linearly scans the parent's listing per call, so resolving a large
+    /// target set one path at a time — e.g. ⌘A in a 10,000-entry folder,
+    /// then right-click — is O(target count × directory size)). Order of
+    /// `paths` is preserved; unresolvable paths are dropped.
+    private func resolvedEntries(for paths: [String]) -> [(path: String, entry: FileEntry)] {
+        guard let applied else { return [] }
+        var indexByParent: [String: [String: FileEntry]] = [:]
+        var resolved: [(path: String, entry: FileEntry)] = []
+        resolved.reserveCapacity(paths.count)
+        for path in paths {
+            let parent = FileTreeModel.parent(of: path)
+            let index: [String: FileEntry]
+            if let cached = indexByParent[parent] {
+                index = cached
+            } else if case .loaded(let listing)? = applied.directories[parent] {
+                index = Dictionary(uniqueKeysWithValues: listing.entries.map { ($0.path, $0) })
+                indexByParent[parent] = index
+            } else {
+                index = [:]
+                indexByParent[parent] = index
+            }
+            if let entry = index[path] {
+                resolved.append((path, entry))
+            }
         }
+        return resolved
     }
 
     private func copyToPasteboard(_ lines: [String]) {
@@ -491,8 +528,10 @@ public final class ExplorerOutlineController: NSObject,
         guard !selection.isEmpty else { return false }
         switch command {
         case .quickLook:
+            // Space must be able to CLOSE an already-open panel (Finder,
+            // Xcode and VS Code all do this) — toggle, not show.
             guard !selectedFilePaths().isEmpty else { return false }
-            outlineView?.showQuickLook()
+            toggleQuickLookHook()
         case .open:
             for path in selection {
                 guard let entry = applied?.entry(at: path) else { continue }
