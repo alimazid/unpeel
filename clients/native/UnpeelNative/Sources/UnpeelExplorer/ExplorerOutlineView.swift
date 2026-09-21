@@ -28,7 +28,10 @@ struct ExplorerOutlineView: NSViewRepresentable {
         Coordinator(controller: ExplorerOutlineController(viewModel: viewModel, palette: palette))
     }
 
-    func makeNSView(context: Context) -> NSScrollView {
+    /// The outline view exactly as the panel builds it. Internal (rather
+    /// than inline in `makeNSView`) so the rendering tests drive the real
+    /// configuration and cannot drift from it.
+    static func makeOutlineView() -> ExplorerNSOutlineView {
         let outline = ExplorerNSOutlineView()
         let column = NSTableColumn(identifier: NSUserInterfaceItemIdentifier("name"))
         column.resizingMask = .autoresizingMask
@@ -47,15 +50,27 @@ struct ExplorerOutlineView: NSViewRepresentable {
         // as much as the external one for "drag a row onto a terminal".
         outline.setDraggingSourceOperationMask([.copy, .generic], forLocal: true)
         outline.setDraggingSourceOperationMask([.copy, .generic, .link], forLocal: false)
-        let controller = context.coordinator.controller
-        controller.attach(to: outline)
+        return outline
+    }
 
+    /// The scroll view exactly as the panel builds it, minus the bounds
+    /// observation the coordinator owns. Shared with the rendering tests.
+    static func makeScrollView(documentView outline: ExplorerNSOutlineView) -> NSScrollView {
         let scroll = NSScrollView()
         scroll.documentView = outline
         scroll.hasVerticalScroller = true
         scroll.autohidesScrollers = true
         scroll.drawsBackground = false
         scroll.contentView.postsBoundsChangedNotifications = true
+        return scroll
+    }
+
+    func makeNSView(context: Context) -> NSScrollView {
+        let outline = Self.makeOutlineView()
+        let controller = context.coordinator.controller
+        controller.attach(to: outline)
+
+        let scroll = Self.makeScrollView(documentView: outline)
         context.coordinator.scrollObserver = NotificationCenter.default.addObserver(
             forName: NSView.boundsDidChangeNotification,
             object: scroll.contentView,

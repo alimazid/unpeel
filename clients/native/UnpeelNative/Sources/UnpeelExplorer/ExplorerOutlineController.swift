@@ -231,7 +231,7 @@ public final class ExplorerOutlineController: NSObject,
 
     public func outlineView(_ outlineView: NSOutlineView, viewFor _: NSTableColumn?, item: Any) -> NSView? {
         guard let item = item as? ExplorerItem else { return nil }
-        let cell = (outlineView.makeView(withIdentifier: Self.cellIdentifier, owner: self) as? NSTableCellView)
+        let cell = (outlineView.makeView(withIdentifier: Self.cellIdentifier, owner: self) as? ExplorerRowCellView)
             ?? Self.makeCell()
         configure(cell, for: item)
         return cell
@@ -243,7 +243,7 @@ public final class ExplorerOutlineController: NSObject,
     /// icon — is reset up front rather than only touched by the branch that
     /// happens to need it; otherwise a value set for an entry (e.g. a
     /// broken-symlink tooltip) can leak into a note row reusing that view.
-    func configure(_ cell: NSTableCellView, for item: ExplorerItem) {
+    func configure(_ cell: ExplorerRowCellView, for item: ExplorerItem) {
         cell.textField?.font = palette.rowFont
         cell.toolTip = nil
         cell.alphaValue = 1
@@ -252,12 +252,12 @@ public final class ExplorerOutlineController: NSObject,
         case .note:
             let directory = String(item.path.dropLast(Self.noteSuffix.count))
             cell.textField?.stringValue = noteText(forDirectory: directory) ?? ""
-            cell.textField?.textColor = palette.secondaryText
+            cell.restingTextColor = palette.secondaryText
         case .entry:
             let entry = applied?.entry(at: item.path)
             cell.imageView?.image = entry.map(icons.icon(for:))
             cell.textField?.stringValue = entry?.name ?? (item.path as NSString).lastPathComponent
-            cell.textField?.textColor = palette.text
+            cell.restingTextColor = palette.text
             cell.alphaValue = (entry?.isIgnored == true || entry?.isHidden == true) ? 0.5 : 1
             cell.toolTip = entry?.isSymlink == true && entry?.isExpandable == false && entry?.kind == .directory
                 ? "This link points outside the project folder."
@@ -285,8 +285,8 @@ public final class ExplorerOutlineController: NSObject,
         outlineView?.reloadQuickLookIfVisible()
     }
 
-    private static func makeCell() -> NSTableCellView {
-        let cell = NSTableCellView()
+    private static func makeCell() -> ExplorerRowCellView {
+        let cell = ExplorerRowCellView()
         cell.identifier = cellIdentifier
         let image = NSImageView()
         let label = NSTextField(labelWithString: "")

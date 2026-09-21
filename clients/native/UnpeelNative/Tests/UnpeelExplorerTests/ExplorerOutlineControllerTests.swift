@@ -385,7 +385,7 @@ final class ExplorerOutlineControllerTests: XCTestCase {
         defer { UserDefaults().removePersistentDomain(forName: suite) }
         controller.apply(model: sampleModel(), filter: VisibilityFilter(), selection: [])
 
-        let cell = NSTableCellView()
+        let cell = ExplorerRowCellView()
         cell.imageView = NSImageView()
         cell.textField = NSTextField(labelWithString: "")
         cell.toolTip = "stale tooltip from a previous row"
