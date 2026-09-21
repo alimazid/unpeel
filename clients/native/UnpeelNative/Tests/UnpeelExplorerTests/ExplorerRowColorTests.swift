@@ -27,7 +27,9 @@ final class ExplorerRowColorTests: XCTestCase {
 
     /// Unselected, selected-unemphasized and selected-emphasized rows, in
     /// both appearances, must all clear the WCAG AA 4.5:1 body-text bar
-    /// against the fill actually behind them.
+    /// against the fill actually behind them. Hidden and git-ignored rows
+    /// are excluded by design: they are drawn dimmed (`alphaValue` 0.5) to
+    /// mark them as secondary, which is deliberately below that bar.
     func testRowLabelsStayLegibleInEverySelectionState() {
         for (appearance, backdrop) in [
             (NSAppearance.Name.darkAqua, NSColor(srgbRed: 0x12 / 255, green: 0x13 / 255, blue: 0x14 / 255, alpha: 1)),
@@ -45,7 +47,7 @@ final class ExplorerRowColorTests: XCTestCase {
                 of: unselected, on: backdrop, under: appearance, label: "\(appearance.rawValue) unselected"
             )
             assertContrast(
-                of: selected, on: selectionFill(emphasized: true, under: appearance),
+                of: selected, on: selectionFill(emphasized: true),
                 under: appearance, label: "\(appearance.rawValue) selected-emphasized"
             )
 
@@ -57,7 +59,7 @@ final class ExplorerRowColorTests: XCTestCase {
                 "\(appearance.rawValue): row 0 still emphasized"
             )
             assertContrast(
-                of: unemphasized, on: selectionFill(emphasized: false, under: appearance),
+                of: unemphasized, on: selectionFill(emphasized: false),
                 under: appearance, label: "\(appearance.rawValue) selected-unemphasized"
             )
         }
@@ -85,7 +87,9 @@ final class ExplorerRowColorTests: XCTestCase {
         )
     }
 
-    private func selectionFill(emphasized: Bool, under appearance: NSAppearance.Name) -> NSColor {
+    /// Both fills are appearance-dynamic system colours; `assertContrast`
+    /// resolves them under the appearance it is checking.
+    private func selectionFill(emphasized: Bool) -> NSColor {
         emphasized ? .selectedContentBackgroundColor : .unemphasizedSelectedContentBackgroundColor
     }
 
@@ -132,7 +136,9 @@ final class ExplorerRowColorTests: XCTestCase {
             )
             // The palette the app injects: one dynamic colour per token.
             let dynamic = NSColor(name: nil) { appearance in
-                appearance.bestMatch(from: [.aqua, .darkAqua]) == .aqua ? lightText : darkText
+                appearance.bestMatch(from: [.aqua, .darkAqua]) == .aqua
+                    ? ExplorerRowColorTests.lightText
+                    : ExplorerRowColorTests.darkText
             }
             controller = ExplorerOutlineController(
                 viewModel: viewModel,
@@ -167,7 +173,11 @@ final class ExplorerRowColorTests: XCTestCase {
             layout()
         }
 
-        /// What AppKit itself does when the window stops being key.
+        /// What AppKit itself does when the window stops being key. Driven
+        /// through `rowView.isEmphasized` because this borderless harness
+        /// window cannot become key, so the key/non-key TRANSITION itself
+        /// is AppKit's and is not what these tests cover — only the cell's
+        /// reaction to the resulting background style is.
         func removeEmphasis(fromRow row: Int) {
             outline.rowView(atRow: row, makeIfNecessary: true)?.isEmphasized = false
             layout()
@@ -188,6 +198,3 @@ final class ExplorerRowColorTests: XCTestCase {
         }
     }
 }
-
-private let lightText = NSColor(srgbRed: 0x11 / 255, green: 0x12 / 255, blue: 0x17 / 255, alpha: 1)
-private let darkText = NSColor(srgbRed: 0xF3 / 255, green: 0xF5 / 255, blue: 0xFB / 255, alpha: 1)

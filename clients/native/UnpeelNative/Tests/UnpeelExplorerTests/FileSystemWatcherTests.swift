@@ -274,7 +274,15 @@ final class FileSystemWatcherTests: XCTestCase {
         try treeA.file("trigger.txt")
         wait(for: [stoppedFromA], timeout: 10)
 
+        // `stop()` is synchronous on B's queue, so no handler can still be
+        // running once it returns and this snapshot is stable. The first
+        // burst may long since have drained, so the assertion below needs
+        // NEW events after the stop — otherwise it passes vacuously.
         let countAtStop = bCounter.current
+        for i in 200..<220 {
+            _ = try? treeB.file("late-\(i).txt", "x")
+        }
+
         Thread.sleep(forTimeInterval: 0.3)
         XCTAssertEqual(bCounter.current, countAtStop, "B must not deliver after being stopped from A's handler")
     }
@@ -321,7 +329,14 @@ final class FileSystemWatcherTests: XCTestCase {
         try treeA.file("trigger.txt")
         wait(for: [releasedFromA], timeout: 10)
 
+        // `deinit` tears the stream down synchronously on B's queue, so
+        // this snapshot is stable; the second burst is what makes the
+        // assertion meaningful once the first one has drained.
         let countAtRelease = bCounter.current
+        for i in 200..<220 {
+            _ = try? treeB.file("late-\(i).txt", "x")
+        }
+
         Thread.sleep(forTimeInterval: 0.3)
         XCTAssertEqual(bCounter.current, countAtRelease, "B must not deliver after being released from A's handler")
     }
@@ -336,6 +351,9 @@ final class FileSystemWatcherTests: XCTestCase {
         let boxA = WatcherBox()
         let boxB = WatcherBox()
         let checked = expectation(description: "checked isOnOwnQueue from A's own queue")
+        // At latency 0.01 the handler can run more than once before the
+        // wait returns; the assertions hold on every delivery.
+        checked.assertForOverFulfill = false
 
         boxA.watcher = FileSystemWatcher(root: treeA.root, latency: 0.01) { _ in
             XCTAssertTrue(boxA.watcher?.isOnOwnQueue ?? false)

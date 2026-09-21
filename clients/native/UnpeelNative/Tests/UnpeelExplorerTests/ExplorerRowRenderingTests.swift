@@ -69,11 +69,12 @@ final class ExplorerRowRenderingTests: XCTestCase {
         var clipWidth: CGFloat { scroll.contentView.bounds.width }
         var columnWidth: CGFloat { outline.tableColumns[0].width }
 
-        var cells: [(row: Int, path: String, cell: NSTableCellView)] {
+        var cells: [(row: Int, path: String, role: ExplorerItem.Role?, cell: NSTableCellView)] {
             (0..<outline.numberOfRows).compactMap { row in
                 guard let cell = outline.view(atColumn: 0, row: row, makeIfNecessary: true) as? NSTableCellView
                 else { return nil }
-                return (row, (outline.item(atRow: row) as? ExplorerItem)?.path ?? "?", cell)
+                let item = outline.item(atRow: row) as? ExplorerItem
+                return (row, item?.path ?? "?", item?.role, cell)
             }
         }
 
@@ -120,10 +121,16 @@ final class ExplorerRowRenderingTests: XCTestCase {
     /// right of it, at a width that can actually render text.
     private func assertRowsRenderable(_ harness: Harness, _ stage: String, file: StaticString = #filePath, line: UInt = #line) {
         XCTAssertGreaterThan(harness.cells.count, 0, "\(stage): no rows", file: file, line: line)
-        for (row, path, cell) in harness.cells {
+        for (row, path, role, cell) in harness.cells {
             let image = cell.imageView?.frame ?? .zero
             let label = cell.textField?.frame ?? .zero
             let where_ = "\(stage) row \(row) \(path)"
+            // Entry rows always carry an icon (`FileIconProvider` never
+            // returns nil), so the geometry below must not be skippable —
+            // a missing icon is itself the regression.
+            if role == .entry {
+                XCTAssertNotNil(cell.imageView?.image, "\(where_): entry row has no icon", file: file, line: line)
+            }
             if cell.imageView?.image != nil {
                 XCTAssertEqual(image.width, 16, accuracy: 0.5, "\(where_): icon width \(image.width)", file: file, line: line)
                 XCTAssertEqual(image.height, 16, accuracy: 0.5, "\(where_): icon height \(image.height)", file: file, line: line)
@@ -283,6 +290,9 @@ final class ExplorerRowRenderingTests: XCTestCase {
             let image = cell.imageView?.frame ?? .zero
             let label = cell.textField?.frame ?? .zero
             let where_ = "\(stage) row \(row) '\(cell.textField?.stringValue ?? "")'"
+            if (outline.item(atRow: row) as? ExplorerItem)?.role == .entry {
+                XCTAssertNotNil(cell.imageView?.image, "\(where_): entry row has no icon", file: file, line: line)
+            }
             if cell.imageView?.image != nil {
                 XCTAssertEqual(image.width, 16, accuracy: 0.5, "\(where_): icon width \(image.width)", file: file, line: line)
                 XCTAssertGreaterThanOrEqual(label.minX, image.maxX, "\(where_): label left of icon", file: file, line: line)
