@@ -45,6 +45,17 @@ enum ExplorerContextResolver {
         activePane ?? focusedSolo ?? selected
     }
 
+    /// `path` shortened exactly like the terminal's own Finder-drop handler
+    /// (`GhosttyTerminalPane.conciseDropReference`): relative to `dropRoot`
+    /// when inside it, else `~/…`, else absolute. Images always stay
+    /// absolute so agents recognize them as attachments. `dropRoot` should
+    /// be the same root value the target pane's own drop path would use
+    /// (its working directory), so a pasted reference resolves exactly like
+    /// a real drag onto that pane would.
+    static func dropReference(for path: String, dropRoot: String?) -> String {
+        GhosttyTerminalPane.conciseDropReference(path, projectRoot: dropRoot)
+    }
+
     private static func nonBlank(_ value: String?) -> String? {
         guard let trimmed = value?.trimmingCharacters(in: .whitespacesAndNewlines), !trimmed.isEmpty else {
             return nil

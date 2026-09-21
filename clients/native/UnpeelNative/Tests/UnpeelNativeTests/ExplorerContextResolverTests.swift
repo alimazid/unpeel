@@ -86,4 +86,41 @@ final class ExplorerContextResolverTests: XCTestCase {
     func testNoneOfTheThreeMeansNoTarget() {
         XCTAssertNil(ExplorerContextResolver.targetSessionID(activePane: nil, focusedSolo: nil, selected: nil))
     }
+
+    // MARK: - dropReference
+
+    func testDropReferenceInsideTheRootIsRelative() {
+        XCTAssertEqual(
+            ExplorerContextResolver.dropReference(
+                for: "/p/.worktrees/fix/src/a.swift",
+                dropRoot: "/p/.worktrees/fix"
+            ),
+            "src/a.swift"
+        )
+    }
+
+    func testDropReferenceForAnImageStaysAbsolute() {
+        XCTAssertEqual(
+            ExplorerContextResolver.dropReference(
+                for: "/p/.worktrees/fix/img.png",
+                dropRoot: "/p/.worktrees/fix"
+            ),
+            "/p/.worktrees/fix/img.png"
+        )
+    }
+
+    func testDropReferenceOutsideTheRootFallsBackToHomeRelative() {
+        let path = NSHomeDirectory() + "/Documents/notes.txt"
+        XCTAssertEqual(
+            ExplorerContextResolver.dropReference(for: path, dropRoot: "/p/.worktrees/fix"),
+            "~/Documents/notes.txt"
+        )
+    }
+
+    func testDropReferenceWithNoRootStaysAbsolute() {
+        XCTAssertEqual(
+            ExplorerContextResolver.dropReference(for: "/opt/agent/reference.md", dropRoot: nil),
+            "/opt/agent/reference.md"
+        )
+    }
 }

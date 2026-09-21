@@ -15,15 +15,16 @@ import UnpeelExplorer
 final class ExplorerHostActions: ExplorerActionHandler {
     weak var store: UnpeelStore?
     weak var cache: SurfaceCache?
-    /// Canonical (realpath-resolved) explorer browsing root. Every path the
-    /// panel hands back derives from the view model's own canonical root
-    /// (`CanonicalPath.resolve` in `ExplorerViewModel.open`), so comparing an
-    /// action's `path` against a non-canonical root would silently disagree
-    /// with the panel under a symlink (`/tmp`, `/var`, a symlinked checkout).
+    /// Canonical (realpath-resolved) explorer browsing root — the base
+    /// `ExplorerContextResolver.dropReference` shortens a dropped path
+    /// against. This is the browsing root (worktree-aware), not the outer
+    /// project root: the terminal's own drop handler shortens against the
+    /// pane's own working directory (`GhosttyTerminalPane.projectRootDirectory`,
+    /// private), which for a worktree session is the worktree itself, so
+    /// using the outer project root here would paste a path (e.g.
+    /// `.worktrees/fix/src/a.swift`) that resolves nowhere from that
+    /// directory, unlike a real drag onto the same pane.
     var root: String?
-    /// Canonical project root, passed to `conciseDropReference` exactly like
-    /// the terminal's own Finder-drop handler does.
-    var projectRoot: String?
 
     private var targetSessionID: String? {
         ExplorerContextResolver.targetSessionID(
@@ -49,19 +50,14 @@ final class ExplorerHostActions: ExplorerActionHandler {
     /// (bracketed paste — agent TUIs only recognize an attachable reference,
     /// including an image, when it arrives as a paste; `sendText` is that
     /// method's own no-clipboard fallback, not something to reimplement
-    /// here), after `conciseDropReference` shortens the path exactly like a
-    /// real drop would. A path outside the canonical root is refused rather
-    /// than pasted as-is: see `root`'s doc comment.
+    /// here), after `dropReference` shortens the path exactly like a real
+    /// drop would. `path` always comes from the panel's own outline, whose
+    /// rows are the library's root-constrained scan — there is no untrusted
+    /// input here to validate.
     func sendPathToAgent(path: String) {
-        guard isWithinRoot(path), let pane = selectedPane else { return }
-        let reference = GhosttyTerminalPane.conciseDropReference(path, projectRoot: projectRoot)
+        guard let pane = selectedPane else { return }
+        let reference = ExplorerContextResolver.dropReference(for: path, dropRoot: root)
         pane.insertAttachablePath(reference)
-    }
-
-    private func isWithinRoot(_ path: String) -> Bool {
-        guard let root else { return false }
-        guard let resolved = CanonicalPath.resolve(path) else { return false }
-        return resolved == root || resolved.hasPrefix(root + "/")
     }
 }
 
@@ -86,25 +82,17 @@ struct ExplorerPanelHost: View {
         self.cache = cache
     }
 
-    /// Same target session a user-facing action resolves
-    /// (`ExplorerHostActions.targetSessionID`): in a split, `selection`
-    /// alone names the pane group's representative, not the exact pane the
-    /// user is looking at, so the tree would otherwise show one session's
-    /// files while an action pastes into another. `activeTerminalPane` and
-    /// `focusedSoloSessionID` both reach `store.objectWillChange` (the
-    /// former is forwarded from `paneLayoutController`, the latter is
-    /// `@Published` directly), so observing `store` here is enough to catch
-    /// every pane-focus change.
-    private var targetSessionID: String? {
-        ExplorerContextResolver.targetSessionID(
-            activePane: store.activeTerminalPane?.sessionID,
-            focusedSolo: store.focusedSoloSessionID,
-            selected: selection.sessionID
-        )
-    }
-
+    /// The tree root follows the SELECTED session, never the focused pane
+    /// within a split (`ExplorerHostActions.targetSessionID` is for the
+    /// paste action only): `setContext` on a changed root tears down the
+    /// watcher, blanks the panel, and rescans, so keying the tree to pane
+    /// focus would blank/rebuild it on every click between panes in
+    /// different worktrees. `focusedSoloSessionID` also covers the
+    /// right-hand project panel's panes (`UnpeelStore.focusedSoloSessionID`),
+    /// which would yank the tree to a worktree the main area is not even
+    /// showing.
     private var resolvedContext: ExplorerContext {
-        let session = targetSessionID.flatMap { store.displaySessionsByID[$0] }
+        let session = selection.sessionID.flatMap { store.displaySessionsByID[$0] }
         return ExplorerContextResolver.resolve(
             isLocalScope: store.selectedHostScope == .local,
             hasSession: session != nil,
@@ -132,12 +120,10 @@ struct ExplorerPanelHost: View {
     private func sync(_ context: ExplorerContext) {
         actions.store = store
         actions.cache = cache
-        if case .local(let root, let projectRoot) = context {
+        if case .local(let root, _) = context {
             actions.root = CanonicalPath.resolve(root) ?? root
-            actions.projectRoot = CanonicalPath.resolve(projectRoot) ?? projectRoot
         } else {
             actions.root = nil
-            actions.projectRoot = nil
         }
         viewModel.setContext(context)
     }

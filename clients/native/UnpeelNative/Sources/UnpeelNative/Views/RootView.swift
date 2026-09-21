@@ -267,12 +267,7 @@ struct RootView: View {
                             .frame(width: CGFloat(explorerWidth))
                             .padding(.top, surfaceInset + (store.showsWindowTitleStrip ? Theme.titleStripHeight : 0))
                             .padding(.bottom, surfaceInset)
-                            // Fork-only: file explorer column. With the
-                            // sidebar collapsed the explorer is the
-                            // leading-most panel, so it keeps the same
-                            // window-edge sliver every other panel gets
-                            // (`explorerLeadingInset`), reflected in
-                            // `shownExplorerWidth` and `explorerResizer`.
+                            // See `explorerLeadingInset`.
                             .padding(.leading, explorerLeadingInset)
                     }
                 }
