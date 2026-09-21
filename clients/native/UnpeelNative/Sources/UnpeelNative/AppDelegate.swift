@@ -550,6 +550,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, SPUU
         )
         resetFontItem.target = self
         viewMenu.addItem(resetFontItem)
+        // Fork-only: file explorer column (UnpeelExplorer).
+        viewMenu.addItem(.separator())
+        let explorerItem = NSMenuItem(
+            title: "Show Explorer",
+            action: #selector(toggleExplorerFromMenu),
+            keyEquivalent: "e"
+        )
+        explorerItem.keyEquivalentModifierMask = [.command, .shift]
+        explorerItem.target = self
+        viewMenu.addItem(explorerItem)
         viewItem.submenu = viewMenu
         mainMenu.addItem(viewItem)
 
@@ -673,6 +683,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, SPUU
         TerminalFontModel.shared.increaseSize()
     }
 
+    @objc private func toggleExplorerFromMenu() {
+        ExplorerPanelState.shared.toggle()
+    }
+
     @objc private func decreaseTerminalFontSizeFromMenu() {
         TerminalFontModel.shared.decreaseSize()
     }
@@ -732,6 +746,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, SPUU
     /// disabled (Appearance ▸ "Session gallery") — the gallery chip owns the
     /// capture flow, so with no chip mounted the notification goes nowhere.
     func validateMenuItem(_ menuItem: NSMenuItem) -> Bool {
+        if menuItem.action == #selector(toggleExplorerFromMenu) {
+            menuItem.title = ExplorerPanelState.shared.isVisible ? "Hide Explorer" : "Show Explorer"
+            return window != nil
+        }
         if menuItem.action == #selector(closePaneOrWindowFromMenu) {
             menuItem.title = store?.canCloseActiveTerminalPane == true
                 ? "Close Pane"
