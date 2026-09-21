@@ -1,7 +1,7 @@
 # Native File Explorer for the Mac app — Design
 
 Date: 2026-09-21
-Status: approved direction; awaiting spec review
+Status: approved 2026-09-21
 Repo: `alimazid/unpeel` (fork of `unpeel-com/unpeel` at 0.7.3), branch `feat/native-file-explorer`
 
 ## 1. Goal
@@ -67,8 +67,8 @@ own resizable column between the left sidebar and the terminal content.
 - **Width:** drag the column's trailing edge; min 180, default 260, max 520;
   persisted globally.
 - **Header:** the root folder's name in small caps, plus a `⋯` menu holding
-  New File, New Folder, Refresh, Collapse All, Show Hidden Files, Show
-  Git-Ignored Files.
+  Refresh, Collapse All, Show Hidden Files, Show Git-Ignored Files (Phase 2
+  adds New File and New Folder).
 - **Root follows selection:** selecting another session re-roots the tree to
   that session's worktree/project. Expanded folders, selection, and scroll
   position are remembered **per root path** and restored on return.
@@ -142,10 +142,10 @@ UnpeelNative (app)                         UnpeelExplorer (library)
 │    from UnpeelStore       │ ◀─────────── │     (NSViewRepresentable →  │
 │  · implements             │   intents    │      NSOutlineView)         │
 │    ExplorerActionHandler  │              │ ExplorerViewModel           │
-└───────────────────────────┘              │ FileTreeModel  FileNode     │
+└───────────────────────────┘              │ FileTreeModel  FileEntry    │
                                            │ DirectoryLoader             │
                                            │ FileSystemWatcher (FSEvents)│
-                                           │ IgnoreRules   FileIconProvider
+                                           │ DirectoryScanner  FileIconProvider
                                            │ ExplorerStateStore          │
                                            │ (P2) FileOperations         │
                                            │ (P3) GitStatusProvider      │
@@ -158,11 +158,11 @@ Each unit has one purpose and is testable alone.
 
 | Unit | Responsibility | Depends on |
 |---|---|---|
-| `FileNode` | Immutable value: `url`, `name`, `kind` (file/directory/symlink→kind), `isHidden`, `isIgnored`, child state (`unloaded` / `loaded([FileNode])` / `failed(String)`) | — |
-| `DirectoryLoader` | Read **one** directory off the main thread → sorted `[FileNode]` (folders first, then `localizedStandardCompare`, matching VS Code's default). Never follows a directory symlink out of the root | FileManager |
-| `FileTreeModel` | Pure, immutable tree state + reducers: `expanding`, `collapsing`, `replacingChildren`, `applyingChanges`. Every reducer returns a new model; no in-place mutation | `FileNode` |
+| `FileEntry` | Immutable row value: `path`, `name`, `kind` (file/directory, following symlinks), `isSymlink`, `isHidden`, `isIgnored`, `isExpandable` | — |
+| `DirectoryLoader` | Read **one** directory off the main thread → sorted `[FileEntry]` (folders first, then `localizedStandardCompare`, matching VS Code's default). Never follows a directory symlink out of the root | FileManager |
+| `FileTreeModel` | Pure, immutable tree state: a flat map of directory path → contents (`loading` / `loaded` / `failed`) plus the expanded set, with reducers `settingContents`, `expanding`, `collapsing`, `collapsingAll`, `removingDirectory`. Flat rather than nested so a reload replaces one entry and an outline row is addressed by path. Every reducer returns a new model | `FileEntry` |
 | `FileSystemWatcher` | One FSEvents stream on the root; coalesces events (150 ms) into a set of changed directory URLs | CoreServices |
-| `IgnoreRules` | Which paths are git-ignored: `git check-ignore --stdin` batched per loaded directory, cached, invalidated when a `.gitignore` changes. Not a git repo → nothing ignored | `git` CLI |
+| `GitIgnoreChecker` / `DirectoryScanner` | Which paths are git-ignored: one `git check-ignore -z --stdin` per directory scan, no cache (a changed `.gitignore` triggers a rescan of every tracked directory). Not a git repo → nothing ignored | `git` CLI |
 | `FileIconProvider` | Icon per node: `NSWorkspace.icon(for: UTType)` keyed and cached by extension; folder open/closed variants | AppKit |
 | `ExplorerStateStore` | Persist/restore per-root expanded paths, selection, scroll offset, and the two visibility toggles in `UserDefaults` (`unpeel.explorer.*`), bounded to the 50 most recent roots | UserDefaults |
 | `ExplorerViewModel` | `@MainActor ObservableObject`. Owns the model, loader, watcher, ignore rules, state store. Public surface: `setContext(_:)`, `toggle(_:)`, `select(_:)`, `refresh()`, `collapseAll()`, `reveal(_:)` | all of the above |
@@ -208,13 +208,15 @@ It calls `viewModel.setContext(_:)` only when the value changes.
 re-expands the persisted expanded paths breadth-first, skipping any that no
 longer exist. Expanding a folder marks it `loading`, calls `DirectoryLoader`
 on a background task, then `replacingChildren`. A load that finishes after
-its folder was collapsed or the root changed is discarded (generation token).
+the root changed, or after its folder stopped being tracked, is discarded
+(generation token). A merely collapsed folder keeps its contents so it keeps
+refreshing and re-expands instantly.
 
 **Refresh.** `FileSystemWatcher` reports changed directories. For each one
 that is currently **loaded** in the model, the view model reloads just that
 directory and diffs children by name, so unrelated expansion/selection state
 is untouched. Changes under unloaded folders are ignored. A changed
-`.gitignore` invalidates `IgnoreRules` and re-filters loaded directories.
+`.gitignore` rescans every tracked directory.
 
 **Filtering.** Two independent toggles, both default off (VS Code shows
 dotfiles by default, but agent projects are dominated by `.git`,
@@ -236,7 +238,7 @@ render dimmed, as in VS Code.
   off-main. A directory over 10,000 entries loads the first 10,000 and adds a
   trailing "… N more items not shown" row, so a pathological folder cannot
   freeze the UI.
-- **`git` missing or failing** → `IgnoreRules` degrades to "nothing ignored"
+- **`git` missing or failing** → `GitIgnoreChecker` degrades to "nothing ignored"
   and logs once; never blocks listing.
 - No error is swallowed silently: user-facing failures surface in the panel,
   everything else goes to the app's existing logging.
@@ -324,7 +326,7 @@ detection; sort-order option (default / modified / type).
   hidden detection, symlink confinement, unreadable directory, 10k cap;
   `FileTreeModel` reducers (immutability asserted — the input model is
   unchanged after every reducer); child diffing preserves expanded
-  descendants; `IgnoreRules` against a temp git repo and a non-repo;
+  descendants; `DirectoryScanner` against a temp git repo and a non-repo;
   `FileSystemWatcher` sees create/delete/rename within a timeout;
   `ExplorerStateStore` round-trip and the 50-root bound; `ExplorerViewModel`
   context switching, stale-load discarding, state restore.
