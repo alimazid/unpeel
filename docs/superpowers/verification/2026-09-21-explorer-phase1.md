@@ -1,6 +1,6 @@
 # Explorer Phase 1 — verification evidence
 
-Date: 2026-09-21 · Branch: `feat/native-file-explorer` · Verified at commit `bf92dba`
+Date: 2026-09-21 · Branch: `feat/native-file-explorer` · Runtime checklist verified at `bf92dba`; final-review fixes re-verified at `43d194c` (§6)
 Plan: `docs/superpowers/plans/2026-09-21-native-file-explorer-phase1.md`
 
 Environment: macOS 26.6.2 (arm64, Dark appearance), Xcode 26.3 / Swift 6.2.4.
@@ -85,7 +85,41 @@ No Keychain/licence prompt appeared in the dev build.
 
 ## 5. Open issues (not fixed in Phase 1)
 
-- The note row is middle-truncated at the 180 pt minimum width ("… 50…ot shown"); tail truncation would read better.
+- ~~The note row is middle-truncated at the 180 pt minimum width.~~ Fixed in `790c327` (notes now truncate at the tail).
 - Coverage total below the 80% target (see §2).
 - ⌘↓ (open) and ⌥⌘R (Reveal in Finder) were not exercised at runtime; both are unit-tested.
-- Minor review findings deferred to the whole-branch review are tracked in the branch's progress ledger.
+- Minor review findings were triaged by the whole-branch review; what was not fixed is listed in the spec's §7 Phase 2 backlog.
+
+## 6. After the whole-branch review (commits `f7b7a40`, `790c327`, `43d194c`)
+
+The final review found no Critical issues and six Important ones; four were
+fixed test-first (FSEvents dropped-event flags now force a full rescan; paths
+no longer logged as public; `.git` refused at expansion and reveal as well as
+listing; watcher tests tightened and mutation-checked), one was a docs fix
+(spec §7), and one — coalescing overlapping reload chains — is deferred to the
+start of Phase 2. A closing review of the three commits approved them with six
+Minor notes (carried to the spec's Phase 2 backlog).
+
+- `clients/native/test-native.sh` → exit 0 — `Executed 722 tests, with 1 test
+  skipped and 0 failures` (same upstream skip as §1).
+- `UnpeelExplorerTests` → 114 tests, 0 failures; `FileSystemWatcherTests` run
+  5× → 0 failures each.
+- Runtime re-check in the rebuilt dev app: first mount renders correctly;
+  **selection is now saved on quit** — selected `README.md`, quit via the
+  app's Quit menu item, the stored state changed from `sel=[docs]` to
+  `sel=[README.md]`, and the relaunch restored expansion and that selection;
+  a relaunch with the 10,050-file folder saved as expanded restored it with
+  the stored state unchanged for the 14 s it was polled; quitting with the
+  other project's session selected preserved both roots' state.
+
+### Unexplained observation (not reproduced)
+
+Once, between the second dev-app run (build `bf92dba`) and the first launch of
+the rebuilt app (`43d194c`), the first fixture's saved view state went from
+`expanded=[big, docs, src]` to empty, while the second fixture's state, the
+panel width, visibility and filter toggles all survived. That launch was also
+the only one where the newly built Host binary replaced the running dev Host,
+and the app came up with a different session selected than at quit. Three
+attempts to reproduce it (relaunch with saved expansions; relaunch with the
+10k folder expanded; quit with the other session selected, then relaunch) all
+preserved state. Cause unknown; it is recorded in the spec's Phase 2 backlog.

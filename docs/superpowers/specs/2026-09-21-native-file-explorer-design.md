@@ -413,3 +413,13 @@ section are authoritative, the plan's samples are not. Evidence:
   root/filter-change stages to the 10k performance test; test the scroll
   observer's teardown; cache `resolvedContext`'s session lookup.
 - Keep saved expansions under a transiently failed ancestor.
+- **Unexplained, not reproduced:** a root's saved expansion was once found
+  empty after launching a rebuilt app whose new Host binary replaced the
+  running dev Host (see the verification log, §6). If it recurs, log every
+  `ExplorerStateStore.save` with the root, the counts and the generation.
+- From the closing review: check `FSEventStreamStart`'s result (today `start()`
+  proves only that the stream was created); clear the Quick Look override on a
+  root change; read the FSEvents flags before the empty-paths guard; note that
+  `RootChanged` needs `WatchRoot`; make the watcher tests' second bursts
+  assert their writes succeeded; drop the dead default line-break mode in
+  `makeCell`.
