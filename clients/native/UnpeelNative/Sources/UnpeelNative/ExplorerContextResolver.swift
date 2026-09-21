@@ -50,10 +50,30 @@ enum ExplorerContextResolver {
     /// when inside it, else `~/…`, else absolute. Images always stay
     /// absolute so agents recognize them as attachments. `dropRoot` should
     /// be the same root value the target pane's own drop path would use
-    /// (its working directory), so a pasted reference resolves exactly like
-    /// a real drag onto that pane would.
-    static func dropReference(for path: String, dropRoot: String?) -> String {
-        GhosttyTerminalPane.conciseDropReference(path, projectRoot: dropRoot)
+    /// (its working directory — see `dropRoot(targetPaneDirectory:explorerRoot:)`),
+    /// so a pasted reference resolves exactly like a real drag onto that
+    /// pane would. `homeDirectory` is injectable (defaulted for production
+    /// call sites) so tests do not depend on the real machine's home.
+    static func dropReference(
+        for path: String,
+        dropRoot: String?,
+        homeDirectory: String = NSHomeDirectory()
+    ) -> String {
+        GhosttyTerminalPane.conciseDropReference(path, projectRoot: dropRoot, homeDirectory: homeDirectory)
+    }
+
+    /// Which root `dropReference` should shorten a path against: the target
+    /// PANE's own seed directory when known — `UnpeelStore.paneWorkingDirectory`
+    /// is literally the rule that seeded that pane's private
+    /// `GhosttyTerminalPane.projectRootDirectory` — else the explorer's own
+    /// tree root. The pane directory must win: the tree can be showing one
+    /// session's root while a *different* session's pane has focus (a split
+    /// across worktrees, or a focused pane in the right-hand project panel),
+    /// and two worktrees of the same repo mirror each other closely enough
+    /// that shortening against the wrong one still LOOKS right while
+    /// resolving to the other worktree's copy.
+    static func dropRoot(targetPaneDirectory: String?, explorerRoot: String?) -> String? {
+        nonBlank(targetPaneDirectory) ?? explorerRoot
     }
 
     private static func nonBlank(_ value: String?) -> String? {

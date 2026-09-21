@@ -89,11 +89,16 @@ final class ExplorerContextResolverTests: XCTestCase {
 
     // MARK: - dropReference
 
+    /// Fixed so `dropReference`'s home-relative tier is exercised without
+    /// depending on the machine running the tests.
+    private let fakeHome = "/Users/faketester"
+
     func testDropReferenceInsideTheRootIsRelative() {
         XCTAssertEqual(
             ExplorerContextResolver.dropReference(
                 for: "/p/.worktrees/fix/src/a.swift",
-                dropRoot: "/p/.worktrees/fix"
+                dropRoot: "/p/.worktrees/fix",
+                homeDirectory: fakeHome
             ),
             "src/a.swift"
         )
@@ -103,24 +108,85 @@ final class ExplorerContextResolverTests: XCTestCase {
         XCTAssertEqual(
             ExplorerContextResolver.dropReference(
                 for: "/p/.worktrees/fix/img.png",
-                dropRoot: "/p/.worktrees/fix"
+                dropRoot: "/p/.worktrees/fix",
+                homeDirectory: fakeHome
             ),
             "/p/.worktrees/fix/img.png"
         )
     }
 
     func testDropReferenceOutsideTheRootFallsBackToHomeRelative() {
-        let path = NSHomeDirectory() + "/Documents/notes.txt"
         XCTAssertEqual(
-            ExplorerContextResolver.dropReference(for: path, dropRoot: "/p/.worktrees/fix"),
+            ExplorerContextResolver.dropReference(
+                for: fakeHome + "/Documents/notes.txt",
+                dropRoot: "/p/.worktrees/fix",
+                homeDirectory: fakeHome
+            ),
             "~/Documents/notes.txt"
         )
     }
 
     func testDropReferenceWithNoRootStaysAbsolute() {
         XCTAssertEqual(
-            ExplorerContextResolver.dropReference(for: "/opt/agent/reference.md", dropRoot: nil),
+            ExplorerContextResolver.dropReference(
+                for: "/opt/agent/reference.md",
+                dropRoot: nil,
+                homeDirectory: fakeHome
+            ),
             "/opt/agent/reference.md"
+        )
+    }
+
+    // MARK: - dropRoot
+
+    func testDropRootPrefersThePaneDirectoryOverTheExplorerRoot() {
+        XCTAssertEqual(
+            ExplorerContextResolver.dropRoot(
+                targetPaneDirectory: "/repo/.worktrees/b",
+                explorerRoot: "/repo/.worktrees/a"
+            ),
+            "/repo/.worktrees/b"
+        )
+    }
+
+    func testDropRootFallsBackToTheExplorerRootWhenPaneDirectoryIsBlank() {
+        XCTAssertEqual(
+            ExplorerContextResolver.dropRoot(targetPaneDirectory: nil, explorerRoot: "/repo/.worktrees/a"),
+            "/repo/.worktrees/a"
+        )
+        XCTAssertEqual(
+            ExplorerContextResolver.dropRoot(targetPaneDirectory: "   ", explorerRoot: "/repo/.worktrees/a"),
+            "/repo/.worktrees/a"
+        )
+    }
+
+    func testDropRootIsNilWhenNeitherIsKnown() {
+        XCTAssertNil(ExplorerContextResolver.dropRoot(targetPaneDirectory: nil, explorerRoot: nil))
+    }
+
+    /// End-to-end: reproduces the defect the review reported — a file from
+    /// worktree A's tree, sent while a pane rooted in worktree B has focus,
+    /// must NOT resolve to the bare relative path (which would silently name
+    /// B's mirrored copy instead of A's).
+    func testSendingAFileToAPaneFocusedOnAnotherWorktreeDoesNotYieldTheBareRelativePath() {
+        let path = "/repo/.worktrees/a/src/a.swift"
+
+        let sameWorktree = ExplorerContextResolver.dropRoot(
+            targetPaneDirectory: "/repo/.worktrees/a",
+            explorerRoot: "/repo/.worktrees/a"
+        )
+        XCTAssertEqual(
+            ExplorerContextResolver.dropReference(for: path, dropRoot: sameWorktree, homeDirectory: fakeHome),
+            "src/a.swift"
+        )
+
+        let otherWorktree = ExplorerContextResolver.dropRoot(
+            targetPaneDirectory: "/repo/.worktrees/b",
+            explorerRoot: "/repo/.worktrees/a"
+        )
+        XCTAssertEqual(
+            ExplorerContextResolver.dropReference(for: path, dropRoot: otherWorktree, homeDirectory: fakeHome),
+            path
         )
     }
 }

@@ -15,15 +15,15 @@ import UnpeelExplorer
 final class ExplorerHostActions: ExplorerActionHandler {
     weak var store: UnpeelStore?
     weak var cache: SurfaceCache?
-    /// Canonical (realpath-resolved) explorer browsing root — the base
-    /// `ExplorerContextResolver.dropReference` shortens a dropped path
-    /// against. This is the browsing root (worktree-aware), not the outer
-    /// project root: the terminal's own drop handler shortens against the
-    /// pane's own working directory (`GhosttyTerminalPane.projectRootDirectory`,
-    /// private), which for a worktree session is the worktree itself, so
-    /// using the outer project root here would paste a path (e.g.
-    /// `.worktrees/fix/src/a.swift`) that resolves nowhere from that
-    /// directory, unlike a real drag onto the same pane.
+    /// Canonical (realpath-resolved) explorer browsing root. Only a
+    /// FALLBACK for `dropReference` now — used solely when the target pane's
+    /// own directory (`targetPaneDirectory`) cannot be resolved — because the
+    /// tree's root and the focused pane's session can differ (a split across
+    /// worktrees, or a focused pane in the right-hand project panel), and
+    /// shortening against the wrong one is exactly the bug this file was
+    /// re-reviewed for: two worktrees of the same repo mirror each other, so
+    /// a reference built against tree A but pasted into a shell rooted at B
+    /// looks right while silently naming B's copy.
     var root: String?
 
     private var targetSessionID: String? {
@@ -32,6 +32,19 @@ final class ExplorerHostActions: ExplorerActionHandler {
             focusedSolo: store?.focusedSoloSessionID,
             selected: store?.selectedSessionID
         )
+    }
+
+    /// The exact directory the TARGET pane's own (private)
+    /// `projectRootDirectory` was seeded with: `UnpeelStore.paneWorkingDirectory`
+    /// is that same seed rule, so this is the one true basis for shortening a
+    /// path pasted into that pane — never the explorer tree's root, which
+    /// may belong to a different session entirely.
+    private var targetPaneDirectory: String? {
+        guard let sessionID = targetSessionID,
+              let session = store?.displaySessionsByID[sessionID],
+              let directory = store?.paneWorkingDirectory(for: session)
+        else { return nil }
+        return CanonicalPath.resolve(directory) ?? directory
     }
 
     private var selectedPane: GhosttyTerminalPane? {
@@ -51,12 +64,18 @@ final class ExplorerHostActions: ExplorerActionHandler {
     /// including an image, when it arrives as a paste; `sendText` is that
     /// method's own no-clipboard fallback, not something to reimplement
     /// here), after `dropReference` shortens the path exactly like a real
-    /// drop would. `path` always comes from the panel's own outline, whose
-    /// rows are the library's root-constrained scan — there is no untrusted
-    /// input here to validate.
+    /// drop would — against the TARGET pane's own directory
+    /// (`targetPaneDirectory`), falling back to the tree's `root` only when
+    /// that cannot be resolved (see `dropRoot`). `path` always comes from
+    /// the panel's own outline, whose rows are the library's
+    /// root-constrained scan — there is no untrusted input here to validate.
     func sendPathToAgent(path: String) {
         guard let pane = selectedPane else { return }
-        let reference = ExplorerContextResolver.dropReference(for: path, dropRoot: root)
+        let dropRoot = ExplorerContextResolver.dropRoot(
+            targetPaneDirectory: targetPaneDirectory,
+            explorerRoot: root
+        )
+        let reference = ExplorerContextResolver.dropReference(for: path, dropRoot: dropRoot)
         pane.insertAttachablePath(reference)
     }
 }
