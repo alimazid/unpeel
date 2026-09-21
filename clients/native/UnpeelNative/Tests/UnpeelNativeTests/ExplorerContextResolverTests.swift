@@ -60,8 +60,30 @@ final class ExplorerContextResolverTests: XCTestCase {
         )
     }
 
-    func testAgentReferenceIsRelativeInsideTheRoot() {
-        XCTAssertEqual(ExplorerContextResolver.agentReference(for: "/p/src/a b.swift", root: "/p"), "src/a b.swift")
-        XCTAssertEqual(ExplorerContextResolver.agentReference(for: "/elsewhere/x", root: "/p"), "/elsewhere/x")
+    // MARK: - targetSessionID
+
+    func testActivePaneWinsOverEverything() {
+        XCTAssertEqual(
+            ExplorerContextResolver.targetSessionID(activePane: "a", focusedSolo: "b", selected: "c"),
+            "a"
+        )
+    }
+
+    func testFocusedSoloWinsWhenNoActivePane() {
+        XCTAssertEqual(
+            ExplorerContextResolver.targetSessionID(activePane: nil, focusedSolo: "b", selected: "c"),
+            "b"
+        )
+    }
+
+    func testSelectedIsTheLastResort() {
+        XCTAssertEqual(
+            ExplorerContextResolver.targetSessionID(activePane: nil, focusedSolo: nil, selected: "c"),
+            "c"
+        )
+    }
+
+    func testNoneOfTheThreeMeansNoTarget() {
+        XCTAssertNil(ExplorerContextResolver.targetSessionID(activePane: nil, focusedSolo: nil, selected: nil))
     }
 }

@@ -683,16 +683,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, SPUU
         TerminalFontModel.shared.increaseSize()
     }
 
-    @objc private func toggleExplorerFromMenu() {
-        ExplorerPanelState.shared.toggle()
-    }
-
     @objc private func decreaseTerminalFontSizeFromMenu() {
         TerminalFontModel.shared.decreaseSize()
     }
 
     @objc private func resetTerminalFontSizeFromMenu() {
         TerminalFontModel.shared.resetSize()
+    }
+
+    // Fork-only: file explorer column (UnpeelExplorer).
+    @objc private func toggleExplorerFromMenu() {
+        ExplorerPanelState.shared.toggle()
     }
 
     @objc private func equalizeSplitsFromMenu() {
@@ -746,6 +747,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, SPUU
     /// disabled (Appearance ▸ "Session gallery") — the gallery chip owns the
     /// capture flow, so with no chip mounted the notification goes nowhere.
     func validateMenuItem(_ menuItem: NSMenuItem) -> Bool {
+        // Fork-only: file explorer column (UnpeelExplorer).
         if menuItem.action == #selector(toggleExplorerFromMenu) {
             menuItem.title = ExplorerPanelState.shared.isVisible ? "Hide Explorer" : "Show Explorer"
             return window != nil

@@ -15,10 +15,26 @@ import UnpeelExplorer
 final class ExplorerHostActions: ExplorerActionHandler {
     weak var store: UnpeelStore?
     weak var cache: SurfaceCache?
+    /// Canonical (realpath-resolved) explorer browsing root. Every path the
+    /// panel hands back derives from the view model's own canonical root
+    /// (`CanonicalPath.resolve` in `ExplorerViewModel.open`), so comparing an
+    /// action's `path` against a non-canonical root would silently disagree
+    /// with the panel under a symlink (`/tmp`, `/var`, a symlinked checkout).
     var root: String?
+    /// Canonical project root, passed to `conciseDropReference` exactly like
+    /// the terminal's own Finder-drop handler does.
+    var projectRoot: String?
+
+    private var targetSessionID: String? {
+        ExplorerContextResolver.targetSessionID(
+            activePane: store?.activeTerminalPane?.sessionID,
+            focusedSolo: store?.focusedSoloSessionID,
+            selected: store?.selectedSessionID
+        )
+    }
 
     private var selectedPane: GhosttyTerminalPane? {
-        guard let sessionID = store?.selectedSessionID else { return nil }
+        guard let sessionID = targetSessionID else { return nil }
         return cache?.existingPane(for: sessionID)
     }
 
@@ -28,12 +44,24 @@ final class ExplorerHostActions: ExplorerActionHandler {
         store?.openInEditor(path: path)
     }
 
-    /// Same shape as dropping the file on the terminal: a shell-quoted path
-    /// and a trailing space, never Enter.
+    /// The same path a Finder drop onto the terminal takes:
+    /// `GhosttyTerminalPane.insertAttachablePath` focuses the pane and PASTES
+    /// (bracketed paste — agent TUIs only recognize an attachable reference,
+    /// including an image, when it arrives as a paste; `sendText` is that
+    /// method's own no-clipboard fallback, not something to reimplement
+    /// here), after `conciseDropReference` shortens the path exactly like a
+    /// real drop would. A path outside the canonical root is refused rather
+    /// than pasted as-is: see `root`'s doc comment.
     func sendPathToAgent(path: String) {
-        guard let pane = selectedPane else { return }
-        let reference = ExplorerContextResolver.agentReference(for: path, root: root ?? "")
-        pane.sendText(GhosttyTerminalPane.quoteDropReference(reference) + " ")
+        guard isWithinRoot(path), let pane = selectedPane else { return }
+        let reference = GhosttyTerminalPane.conciseDropReference(path, projectRoot: projectRoot)
+        pane.insertAttachablePath(reference)
+    }
+
+    private func isWithinRoot(_ path: String) -> Bool {
+        guard let root else { return false }
+        guard let resolved = CanonicalPath.resolve(path) else { return false }
+        return resolved == root || resolved.hasPrefix(root + "/")
     }
 }
 
@@ -58,8 +86,25 @@ struct ExplorerPanelHost: View {
         self.cache = cache
     }
 
+    /// Same target session a user-facing action resolves
+    /// (`ExplorerHostActions.targetSessionID`): in a split, `selection`
+    /// alone names the pane group's representative, not the exact pane the
+    /// user is looking at, so the tree would otherwise show one session's
+    /// files while an action pastes into another. `activeTerminalPane` and
+    /// `focusedSoloSessionID` both reach `store.objectWillChange` (the
+    /// former is forwarded from `paneLayoutController`, the latter is
+    /// `@Published` directly), so observing `store` here is enough to catch
+    /// every pane-focus change.
+    private var targetSessionID: String? {
+        ExplorerContextResolver.targetSessionID(
+            activePane: store.activeTerminalPane?.sessionID,
+            focusedSolo: store.focusedSoloSessionID,
+            selected: selection.sessionID
+        )
+    }
+
     private var resolvedContext: ExplorerContext {
-        let session = selection.sessionID.flatMap { store.displaySessionsByID[$0] }
+        let session = targetSessionID.flatMap { store.displaySessionsByID[$0] }
         return ExplorerContextResolver.resolve(
             isLocalScope: store.selectedHostScope == .local,
             hasSession: session != nil,
@@ -87,10 +132,12 @@ struct ExplorerPanelHost: View {
     private func sync(_ context: ExplorerContext) {
         actions.store = store
         actions.cache = cache
-        if case .local(let root, _) = context {
-            actions.root = root
+        if case .local(let root, let projectRoot) = context {
+            actions.root = CanonicalPath.resolve(root) ?? root
+            actions.projectRoot = CanonicalPath.resolve(projectRoot) ?? projectRoot
         } else {
             actions.root = nil
+            actions.projectRoot = nil
         }
         viewModel.setContext(context)
     }

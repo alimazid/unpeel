@@ -28,10 +28,21 @@ enum ExplorerContextResolver {
         return .local(root: root, projectRoot: project ?? root)
     }
 
-    /// What gets pasted into the agent's prompt for `path`: relative to the
-    /// explorer root (the agent's checkout) when inside it, else absolute.
-    static func agentReference(for path: String, root: String) -> String {
-        ExplorerPaths.relative(path, to: root)
+    /// Which session's pane a user-facing action (Send Path to Agent) should
+    /// target. `selectedSessionID` alone names the pane GROUP's
+    /// representative session — in a split, `UnpeelStore` rewrites selection
+    /// to that representative and routes pane-level intent through focus
+    /// instead (see `UnpeelStore.selectedSessionID`'s setter) — so it is
+    /// never the exact pane the user is looking at within a split. The
+    /// focused pane wins when a group is focused; the last-focused solo/panel
+    /// pane is next (groups clear `activePane`, so this is what the focus
+    /// border keys on for those); the plain selection is the final fallback.
+    static func targetSessionID(
+        activePane: String?,
+        focusedSolo: String?,
+        selected: String?
+    ) -> String? {
+        activePane ?? focusedSolo ?? selected
     }
 
     private static func nonBlank(_ value: String?) -> String? {
