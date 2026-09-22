@@ -12,25 +12,31 @@ public enum MarkdownPreviewDocument {
         var components = URLComponents()
         components.scheme = scheme
         components.host = host
-        components.path = path
+        components.path = path.hasPrefix("/") ? path : "/" + path
         return components.url!
     }
 
     public static func path(from url: URL) -> String? {
-        guard url.scheme == scheme else { return nil }
+        guard url.scheme == scheme, url.host == host else { return nil }
         return url.path
     }
 
+    /// `https:` images are allowed deliberately (README badges commonly load
+    /// from a badge service), matching VS Code's own preview; `http:` is not,
+    /// so a plaintext beacon can't run. Everything else is `'none'`: no
+    /// script runs in the page (the activate/Escape listeners are injected
+    /// as a `WKUserScript` instead, which is not subject to the page CSP),
+    /// no fetches, no forms, no framing.
     public static func page(bodyHTML: String, title: String) -> String {
         """
         <!doctype html>
         <html><head><meta charset="utf-8">
+        <meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src unpeel-preview: https: data:; style-src 'unsafe-inline'; script-src 'none'; connect-src 'none'; form-action 'none'; base-uri 'none'; frame-src 'none'; object-src 'none'">
         <meta name="viewport" content="width=device-width, initial-scale=1">
         <title>\(HTMLEscaping.escape(title))</title>
         <style>\(stylesheet)</style>
         </head><body>
         <article class="markdown-body">\(bodyHTML)</article>
-        <script>\(script)</script>
         </body></html>
         """
     }
@@ -39,9 +45,11 @@ public enum MarkdownPreviewDocument {
         page(bodyHTML: "<p class=\"notice\">\(HTMLEscaping.escape(message))</p>", title: title)
     }
 
-    /// Reports mouse-down (so the pane can become active), Escape, and
-    /// answers scroll-position queries; nothing else runs in the page.
-    static let script = """
+    /// Reports mouse-down (so the pane can become active) and Escape;
+    /// nothing else runs in the page. Injected by the web view as a
+    /// `WKUserScript` rather than an inline `<script>` tag, since the page's
+    /// `script-src 'none'` CSP would otherwise block it.
+    public static let userScript = """
     document.addEventListener('mousedown', () => {
       webkit.messageHandlers.unpeelPreview.postMessage({type: 'activate'});
     });

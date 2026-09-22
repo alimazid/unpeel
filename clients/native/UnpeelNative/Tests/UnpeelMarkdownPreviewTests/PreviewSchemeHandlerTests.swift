@@ -21,7 +21,7 @@ private final class RecordingTask: NSObject, WKURLSchemeTask {
 final class PreviewSchemeHandlerTests: XCTestCase {
     private var root: URL!
 
-    override func setUpWithError() throws {
+    override func setUp() async throws {
         root = FileManager.default.temporaryDirectory
             .appendingPathComponent("preview-handler-\(UUID().uuidString)")
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
@@ -29,7 +29,7 @@ final class PreviewSchemeHandlerTests: XCTestCase {
         try Data([1, 2, 3]).write(to: root.appendingPathComponent("p.png"))
     }
 
-    override func tearDownWithError() throws {
+    override func tearDown() async throws {
         try? FileManager.default.removeItem(at: root)
     }
 
@@ -71,5 +71,14 @@ final class PreviewSchemeHandlerTests: XCTestCase {
         let task = run(big.path)
         XCTAssertEqual((task.response as? HTTPURLResponse)?.statusCode, 200)
         XCTAssertTrue(String(decoding: task.data, as: UTF8.self).contains("too large to preview"))
+    }
+
+    func testOversizedImageIs404() throws {
+        let big = root.appendingPathComponent("big.png")
+        try Data(repeating: 0x61, count: 4_194_305).write(to: big)
+        let task = run(big.path)
+        XCTAssertEqual((task.response as? HTTPURLResponse)?.statusCode, 404)
+        XCTAssertEqual(task.data.count, 0)
+        XCTAssertTrue(task.finished)
     }
 }

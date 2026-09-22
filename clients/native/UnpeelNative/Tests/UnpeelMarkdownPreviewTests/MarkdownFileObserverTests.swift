@@ -5,7 +5,7 @@ import XCTest
 final class MarkdownFileObserverTests: XCTestCase {
     private var file: URL!
 
-    override func setUpWithError() throws {
+    override func setUp() async throws {
         let dir = FileManager.default.temporaryDirectory
             .appendingPathComponent("preview-observer-\(UUID().uuidString)")
         try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
@@ -13,7 +13,7 @@ final class MarkdownFileObserverTests: XCTestCase {
         try Data("one".utf8).write(to: file)
     }
 
-    override func tearDownWithError() throws {
+    override func tearDown() async throws {
         try? FileManager.default.removeItem(at: file.deletingLastPathComponent())
     }
 

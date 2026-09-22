@@ -10,7 +10,11 @@ final class MarkdownPreviewDocumentTests: XCTestCase {
         XCTAssertEqual(page.components(separatedBy: "<style>").count - 1, 1)
         XCTAssertTrue(page.contains("prefers-color-scheme: dark"))
         XCTAssertTrue(page.contains("<article class=\"markdown-body\"><p>x</p></article>"))
-        XCTAssertTrue(page.contains("webkit.messageHandlers.unpeelPreview.postMessage"))
+        XCTAssertTrue(page.contains("Content-Security-Policy"))
+        XCTAssertTrue(page.contains("script-src 'none'"))
+        XCTAssertTrue(page.contains("img-src unpeel-preview: https: data:"))
+        XCTAssertFalse(page.contains("<script"))
+        XCTAssertTrue(MarkdownPreviewDocument.userScript.contains("webkit.messageHandlers.unpeelPreview.postMessage"))
     }
 
     func testURLForPathPercentEncodesAndRoundTrips() {
@@ -19,5 +23,10 @@ final class MarkdownPreviewDocumentTests: XCTestCase {
         XCTAssertEqual(url.host, "local")
         XCTAssertEqual(url.path, "/Users/me/My Docs/a#b.md")
         XCTAssertEqual(MarkdownPreviewDocument.path(from: url), "/Users/me/My Docs/a#b.md")
+        XCTAssertNil(MarkdownPreviewDocument.path(from: URL(string: "unpeel-preview://other/a.md")!))
+    }
+
+    func testURLForRelativePathIsRootedAndDoesNotTrap() {
+        XCTAssertEqual(MarkdownPreviewDocument.url(forPath: "relative.md").path, "/relative.md")
     }
 }

@@ -4,18 +4,22 @@ import XCTest
 final class PreviewResourcePolicyTests: XCTestCase {
     private var root: URL!
     private var outside: URL!
+    private var sibling: URL!
 
     override func setUpWithError() throws {
         let base = FileManager.default.temporaryDirectory
             .appendingPathComponent("preview-policy-\(UUID().uuidString)")
         root = base.appendingPathComponent("root")
         outside = base.appendingPathComponent("outside")
+        sibling = base.appendingPathComponent("root2")
         try FileManager.default.createDirectory(at: root.appendingPathComponent("img"), withIntermediateDirectories: true)
         try FileManager.default.createDirectory(at: outside, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: sibling, withIntermediateDirectories: true)
         try Data("# hi".utf8).write(to: root.appendingPathComponent("README.md"))
         try Data([0x89, 0x50]).write(to: root.appendingPathComponent("img/a.png"))
         try Data("secret".utf8).write(to: outside.appendingPathComponent("s.md"))
         try Data("x".utf8).write(to: root.appendingPathComponent("notes.txt"))
+        try Data("secret".utf8).write(to: sibling.appendingPathComponent("s.md"))
         try FileManager.default.createSymbolicLink(
             at: root.appendingPathComponent("escape.md"),
             withDestinationURL: outside.appendingPathComponent("s.md")
@@ -48,5 +52,6 @@ final class PreviewResourcePolicyTests: XCTestCase {
         XCTAssertEqual(policy().decide(requestPath: root.appendingPathComponent("img").path), .refuse("not a regular file"))
         XCTAssertEqual(policy().decide(requestPath: root.appendingPathComponent("notes.txt").path), .refuse("type not allowed"))
         XCTAssertEqual(policy().decide(requestPath: root.appendingPathComponent("missing.md").path), .refuse("not a regular file"))
+        XCTAssertEqual(policy().decide(requestPath: sibling.appendingPathComponent("s.md").path), .refuse("outside project root"))
     }
 }

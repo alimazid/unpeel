@@ -27,6 +27,15 @@ struct MarkdownPreviewWebView: NSViewRepresentable {
         configuration.userContentController.add(
             context.coordinator, name: MarkdownPreviewDocument.messageHandlerName
         )
+        // Injected as a user script, not an inline `<script>` tag: user
+        // scripts run outside the page's `script-src 'none'` CSP.
+        configuration.userContentController.addUserScript(
+            WKUserScript(
+                source: MarkdownPreviewDocument.userScript,
+                injectionTime: .atDocumentStart,
+                forMainFrameOnly: true
+            )
+        )
         let webView = WKWebView(frame: .zero, configuration: configuration)
         webView.navigationDelegate = context.coordinator
         webView.setValue(false, forKey: "drawsBackground")
