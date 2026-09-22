@@ -194,16 +194,19 @@ final class ExplorerContextResolverTests: XCTestCase {
     /// session to attach a plugin pane to; without one the editor is the
     /// fallback so the gesture never silently does nothing.
     func testOpenRouteNeedsASessionForTheRules() {
-        XCTAssertEqual(ExplorerContextResolver.openRoute(targetSessionID: "s1"), .rules(sessionID: "s1"))
-        XCTAssertEqual(ExplorerContextResolver.openRoute(targetSessionID: nil), .editor)
-        XCTAssertEqual(ExplorerContextResolver.openRoute(targetSessionID: ""), .editor)
+        XCTAssertEqual(ExplorerContextResolver.openRoute(sessionID: "s1"), .rules(sessionID: "s1"))
+        XCTAssertEqual(ExplorerContextResolver.openRoute(sessionID: nil), .editor)
+        XCTAssertEqual(ExplorerContextResolver.openRoute(sessionID: ""), .editor)
     }
 
     /// With no store attached (the panel before its first body pass) every
-    /// handler member must be a safe no-op rather than a crash.
+    /// handler member must be a safe no-op rather than a crash, even once a
+    /// tree session is known (`rootSessionID` alone must not reach the
+    /// unowned `store`).
     @MainActor
     func testHostActionsWithoutAStoreAreNoOps() {
         let actions = ExplorerHostActions()
+        actions.rootSessionID = "s1"
         actions.openFile(path: "/tmp/README.md")
         actions.openInEditor(path: "/tmp/README.md")
         actions.sendPathToAgent(path: "/tmp/README.md")

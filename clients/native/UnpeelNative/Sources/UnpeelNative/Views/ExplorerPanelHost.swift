@@ -27,6 +27,11 @@ final class ExplorerHostActions: ExplorerActionHandler {
     /// a reference built against tree A but pasted into a shell rooted at B
     /// looks right while silently naming B's copy.
     var root: String?
+    /// The session whose root the tree shows (`selection.sessionID`, set by
+    /// `ExplorerPanelHost.sync`). Opens attach plugin panes to THIS session,
+    /// never to the focused pane of a split — that pane may live in another
+    /// worktree, see the `root` comment above.
+    var rootSessionID: String?
     private static let logger = Logger(subsystem: "com.unpeel.explorer", category: "host")
 
     private var targetSessionID: String? {
@@ -60,17 +65,17 @@ final class ExplorerHostActions: ExplorerActionHandler {
     /// Open-with rules, exactly the routine behind a terminal ⌘-click:
     /// registry match by extension (`.md` → Markdown plugin), Settings ▸
     /// Open With override, else the editor; the plugin pane attaches to the
-    /// explorer's target session. `openClickedFile` returns `false` when the
-    /// file no longer resolves locally (the watcher removes the row moments
-    /// later) or, in remote scope — where this panel shows no tree anyway —
-    /// when no plugin claims the type; either way there is nothing more to
-    /// do than note it.
+    /// TREE's session (`rootSessionID`). `openClickedFile` returns `false`
+    /// when the file no longer resolves locally (the watcher removes the row
+    /// moments later) or, in remote scope — where this panel shows no tree
+    /// anyway — when no plugin claims the type; either way there is nothing
+    /// more to do than note it.
     func openFile(path: String) {
         guard let store else {
             openInEditor(path: path)
             return
         }
-        switch ExplorerContextResolver.openRoute(targetSessionID: targetSessionID) {
+        switch ExplorerContextResolver.openRoute(sessionID: rootSessionID) {
         case .editor:
             openInEditor(path: path)
         case let .rules(sessionID):
@@ -130,7 +135,8 @@ struct ExplorerPanelHost: View {
 
     /// The tree root follows the SELECTED session, never the focused pane
     /// within a split (`ExplorerHostActions.targetSessionID` is for the
-    /// paste action only): `setContext` on a changed root tears down the
+    /// paste action; opens use `rootSessionID`, the tree's own session):
+    /// `setContext` on a changed root tears down the
     /// watcher, blanks the panel, and rescans, so keying the tree to pane
     /// focus would blank/rebuild it on every click between panes in
     /// different worktrees. `focusedSoloSessionID` also covers the
@@ -172,6 +178,7 @@ struct ExplorerPanelHost: View {
 
     private func sync(_ context: ExplorerContext) {
         actions.store = store
+        actions.rootSessionID = selection.sessionID
         actions.cache = cache
         if case .local(let root, _) = context {
             actions.root = CanonicalPath.resolve(root) ?? root
