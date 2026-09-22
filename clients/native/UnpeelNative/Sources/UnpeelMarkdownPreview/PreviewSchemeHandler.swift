@@ -26,8 +26,12 @@ public final class PreviewSchemeHandler: NSObject, WKURLSchemeHandler {
             respond(task, url: url, status: 404, mimeType: "text/plain", data: Data())
         case let .serve(resolved, mime):
             let name = (resolved as NSString).lastPathComponent
-            let size = (try? FileManager.default.attributesOfItem(atPath: resolved))?[.size] as? NSNumber
-            if let size, size.int64Value > Int64(MarkdownPreviewDocument.maximumBytes) {
+            // Fail closed: no readable size means no read at all.
+            guard let size = (try? FileManager.default.attributesOfItem(atPath: resolved))?[.size] as? NSNumber else {
+                respond(task, url: url, status: 404, mimeType: "text/plain", data: Data())
+                return
+            }
+            if size.int64Value > Int64(MarkdownPreviewDocument.maximumBytes) {
                 if mime == "text/markdown" {
                     let html = MarkdownPreviewDocument.unavailablePage(
                         title: name, message: "\(name) is too large to preview (over 4 MB). Open it in the editor instead."

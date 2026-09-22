@@ -65,6 +65,11 @@ final class MarkdownFileObserverTests: XCTestCase {
         let temp = file.deletingLastPathComponent().appendingPathComponent("doc.md.tmp")
         try Data("atomic".utf8).write(to: temp)
         _ = try FileManager.default.replaceItemAt(file, withItemAt: temp)
+        // Let the vnode event land first so the reopen IS scheduled; an
+        // immediate `stop()` would cancel the source before any reopen
+        // existed and the test would pass against an observer that never
+        // cancels it.
+        RunLoop.main.run(until: Date().addingTimeInterval(0.02))
         observer.stop()
         let countAtStop = count
         RunLoop.main.run(until: Date().addingTimeInterval(0.3))

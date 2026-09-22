@@ -19,7 +19,10 @@ public enum PreviewNavigationPolicy {
     /// allowed in place, http(s)/mailto clicks go to the system, all else
     /// cancels.
     public static func decide(url: URL, isLinkActivated: Bool, currentPath: String) -> PreviewNavigationDecision {
-        switch url.scheme {
+        // Schemes are case-insensitive (RFC 3986); WebKit normally lowercases
+        // them, but a hand-written `UNPEEL-PREVIEW:` link must not fall to
+        // the default branch and be cancelled.
+        switch url.scheme?.lowercased() {
         case MarkdownPreviewDocument.scheme:
             guard isLinkActivated else { return .allow }
             let target = MarkdownPreviewDocument.path(from: url)
