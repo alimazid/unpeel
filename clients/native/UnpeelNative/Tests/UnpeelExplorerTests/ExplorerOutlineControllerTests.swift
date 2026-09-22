@@ -10,9 +10,12 @@ private final class RecordingHandler: ExplorerActionHandler {
     /// Paths passed to `openInEditor` (explicit editor bypass).
     var opened: [String] = []
     var sent: [String] = []
+    /// Paths passed to `openMarkdownEditor` (the "Open in Markdown Editor" menu item).
+    var editedInMarkdown: [String] = []
     func openFile(path: String) { openedWithRules.append(path) }
     func openInEditor(path: String) { opened.append(path) }
     func sendPathToAgent(path: String) { sent.append(path) }
+    func openMarkdownEditor(path: String) { editedInMarkdown.append(path) }
 }
 
 @MainActor
@@ -35,6 +38,7 @@ final class ExplorerOutlineControllerTests: XCTestCase {
                     entries: [
                         FileEntry(path: "/r/src", name: "src", kind: .directory),
                         FileEntry(path: "/r/.env", name: ".env", kind: .file, isHidden: true),
+                        FileEntry(path: "/r/README.md", name: "README.md", kind: .file),
                         FileEntry(path: "/r/a.txt", name: "a.txt", kind: .file),
                     ],
                     truncatedCount: truncated
@@ -50,10 +54,10 @@ final class ExplorerOutlineControllerTests: XCTestCase {
         defer { UserDefaults().removePersistentDomain(forName: suite) }
 
         controller.apply(model: sampleModel(), filter: VisibilityFilter(), selection: [])
-        XCTAssertEqual(controller.children(of: root).map(\.path), ["/r/src", "/r/a.txt"])
+        XCTAssertEqual(controller.children(of: root).map(\.path), ["/r/src", "/r/README.md", "/r/a.txt"])
 
         controller.apply(model: sampleModel(), filter: VisibilityFilter(showHidden: true), selection: [])
-        XCTAssertEqual(controller.children(of: root).map(\.path), ["/r/src", "/r/.env", "/r/a.txt"])
+        XCTAssertEqual(controller.children(of: root).map(\.path), ["/r/src", "/r/.env", "/r/README.md", "/r/a.txt"])
     }
 
     func testTruncatedAndFailedDirectoriesGetANoteRow() {
@@ -115,7 +119,8 @@ final class ExplorerOutlineControllerTests: XCTestCase {
 
         controller.apply(model: sampleModel(), filter: VisibilityFilter(), selection: [])
 
-        XCTAssertEqual(controller.outlineView(outline, numberOfChildrenOfItem: nil), 2)
+        // Three visible root entries with the default filter: "src", "README.md", "a.txt".
+        XCTAssertEqual(controller.outlineView(outline, numberOfChildrenOfItem: nil), 3)
         let first = controller.outlineView(outline, child: 0, ofItem: nil)
         XCTAssertEqual((first as? ExplorerItem)?.path, "/r/src")
         XCTAssertTrue(controller.outlineView(outline, isItemExpandable: first))
@@ -584,5 +589,40 @@ final class ExplorerOutlineControllerTests: XCTestCase {
         let libChildrenAfter = controller.children(of: "/r/lib")
         XCTAssertEqual(libChildrenAfter.map(\.path), libChildrenBefore.map(\.path))
         XCTAssertTrue(libChildrenAfter.first === libChildrenBefore.first)
+    }
+
+    // MARK: - Markdown routing (Fork-only: markdown preview pane)
+
+    func testMenuOffersMarkdownEditorOnlyForMarkdownOnlyFileTargets() {
+        let (controller, _, suite) = makeController()
+        defer { UserDefaults().removePersistentDomain(forName: suite) }
+        let handler = RecordingHandler()
+        controller.actionHandler = handler
+        controller.apply(model: sampleModel(), filter: VisibilityFilter(), selection: [])
+
+        XCTAssertEqual(
+            Array(controller.menuActions(for: "/r/README.md").prefix(6)),
+            [.open, .openInMarkdownEditor, .openInEditor, .revealInFinder, .quickLook, nil]
+        )
+        XCTAssertEqual(
+            Array(controller.menuActions(for: "/r/a.txt").prefix(5)),
+            [.open, .openInEditor, .revealInFinder, .quickLook, nil]
+        )
+        XCTAssertFalse(controller.menuActions(forTargets: ["/r/README.md", "/r/a.txt"]).contains(.openInMarkdownEditor))
+        XCTAssertFalse(controller.menuActions(forTargets: ["/r/README.md", "/r/src"]).contains(.openInMarkdownEditor))
+    }
+
+    func testPerformOpenInMarkdownEditorOnlyForwardsMarkdownFiles() {
+        let (controller, _, suite) = makeController()
+        defer { UserDefaults().removePersistentDomain(forName: suite) }
+        let handler = RecordingHandler()
+        controller.actionHandler = handler
+        controller.apply(model: sampleModel(), filter: VisibilityFilter(), selection: [])
+
+        controller.perform(.openInMarkdownEditor, on: ["/r/README.md", "/r/a.txt", "/r/src"])
+        XCTAssertEqual(handler.editedInMarkdown, ["/r/README.md"])
+        XCTAssertEqual(handler.openedWithRules, [])
+        XCTAssertEqual(handler.opened, [])
+        XCTAssertEqual(ExplorerOutlineController.MenuAction.openInMarkdownEditor.title, "Open in Markdown Editor")
     }
 }

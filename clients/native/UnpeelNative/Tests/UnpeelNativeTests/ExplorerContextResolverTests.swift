@@ -208,6 +208,7 @@ final class ExplorerContextResolverTests: XCTestCase {
         let actions = ExplorerHostActions()
         actions.rootSessionID = "s1"
         actions.openFile(path: "/tmp/README.md")
+        actions.openMarkdownEditor(path: "/tmp/README.md")
         actions.openInEditor(path: "/tmp/README.md")
         actions.sendPathToAgent(path: "/tmp/README.md")
         XCTAssertFalse(actions.canSendToAgent)

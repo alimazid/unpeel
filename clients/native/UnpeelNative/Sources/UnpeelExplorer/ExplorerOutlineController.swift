@@ -5,12 +5,13 @@ public final class ExplorerOutlineController: NSObject,
     NSOutlineViewDataSource, NSOutlineViewDelegate, NSMenuDelegate
 {
     public enum MenuAction: String, Equatable {
-        case open, openInEditor, revealInFinder, quickLook, sendToAgent
+        case open, openInMarkdownEditor, openInEditor, revealInFinder, quickLook, sendToAgent
         case copyPath, copyRelativePath, refresh, collapse
 
         var title: String {
             switch self {
             case .open: return "Open"
+            case .openInMarkdownEditor: return "Open in Markdown Editor"
             case .openInEditor: return "Open in Editor"
             case .revealInFinder: return "Reveal in Finder"
             case .quickLook: return "Quick Look"
@@ -441,8 +442,15 @@ public final class ExplorerOutlineController: NSObject,
         })
         let send: [MenuAction?] = actionHandler?.canSendToAgent == true ? [.sendToAgent, nil] : []
         let copy: [MenuAction?] = [.copyPath, .copyRelativePath, nil]
+        // Fork-only: markdown preview pane — the plugin verb only when EVERY
+        // target is a markdown file (a directory or other file hides it).
+        let markdownOnly = resolved.allSatisfy {
+            $0.entry.kind == .file && MarkdownFileTypes.isMarkdown($0.path)
+        }
         var actions: [MenuAction?] = hasFile
-            ? [.open, .openInEditor, .revealInFinder, .quickLook, nil]
+            ? (markdownOnly
+                ? [.open, .openInMarkdownEditor, .openInEditor, .revealInFinder, .quickLook, nil]
+                : [.open, .openInEditor, .revealInFinder, .quickLook, nil])
             : [.revealInFinder, nil]
         actions += send + copy + [.refresh]
         if hasExpandedDirectory {
@@ -495,6 +503,8 @@ public final class ExplorerOutlineController: NSObject,
         switch action {
         case .open:
             filesOnly(paths).forEach { actionHandler?.openFile(path: $0) }
+        case .openInMarkdownEditor:
+            filesOnly(paths).filter(MarkdownFileTypes.isMarkdown).forEach { actionHandler?.openMarkdownEditor(path: $0) }
         case .openInEditor:
             filesOnly(paths).forEach { actionHandler?.openInEditor(path: $0) }
         case .revealInFinder:

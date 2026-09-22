@@ -62,15 +62,25 @@ final class ExplorerHostActions: ExplorerActionHandler {
 
     var canSendToAgent: Bool { selectedPane != nil }
 
-    /// Open-with rules, exactly the routine behind a terminal ⌘-click:
-    /// registry match by extension (`.md` → Markdown plugin), Settings ▸
-    /// Open With override, else the editor; the plugin pane attaches to the
-    /// TREE's session (`rootSessionID`). `openClickedFile` returns `false`
-    /// when the file no longer resolves locally (the watcher removes the row
-    /// moments later) or, in remote scope — where this panel shows no tree
-    /// anyway — when no plugin claims the type; either way there is nothing
-    /// more to do than note it.
+    /// Markdown opens as a rendered preview pane beside the tree's session
+    /// (Fork-only: markdown preview pane); everything else goes through the
+    /// open-with rules, exactly the routine behind a terminal ⌘-click.
     func openFile(path: String) {
+        if MarkdownFileTypes.isMarkdown(path), let store, let sessionID = rootSessionID {
+            store.openMarkdownPreview(path: path, besideSession: sessionID)
+            return
+        }
+        openMarkdownEditor(path: path)
+    }
+
+    /// The open-with rules: registry match by extension (`.md` → Markdown
+    /// plugin), Settings ▸ Open With override, else the editor; the plugin
+    /// pane attaches to the TREE's session (`rootSessionID`). `openClickedFile`
+    /// returns `false` when the file no longer resolves locally (the watcher
+    /// removes the row moments later) or, in remote scope — where this panel
+    /// shows no tree anyway — when no plugin claims the type; either way
+    /// there is nothing more to do than note it.
+    func openMarkdownEditor(path: String) {
         guard let store else {
             openInEditor(path: path)
             return

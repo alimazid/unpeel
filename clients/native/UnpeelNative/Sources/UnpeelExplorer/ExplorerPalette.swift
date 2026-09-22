@@ -31,6 +31,9 @@ public protocol ExplorerActionHandler: AnyObject {
     /// path in a terminal: a plugin side pane for types that have one, else
     /// the editor). Double-click, ⌘↓ and the "Open" menu item use this.
     func openFile(path: String)
+    /// Always the Markdown plugin pane (Unpeel's editor for `.md`), for the
+    /// context-menu item shown on markdown files.
+    func openMarkdownEditor(path: String)
     /// Always the configured editor — the explicit bypass ("Open in Editor").
     func openInEditor(path: String)
     func sendPathToAgent(path: String)
