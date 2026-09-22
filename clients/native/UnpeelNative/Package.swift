@@ -64,6 +64,7 @@ let package = Package(
             name: "UnpeelNative",
             dependencies: [
                 "UnpeelExplorer",
+                // Fork-only: markdown preview pane
                 "UnpeelMarkdownPreview",
                 "CUnpeelNativeBridge",
                 .product(name: "UnpeelShared", package: "UnpeelShared"),
@@ -112,6 +113,7 @@ let package = Package(
             dependencies: ["UnpeelExplorer"],
             path: "Tests/UnpeelExplorerTests"
         ),
+        // Fork-only: markdown preview pane
         .testTarget(
             name: "UnpeelMarkdownPreviewTests",
             dependencies: ["UnpeelMarkdownPreview"],

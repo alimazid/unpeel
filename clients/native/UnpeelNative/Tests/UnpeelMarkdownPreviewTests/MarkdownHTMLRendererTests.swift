@@ -62,6 +62,15 @@ final class MarkdownHTMLRendererTests: XCTestCase {
         XCTAssertTrue(render("[t](x?a='1')").contains("href=\"x?a=&#39;1&#39;\""))
     }
 
+    // Fork-only: markdown preview pane — pins the loose-item branch
+    // (`visitListItem`'s `else` arm): a nested list inside the outer `<li>`.
+    func testNestedListsNestTheInnerListInsideTheOuterItem() {
+        XCTAssertEqual(
+            render("- a\n  - b"),
+            "<ul>\n<li><p>a</p>\n<ul>\n<li>b</li>\n</ul>\n</li>\n</ul>\n"
+        )
+    }
+
     func testTablesWithAlignment() {
         let html = render("| a | b |\n|:--|--:|\n| 1 | 2 |")
         XCTAssertTrue(html.hasPrefix("<table>\n<thead>\n<tr><th align=\"left\">a</th><th align=\"right\">b</th></tr>\n</thead>\n<tbody>\n<tr><td align=\"left\">1</td><td align=\"right\">2</td></tr>\n</tbody>\n</table>\n"))

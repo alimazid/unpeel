@@ -150,6 +150,18 @@ extension PaneNode {
         leaves.contains { $0.content.isTransient }
     }
 
+    /// Removes every transient (launcher or preview) leaf. Shared by both
+    /// branches of `DurablePaneGroup.init?`, which used to run the same
+    /// strip loop twice.
+    // Fork-only: markdown preview pane
+    func strippingTransientLeaves() -> PaneNode? {
+        var candidate: PaneNode? = self
+        for pane in leaves where pane.content.isTransient {
+            candidate = candidate?.removingLeaf(pane.id)
+        }
+        return candidate
+    }
+
     func leaf(id paneID: String) -> Pane? {
         leaves.first { $0.id == paneID }
     }
@@ -473,6 +485,10 @@ struct PaneLayoutState: Equatable, Sendable {
     static let maximumSessionLeafCount = 8
     static let minimumSplitRatio = 0.1
     static let maximumSplitRatio = 0.9
+    // Fork-only: markdown preview pane — M6: previews are exempt from the
+    // session cap (they are transient, never persisted), but a fan-out
+    // open of many files in one group should not create unbounded WKWebViews.
+    static let maximumMarkdownPreviewLeafCount = 6
 
     private(set) var groups: [PaneGroup]
 
@@ -789,6 +805,10 @@ struct PaneLayoutState: Equatable, Sendable {
             throw PaneLayoutError.invalidMarkdownPreviewPath
         }
         if let target = location(ofSession: targetSessionID) {
+            // Fork-only: markdown preview pane — M6: only the splitting path
+            // needs this check; the solo branch below always creates a fresh
+            // group with exactly one preview leaf.
+            try validatePreviewCapacity(ofGroupAt: try index(ofGroup: target.groupID))
             return try insertLeaf(
                 .markdownPreview(path: path),
                 splitting: target.paneID,
@@ -1200,6 +1220,16 @@ struct PaneLayoutState: Equatable, Sendable {
         }
     }
 
+    // Fork-only: markdown preview pane — M6
+    private func validatePreviewCapacity(ofGroupAt groupIndex: Int) throws {
+        let previewCount = groups[groupIndex].root.leaves
+            .filter { $0.content.markdownPreviewPath != nil }
+            .count
+        guard previewCount < Self.maximumMarkdownPreviewLeafCount else {
+            throw PaneLayoutError.capacityReached(groups[groupIndex].id)
+        }
+    }
+
     private func index(ofGroup groupID: String) throws -> Int {
         guard let index = groups.firstIndex(where: { $0.id == groupID }) else {
             throw PaneLayoutError.groupNotFound(groupID)
@@ -1290,20 +1320,14 @@ struct DurablePaneGroup: Codable, Equatable, Sendable {
     init?(group: PaneGroup) {
         // Persist the pre-launcher snapshot while a launcher interaction is
         // live; otherwise strip launcher leaves via the removal algorithm.
-        var candidate: PaneNode?
+        // Fork-only: markdown preview pane — both the live root and the
+        // pre-launcher snapshot can hold preview leaves, so both go through
+        // the same strip (`PaneNode.strippingTransientLeaves()`).
+        let candidate: PaneNode?
         if group.root.containsLauncher, let snapshot = group.preLauncherRoot {
-            candidate = snapshot
-            // Fork-only: markdown preview pane — the snapshot can hold
-            // previews too, so it needs the same strip as the branch below.
-            for pane in snapshot.leaves where pane.content.isTransient {
-                candidate = candidate?.removingLeaf(pane.id)
-            }
+            candidate = snapshot.strippingTransientLeaves()
         } else {
-            candidate = group.root
-            // Fork-only: markdown preview pane — previews are transient too
-            for pane in group.root.leaves where pane.content.isTransient {
-                candidate = candidate?.removingLeaf(pane.id)
-            }
+            candidate = group.root.strippingTransientLeaves()
         }
         guard let candidate, candidate.sessionLeaves.count >= 2 else {
             return nil

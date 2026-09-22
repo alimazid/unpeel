@@ -286,7 +286,27 @@ final class PaneLayoutStateTests: XCTestCase {
 
     func testInsertMarkdownPreviewRejectsAnEmptyPath() throws {
         var state = twoPaneState()
-        XCTAssertThrowsError(try state.insertMarkdownPreview(path: "", beside: "s1", at: .right))
+        XCTAssertThrowsError(try state.insertMarkdownPreview(path: "", beside: "s1", at: .right)) {
+            XCTAssertEqual($0 as? PaneLayoutError, .invalidMarkdownPreviewPath)
+        }
+    }
+
+    // Fork-only: markdown preview pane — M6: previews are exempt from the
+    // session cap, but not uncapped.
+    func testInsertMarkdownPreviewCapsLeavesPerGroup() throws {
+        var state = PaneLayoutState(groups: [])
+        var location = try state.insertMarkdownPreview(path: "/r/0.md", beside: "s1", at: .right)
+        for index in 1..<PaneLayoutState.maximumMarkdownPreviewLeafCount {
+            location = try state.insertMarkdownPreview(path: "/r/\(index).md", beside: "s1", at: .right)
+        }
+        let group = try XCTUnwrap(state.group(id: location.groupID))
+        XCTAssertEqual(
+            group.root.leaves.filter { $0.content.markdownPreviewPath != nil }.count,
+            PaneLayoutState.maximumMarkdownPreviewLeafCount
+        )
+        XCTAssertThrowsError(try state.insertMarkdownPreview(path: "/r/overflow.md", beside: "s1", at: .right)) {
+            XCTAssertEqual($0 as? PaneLayoutError, .capacityReached(location.groupID))
+        }
     }
 
     func testInsertingAPreviewClearsTheLauncherSnapshot() throws {
