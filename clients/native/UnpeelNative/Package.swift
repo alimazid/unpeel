@@ -35,6 +35,9 @@ let package = Package(
         // Sparkle 2 handles signed appcast checks and app replacement for
         // Cloudflare/R2-hosted beta and stable updates.
         .package(url: "https://github.com/sparkle-project/Sparkle", from: "2.6.0"),
+        // Fork-only: markdown preview pane. Apple's cmark-gfm based parser
+        // for the rendered preview; the module is `Markdown`.
+        .package(url: "https://github.com/swiftlang/swift-markdown", from: "0.9.0"),
     ],
     targets: [
         .target(
@@ -48,10 +51,20 @@ let package = Package(
             name: "UnpeelExplorer",
             path: "Sources/UnpeelExplorer"
         ),
+        // Rendered Markdown preview pane (fork-only feature). WebKit +
+        // swift-markdown only; never imports app types.
+        .target(
+            name: "UnpeelMarkdownPreview",
+            dependencies: [
+                .product(name: "Markdown", package: "swift-markdown"),
+            ],
+            path: "Sources/UnpeelMarkdownPreview"
+        ),
         .executableTarget(
             name: "UnpeelNative",
             dependencies: [
                 "UnpeelExplorer",
+                "UnpeelMarkdownPreview",
                 "CUnpeelNativeBridge",
                 .product(name: "UnpeelShared", package: "UnpeelShared"),
                 // Imported ONLY inside GhosttyBridge.swift (PRD §8 isolation
@@ -98,6 +111,11 @@ let package = Package(
             name: "UnpeelExplorerTests",
             dependencies: ["UnpeelExplorer"],
             path: "Tests/UnpeelExplorerTests"
+        ),
+        .testTarget(
+            name: "UnpeelMarkdownPreviewTests",
+            dependencies: ["UnpeelMarkdownPreview"],
+            path: "Tests/UnpeelMarkdownPreviewTests"
         ),
     ]
 )
