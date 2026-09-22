@@ -23,7 +23,10 @@ public struct PreviewResourcePolicy: Sendable {
 
     public func decide(requestPath: String) -> Decision {
         guard let root = canonicalRoot, let path = PreviewCanonicalPath.resolve(requestPath) else {
-            return .refuse("not a regular file")
+            // Fork-only: markdown preview pane — M11: distinct from the
+            // regular-file check below, which is the only other producer of
+            // this decision and needs its own diagnostic meaning.
+            return .refuse("unresolvable path")
         }
         guard path == root || path.hasPrefix(root.hasSuffix("/") ? root : root + "/") else {
             return .refuse("outside project root")
@@ -35,5 +38,17 @@ public struct PreviewResourcePolicy: Sendable {
         let ext = (path as NSString).pathExtension.lowercased()
         guard let mime = Self.mimeTypes[ext] else { return .refuse("type not allowed") }
         return .serve(path: path, mimeType: mime)
+    }
+
+    // Fork-only: markdown preview pane — I2: the canonical path of an
+    // in-page link's target, but only when it is a markdown document inside
+    // the root. Used to confine `.openMarkdown` targets before they reach
+    // the pane model; never used for scheme-handler serving, which already
+    // goes through `decide` directly.
+    public func documentPath(for requestPath: String) -> String? {
+        guard case let .serve(path, mimeType) = decide(requestPath: requestPath), mimeType == "text/markdown" else {
+            return nil
+        }
+        return path
     }
 }

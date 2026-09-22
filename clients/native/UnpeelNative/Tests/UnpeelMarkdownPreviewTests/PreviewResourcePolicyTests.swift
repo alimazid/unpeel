@@ -51,7 +51,22 @@ final class PreviewResourcePolicyTests: XCTestCase {
         XCTAssertEqual(policy().decide(requestPath: root.appendingPathComponent("escape.md").path), .refuse("outside project root"))
         XCTAssertEqual(policy().decide(requestPath: root.appendingPathComponent("img").path), .refuse("not a regular file"))
         XCTAssertEqual(policy().decide(requestPath: root.appendingPathComponent("notes.txt").path), .refuse("type not allowed"))
-        XCTAssertEqual(policy().decide(requestPath: root.appendingPathComponent("missing.md").path), .refuse("not a regular file"))
+        XCTAssertEqual(policy().decide(requestPath: root.appendingPathComponent("missing.md").path), .refuse("unresolvable path"))
         XCTAssertEqual(policy().decide(requestPath: sibling.appendingPathComponent("s.md").path), .refuse("outside project root"))
+    }
+
+    // Fork-only: markdown preview pane — I2: confines in-page link targets.
+    func testDocumentPathIsTheCanonicalPathForAMarkdownFileInsideTheRoot() {
+        XCTAssertEqual(
+            policy().documentPath(for: root.appendingPathComponent("README.md").path),
+            PreviewCanonicalPath.resolve(root.appendingPathComponent("README.md").path)
+        )
+    }
+
+    func testDocumentPathIsNilOutsideTheRootOrForANonMarkdownOrDirectoryTarget() {
+        XCTAssertNil(policy().documentPath(for: outside.appendingPathComponent("s.md").path))
+        XCTAssertNil(policy().documentPath(for: root.appendingPathComponent("escape.md").path))
+        XCTAssertNil(policy().documentPath(for: root.appendingPathComponent("img/a.png").path))
+        XCTAssertNil(policy().documentPath(for: root.appendingPathComponent("img").path))
     }
 }

@@ -65,6 +65,23 @@ final class PreviewSchemeHandlerTests: XCTestCase {
         XCTAssertTrue(task.finished)
     }
 
+    // Fork-only: markdown preview pane — M5: the pane's own document gets an
+    // explanation, not a blank card; a refused non-markdown request is
+    // unaffected (still an empty 404).
+    func testRefusedMarkdownDocumentShowsAnUnavailableNotice() {
+        let task = run("/etc/notes.md")
+        XCTAssertEqual((task.response as? HTTPURLResponse)?.statusCode, 200)
+        XCTAssertTrue(String(decoding: task.data, as: UTF8.self).contains("cannot be previewed"))
+        XCTAssertTrue(task.finished)
+    }
+
+    func testRefusedNonMarkdownPathIs404AndEmpty() {
+        let task = run("/etc/notes.png")
+        XCTAssertEqual((task.response as? HTTPURLResponse)?.statusCode, 404)
+        XCTAssertEqual(task.data.count, 0)
+        XCTAssertTrue(task.finished)
+    }
+
     func testOversizedMarkdownIsNotRendered() throws {
         let big = root.appendingPathComponent("big.md")
         try Data(repeating: 0x61, count: 4_194_305).write(to: big)

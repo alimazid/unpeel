@@ -1,10 +1,15 @@
 import SwiftUI
+// Fork-only: markdown preview pane
+import os
 
 /// Pane body: a slim toolbar (file name, Edit) above the rendered document.
 /// The pane header itself belongs to the app; this view owns only what is
 /// specific to previews. Reloads on disk changes; shows a notice once the
 /// file is gone (the app drops the pane on its next validation).
 public struct MarkdownPreviewPaneView: View {
+    // Fork-only: markdown preview pane
+    private static let logger = Logger(subsystem: "com.unpeel.explorer", category: "preview-pane")
+
     public let path: String
     public let projectRoot: String
     public let onEdit: () -> Void
@@ -58,7 +63,7 @@ public struct MarkdownPreviewPaneView: View {
                     reloadToken: reloadToken,
                     onActivate: onActivate,
                     onEscape: onEscape,
-                    onOpenMarkdown: onOpenMarkdown
+                    onOpenMarkdown: handleOpenMarkdown
                 )
             }
         }
@@ -78,5 +83,17 @@ public struct MarkdownPreviewPaneView: View {
         }
         observer.start()
         self.observer = observer
+    }
+
+    // Fork-only: markdown preview pane — I2: confine the web view's link
+    // target to the project root before it ever reaches the app's pane
+    // model; a nil result means the link resolved outside the root, to a
+    // non-markdown resource, or to a directory, and is silently ignored.
+    private func handleOpenMarkdown(_ requestPath: String) {
+        guard let target = PreviewResourcePolicy(projectRoot: projectRoot).documentPath(for: requestPath) else {
+            Self.logger.info("in-page markdown link refused \(requestPath, privacy: .private)")
+            return
+        }
+        onOpenMarkdown(target)
     }
 }

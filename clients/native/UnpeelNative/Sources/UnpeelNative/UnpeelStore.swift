@@ -11926,19 +11926,52 @@ final class UnpeelStore: ObservableObject {
     /// Shows `path` rendered beside `sessionID`'s pane: the group's existing
     /// preview for that path is focused, otherwise a new leaf splits the
     /// session's pane to the right (the placement plugin panes use). The
-    /// path arrives canonical from the explorer's own scan.
+    /// explorer hands this a path already resolved against the tree root;
+    /// an in-page link (I2) does not, so the target is always reconfirmed
+    /// against `sessionID`'s project root here — belt-and-braces alongside
+    /// the pane view's own `PreviewResourcePolicy` check — and the pane
+    /// model only ever sees the canonical path (M4: reuse-by-exact-path).
     func openMarkdownPreview(path: String, besideSession sessionID: String) {
         guard selectedHostScope == .local,
               !path.isEmpty,
-              displaySessionsByID[sessionID] != nil
+              displaySessionsByID[sessionID] != nil,
+              let projectRoot = markdownPreviewProjectRoot(for: sessionID),
+              let target = Self.markdownPreviewTarget(path: path, projectRoot: projectRoot)
         else { return }
-        let location = paneLayoutState.location(ofMarkdownPreview: path, inGroupContaining: sessionID)
+        let location = paneLayoutState.location(ofMarkdownPreview: target, inGroupContaining: sessionID)
             ?? mutatePaneLayout { state in
-                try state.insertMarkdownPreview(path: path, beside: sessionID, at: .right)
+                try state.insertMarkdownPreview(path: target, beside: sessionID, at: .right)
             }
         guard let location else { return }
         paneLayoutController.setPendingReveal(groupID: location.groupID, paneID: location.paneID)
         setActiveTerminalPane(groupID: location.groupID, paneID: location.paneID, sessionID: nil)
+    }
+
+    /// I2: the canonical target for a markdown preview, confined to
+    /// `projectRoot`. Both paths are `realpath(3)`-resolved (never
+    /// `resolvingSymlinksInPath`, which strips `/private` and would
+    /// disagree with the rest of the preview stack's canonical paths) —
+    /// the result is the canonical path only when it equals the root or
+    /// nests under it and names a regular file; a directory is not a
+    /// document, so the root itself never qualifies.
+    nonisolated static func markdownPreviewTarget(path: String, projectRoot: String) -> String? {
+        guard let root = resolvedRealpath(projectRoot), let target = resolvedRealpath(path) else {
+            return nil
+        }
+        guard target == root || target.hasPrefix(root.hasSuffix("/") ? root : root + "/") else {
+            return nil
+        }
+        var isDirectory: ObjCBool = false
+        guard FileManager.default.fileExists(atPath: target, isDirectory: &isDirectory), !isDirectory.boolValue else {
+            return nil
+        }
+        return target
+    }
+
+    private nonisolated static func resolvedRealpath(_ path: String) -> String? {
+        guard let resolved = realpath(path, nil) else { return nil }
+        defer { free(resolved) }
+        return String(cString: resolved)
     }
 
     /// The root the preview may serve resources from: the session's worktree,

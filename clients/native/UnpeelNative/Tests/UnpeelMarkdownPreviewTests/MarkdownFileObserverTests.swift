@@ -77,4 +77,23 @@ final class MarkdownFileObserverTests: XCTestCase {
         RunLoop.main.run(until: Date().addingTimeInterval(0.5))
         XCTAssertEqual(count, countAtStop)
     }
+
+    // Fork-only: markdown preview pane — I1: the observer must keep retrying
+    // past the first reopen window, not go permanently dead on one miss.
+    func testFileReturningAfterALongAbsenceIsObservedAgain() throws {
+        var count = 0
+        let observer = MarkdownFileObserver(path: file.path, debounce: 0.05) {
+            count += 1
+        }
+        observer.start()
+        defer { observer.stop() }
+        try FileManager.default.removeItem(at: file)
+        RunLoop.main.run(until: Date().addingTimeInterval(0.4))
+        try Data("returned".utf8).write(to: file)
+        RunLoop.main.run(until: Date().addingTimeInterval(1.5))
+        let countAfterSpin = count
+        try Data("again".utf8).write(to: file)
+        RunLoop.main.run(until: Date().addingTimeInterval(0.5))
+        XCTAssertGreaterThan(count, countAfterSpin)
+    }
 }

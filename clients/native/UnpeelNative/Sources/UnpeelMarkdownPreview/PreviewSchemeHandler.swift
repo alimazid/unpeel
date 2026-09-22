@@ -23,7 +23,20 @@ public final class PreviewSchemeHandler: NSObject, WKURLSchemeHandler {
         switch policy.decide(requestPath: path) {
         case let .refuse(reason):
             Self.logger.info("preview refused \(path, privacy: .private): \(reason, privacy: .public)")
-            respond(task, url: url, status: 404, mimeType: "text/plain", data: Data())
+            // Fork-only: markdown preview pane — M5: a refused sub-resource
+            // (an image, say) stays a silent 404, but a refused markdown
+            // document is what the pane itself is showing — tell the user
+            // why instead of leaving a blank card.
+            if MarkdownFileTypes.isMarkdown(path) {
+                let name = (path as NSString).lastPathComponent
+                let html = MarkdownPreviewDocument.unavailablePage(
+                    title: name,
+                    message: "\(name) cannot be previewed: it is outside the project or not a regular file."
+                )
+                respond(task, url: url, status: 200, mimeType: "text/html", data: Data(html.utf8))
+            } else {
+                respond(task, url: url, status: 404, mimeType: "text/plain", data: Data())
+            }
         case let .serve(resolved, mime):
             let name = (resolved as NSString).lastPathComponent
             // Fail closed: no readable size means no read at all.
