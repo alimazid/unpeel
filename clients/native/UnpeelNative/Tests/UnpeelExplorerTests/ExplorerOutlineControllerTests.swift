@@ -5,8 +5,12 @@ import XCTest
 @MainActor
 private final class RecordingHandler: ExplorerActionHandler {
     var canSendToAgent = true
+    /// Paths passed to `openFile` (open-with rules).
+    var openedWithRules: [String] = []
+    /// Paths passed to `openInEditor` (explicit editor bypass).
     var opened: [String] = []
     var sent: [String] = []
+    func openFile(path: String) { openedWithRules.append(path) }
     func openInEditor(path: String) { opened.append(path) }
     func sendPathToAgent(path: String) { sent.append(path) }
 }
@@ -129,7 +133,7 @@ final class ExplorerOutlineControllerTests: XCTestCase {
         XCTAssertEqual(controller.menuActions(for: nil), [.refresh])
         XCTAssertEqual(
             controller.menuActions(for: "/r/a.txt"),
-            [.openInEditor, .revealInFinder, .quickLook, nil, .sendToAgent, nil, .copyPath, .copyRelativePath, nil, .refresh]
+            [.open, .openInEditor, .revealInFinder, .quickLook, nil, .sendToAgent, nil, .copyPath, .copyRelativePath, nil, .refresh]
         )
         XCTAssertEqual(
             controller.menuActions(for: "/r/src"),
@@ -162,16 +166,17 @@ final class ExplorerOutlineControllerTests: XCTestCase {
         XCTAssertEqual(pasteboard.string(forType: .string), "a.txt")
     }
 
-    func testOpenKeyCommandOpensSelectedFiles() {
+    func testOpenKeyCommandOpensSelectedFilesThroughTheRules() {
         let (controller, viewModel, suite) = makeController()
         defer { UserDefaults().removePersistentDomain(forName: suite) }
         let handler = RecordingHandler()
         controller.actionHandler = handler
-        controller.apply(model: sampleModel(), filter: VisibilityFilter(), selection: [])
-        viewModel.selection = ["/r/a.txt"]
+        controller.apply(model: sampleModel(), filter: VisibilityFilter(showHidden: true), selection: [])
+        viewModel.selection = ["/r/.env", "/r/a.txt"]
 
         XCTAssertTrue(controller.handleKeyCommand(.open))
-        XCTAssertEqual(handler.opened, ["/r/a.txt"])
+        XCTAssertEqual(handler.openedWithRules, ["/r/.env", "/r/a.txt"])
+        XCTAssertEqual(handler.opened, [])
     }
 
     /// Regression: Space must CLOSE an already-open Quick Look panel (as in
@@ -228,6 +233,48 @@ final class ExplorerOutlineControllerTests: XCTestCase {
         controller.perform(.openInEditor, on: ["/r/a.txt", "/r/src"])
 
         XCTAssertEqual(handler.opened, ["/r/a.txt"])
+    }
+
+    /// Double-click is the primary "open" gesture and must go through the
+    /// app's open-with rules (`openFile`), never straight to the editor;
+    /// a directory double-click stays a no-op here (expansion is on click).
+    func testDoubleClickOpensAFileThroughTheRulesAndIgnoresDirectories() {
+        let (controller, _, suite) = makeController()
+        defer { UserDefaults().removePersistentDomain(forName: suite) }
+        let handler = RecordingHandler()
+        controller.actionHandler = handler
+        controller.apply(model: sampleModel(), filter: VisibilityFilter(), selection: [])
+
+        controller.doubleClick(onPath: "/r/a.txt")
+        controller.doubleClick(onPath: "/r/src")
+        controller.doubleClick(onPath: "/r/missing.txt")
+
+        XCTAssertEqual(handler.openedWithRules, ["/r/a.txt"])
+        XCTAssertEqual(handler.opened, [])
+    }
+
+    /// The two menu items are distinct intents: "Open" → rules, "Open in
+    /// Editor" → editor. Each must call only its own handler member, and
+    /// both skip directories in a mixed target set.
+    func testPerformOpenAndOpenInEditorCallDistinctHandlerMembers() {
+        let (controller, _, suite) = makeController()
+        defer { UserDefaults().removePersistentDomain(forName: suite) }
+        let handler = RecordingHandler()
+        controller.actionHandler = handler
+        controller.apply(model: sampleModel(), filter: VisibilityFilter(), selection: [])
+
+        controller.perform(.open, on: ["/r/a.txt", "/r/src"])
+        XCTAssertEqual(handler.openedWithRules, ["/r/a.txt"])
+        XCTAssertEqual(handler.opened, [])
+
+        controller.perform(.openInEditor, on: ["/r/src", "/r/a.txt"])
+        XCTAssertEqual(handler.openedWithRules, ["/r/a.txt"])
+        XCTAssertEqual(handler.opened, ["/r/a.txt"])
+    }
+
+    func testOpenMenuActionTitle() {
+        XCTAssertEqual(ExplorerOutlineController.MenuAction.open.title, "Open")
+        XCTAssertEqual(ExplorerOutlineController.MenuAction.openInEditor.title, "Open in Editor")
     }
 
     /// `perform(.collapse, on:)` should only ever act on currently-expanded
@@ -332,7 +379,7 @@ final class ExplorerOutlineControllerTests: XCTestCase {
         controller.apply(model: sampleModel(), filter: VisibilityFilter(), selection: [])
 
         let expected: [ExplorerOutlineController.MenuAction?] = [
-            .openInEditor, .revealInFinder, .quickLook, nil,
+            .open, .openInEditor, .revealInFinder, .quickLook, nil,
             .sendToAgent, nil,
             .copyPath, .copyRelativePath, nil,
             .refresh, .collapse,

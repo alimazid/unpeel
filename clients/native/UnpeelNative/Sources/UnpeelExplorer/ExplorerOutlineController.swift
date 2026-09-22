@@ -5,11 +5,12 @@ public final class ExplorerOutlineController: NSObject,
     NSOutlineViewDataSource, NSOutlineViewDelegate, NSMenuDelegate
 {
     public enum MenuAction: String, Equatable {
-        case openInEditor, revealInFinder, quickLook, sendToAgent
+        case open, openInEditor, revealInFinder, quickLook, sendToAgent
         case copyPath, copyRelativePath, refresh, collapse
 
         var title: String {
             switch self {
+            case .open: return "Open"
             case .openInEditor: return "Open in Editor"
             case .revealInFinder: return "Reveal in Finder"
             case .quickLook: return "Quick Look"
@@ -402,10 +403,18 @@ public final class ExplorerOutlineController: NSObject,
 
     @objc private func handleDoubleClick() {
         guard let outlineView, outlineView.clickedRow >= 0,
-              let entry = entry(for: outlineView.item(atRow: outlineView.clickedRow)),
-              entry.kind == .file
+              let entry = entry(for: outlineView.item(atRow: outlineView.clickedRow))
         else { return }
-        actionHandler?.openInEditor(path: entry.path)
+        doubleClick(onPath: entry.path)
+    }
+
+    /// Double-click on a file opens it through the app's open-with rules
+    /// (`openFile`), never the editor directly. Directories do nothing here:
+    /// a single click already toggles them. Internal so tests can drive it —
+    /// `NSOutlineView.clickedRow` is read-only and needs a real click.
+    func doubleClick(onPath path: String) {
+        guard let entry = applied?.entry(at: path), entry.kind == .file else { return }
+        actionHandler?.openFile(path: path)
     }
 
     // MARK: - Context menu
@@ -420,9 +429,9 @@ public final class ExplorerOutlineController: NSObject,
 
     /// Menu actions for the WHOLE target set, not just one representative
     /// path — a mixed selection (a file and an expanded directory) must
-    /// offer "Open in Editor"/"Quick Look" (there's a file) AND "Collapse"
-    /// (there's an expanded directory), regardless of which one is first or
-    /// was clicked.
+    /// offer "Open"/"Open in Editor"/"Quick Look" (there's a file) AND
+    /// "Collapse" (there's an expanded directory), regardless of which one
+    /// is first or was clicked.
     public func menuActions(forTargets paths: [String]) -> [MenuAction?] {
         let resolved = resolvedEntries(for: paths)
         guard !resolved.isEmpty else { return [.refresh] }
@@ -433,7 +442,7 @@ public final class ExplorerOutlineController: NSObject,
         let send: [MenuAction?] = actionHandler?.canSendToAgent == true ? [.sendToAgent, nil] : []
         let copy: [MenuAction?] = [.copyPath, .copyRelativePath, nil]
         var actions: [MenuAction?] = hasFile
-            ? [.openInEditor, .revealInFinder, .quickLook, nil]
+            ? [.open, .openInEditor, .revealInFinder, .quickLook, nil]
             : [.revealInFinder, nil]
         actions += send + copy + [.refresh]
         if hasExpandedDirectory {
@@ -484,6 +493,8 @@ public final class ExplorerOutlineController: NSObject,
 
     public func perform(_ action: MenuAction, on paths: [String]) {
         switch action {
+        case .open:
+            filesOnly(paths).forEach { actionHandler?.openFile(path: $0) }
         case .openInEditor:
             filesOnly(paths).forEach { actionHandler?.openInEditor(path: $0) }
         case .revealInFinder:
@@ -554,7 +565,7 @@ public final class ExplorerOutlineController: NSObject,
             for path in selection {
                 guard let entry = applied?.entry(at: path) else { continue }
                 if entry.kind == .file {
-                    actionHandler?.openInEditor(path: path)
+                    actionHandler?.openFile(path: path)
                 } else if let item = items[path] {
                     outlineView?.expandItem(item)
                 }

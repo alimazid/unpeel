@@ -27,6 +27,11 @@ public struct ExplorerPalette {
 @MainActor
 public protocol ExplorerActionHandler: AnyObject {
     var canSendToAgent: Bool { get }
+    /// Open with the app's open-with rules (the same routing as ⌘-clicking a
+    /// path in a terminal: a plugin side pane for types that have one, else
+    /// the editor). Double-click, ⌘↓ and the "Open" menu item use this.
+    func openFile(path: String)
+    /// Always the configured editor — the explicit bypass ("Open in Editor").
     func openInEditor(path: String)
     func sendPathToAgent(path: String)
 }
