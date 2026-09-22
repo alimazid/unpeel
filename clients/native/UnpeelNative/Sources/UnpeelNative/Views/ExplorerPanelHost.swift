@@ -60,9 +60,11 @@ final class ExplorerHostActions: ExplorerActionHandler {
     /// Open-with rules, exactly the routine behind a terminal ⌘-click:
     /// registry match by extension (`.md` → Markdown plugin), Settings ▸
     /// Open With override, else the editor; the plugin pane attaches to the
-    /// explorer's target session. `openClickedFile` returns `false` only
-    /// when the file no longer resolves on disk — the watcher removes the
-    /// row moments later, so there is nothing more to do than note it.
+    /// explorer's target session. `openClickedFile` returns `false` when the
+    /// file no longer resolves locally (the watcher removes the row moments
+    /// later) or, in remote scope — where this panel shows no tree anyway —
+    /// when no plugin claims the type; either way there is nothing more to
+    /// do than note it.
     func openFile(path: String) {
         guard let store else {
             openInEditor(path: path)
