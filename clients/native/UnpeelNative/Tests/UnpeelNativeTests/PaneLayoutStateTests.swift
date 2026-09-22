@@ -250,4 +250,120 @@ final class PaneLayoutStateTests: XCTestCase {
         XCTAssertNil(state.spatialNeighbor(ofPane: paneA, direction: .up))
         XCTAssertNil(state.spatialNeighbor(ofPane: paneA, direction: .down))
     }
+
+    // MARK: - Fork-only: markdown preview leaves
+
+    private let previewPath = "/r/README.md"
+
+    func testInsertMarkdownPreviewBesideSoloSessionCreatesGroupOnTheRight() throws {
+        var state = PaneLayoutState(groups: [])
+        let location = try state.insertMarkdownPreview(path: previewPath, beside: "s1", at: .right)
+        let group = try XCTUnwrap(state.group(id: location.groupID))
+        XCTAssertEqual(group.sessionIDs, ["s1"])
+        XCTAssertEqual(group.root.leaves.map(\.content), [.session(id: "s1"), .markdownPreview(path: previewPath)])
+        guard case let .split(split) = group.root else { return XCTFail("expected a split") }
+        XCTAssertEqual(split.direction, .horizontal)
+        XCTAssertEqual(split.ratio, 0.5)
+        XCTAssertEqual(group.representativeSessionID, "s1")
+    }
+
+    func testInsertMarkdownPreviewBesideGroupedSessionSplitsThatLeaf() throws {
+        var state = twoPaneState()
+        let location = try state.insertMarkdownPreview(path: previewPath, beside: "s2", at: .right)
+        XCTAssertEqual(location.groupID, groupID)
+        let group = try XCTUnwrap(state.group(id: groupID))
+        XCTAssertEqual(group.root.leaves.map(\.content), [.session(id: "s1"), .session(id: "s2"), .markdownPreview(path: previewPath)])
+        XCTAssertEqual(group.root.sessionLeaves.count, 2)
+    }
+
+    func testLocationOfMarkdownPreviewFindsOnlyWithinTheSessionsGroup() throws {
+        var state = twoPaneState()
+        let inserted = try state.insertMarkdownPreview(path: previewPath, beside: "s1", at: .right)
+        XCTAssertEqual(state.location(ofMarkdownPreview: previewPath, inGroupContaining: "s2"), inserted)
+        XCTAssertNil(state.location(ofMarkdownPreview: "/r/other.md", inGroupContaining: "s1"))
+        XCTAssertNil(state.location(ofMarkdownPreview: previewPath, inGroupContaining: "s9"))
+    }
+
+    func testPreviewLeavesDoNotCountTowardTheSessionCap() throws {
+        var state = PaneLayoutState(groups: [])
+        _ = try state.insertMarkdownPreview(path: previewPath, beside: "s1", at: .right)
+        for index in 2...PaneLayoutState.maximumSessionLeafCount {
+            try state.insertSession("s\(index)", beside: "s1", at: .right)
+        }
+        XCTAssertEqual(state.groups[0].root.sessionLeaves.count, PaneLayoutState.maximumSessionLeafCount)
+        XCTAssertThrowsError(try state.insertSession("s99", beside: "s1", at: .right))
+        _ = try state.insertMarkdownPreview(path: "/r/more.md", beside: "s1", at: .right)
+    }
+
+    func testDetachingTheLastSessionDissolvesTheGroupWithItsPreviews() throws {
+        var state = PaneLayoutState(groups: [])
+        let location = try state.insertMarkdownPreview(path: previewPath, beside: "s1", at: .right)
+        let sessionPane = try XCTUnwrap(state.location(ofSession: "s1"))
+        let change = try state.detachPane(sessionPane.paneID)
+        XCTAssertTrue(change.dissolved)
+        XCTAssertTrue(state.groups.isEmpty)
+        XCTAssertNil(state.location(ofPane: location.paneID))
+    }
+
+    func testDetachingAPreviewKeepsASessionPlusPreviewGroupOtherwiseDissolves() throws {
+        var state = PaneLayoutState(groups: [])
+        let first = try state.insertMarkdownPreview(path: previewPath, beside: "s1", at: .right)
+        let second = try state.insertMarkdownPreview(path: "/r/b.md", beside: "s1", at: .right)
+        XCTAssertFalse(try state.detachPane(second.paneID).dissolved)
+        XCTAssertEqual(state.groups.count, 1)
+        XCTAssertTrue(try state.detachPane(first.paneID).dissolved)
+        XCTAssertTrue(state.groups.isEmpty)
+    }
+
+    func testReconcileDropsPreviewsWhenTheirGroupLosesItsSessions() throws {
+        var state = PaneLayoutState(groups: [])
+        _ = try state.insertMarkdownPreview(path: previewPath, beside: "s1", at: .right)
+        let changes = state.reconcile(eligibleSessionIDs: [])
+        XCTAssertEqual(changes.map(\.dissolved), [true])
+        XCTAssertTrue(state.groups.isEmpty)
+
+        var kept = PaneLayoutState(groups: [])
+        _ = try kept.insertMarkdownPreview(path: previewPath, beside: "s1", at: .right)
+        XCTAssertTrue(kept.reconcile(eligibleSessionIDs: ["s1"]).isEmpty)
+        XCTAssertEqual(kept.groups.count, 1)
+    }
+
+    func testDurableLayoutStripsPreviewLeaves() throws {
+        var state = twoPaneState()
+        _ = try state.insertMarkdownPreview(path: previewPath, beside: "s1", at: .right)
+        let durable = try XCTUnwrap(DurablePaneGroup(group: state.groups[0]))
+        XCTAssertEqual(durable.root.paneNode().leaves.map(\.content), [.session(id: "s1"), .session(id: "s2")])
+
+        var solo = PaneLayoutState(groups: [])
+        _ = try solo.insertMarkdownPreview(path: previewPath, beside: "s1", at: .right)
+        XCTAssertNil(DurablePaneGroup(group: solo.groups[0]))
+    }
+
+    func testStructuralIdentityDistinguishesPreviewPaths() throws {
+        var a = PaneLayoutState(groups: [])
+        _ = try a.insertMarkdownPreview(path: previewPath, beside: "s1", at: .right, newGroupID: groupID, newRepresentativePaneID: paneA, newPaneID: paneB)
+        var b = PaneLayoutState(groups: [])
+        _ = try b.insertMarkdownPreview(path: "/r/b.md", beside: "s1", at: .right, newGroupID: groupID, newRepresentativePaneID: paneA, newPaneID: paneB)
+        XCTAssertNotEqual(a.groups[0].root.structuralIdentity, b.groups[0].root.structuralIdentity)
+    }
+
+    func testCanonicalizeDedupesPreviewPathsAndKeepsSessionPlusPreview() {
+        let state = PaneLayoutState(groups: [
+            PaneGroup(
+                id: groupID,
+                representativePaneID: paneA,
+                root: .split(PaneSplit(
+                    direction: .horizontal, ratio: 0.5,
+                    left: .leaf(Pane(id: paneA, content: .session(id: "s1"))),
+                    right: .split(PaneSplit(
+                        direction: .horizontal, ratio: 0.5,
+                        left: .leaf(Pane(id: paneB, content: .markdownPreview(path: previewPath))),
+                        right: .leaf(Pane(id: paneC, content: .markdownPreview(path: previewPath)))
+                    ))
+                ))
+            ),
+        ])
+        XCTAssertEqual(state.groups.count, 1)
+        XCTAssertEqual(state.groups[0].root.leaves.map(\.id), [paneA, paneB])
+    }
 }

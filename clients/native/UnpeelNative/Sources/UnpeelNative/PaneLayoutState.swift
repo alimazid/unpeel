@@ -9,6 +9,10 @@ import Foundation
 enum PaneContent: Equatable, Sendable {
     case session(id: String)
     case launcher(projectID: String)
+    // Fork-only: markdown preview pane. A rendered, read-only view of one
+    // file; transient like the launcher (never persisted, never counted as
+    // a session leaf).
+    case markdownPreview(path: String)
 
     var sessionID: String? {
         guard case let .session(id) = self else { return nil }
@@ -18,6 +22,20 @@ enum PaneContent: Equatable, Sendable {
     var isLauncher: Bool {
         if case .launcher = self { return true }
         return false
+    }
+
+    // Fork-only: markdown preview pane
+    var markdownPreviewPath: String? {
+        guard case let .markdownPreview(path) = self else { return nil }
+        return path
+    }
+
+    /// Leaves that keep a lone session grouped but never persist.
+    var isTransient: Bool {
+        switch self {
+        case .session: return false
+        case .launcher, .markdownPreview: return true
+        }
     }
 }
 
@@ -125,6 +143,11 @@ extension PaneNode {
 
     var containsLauncher: Bool {
         leaves.contains { $0.content.isLauncher }
+    }
+
+    // Fork-only: markdown preview pane
+    var containsTransientLeaf: Bool {
+        leaves.contains { $0.content.isTransient }
     }
 
     func leaf(id paneID: String) -> Pane? {
@@ -273,6 +296,8 @@ extension PaneNode {
                 hasher.combine(id)
             case let .launcher(projectID):
                 hasher.combine("launcher:\(projectID)")
+            case let .markdownPreview(path):
+                hasher.combine("preview:\(path)")
             }
         case let .split(split):
             hasher.combine(1)
@@ -588,16 +613,28 @@ struct PaneLayoutState: Equatable, Sendable {
         newPaneID: String? = nil
     ) throws -> PaneLocation {
         try validateNewSession(sessionID)
+        return try insertLeaf(.session(id: sessionID), splitting: targetPaneID, edge: edge, newPaneID: newPaneID, checkCapacity: true)
+    }
+
+    /// Splits `targetPaneID`'s leaf with a new leaf of `content`. Session
+    /// leaves check the cap; transient leaves (Fork-only: markdown preview
+    /// pane) do not, because they never count as sessions.
+    private mutating func insertLeaf(
+        _ content: PaneContent,
+        splitting targetPaneID: String,
+        edge: PaneEdge,
+        newPaneID: String?,
+        checkCapacity: Bool
+    ) throws -> PaneLocation {
         guard let location = location(ofPane: targetPaneID) else {
             throw PaneLayoutError.paneNotFound(targetPaneID)
         }
         let groupIndex = try index(ofGroup: location.groupID)
-        try validateCapacity(ofGroupAt: groupIndex)
+        if checkCapacity {
+            try validateCapacity(ofGroupAt: groupIndex)
+        }
 
-        let pane = Pane(
-            id: newPaneID ?? PaneStableID.make(),
-            content: .session(id: sessionID)
-        )
+        let pane = Pane(id: newPaneID ?? PaneStableID.make(), content: content)
         guard let root = groups[groupIndex].root.splittingLeaf(
             targetPaneID, adding: pane, edge: edge
         ) else {
@@ -718,6 +755,62 @@ struct PaneLayoutState: Equatable, Sendable {
         return PaneLocation(groupID: group.id, paneID: launcher.id)
     }
 
+    // MARK: Fork-only: markdown preview pane
+
+    /// Splits the target session's leaf, or creates a session + preview
+    /// group when that session is currently solo. Same shape as the
+    /// launcher's `beside:` insertion; previews never count toward the cap.
+    @discardableResult
+    mutating func insertMarkdownPreview(
+        path: String,
+        beside targetSessionID: String,
+        at edge: PaneEdge,
+        newGroupID: String? = nil,
+        newRepresentativePaneID: String? = nil,
+        newPaneID: String? = nil
+    ) throws -> PaneLocation {
+        guard !targetSessionID.isEmpty else {
+            throw PaneLayoutError.invalidSessionID
+        }
+        if let target = location(ofSession: targetSessionID) {
+            return try insertLeaf(
+                .markdownPreview(path: path),
+                splitting: target.paneID,
+                edge: edge,
+                newPaneID: newPaneID,
+                checkCapacity: false
+            )
+        }
+        let representative = Pane(
+            id: newRepresentativePaneID ?? PaneStableID.make(),
+            content: .session(id: targetSessionID)
+        )
+        let preview = Pane(
+            id: newPaneID ?? PaneStableID.make(),
+            content: .markdownPreview(path: path)
+        )
+        let split = PaneSplit(
+            direction: edge.splitDirection,
+            ratio: 0.5,
+            left: edge.newLeafIsLeftChild ? .leaf(preview) : .leaf(representative),
+            right: edge.newLeafIsLeftChild ? .leaf(representative) : .leaf(preview)
+        )
+        let group = PaneGroup(
+            id: newGroupID ?? PaneStableID.make(),
+            representativePaneID: representative.id,
+            root: .split(split)
+        )
+        groups.append(group)
+        return PaneLocation(groupID: group.id, paneID: preview.id)
+    }
+
+    func location(ofMarkdownPreview path: String, inGroupContaining sessionID: String) -> PaneLocation? {
+        guard let group = group(containingSession: sessionID),
+              let pane = group.root.leaves.first(where: { $0.content.markdownPreviewPath == path })
+        else { return nil }
+        return PaneLocation(groupID: group.id, paneID: pane.id)
+    }
+
     mutating func bindLauncher(_ paneID: String, toSessionID sessionID: String) throws {
         try validateNewSession(sessionID)
         guard let location = location(ofPane: paneID) else {
@@ -770,8 +863,9 @@ struct PaneLayoutState: Equatable, Sendable {
         }
 
         let sessionLeaves = newRoot.sessionLeaves
+        // Fork-only: markdown preview pane
         let canRemainGrouped = sessionLeaves.count >= 2
-            || (sessionLeaves.count == 1 && newRoot.containsLauncher)
+            || (sessionLeaves.count == 1 && newRoot.containsTransientLeaf)
         guard canRemainGrouped else {
             groups.remove(at: groupIndex)
             return PaneLayoutChange(
@@ -921,8 +1015,10 @@ struct PaneLayoutState: Equatable, Sendable {
 
             let sessionLeaves = newRoot?.sessionLeaves ?? []
             let hasLauncher = newRoot?.containsLauncher ?? false
+            // Fork-only: markdown preview pane
+            let hasTransient = newRoot?.containsTransientLeaf ?? false
             let canRemainGrouped = sessionLeaves.count >= 2
-                || (sessionLeaves.count == 1 && hasLauncher)
+                || (sessionLeaves.count == 1 && hasTransient)
 
             guard let newRoot, canRemainGrouped else {
                 changes.append(PaneLayoutChange(
@@ -994,6 +1090,8 @@ struct PaneLayoutState: Equatable, Sendable {
             var candidatePaneIDs = usedPaneIDs
             var candidateSessionIDs = usedSessionIDs
             var hasLauncher = false
+            // Fork-only: markdown preview pane
+            var candidatePreviewPaths = Set<String>()
             var root: PaneNode? = candidate.root
             for pane in candidate.root.leaves {
                 var keep = !candidatePaneIDs.contains(pane.id)
@@ -1006,6 +1104,10 @@ struct PaneLayoutState: Equatable, Sendable {
                     case .launcher:
                         keep = !hasLauncher
                         hasLauncher = hasLauncher || keep
+                    // Fork-only: markdown preview pane — one leaf per path.
+                    case let .markdownPreview(path):
+                        keep = !path.isEmpty && !candidatePreviewPaths.contains(path)
+                        if keep { candidatePreviewPaths.insert(path) }
                     }
                 }
                 if keep {
@@ -1030,8 +1132,9 @@ struct PaneLayoutState: Equatable, Sendable {
 
             guard let root else { continue }
             let sessionLeaves = root.sessionLeaves
+            // Fork-only: markdown preview pane
             let canRemainGrouped = sessionLeaves.count >= 2
-                || (sessionLeaves.count == 1 && hasLauncher)
+                || (sessionLeaves.count == 1 && root.containsTransientLeaf)
             guard canRemainGrouped else { continue }
 
             usedGroupIDs.insert(groupID)
@@ -1176,7 +1279,8 @@ struct DurablePaneGroup: Codable, Equatable, Sendable {
             candidate = snapshot
         } else {
             candidate = group.root
-            for pane in group.root.leaves where pane.content.isLauncher {
+            // Fork-only: markdown preview pane — previews are transient too
+            for pane in group.root.leaves where pane.content.isTransient {
                 candidate = candidate?.removingLeaf(pane.id)
             }
         }

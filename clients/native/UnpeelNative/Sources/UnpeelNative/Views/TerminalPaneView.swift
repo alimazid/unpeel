@@ -734,6 +734,9 @@ struct TerminalPaneContainer: View {
                 return "session:\(sessionID)"
             case .launcher:
                 return "launcher:\(paneID)"
+            // Fork-only: markdown preview pane
+            case .markdownPreview:
+                return "preview:\(paneID)"
             }
         }
     }
@@ -1064,6 +1067,9 @@ struct TerminalPaneContainer: View {
             }
         case let .launcher(projectID):
             launcherPane(pane, projectID: projectID)
+        // Fork-only: markdown preview pane — temporary; Task 5 replaces this.
+        case .markdownPreview:
+            unavailablePane(pane)
         }
     }
 
