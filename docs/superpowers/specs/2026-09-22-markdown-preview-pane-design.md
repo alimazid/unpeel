@@ -56,9 +56,11 @@ Editing stays one click away in Unpeel's Markdown plugin pane.
   preview leaves with it.
 - **Live update:** the pane re-renders when the file changes on disk
   (debounced 150 ms), preserving the scroll position. Deleted or unreadable
-  file → the pane body shows "*name* is no longer available" and the pane is
-  dropped at the next render-time validation (`validatedPaneGroup`), never by
-  mutating durable state.
+  file → the pane body shows "*name* is no longer available" and stays until
+  the user closes it (or the file returns, which reloads it). No filesystem
+  check runs on the render path: an editor that saves by unlink-then-write
+  would otherwise make the pane vanish and reappear (revised 2026-09-22 after
+  the Task 4 review).
 - **Rendering:** GitHub-flavoured Markdown — headings, paragraphs, emphasis,
   lists, task lists, tables, fenced and indented code, block quotes, thematic
   breaks, links, images, inline HTML escaped (not rendered). Light/dark follows
@@ -114,9 +116,11 @@ gets a copy of the 20-line helper rather than a dependency on the explorer.
 - `UnpeelStore.swift`
   - `openMarkdownPreview(path: String, besideSession sessionID: String)`:
     canonicalise, reuse-or-insert via `mutatePaneLayout`, set the active pane.
-  - `validatedPaneGroup(containingSession:)`: `.markdownPreview(path)` kept only
-    while the file exists.
-  - `canCloseActiveTerminalPane`: true when the active pane is a preview.
+  - `validatedPaneGroup(containingSession:)`: `.markdownPreview` is kept like
+    the launcher (no file check on the render path); the grouping guard counts
+    transient leaves.
+  - `canCloseActiveTerminalPane` needs no change: it gates on the group's
+    representative session being alive, which holds for a focused preview.
   - `markdownPreviewProjectRoot(for sessionID:)`: the session's worktree or
     project path, for `PreviewResourcePolicy`.
 - `Views/TerminalPaneView.swift`
