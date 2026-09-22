@@ -410,6 +410,14 @@ section are authoritative, the plan's samples are not. Evidence:
   would make it O(1).
 - `git` is resolved through `/usr/bin/env`; probe once and cache "unavailable".
 - Log, rather than drop, a failed state save and a failed `git` stdin write.
+- Upstream divergence: "Open" on a file with no plugin rule resolves the
+  editor via `preferredCodeEditor()` (native override ?? "code"), while
+  "Open in Editor" uses `codeEditor` (native override ?? `app-state.json`
+  `code_editor` ?? "code"); a user who set `code_editor` only in
+  `app-state.json` gets different editors from the two adjacent items.
+  Fixing it means touching `UnpeelStore.swift`.
+- Multi-select Open / ⌘↓ opens one plugin pane per selected file with no
+  bound; consider a confirmation above ~5 files.
 - Store a note row's directory on the item instead of recovering it from the
   path; poll instead of a fixed budget in the hosted rendering test; add
   root/filter-change stages to the 10k performance test; test the scroll

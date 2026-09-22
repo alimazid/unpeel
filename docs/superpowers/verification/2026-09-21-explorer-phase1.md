@@ -134,6 +134,10 @@ isolated dev build (`dev-blank.sh`, `UNPEEL_HOME=~/unpeel-dev-explorer-home`)
 with the Markdown plugin linked into that home (`unpeel apps link
 unpeel.app.markdown crates/apps/target/release/unpeel-markdown`), against the
 `unpeel-dev-explorer-fixture2` root; screenshots in `explorer-open-with/`.
+The `.rules` arm of `ExplorerHostActions.openFile` (reaching
+`UnpeelStore.openClickedFile` with the tree's session) is covered at runtime
+only (checks 1–3), because `UnpeelStore` is not mockable in the app test
+target.
 
 | # | Check | Result |
 |---|---|---|

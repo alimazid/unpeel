@@ -39,15 +39,17 @@ Phase 1 hardwired every open entry point to the editor.
    panes).
 4. Plugin not installed → Unpeel's own alert: Install / Use Editor / Always
    Use Editor. The explorer adds no prompt of its own.
-5. The file no longer exists → `openClickedFile` returns `false` and nothing
-   opens; the explorer logs at `.info` and the watcher removes the row.
+5. `openClickedFile` returns `false` — either the file no longer resolves
+   locally (the watcher removes the row moments later), or, in remote scope
+   (where the explorer shows no tree anyway), no plugin claims the type —
+   and nothing opens; the explorer logs at `.info`.
 
-The **caller session** is the explorer's target session — the same one "Send
-Path to Agent" pastes into (`ExplorerContextResolver.targetSessionID`:
-active pane of a split, else focused solo/panel pane, else the selected
-session). With no target session (not expected while a local root is shown)
-the explorer falls back to `openInEditor(path:)` so the action never silently
-does nothing.
+The **caller session** is the tree's own session — the selected session
+whose root the tree shows (`ExplorerHostActions.rootSessionID`) — never the
+focused pane of a split: that pane may belong to another worktree, and the
+pane should appear beside the session whose tree the user double-clicked in.
+With no such session (context `.none`, when the panel shows no tree anyway)
+the explorer falls back to `openInEditor(path:)`.
 
 Multiple selected files + ⌘↓ or **Open** open each file in turn, as Phase 1
 did with the editor. Enter is still reserved for Rename (Phase 2).
@@ -71,16 +73,25 @@ Remote-Host scope is unchanged: the explorer shows no tree there.
 - `ExplorerHostActions.openFile(path:)`:
   ```swift
   func openFile(path: String) {
-      guard let store, let sessionID = targetSessionID else {
+      guard let store else {
           openInEditor(path: path)
           return
       }
-      let match = ClickablePath.Match(path: path, line: nil, column: nil)
-      if !store.openClickedFile(match, path: path, fromSessionID: sessionID) {
-          logger.info("explorer: open declined for \(path, privacy: .private)")
+      switch ExplorerContextResolver.openRoute(sessionID: rootSessionID) {
+      case .editor:
+          openInEditor(path: path)
+      case let .rules(sessionID):
+          let match = ClickablePath.Match(path: path, line: nil, column: nil)
+          if !store.openClickedFile(match, path: path, fromSessionID: sessionID) {
+              logger.info("open declined for \(path, privacy: .private)")
+          }
       }
   }
   ```
+  `ExplorerContextResolver.openRoute(sessionID:)` is the pure decision behind
+  the switch — it returns `ExplorerOpenRoute.editor` or `.rules(sessionID:)`
+  from a plain optional, so the session-selection logic is testable without
+  `UnpeelStore`.
 - No upstream file changes. `ExplorerPanelHost.swift` is fork-only; the two
   upstream files the fork edits (`RootView.swift`, `AppDelegate.swift`) are
   untouched.
@@ -89,7 +100,8 @@ Remote-Host scope is unchanged: the explorer shows no tree there.
 
 - `UnpeelExplorerTests` (fake `ExplorerActionHandler` recording calls):
   double-click on a file → one `openFile`, zero `openInEditor`; double-click
-  on a folder → expansion, no handler call; `.open` key command with two
+  on a folder → no-op in the controller (expansion is the single click's
+  job), no handler call; `.open` key command with two
   files selected → `openFile` for each in row order; `menuActions(forTargets:)`
   for a file starts `[.open, .openInEditor, …]`, for a folder contains
   neither; `perform(.open)` and `perform(.openInEditor)` call the matching
