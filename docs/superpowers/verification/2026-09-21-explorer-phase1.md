@@ -123,3 +123,29 @@ and the app came up with a different session selected than at quit. Three
 attempts to reproduce it (relaunch with saved expansions; relaunch with the
 10k folder expanded; quit with the other session selected, then relaunch) all
 preserved state. Cause unknown; it is recorded in the spec's Phase 2 backlog.
+
+## 7. Open-with rules (2026-09-22, branch `feat/explorer-open-with-rules`, verified at `e4ec886`)
+
+Spec: `docs/superpowers/specs/2026-09-22-explorer-open-with-rules-design.md`.
+Tests: `clients/native/test-native.sh` → `Executed 727 tests, with 1 test
+skipped and 0 failures` (same upstream skip as §1); `UnpeelExplorerTests`
+117, `UnpeelNativeTests` explorer suites 23. Runtime checks ran in the
+isolated dev build (`dev-blank.sh`, `UNPEEL_HOME=~/unpeel-dev-explorer-home`)
+with the Markdown plugin linked into that home (`unpeel apps link
+unpeel.app.markdown crates/apps/target/release/unpeel-markdown`), against the
+`unpeel-dev-explorer-fixture2` root; screenshots in `explorer-open-with/`.
+
+| # | Check | Result |
+|---|---|---|
+| 1 | Double-click `README.md` | PASS — Markdown plugin pane opened beside the session's terminal (`01-…png`) |
+| 2 | Double-click `README.md` again | PASS — the same pane; no second pane |
+| 3 | Select `notes.md`, ⌘↓ | PASS — second Markdown pane for that file (`02-…png`) |
+| 4 | Double-click `src/main.ts` | PASS — VS Code came to the front; no plugin pane |
+| 5 | Context menu on `README.md` | PASS — Open, Open in Editor, Reveal in Finder, Quick Look, … (`03-…png`) |
+| 6 | Open in Editor on `README.md` | PASS — VS Code window "README.md" came to the front; no new pane |
+| 7 | Context menu on the `lib` folder | PASS — no Open / Open in Editor (`04-…png`) |
+| 8 | Plugin not installed → Install / Use Editor alert | NOT REPRODUCIBLE here: after `unpeel apps unlink` the Host still reports the plugin `ready` because the real `~/.unpeel/apps/bin/unpeel-markdown` is on its search path, and the real home is off limits. The alert is upstream's `promptToInstallApp`, reached through the unchanged `openClickedFile`; the explorer adds no code on that path. |
+| 9 | `rm zzz.txt` then double-click its row at once | PASS — nothing opened, no crash, row gone within the watcher's refresh (`05-…png`). The `.info` log line was not captured (`log show` returned nothing), so it is unknown whether the click landed before or after the row was removed. |
+
+The dev-home plugin link was restored to the dev build afterwards; the
+fixture keeps the added `README.md`, `notes.md`, `third.md`, `src/main.ts`.

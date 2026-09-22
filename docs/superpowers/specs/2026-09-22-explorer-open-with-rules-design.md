@@ -1,7 +1,8 @@
 # Explorer: open files through Unpeel's open-with rules
 
-Status: approved 2026-09-22 (design agreed in conversation; addendum to
-`2026-09-21-native-file-explorer-design.md`, which it amends in §2 and §3.2).
+Status: approved 2026-09-22; implemented (evidence in
+`docs/superpowers/verification/2026-09-21-explorer-phase1.md` §7). Addendum to
+`2026-09-21-native-file-explorer-design.md`, which it amends in §2 and §3.2.
 
 ## 1. Goal
 
