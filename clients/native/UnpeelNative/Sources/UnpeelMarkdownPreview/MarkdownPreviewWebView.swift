@@ -38,7 +38,10 @@ struct MarkdownPreviewWebView: NSViewRepresentable {
         )
         let webView = WKWebView(frame: .zero, configuration: configuration)
         webView.navigationDelegate = context.coordinator
-        webView.setValue(false, forKey: "drawsBackground")
+        // Fork-only: markdown preview pane — M1: the public equivalent of
+        // the private `_setDrawsBackground:` KVC call, available on the
+        // package's macOS 13 floor.
+        webView.underPageBackgroundColor = .clear
         webView.allowsBackForwardNavigationGestures = false
         webView.load(URLRequest(url: MarkdownPreviewDocument.url(forPath: path)))
         context.coordinator.lastReloadToken = reloadToken
@@ -114,15 +117,5 @@ struct MarkdownPreviewWebView: NSViewRepresentable {
             default: break
             }
         }
-    }
-}
-
-/// Mirror of the plugin registry's markdown extensions
-/// (`protocol/app-registry.json`); the explorer keeps its own copy.
-public enum MarkdownFileTypes {
-    public static let extensions: Set<String> = ["md", "markdown", "mdown", "mkd"]
-
-    public static func isMarkdown(_ path: String) -> Bool {
-        extensions.contains((path as NSString).pathExtension.lowercased())
     }
 }

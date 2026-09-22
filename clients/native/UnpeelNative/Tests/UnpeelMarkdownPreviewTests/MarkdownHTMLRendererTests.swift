@@ -57,6 +57,11 @@ final class MarkdownHTMLRendererTests: XCTestCase {
         )
     }
 
+    // Fork-only: markdown preview pane — M10: `escapeAttribute` also escapes `'`.
+    func testLinkAttributeEscapesSingleQuotes() {
+        XCTAssertTrue(render("[t](x?a='1')").contains("href=\"x?a=&#39;1&#39;\""))
+    }
+
     func testTablesWithAlignment() {
         let html = render("| a | b |\n|:--|--:|\n| 1 | 2 |")
         XCTAssertTrue(html.hasPrefix("<table>\n<thead>\n<tr><th align=\"left\">a</th><th align=\"right\">b</th></tr>\n</thead>\n<tbody>\n<tr><td align=\"left\">1</td><td align=\"right\">2</td></tr>\n</tbody>\n</table>\n"))

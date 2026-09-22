@@ -18,7 +18,12 @@ enum HTMLEscaping {
         return out
     }
 
+    // Fork-only: markdown preview pane — M10: `escape` alone leaves `'`
+    // unescaped, which is harmless inside a double-quoted attribute value
+    // right up until something double-quotes an attribute built from
+    // untrusted input elsewhere; escape it here too so the name matches
+    // what it does.
     static func escapeAttribute(_ value: String) -> String {
-        escape(value)
+        escape(value).replacingOccurrences(of: "'", with: "&#39;")
     }
 }

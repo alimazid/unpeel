@@ -70,7 +70,17 @@ final class ExplorerHostActions: ExplorerActionHandler {
             store.openMarkdownPreview(path: path, besideSession: sessionID)
             return
         }
-        openMarkdownEditor(path: path)
+        // Fork-only: markdown preview pane (M3) — every non-markdown file
+        // still goes through the generic open-with rules below.
+        openWithRules(path: path)
+    }
+
+    /// For markdown files this is the Markdown plugin, the registry default
+    /// — the context-menu item shown on markdown files routes here directly
+    /// (`openWithRules` would land on the same plugin for a `.md` path
+    /// anyway, since it is the registry's default handler for the type).
+    func openMarkdownEditor(path: String) {
+        openWithRules(path: path)
     }
 
     /// The open-with rules: registry match by extension (`.md` → Markdown
@@ -79,8 +89,11 @@ final class ExplorerHostActions: ExplorerActionHandler {
     /// returns `false` when the file no longer resolves locally (the watcher
     /// removes the row moments later) or, in remote scope — where this panel
     /// shows no tree anyway — when no plugin claims the type; either way
-    /// there is nothing more to do than note it.
-    func openMarkdownEditor(path: String) {
+    /// there is nothing more to do than note it. Shared by `openFile`'s
+    /// non-markdown fallthrough and `openMarkdownEditor` (Fork-only:
+    /// markdown preview pane, M3 — the two used to be one method wrongly
+    /// named after only one of its callers).
+    private func openWithRules(path: String) {
         guard let store else {
             openInEditor(path: path)
             return

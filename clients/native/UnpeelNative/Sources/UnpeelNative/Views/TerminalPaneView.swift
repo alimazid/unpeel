@@ -17,6 +17,7 @@ import SwiftUI
 import UnpeelShared
 // Fork-only: markdown preview pane
 import UnpeelMarkdownPreview
+import os
 
 extension Notification.Name {
     /// AppDelegate's scoped ⌘W request. The active TerminalPaneContainer
@@ -1348,6 +1349,13 @@ struct TerminalPaneContainer: View {
 
     // MARK: Fork-only: markdown preview pane
 
+    /// M7: `openClickedFile` returns `false` when nothing claims the path
+    /// (it no longer resolves locally, or, in remote scope, no plugin
+    /// handles the type); the header button and the pane-menu item both log
+    /// the decline instead of failing silently, matching the explorer's own
+    /// open-with logging.
+    private static let markdownPreviewLogger = Logger(subsystem: "com.unpeel.explorer", category: "preview-pane")
+
     /// Rendered, read-only view of one file. Transient like the launcher.
     /// The project root the preview may read from follows the group's
     /// representative session (the tree the file was opened from).
@@ -1373,11 +1381,13 @@ struct TerminalPaneContainer: View {
                     path: path,
                     projectRoot: projectRoot,
                     onEdit: {
-                        store.openClickedFile(
+                        if !store.openClickedFile(
                             ClickablePath.Match(path: path, line: nil, column: nil),
                             path: path,
                             fromSessionID: representative.id
-                        )
+                        ) {
+                            Self.markdownPreviewLogger.info("markdown editor declined for \(path, privacy: .private)")
+                        }
                     },
                     onActivate: { activatePane(pane.paneID) },
                     onEscape: {
@@ -1931,11 +1941,13 @@ struct TerminalPaneContainer: View {
         // Fork-only: markdown preview pane
         if case let .markdownPreview(path) = pane.content {
             menu.addItem(controller.item("Open in Markdown Editor") {
-                store.openClickedFile(
+                if !store.openClickedFile(
                     ClickablePath.Match(path: path, line: nil, column: nil),
                     path: path,
                     fromSessionID: representative.id
-                )
+                ) {
+                    Self.markdownPreviewLogger.info("markdown editor declined for \(path, privacy: .private)")
+                }
             })
         }
 

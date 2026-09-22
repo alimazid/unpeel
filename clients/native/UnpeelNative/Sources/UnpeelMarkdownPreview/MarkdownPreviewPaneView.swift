@@ -40,9 +40,6 @@ public struct MarkdownPreviewPaneView: View {
     public var body: some View {
         VStack(spacing: 0) {
             HStack(spacing: 8) {
-                Text("Preview")
-                    .font(.system(size: 11, weight: .medium))
-                    .foregroundStyle(.secondary)
                 Spacer()
                 Button("Edit", action: onEdit)
                     .controlSize(.small)
@@ -69,6 +66,16 @@ public struct MarkdownPreviewPaneView: View {
         }
         .onAppear(perform: startObserving)
         .onDisappear { observer?.stop(); observer = nil }
+        // Fork-only: markdown preview pane — M8: no site mutates a preview
+        // leaf's path in place today, but if one ever does, the observer
+        // must restart on the new file rather than keep watching the old one.
+        .onChange(of: path) { _ in
+            observer?.stop()
+            observer = nil
+            missing = false
+            reloadToken += 1
+            startObserving()
+        }
     }
 
     private func startObserving() {
