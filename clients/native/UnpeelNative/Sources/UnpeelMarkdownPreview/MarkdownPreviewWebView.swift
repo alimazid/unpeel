@@ -88,21 +88,20 @@ struct MarkdownPreviewWebView: NSViewRepresentable {
             decisionHandler: @escaping @MainActor (WKNavigationActionPolicy) -> Void
         ) {
             guard let url = action.request.url else { return decisionHandler(.cancel) }
-            switch url.scheme {
-            case MarkdownPreviewDocument.scheme:
-                if action.navigationType == .linkActivated,
-                   let target = MarkdownPreviewDocument.path(from: url),
-                   MarkdownFileTypes.isMarkdown(target)
-                {
-                    parent.onOpenMarkdown(target)
-                    return decisionHandler(.cancel)
-                }
-                // The initial load, reloads and in-page anchors.
-                decisionHandler(action.navigationType == .linkActivated && url.fragment == nil ? .cancel : .allow)
-            case "http", "https", "mailto":
-                if action.navigationType == .linkActivated { NSWorkspace.shared.open(url) }
+            switch PreviewNavigationPolicy.decide(
+                url: url,
+                isLinkActivated: action.navigationType == .linkActivated,
+                currentPath: parent.path
+            ) {
+            case .allow:
+                decisionHandler(.allow)
+            case .cancel:
                 decisionHandler(.cancel)
-            default:
+            case let .openMarkdown(target):
+                parent.onOpenMarkdown(target)
+                decisionHandler(.cancel)
+            case let .openExternal(url):
+                NSWorkspace.shared.open(url)
                 decisionHandler(.cancel)
             }
         }

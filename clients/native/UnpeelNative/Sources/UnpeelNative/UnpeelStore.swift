@@ -11921,6 +11921,36 @@ final class UnpeelStore: ObservableObject {
             && !group.root.containsLauncher
     }
 
+    // MARK: Fork-only: markdown preview pane
+
+    /// Shows `path` rendered beside `sessionID`'s pane: the group's existing
+    /// preview for that path is focused, otherwise a new leaf splits the
+    /// session's pane to the right (the placement plugin panes use). The
+    /// path arrives canonical from the explorer's own scan.
+    func openMarkdownPreview(path: String, besideSession sessionID: String) {
+        guard selectedHostScope == .local,
+              !path.isEmpty,
+              displaySessionsByID[sessionID] != nil
+        else { return }
+        let location = paneLayoutState.location(ofMarkdownPreview: path, inGroupContaining: sessionID)
+            ?? mutatePaneLayout { state in
+                try state.insertMarkdownPreview(path: path, beside: sessionID, at: .right)
+            }
+        guard let location else { return }
+        paneLayoutController.setPendingReveal(groupID: location.groupID, paneID: location.paneID)
+        setActiveTerminalPane(groupID: location.groupID, paneID: location.paneID, sessionID: nil)
+    }
+
+    /// The root the preview may serve resources from: the session's worktree,
+    /// else its project folder, else the pane's working directory — the same
+    /// precedence as the explorer's tree root.
+    func markdownPreviewProjectRoot(for sessionID: String) -> String? {
+        guard let session = displaySessionsByID[sessionID] else { return nil }
+        if let worktree = session.worktreePath, !worktree.isEmpty { return worktree }
+        if let project = displayProjectsByID[session.projectID]?.path, !project.isEmpty { return project }
+        return paneWorkingDirectory(for: session)
+    }
+
     /// Session ▸ Split Pane: add a transient launcher by splitting a pane.
     /// Defaults to the active pane (falling back to the shown session's pane)
     /// on the requested edge.

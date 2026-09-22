@@ -15,6 +15,8 @@
 import AppKit
 import SwiftUI
 import UnpeelShared
+// Fork-only: markdown preview pane
+import UnpeelMarkdownPreview
 
 extension Notification.Name {
     /// AppDelegate's scoped ⌘W request. The active TerminalPaneContainer
@@ -1067,9 +1069,9 @@ struct TerminalPaneContainer: View {
             }
         case let .launcher(projectID):
             launcherPane(pane, projectID: projectID)
-        // Fork-only: markdown preview pane — temporary; Task 5 replaces this.
-        case .markdownPreview:
-            unavailablePane(pane)
+        // Fork-only: markdown preview pane
+        case let .markdownPreview(path):
+            markdownPreviewPane(pane, path: path)
         }
     }
 
@@ -1336,6 +1338,56 @@ struct TerminalPaneContainer: View {
                         onCancel: { detachPane(pane) }
                     )
                 }
+            }
+            .frame(maxHeight: .infinity)
+        }
+        .modifier(paneCardChrome(background: background, paneID: pane.paneID))
+        .transition(.identity)
+    }
+
+    // MARK: Fork-only: markdown preview pane
+
+    /// Rendered, read-only view of one file. Transient like the launcher.
+    /// The project root the preview may read from follows the group's
+    /// representative session (the tree the file was opened from).
+    private func markdownPreviewPane(
+        _ pane: PresentedPane,
+        path: String
+    ) -> some View {
+        let background = frameBackground(representative)
+        let fileName = (path as NSString).lastPathComponent
+        let projectRoot = store.markdownPreviewProjectRoot(for: representative.id)
+            ?? (path as NSString).deletingLastPathComponent
+        return VStack(spacing: 0) {
+            paneHeader(
+                pane: pane,
+                entry: nil,
+                title: fileName,
+                background: background
+            )
+            ZStack {
+                Color(nsColor: background)
+                    .opacity(transparency.surfaceOpacity)
+                MarkdownPreviewPaneView(
+                    path: path,
+                    projectRoot: projectRoot,
+                    onEdit: {
+                        store.openClickedFile(
+                            ClickablePath.Match(path: path, line: nil, column: nil),
+                            path: path,
+                            fromSessionID: representative.id
+                        )
+                    },
+                    onActivate: { activatePane(pane.paneID) },
+                    onEscape: {
+                        if let sessionPane = group?.root.sessionLeaves.first(where: { $0.content.sessionID == representative.id }) {
+                            activatePane(sessionPane.id)
+                        }
+                    },
+                    onOpenMarkdown: { target in
+                        store.openMarkdownPreview(path: target, besideSession: representative.id)
+                    }
+                )
             }
             .frame(maxHeight: .infinity)
         }
@@ -1872,6 +1924,17 @@ struct TerminalPaneContainer: View {
             }
             menu.addItem(controller.item("Manage Plugins…") {
                 store.openSettings(tab: .plugins)
+            })
+        }
+
+        // Fork-only: markdown preview pane
+        if case let .markdownPreview(path) = pane.content {
+            menu.addItem(controller.item("Open in Markdown Editor") {
+                store.openClickedFile(
+                    ClickablePath.Match(path: path, line: nil, column: nil),
+                    path: path,
+                    fromSessionID: representative.id
+                )
             })
         }
 

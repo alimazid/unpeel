@@ -53,4 +53,23 @@ final class MarkdownFileObserverTests: XCTestCase {
         try Data("again".utf8).write(to: file)
         wait(for: [second], timeout: 2)
     }
+
+    func testStopDuringReopenWindowDoesNotResume() throws {
+        var count = 0
+        let observer = MarkdownFileObserver(path: file.path, debounce: 0.05) {
+            count += 1
+        }
+        observer.start()
+        // Atomic replace triggers delete/rename, which schedules a reopen
+        // ~0.1s out; stopping right away must cancel that reopen too.
+        let temp = file.deletingLastPathComponent().appendingPathComponent("doc.md.tmp")
+        try Data("atomic".utf8).write(to: temp)
+        _ = try FileManager.default.replaceItemAt(file, withItemAt: temp)
+        observer.stop()
+        let countAtStop = count
+        RunLoop.main.run(until: Date().addingTimeInterval(0.3))
+        try Data("again".utf8).write(to: file)
+        RunLoop.main.run(until: Date().addingTimeInterval(0.5))
+        XCTAssertEqual(count, countAtStop)
+    }
 }

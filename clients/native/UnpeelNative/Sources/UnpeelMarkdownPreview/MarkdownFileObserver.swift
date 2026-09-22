@@ -12,6 +12,8 @@ public final class MarkdownFileObserver {
     private var source: DispatchSourceFileSystemObject?
     private var descriptor: Int32 = -1
     private var pending: DispatchWorkItem?
+    private var reopen: DispatchWorkItem?
+    private static let reopenDelay: TimeInterval = 0.1
 
     public init(path: String, debounce: TimeInterval = 0.15, onChange: @escaping @MainActor () -> Void) {
         self.path = path
@@ -43,9 +45,12 @@ public final class MarkdownFileObserver {
             let events = source.data
             if !events.intersection([.delete, .rename, .revoke]).isEmpty {
                 self.disarm()
-                DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { [weak self] in
+                let work = DispatchWorkItem { [weak self] in
+                    self?.reopen = nil
                     self?.arm()
                 }
+                self.reopen = work
+                DispatchQueue.main.asyncAfter(deadline: .now() + Self.reopenDelay, execute: work)
             }
             self.scheduleChange()
         }
@@ -57,6 +62,8 @@ public final class MarkdownFileObserver {
     }
 
     private func disarm() {
+        reopen?.cancel()
+        reopen = nil
         source?.cancel()
         source = nil
         descriptor = -1

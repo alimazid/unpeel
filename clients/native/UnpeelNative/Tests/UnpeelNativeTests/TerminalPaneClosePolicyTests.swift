@@ -31,4 +31,12 @@ final class TerminalPaneClosePolicyTests: XCTestCase {
             .confirmArchive("agent")
         )
     }
+
+    // Fork-only: markdown preview pane — ⌘W on a preview only detaches it.
+    func testMarkdownPreviewCloseDetachesThePane() {
+        XCTAssertEqual(
+            terminalPaneCloseAction(for: .markdownPreview(path: "/r/a.md"), canArchiveSession: true),
+            .detachPane
+        )
+    }
 }
