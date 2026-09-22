@@ -1,0 +1,56 @@
+import XCTest
+@testable import UnpeelMarkdownPreview
+
+@MainActor
+final class MarkdownFileObserverTests: XCTestCase {
+    private var file: URL!
+
+    override func setUpWithError() throws {
+        let dir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("preview-observer-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        file = dir.appendingPathComponent("doc.md")
+        try Data("one".utf8).write(to: file)
+    }
+
+    override func tearDownWithError() throws {
+        try? FileManager.default.removeItem(at: file.deletingLastPathComponent())
+    }
+
+    func testWriteFiresOnceAfterDebounce() throws {
+        let fired = expectation(description: "change")
+        var count = 0
+        let observer = MarkdownFileObserver(path: file.path, debounce: 0.05) {
+            count += 1
+            if count == 1 { fired.fulfill() }
+        }
+        observer.start()
+        defer { observer.stop() }
+        try Data("two".utf8).write(to: file)
+        try Data("three".utf8).write(to: file)
+        wait(for: [fired], timeout: 2)
+        RunLoop.main.run(until: Date().addingTimeInterval(0.2))
+        XCTAssertEqual(count, 1)
+    }
+
+    func testAtomicReplaceIsObservedAndTheObserverReArms() throws {
+        let first = expectation(description: "first")
+        let second = expectation(description: "second")
+        var count = 0
+        let observer = MarkdownFileObserver(path: file.path, debounce: 0.05) {
+            count += 1
+            if count == 1 { first.fulfill() }
+            if count == 2 { second.fulfill() }
+        }
+        observer.start()
+        defer { observer.stop() }
+        // Editors save atomically: write a sibling, then rename over the file.
+        let temp = file.deletingLastPathComponent().appendingPathComponent("doc.md.tmp")
+        try Data("atomic".utf8).write(to: temp)
+        _ = try FileManager.default.replaceItemAt(file, withItemAt: temp)
+        wait(for: [first], timeout: 2)
+        RunLoop.main.run(until: Date().addingTimeInterval(0.3))
+        try Data("again".utf8).write(to: file)
+        wait(for: [second], timeout: 2)
+    }
+}
