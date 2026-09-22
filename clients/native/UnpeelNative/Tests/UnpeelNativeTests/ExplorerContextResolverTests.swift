@@ -189,4 +189,24 @@ final class ExplorerContextResolverTests: XCTestCase {
             path
         )
     }
+
+    /// `openFile` goes through the open-with rules only when there is a
+    /// session to attach a plugin pane to; without one the editor is the
+    /// fallback so the gesture never silently does nothing.
+    func testOpenRouteNeedsASessionForTheRules() {
+        XCTAssertEqual(ExplorerContextResolver.openRoute(targetSessionID: "s1"), .rules(sessionID: "s1"))
+        XCTAssertEqual(ExplorerContextResolver.openRoute(targetSessionID: nil), .editor)
+        XCTAssertEqual(ExplorerContextResolver.openRoute(targetSessionID: ""), .editor)
+    }
+
+    /// With no store attached (the panel before its first body pass) every
+    /// handler member must be a safe no-op rather than a crash.
+    @MainActor
+    func testHostActionsWithoutAStoreAreNoOps() {
+        let actions = ExplorerHostActions()
+        actions.openFile(path: "/tmp/README.md")
+        actions.openInEditor(path: "/tmp/README.md")
+        actions.sendPathToAgent(path: "/tmp/README.md")
+        XCTAssertFalse(actions.canSendToAgent)
+    }
 }

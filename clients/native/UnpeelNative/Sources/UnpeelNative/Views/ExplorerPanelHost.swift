@@ -3,11 +3,13 @@
 //  UnpeelNative
 //
 //  The only place the file explorer library meets app state: it derives the
-//  explorer context from the selected session and performs the two actions
-//  the library cannot (open in the user's editor, paste into the terminal).
+//  explorer context from the selected session and performs the three actions
+//  the library cannot (open through the open-with rules, open in the user's
+//  editor, paste into the terminal).
 //
 
 import AppKit
+import os
 import SwiftUI
 import UnpeelExplorer
 
@@ -25,6 +27,7 @@ final class ExplorerHostActions: ExplorerActionHandler {
     /// a reference built against tree A but pasted into a shell rooted at B
     /// looks right while silently naming B's copy.
     var root: String?
+    private static let logger = Logger(subsystem: "com.unpeel.explorer", category: "host")
 
     private var targetSessionID: String? {
         ExplorerContextResolver.targetSessionID(
@@ -53,6 +56,28 @@ final class ExplorerHostActions: ExplorerActionHandler {
     }
 
     var canSendToAgent: Bool { selectedPane != nil }
+
+    /// Open-with rules, exactly the routine behind a terminal ⌘-click:
+    /// registry match by extension (`.md` → Markdown plugin), Settings ▸
+    /// Open With override, else the editor; the plugin pane attaches to the
+    /// explorer's target session. `openClickedFile` returns `false` only
+    /// when the file no longer resolves on disk — the watcher removes the
+    /// row moments later, so there is nothing more to do than note it.
+    func openFile(path: String) {
+        guard let store else {
+            openInEditor(path: path)
+            return
+        }
+        switch ExplorerContextResolver.openRoute(targetSessionID: targetSessionID) {
+        case .editor:
+            openInEditor(path: path)
+        case let .rules(sessionID):
+            let match = ClickablePath.Match(path: path, line: nil, column: nil)
+            if !store.openClickedFile(match, path: path, fromSessionID: sessionID) {
+                Self.logger.info("open declined for \(path, privacy: .private)")
+            }
+        }
+    }
 
     func openInEditor(path: String) {
         store?.openInEditor(path: path)

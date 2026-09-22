@@ -76,10 +76,25 @@ enum ExplorerContextResolver {
         nonBlank(targetPaneDirectory) ?? explorerRoot
     }
 
+    /// How the explorer opens a file. The open-with rules
+    /// (`UnpeelStore.openClickedFile`) attach a plugin pane to a CALLER
+    /// session, so they need one; with no resolvable target session the
+    /// editor is the fallback (never a silent no-op).
+    static func openRoute(targetSessionID: String?) -> ExplorerOpenRoute {
+        guard let sessionID = nonBlank(targetSessionID) else { return .editor }
+        return .rules(sessionID: sessionID)
+    }
+
     private static func nonBlank(_ value: String?) -> String? {
         guard let trimmed = value?.trimmingCharacters(in: .whitespacesAndNewlines), !trimmed.isEmpty else {
             return nil
         }
         return trimmed
     }
+}
+
+enum ExplorerOpenRoute: Equatable {
+    /// `UnpeelStore.openClickedFile` with this caller session.
+    case rules(sessionID: String)
+    case editor
 }
