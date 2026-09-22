@@ -166,6 +166,11 @@ struct ExplorerPanelHost: View {
         ExplorerPanelView(viewModel: viewModel, palette: palette, actionHandler: actions)
             .onAppear { sync(resolvedContext) }
             .onChange(of: resolvedContext) { sync($0) }
+            // Two sessions in the same worktree resolve to an EQUAL context,
+            // so the `onChange` above never fires when switching between
+            // them; the open target must still follow the selection or a
+            // plugin pane would attach to the previously selected session.
+            .onChange(of: selection.sessionID) { actions.rootSessionID = $0 }
             .onDisappear { viewModel.persistState() }
             // Quitting does not dismantle the view hierarchy, so
             // `onDisappear` never fires on termination: without this, the
