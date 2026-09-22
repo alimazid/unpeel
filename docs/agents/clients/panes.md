@@ -61,6 +61,13 @@ Model essentials:
   (`preLauncherRoot`). Canceling restores it exactly; binding, resizing,
   swapping, equalizing, or inserting a session makes the visible geometry
   durable instead.
+- Fork-only: `.markdownPreview(path:)` is a second transient leaf — a
+  rendered, read-only Markdown view opened from the file explorer beside a
+  session. Like the launcher it is stripped before persistence (including
+  from `preLauncherRoot`), never counts as a session leaf, keeps a lone
+  session grouped, and is dropped when its group loses its last session leaf;
+  at most six per group. The durable schema and
+  `protocol/pane-layout-operations-v1.json` are unchanged.
 - **Spatial focus navigation** (left/right/up/down) is a pure query over the
   tree's artificial grid dimensions — never over rendered pixels — so both
   frontends always agree on the neighbor.

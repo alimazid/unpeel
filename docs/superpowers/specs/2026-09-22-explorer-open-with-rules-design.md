@@ -22,6 +22,12 @@ Phase 1 hardwired every open entry point to the editor.
 | Context menu **Open in Editor** | editor | editor (unchanged; the explicit bypass) |
 | Double-click / ⌘↓ on a folder | expand | expand (unchanged) |
 
+Superseded for markdown files the same day by
+`2026-09-22-markdown-preview-pane-design.md`: `.md`/`.markdown`/`.mdown`/`.mkd`
+now open in the native preview pane; the Markdown plugin is reached through
+the context menu's **Open in Markdown Editor** or the preview's **Edit**
+button. Every other file type keeps the routing described here.
+
 "Open-with rules" means exactly `UnpeelStore.openClickedFile(_:path:fromSessionID:)`
 (`UnpeelStore.swift:10700`), the routine behind a terminal ⌘-click:
 

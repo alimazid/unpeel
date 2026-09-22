@@ -21,7 +21,7 @@ Editing stays one click away in Unpeel's Markdown plugin pane.
 |---|---|
 | Where the preview lives | A native pane in the split layout (option C), not a window or a terminal render |
 | Reuse | One preview pane per file; opening a file already previewed in that group focuses its pane |
-| Edit path | An **Edit** button in the pane header opens the Markdown plugin pane (through the open-with rules a terminal ⌘-click uses); VS Code stays in the explorer context menu |
+| Edit path | An **Edit** button in a slim toolbar row at the top of the pane body opens the Markdown plugin pane (through the open-with rules a terminal ⌘-click uses); VS Code stays in the explorer context menu |
 | Persistence | Transient in v1: preview panes are stripped before the layout is persisted (like the launcher pane); durable restore is a later addendum |
 | Renderer | `WKWebView` fed by `swift-markdown` (GitHub-flavoured) → HTML with a bundled stylesheet |
 
@@ -68,7 +68,10 @@ Editing stays one click away in Unpeel's Markdown plugin pane.
   folder and are served only from inside the explorer's **project root**
   (realpath-checked); anything outside is refused. `http(s)` links open in the
   default browser; relative `.md` links open a new preview pane in the same
-  group.
+  group — only when the target resolves inside the project root (a link to a
+  file outside it is refused at the pane and again in the store, so web
+  content can never choose a path the Edit button would open). A group holds
+  at most six preview panes.
 - **Focus:** clicking a preview makes it the active pane (highlight border).
   ⌥-arrows move between panes as today; the preview takes no first-responder
   handoff (like the launcher pane). Escape in the preview returns focus to the
@@ -94,7 +97,7 @@ os. Never imports app types.
 | `PreviewSchemeHandler` | `WKURLSchemeHandler` for `unpeel-preview://` — serves files approved by `PreviewResourcePolicy`, 404 otherwise; the document's base URL is `unpeel-preview:///<relative dir>/` so relative references resolve here | `PreviewResourcePolicy` |
 | `MarkdownFileObserver` | `DispatchSource.makeFileSystemObjectSource` on the file (write, delete, rename, extend), debounced, re-armed after atomic saves (editors replace the inode) | Foundation |
 | `MarkdownPreviewWebView` | `NSViewRepresentable` around `WKWebView`; loads the document, restores scroll after reload, routes `http(s)` navigations to `NSWorkspace`, relative `.md` navigations to an `onOpenMarkdown(path)` callback, `data:`/`unpeel-preview:` allowed, everything else cancelled | all above |
-| `MarkdownPreviewPaneView` | SwiftUI body used inside the pane: title/Edit are provided by the app's header; this view owns the load state (`loading / rendered / unavailable(reason)`) | `MarkdownPreviewWebView`, `MarkdownFileObserver` |
+| `MarkdownPreviewPaneView` | SwiftUI body used inside the pane: the toolbar row with **Edit**, the web view, the "no longer available" state; the title chip is the app's header. Its `onOpenMarkdown` hop refuses link targets `PreviewResourcePolicy` would not serve | `MarkdownPreviewWebView`, `MarkdownFileObserver`, `PreviewResourcePolicy` |
 
 `CanonicalPath` (realpath) lives in `UnpeelExplorer`; `UnpeelMarkdownPreview`
 gets a copy of the 20-line helper rather than a dependency on the explorer.
@@ -125,10 +128,13 @@ gets a copy of the 20-line helper rather than a dependency on the explorer.
     project path, for `PreviewResourcePolicy`.
 - `Views/TerminalPaneView.swift`
   - `PresentedPane.id` and `paneSlot` gain the case; `markdownPreviewPane(_:path:)`
-    is modelled on `launcherPane` (same chrome) with the Edit button in the
-    header trailing slot.
-  - `paneIsFocused`/`paneShowsActiveBorder` compare the pane id when the
-    content has no session, so two session-less panes never both highlight.
+    is modelled on `launcherPane` (same chrome). The Edit button lives in a
+    slim toolbar row at the top of the pane body (`MarkdownPreviewPaneView`),
+    not in the header: `paneHeader` is upstream code with no trailing slot,
+    and adding one would widen the merge surface (decided 2026-09-22).
+  - Focus highlighting needs no change: preview leaves always live in a
+    group, and the multi-pane branch of `paneIsFocused` already compares pane
+    ids.
 - `Package.swift`: the dependency, the target, the app's dependency on it.
 - `docs/agents/clients/panes.md`: one paragraph on the transient preview leaf.
 

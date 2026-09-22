@@ -27,8 +27,10 @@ own resizable column between the left sidebar and the terminal content.
 ### Non-goals
 
 - iOS / iPad client, the TUI, and remote-Host sessions.
-- Any change to the Host, the Host protocol, `protocol/`, the pane-layout
-  contract, or App Kit's `unpeel.ui/1` contract.
+- Any change to the Host, the Host protocol, `protocol/`, the *persisted*
+  pane-layout contract, or App Kit's `unpeel.ui/1` contract. (The 2026-09-22
+  preview pane adds a transient, never-persisted leaf to the client-side pane
+  model; the durable schema and fixture are unchanged.)
 - Replacing or modifying the existing `crates/apps/filetree` TUI app.
 - Editing files inside Unpeel. Files open in the user's external editor.
 - Upstreaming. Upstream declines file trees (`CONTRIBUTING.md`, "Unpeel is
@@ -199,6 +201,18 @@ matches the sidebar's typography (13 pt row labels) and light/dark handling.
 
 New app-target files: `Views/ExplorerPanelHost.swift` (adapter + action
 handler), `ExplorerPanelState.swift`.
+
+Added 2026-09-22 by `2026-09-22-markdown-preview-pane-design.md` (every
+edited block marked `// Fork-only: markdown preview pane`):
+
+5. `Package.swift` — the `swift-markdown` dependency (and its
+   `Package.resolved` pin), the `UnpeelMarkdownPreview` target and test target.
+6. `PaneLayoutState.swift` — the transient `.markdownPreview` leaf and its
+   grouping rules; `DurablePaneNode` and the protocol fixture untouched.
+7. `UnpeelStore.swift` — `openMarkdownPreview`, `markdownPreviewProjectRoot`,
+   the `validatedPaneGroup` arm.
+8. `Views/TerminalPaneView.swift` — the preview pane's render branch and menu.
+9. `docs/agents/clients/panes.md` — one paragraph on the transient leaf.
 
 ### 3.4 Data flow
 
