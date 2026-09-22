@@ -84,14 +84,14 @@ own resizable column between the left sidebar and the terminal content.
 | Input | Action |
 |---|---|
 | Click | Select. Click on a folder row also toggles expansion (VS Code default) |
-| Double-click file | Open in configured editor (`UnpeelStore.openInEditor(path:)`) |
+| Double-click file | Open through Unpeel's open-with rules (`UnpeelStore.openClickedFile`; `.md` → Markdown plugin side pane, else the editor). Phase 1 shipped editor-only; amended by `2026-09-22-explorer-open-with-rules-design.md` |
 | ⌘-click / ⇧-click | Toggle / range multi-select (Phase 2) |
 | ↑ ↓ | Move selection |
 | → | Expand folder; if expanded, move to first child |
 | ← | Collapse folder; if collapsed or a file, move to parent |
 | Enter | Rename (Phase 2) |
 | Space | Quick Look the selection |
-| ⌘↓ | Open file / expand folder |
+| ⌘↓ | Open file (same open-with rules as double-click) / expand folder |
 | ⌘⌫ | Move to Trash (Phase 2) |
 | ⌘C / ⌘X / ⌘V | Copy / cut / paste files (Phase 2) |
 | ⌘Z / ⇧⌘Z | Undo / redo the last file operation (Phase 2) |
@@ -109,7 +109,9 @@ they never steal keys from a terminal.
 ### Context menu
 
 Phase 1: Open in Editor, Reveal in Finder, Quick Look, Send Path to Agent,
-Copy Path, Copy Relative Path, Refresh, Collapse.
+Copy Path, Copy Relative Path, Refresh, Collapse. Added 2026-09-22: Open
+(open-with rules; first item for files — see
+`2026-09-22-explorer-open-with-rules-design.md`).
 Phase 2 adds: New File…, New Folder…, Rename…, Duplicate, Cut, Copy, Paste,
 Move to Trash.
 
@@ -175,7 +177,7 @@ Each unit has one purpose and is testable alone.
 | `ExplorerViewModel` | `@MainActor ObservableObject`. Owns the model, loader, watcher, ignore rules, state store. Public surface: published `context`, `model`, `rootError`, `selection`, `filter`, `restoreToken`; `setContext(_:)`, `expand(_:)`, `collapse(_:)`, `collapseAll()`, `refresh()`, `retry()`, `handleChange(_:)`, `reveal(_:)`, `setFilter(_:)`, `persistState()`. All paths are `String`s. Loads are guarded by a context generation and a per-directory request token; persistence is suppressed from the moment a root starts opening until its saved state has been replayed | all of the above |
 | `ExplorerOutlineView` | `NSViewRepresentable` wrapping `NSScrollView` + `NSOutlineView`, with data source/delegate that diff-apply model changes (`insertItems`/`removeItems`/`reloadItem`) so expansion and selection survive refreshes | AppKit, view model |
 | `ExplorerPanelView` | SwiftUI shell: header, `⋯` menu, empty/error states, the outline view | view model |
-| `ExplorerActionHandler` (protocol) | Intents the library cannot perform itself: `canSendToAgent`, `openInEditor(path:)`, `sendPathToAgent(path:)`. Implemented by the app | — |
+| `ExplorerActionHandler` (protocol) | Intents the library cannot perform itself: `canSendToAgent`, `openFile(path:)` (open-with rules, added 2026-09-22), `openInEditor(path:)`, `sendPathToAgent(path:)`. Implemented by the app | — |
 | `ExplorerContext` (value) | `.none`, `.remote`, `.local(root: String, projectRoot: String)` | — |
 
 `ExplorerPalette` (a small struct of `NSColor`s/fonts) is injected by the app
