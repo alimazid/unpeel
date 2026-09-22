@@ -110,7 +110,7 @@ Remote-Host scope is unchanged: the explorer shows no tree there.
   `openInEditor` without crashing (guards the nil-session path).
 - Runtime (dev build, `UNPEEL_HOME=~/unpeel-dev-explorer-home`, Markdown
   plugin linked with `unpeel apps link`): double-click `README.md` → Markdown
-  pane beside the target session; double-click a `.ts` → editor; **Open in
+  pane beside the tree's session; double-click a `.ts` → editor; **Open in
   Editor** on `.md` → editor; ⌘↓ on `.md` → Markdown pane; second double-click
   on the same `.md` reuses the pane; plugin unlinked → Install / Use Editor
   alert. Evidence appended to

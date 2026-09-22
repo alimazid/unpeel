@@ -153,3 +153,27 @@ target.
 
 The dev-home plugin link was restored to the dev build afterwards; the
 fixture keeps the added `README.md`, `notes.md`, `third.md`, `src/main.ts`.
+
+### After the whole-branch review (`94a7dab`, `e60674e`, `7800736`)
+
+The final review found no Critical issues and one Important one: opens
+attached the plugin pane to the focused pane's session (`targetSessionID`,
+the paste target), which in a cross-worktree split is not the session whose
+tree was double-clicked. Fixed by opening through the tree's own session
+(`ExplorerHostActions.rootSessionID`, set from `selection.sessionID`). The
+re-review found that `rootSessionID` was refreshed only when the tree's root
+changed, so switching between two sessions that share a root left it stale;
+fixed with an `onChange(of: selection.sessionID)` (`7800736`). Closing verdict:
+ready to merge. `clients/native/test-native.sh` → 727 tests, 1 skipped, 0
+failures; app-side explorer suites 23/23.
+
+Runtime re-check in the rebuilt dev app (`7800736`): double-click `README.md`
+in the fixture2 tree → Markdown pane attached to the fixture2 session — PASS.
+The same-root session switch was **not** exercised at runtime: it needs two
+visible sessions in one project, and the only extra session I could create
+(`unpeel new --command "zsh -l"`) did not appear in the sidebar; the fix is
+the one-line `onChange` the reviewer confirmed. Relaunching the dev app also
+restarted the dev Host (version identity), which relaunched the fixture2
+session with its recorded `claude` command — Unpeel's restart-with-resume,
+not an explorer effect; the user's live dev-home sessions were unaffected
+(same PIDs).
