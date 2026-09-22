@@ -284,6 +284,34 @@ final class PaneLayoutStateTests: XCTestCase {
         XCTAssertNil(state.location(ofMarkdownPreview: previewPath, inGroupContaining: "s9"))
     }
 
+    func testInsertMarkdownPreviewRejectsAnEmptyPath() throws {
+        var state = twoPaneState()
+        XCTAssertThrowsError(try state.insertMarkdownPreview(path: "", beside: "s1", at: .right))
+    }
+
+    func testInsertingAPreviewClearsTheLauncherSnapshot() throws {
+        var state = twoPaneState()
+        _ = try state.insertLauncher(projectID: "p", splitting: paneA, edge: .right)
+        XCTAssertNotNil(state.groups[0].preLauncherRoot)
+        _ = try state.insertMarkdownPreview(path: previewPath, beside: "s2", at: .right)
+        XCTAssertNil(state.groups[0].preLauncherRoot)
+    }
+
+    func testValidateCapacityStillCountsALiveLauncherWithPreviewsPresent() throws {
+        var state = PaneLayoutState(groups: [])
+        _ = try state.insertMarkdownPreview(path: previewPath, beside: "s1", at: .right)
+        for index in 2...(PaneLayoutState.maximumSessionLeafCount - 1) {
+            try state.insertSession("s\(index)", beside: "s1", at: .right)
+        }
+        XCTAssertEqual(
+            state.groups[0].root.sessionLeaves.count,
+            PaneLayoutState.maximumSessionLeafCount - 1
+        )
+        _ = try state.insertLauncher(projectID: "p", beside: "s1", at: .right)
+        XCTAssertThrowsError(try state.insertSession("s99", beside: "s1", at: .right))
+        _ = try state.insertMarkdownPreview(path: "/r/more.md", beside: "s1", at: .right)
+    }
+
     func testPreviewLeavesDoNotCountTowardTheSessionCap() throws {
         var state = PaneLayoutState(groups: [])
         _ = try state.insertMarkdownPreview(path: previewPath, beside: "s1", at: .right)
@@ -339,11 +367,30 @@ final class PaneLayoutStateTests: XCTestCase {
         XCTAssertNil(DurablePaneGroup(group: solo.groups[0]))
     }
 
+    // Fork-only: markdown preview pane — the launcher-snapshot branch must
+    // strip previews too, not just the direct-root branch above.
+    func testDurableLayoutStripsPreviewsFromTheLauncherSnapshot() throws {
+        var state = twoPaneState()
+        _ = try state.insertMarkdownPreview(path: previewPath, beside: "s1", at: .right)
+        _ = try state.insertLauncher(projectID: "p", splitting: paneA, edge: .right)
+        let durable = try XCTUnwrap(DurablePaneGroup(group: state.groups[0]))
+        XCTAssertEqual(
+            durable.root.paneNode().leaves.map(\.content),
+            [.session(id: "s1"), .session(id: "s2")]
+        )
+    }
+
     func testStructuralIdentityDistinguishesPreviewPaths() throws {
         var a = PaneLayoutState(groups: [])
-        _ = try a.insertMarkdownPreview(path: previewPath, beside: "s1", at: .right, newGroupID: groupID, newRepresentativePaneID: paneA, newPaneID: paneB)
+        _ = try a.insertMarkdownPreview(
+            path: previewPath, beside: "s1", at: .right,
+            newGroupID: groupID, newRepresentativePaneID: paneA, newPaneID: paneB
+        )
         var b = PaneLayoutState(groups: [])
-        _ = try b.insertMarkdownPreview(path: "/r/b.md", beside: "s1", at: .right, newGroupID: groupID, newRepresentativePaneID: paneA, newPaneID: paneB)
+        _ = try b.insertMarkdownPreview(
+            path: "/r/b.md", beside: "s1", at: .right,
+            newGroupID: groupID, newRepresentativePaneID: paneA, newPaneID: paneB
+        )
         XCTAssertNotEqual(a.groups[0].root.structuralIdentity, b.groups[0].root.structuralIdentity)
     }
 

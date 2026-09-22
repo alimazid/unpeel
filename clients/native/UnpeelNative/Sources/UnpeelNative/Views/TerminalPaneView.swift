@@ -728,8 +728,9 @@ struct TerminalPaneContainer: View {
         let isSynthetic: Bool
 
         /// Session identity keeps an existing TerminalHostView mounted while
-        /// panes move or a solo Session joins/leaves a group. A launcher
-        /// has no Session yet, so its stable pane id is its temporary identity.
+        /// panes move or a solo Session joins/leaves a group. A launcher —
+        /// and a markdown preview, which has no Session either — uses its
+        /// stable pane id as its identity.
         var id: String {
             switch content {
             case let .session(sessionID):

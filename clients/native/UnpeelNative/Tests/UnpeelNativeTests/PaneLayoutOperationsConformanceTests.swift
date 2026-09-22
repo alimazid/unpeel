@@ -207,6 +207,9 @@ final class PaneLayoutOperationsConformanceTests: XCTestCase {
         case .paneIsNotLauncher: return "paneIsNotLauncher"
         case .panesBelongToDifferentGroups: return "panesBelongToDifferentGroups"
         case .invalidRatio: return "invalidRatio"
+        // Fork-only: markdown preview pane — not part of the shared fixture;
+        // no case in pane-layout-operations-v1.json exercises this arm.
+        case .invalidMarkdownPreviewPath: return "invalidMarkdownPreviewPath"
         }
     }
 

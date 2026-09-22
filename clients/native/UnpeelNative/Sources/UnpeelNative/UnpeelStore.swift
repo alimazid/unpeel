@@ -12270,12 +12270,12 @@ final class UnpeelStore: ObservableObject {
                 if !alive {
                     root = root?.removingLeaf(pane.id)
                 }
-            // Fork-only: markdown preview pane — dropped once its file is
-            // gone, the same way a dead Session pane is dropped above.
-            case let .markdownPreview(path):
-                if !FileManager.default.fileExists(atPath: path) {
-                    root = root?.removingLeaf(pane.id)
-                }
+            // Fork-only: markdown preview pane — kept while its group has a
+            // session; the pane body itself shows the file's state (deleted
+            // files show a notice, never a layout change), so no filesystem
+            // check runs on the render path.
+            case .markdownPreview:
+                continue
             }
         }
         guard let root else { return nil }

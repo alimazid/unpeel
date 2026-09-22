@@ -464,6 +464,9 @@ enum PaneLayoutError: Error, Equatable {
     case paneIsNotLauncher(String)
     case panesBelongToDifferentGroups
     case invalidRatio
+    // Fork-only: markdown preview pane — an empty path is never a valid
+    // preview target; canonicalize already drops one, so insert rejects it.
+    case invalidMarkdownPreviewPath
 }
 
 struct PaneLayoutState: Equatable, Sendable {
@@ -613,12 +616,19 @@ struct PaneLayoutState: Equatable, Sendable {
         newPaneID: String? = nil
     ) throws -> PaneLocation {
         try validateNewSession(sessionID)
-        return try insertLeaf(.session(id: sessionID), splitting: targetPaneID, edge: edge, newPaneID: newPaneID, checkCapacity: true)
+        return try insertLeaf(
+            .session(id: sessionID),
+            splitting: targetPaneID,
+            edge: edge,
+            newPaneID: newPaneID,
+            checkCapacity: true
+        )
     }
 
     /// Splits `targetPaneID`'s leaf with a new leaf of `content`. Session
     /// leaves check the cap; transient leaves (Fork-only: markdown preview
     /// pane) do not, because they never count as sessions.
+    // Fork-only: markdown preview pane — shared by session and preview insertion
     private mutating func insertLeaf(
         _ content: PaneContent,
         splitting targetPaneID: String,
@@ -640,8 +650,9 @@ struct PaneLayoutState: Equatable, Sendable {
         ) else {
             throw PaneLayoutError.paneNotFound(targetPaneID)
         }
-        // Adding a real Session while a launcher is open is an intentional
-        // layout mutation; its geometry becomes the new basis.
+        // Any explicit leaf insertion — a real Session, or a preview — is an
+        // intentional layout mutation; its geometry becomes the new basis,
+        // so the launcher's restore snapshot is dropped.
         groups[groupIndex].preLauncherRoot = nil
         groups[groupIndex].root = root
         return PaneLocation(groupID: groups[groupIndex].id, paneID: pane.id)
@@ -771,6 +782,11 @@ struct PaneLayoutState: Equatable, Sendable {
     ) throws -> PaneLocation {
         guard !targetSessionID.isEmpty else {
             throw PaneLayoutError.invalidSessionID
+        }
+        // Fork-only: markdown preview pane — an empty path can never resolve
+        // to a document; reject it here rather than in canonicalize.
+        guard !path.isEmpty else {
+            throw PaneLayoutError.invalidMarkdownPreviewPath
         }
         if let target = location(ofSession: targetSessionID) {
             return try insertLeaf(
@@ -1277,6 +1293,11 @@ struct DurablePaneGroup: Codable, Equatable, Sendable {
         var candidate: PaneNode?
         if group.root.containsLauncher, let snapshot = group.preLauncherRoot {
             candidate = snapshot
+            // Fork-only: markdown preview pane — the snapshot can hold
+            // previews too, so it needs the same strip as the branch below.
+            for pane in snapshot.leaves where pane.content.isTransient {
+                candidate = candidate?.removingLeaf(pane.id)
+            }
         } else {
             candidate = group.root
             // Fork-only: markdown preview pane — previews are transient too
