@@ -73,6 +73,8 @@ public final class MarkdownFileObserver {
     // `stop()`), backing off geometrically each time it is called again
     // without an intervening successful open, which resets the delay.
     private func scheduleReopen() {
+        // A second `start()` inside a retry window must not fork the chain.
+        reopen?.cancel()
         let delay = currentReopenDelay
         currentReopenDelay = min(currentReopenDelay * 2, Self.maximumReopenDelay)
         let work = DispatchWorkItem { [weak self] in
