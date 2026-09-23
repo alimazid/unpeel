@@ -1,6 +1,7 @@
 # Sidebar sections: Projects and Explorer in one left panel
 
-Status: approved design 2026-09-23 (brainstorming); not yet planned.
+Status: implemented 2026-09-23 (evidence:
+`docs/superpowers/verification/2026-09-23-sidebar-sections.md`).
 Fork-only. Amends `2026-09-21-native-file-explorer-design.md`, which placed
 the explorer in its own column between the sidebar and the content pane.
 
@@ -217,3 +218,20 @@ two newly edited upstream files (`SidebarView.swift`,
 - GIT HISTORY (a later spec; it arrives as a third `SidebarSectionID`).
 - Reordering sections by drag, or moving sections to other panels.
 - Remote-scope explorer content (unchanged: empty-state message).
+
+## 8. Amendments during implementation
+
+- The EXPLORER header's `…` menu is disabled while the section is collapsed
+  or hidden: the explorer's view model holds no tree then (collapsing tears
+  the tree and its watcher down), so Refresh / Collapse All / the filters
+  have nothing to act on.
+- ⇧⌘E while Settings is open reveals and expands EXPLORER behind the
+  settings nav; nothing visible changes until Settings closes.
+- The explorer's view model and host actions are owned by
+  `ExplorerSectionModel`; only the most recently mounted host may tear the
+  tree down (claim/release token), because SwiftUI can deliver a new host's
+  `onAppear` before the old host's `onDisappear`.
+- The trackpad swipe monitor keeps upstream's `!settingsVisible` guard
+  (moved verbatim) even though PROJECTS content is never mounted while
+  Settings is open.
+
