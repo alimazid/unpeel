@@ -49,7 +49,7 @@ review.
 | 4 | Header right-click: hide PROJECTS, try to hide the last one, show it again | PASS — checkmark menu (`06`); with one section left its item is disabled (`07`); showing restores the stack |
 | 5 | Horizontal swipe over PROJECTS / over EXPLORER | PASS — over PROJECTS it switched to the other workspace page and back (`08`); over EXPLORER the swipe monitor saw the events but reported them outside its bounds and nothing switched (`09`; confirmed with temporary logging, since removed) |
 | 6 | Finder folder dropped on PROJECTS | Not exercised (no synthetic Finder drag); the drop code moved byte-identically, verified in review |
-| 7 | Reorder in PROJECTS | PASS for project rows — a project row drag reordered projects and a second drag restored the order (session-row drag not exercised) |
+| 7 | Reorder in PROJECTS, including the first row | PASS — at `011fe96` the first project row dragged down two places and back to the top (order file restored byte-for-byte); before the final-review fix the first row could not be pressed (see §5) |
 | 8 | Rows fade under the PROJECTS header while scrolled | PASS (`10`) |
 | 9 | ⇧⌘E from every state | PASS — unfocused → tree focused, title "Hide Explorer" (`11`); focused → EXPLORER collapsed, terminal focused, "Show Explorer" (`12`); collapsed → expanded + focused; sidebar collapsed → sidebar opens + tree focused (`13`); EXPLORER hidden → shown + focused (`14`) |
 | 10 | Settings open/close; sidebar collapse/expand | PASS — settings nav replaces the stack and restores it (`15`); ⌘B collapse and ⇧⌘E re-open |
@@ -69,3 +69,16 @@ PROJECTS.
   was inactive; with the app frontmost the swipe switched every time.
 - The EXPLORER header's `…` menu is disabled while the section is collapsed
   (no tree is loaded then) — recorded as a spec amendment.
+
+## 5. Final review and fixes
+
+Whole-branch review (report in the SDD ledger): 0 Critical, 1 Important.
+The session-drag controller still refused presses in the top 38 pt of the
+PROJECTS scroll view (upstream's titlebar-glass band), so the first row
+could not be pressed or dragged. Fixed in `542e6eb`/`484c18d`: the band now
+excludes nothing (the header sits outside the scroll view), with unit
+tests. Also fixed: the empty-projects state's 38 pt pad (`542e6eb`), drag
+auto-scroll zones clamped to a quarter of the PROJECTS viewport
+(`011fe96`), stale explorer-spec touchpoints, and removal-site comments.
+Gate at `011fe96`: `Executed 832 tests, with 1 test skipped and 0 failures`.
+
