@@ -33,11 +33,18 @@ enum ExplorerFocus {
 
     /// Makes the outline first responder, retrying every 50 ms (about one
     /// second in total) while the section mounts. Gives up silently: the
-    /// section is still revealed, only focus is missing.
+    /// section is still revealed, only focus is missing. Retries not only
+    /// while the outline hasn't mounted yet, but also when it has mounted
+    /// but refuses first responder status (e.g. `acceptsFirstResponder` is
+    /// briefly false while the table is still laying out its column) —
+    /// `makeFirstResponder` returning `false`, or the window's first
+    /// responder ending up something other than the outline, both count as
+    /// "not focused yet".
     static func focusTree(in window: NSWindow?, attemptsLeft: Int = 20) {
         guard let window else { return }
-        if let outline = outline(in: window.contentView) {
-            window.makeFirstResponder(outline)
+        if let outline = outline(in: window.contentView),
+           window.makeFirstResponder(outline),
+           window.firstResponder === outline {
             return
         }
         guard attemptsLeft > 1 else { return }

@@ -144,8 +144,37 @@ final class ExplorerSectionModel: ObservableObject {
     let viewModel: ExplorerViewModel
     let actions = ExplorerHostActions()
 
+    /// The identity of the most recently mounted `ExplorerPanelHost`. Not
+    /// `@Published` — the model must keep publishing nothing.
+    ///
+    /// SwiftUI can deliver a new host's `onAppear` before an old host's
+    /// `onDisappear` when the view's identity changes (observed: `appear`
+    /// for the new instance, then `disappear` for the old one). Both hosts
+    /// share this one model, so an unconditional `setContext(.none)` in
+    /// `onDisappear` would blank the tree and stop its watcher out from
+    /// under the new host that is already on screen. `claim`/`release` make
+    /// that ordering safe: only the host that is still the active claim may
+    /// tear down.
+    private var activeHost: UUID?
+
     init(defaults: UserDefaults = AppDefaults.shared) {
         viewModel = ExplorerViewModel(stateStore: ExplorerStateStore(defaults: defaults))
+    }
+
+    /// Marks `token` as the active host. Call from `onAppear`, before
+    /// syncing the tree's context.
+    func claim(_ token: UUID) {
+        activeHost = token
+    }
+
+    /// Releases `token`. Returns whether it was still the active host —
+    /// callers must only tear down shared state (persist + stop the
+    /// watcher) when this returns `true`; a superseded host's own teardown
+    /// (its claim already replaced by a newer host's `onAppear`) is a no-op.
+    func release(_ token: UUID) -> Bool {
+        guard activeHost == token else { return false }
+        activeHost = nil
+        return true
     }
 }
 
@@ -159,6 +188,10 @@ struct ExplorerPanelHost: View {
     @ObservedObject private var selection: SessionSelectionState
     @ObservedObject private var viewModel: ExplorerViewModel
     private let actions: ExplorerHostActions
+    private let section: ExplorerSectionModel
+    /// This host instance's identity, claimed on `onAppear` and released on
+    /// `onDisappear` — see `ExplorerSectionModel.activeHost`.
+    @State private var mountToken = UUID()
     let cache: SurfaceCache
 
     init(store: UnpeelStore, cache: SurfaceCache, section: ExplorerSectionModel) {
@@ -166,6 +199,7 @@ struct ExplorerPanelHost: View {
         self.selection = store.sessionSelection
         self.viewModel = section.viewModel
         self.actions = section.actions
+        self.section = section
         self.cache = cache
     }
 
@@ -204,7 +238,10 @@ struct ExplorerPanelHost: View {
 
     var body: some View {
         ExplorerPanelView(viewModel: viewModel, palette: Self.palette, actionHandler: actions, showsHeader: false)
-            .onAppear { sync(resolvedContext) }
+            .onAppear {
+                section.claim(mountToken)
+                sync(resolvedContext)
+            }
             .onChange(of: resolvedContext) { sync($0) }
             // Two sessions in the same worktree resolve to an EQUAL context,
             // so the `onChange` above never fires when switching between
@@ -213,8 +250,12 @@ struct ExplorerPanelHost: View {
             .onChange(of: selection.sessionID) { actions.rootSessionID = $0 }
             // Collapsed or hidden: persist the tree's state and stop the
             // FSEvents watcher (`setContext` does both); re-expanding
-            // re-opens the root and restores the saved expansions.
-            .onDisappear { viewModel.setContext(.none) }
+            // re-opens the root and restores the saved expansions. Only the
+            // still-active host may do this — see `ExplorerSectionModel`.
+            .onDisappear {
+                guard section.release(mountToken) else { return }
+                viewModel.setContext(.none)
+            }
             // Quitting does not dismantle the view hierarchy, so
             // `onDisappear` never fires on termination: without this, the
             // selection and scroll offset since the last expand/collapse or
