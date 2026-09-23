@@ -1,6 +1,9 @@
 # System window drag (edge tiling) — verification evidence
 
-Date: 2026-09-23 · Branch: `fix/system-window-drag` · Fork-only change.
+Date: 2026-09-23 · Branch: `fix/system-window-drag` (`e775048`, review fixes
+`db397c7`) · Fork-only change. Gate: `clients/native/test-native.sh` —
+790 tests, 1 skipped (upstream), 0 failures; no tests added (window-server
+interaction is not unit-testable, matching the code it replaces).
 
 ## Root cause
 
@@ -36,6 +39,17 @@ jiggle, 2.5 s hold), tiled to the left half — frame
 `(-3348, 234, 1684, 1410)` — proving the synthetic gesture can trigger
 tiling at all. Note: a pointer posted *past* the edge is not clamped and
 does not tile; the pointer must stop at the edge itself.
+
+## Review
+
+One code-reviewer pass: 0 Critical, 1 Important (a deferred restore could
+tear down a newer drag's monitors), 3 Minor. Fixed in `db397c7`: the
+restore runs synchronously on the main actor, each armed drag carries a
+generation so a stale release is a no-op, and the double-click path
+cancels any pending drag first. The checklist below was re-run on a dev
+build of `db397c7` with identical results (tiled frame
+`(-3350, -662, 1674, 1410)`; a further plain drag of +200/+100 px moved the
+window by exactly that delta).
 
 ## Checklist
 
