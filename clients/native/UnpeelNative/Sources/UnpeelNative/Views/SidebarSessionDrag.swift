@@ -444,6 +444,16 @@ final class SidebarSessionDragController: ObservableObject {
     // excludes nothing (reveal scrolling still keeps rows clear of the fade).
     nonisolated static let pressBandTopOcclusion: CGFloat = 0
 
+    // Fork-only: sidebar sections. Each drag auto-scroll edge zone is at
+    // most a quarter of the viewport, so the two never swallow the rows of
+    // a short PROJECTS section.
+    nonisolated static func effectiveAutoScrollZone(
+        viewportHeight: CGFloat,
+        zone: CGFloat
+    ) -> CGFloat {
+        min(zone, max(0, viewportHeight) / 4)
+    }
+
     nonisolated static func pressIsInVisibleBand(
         point: CGPoint,
         visibleRect: CGRect,
@@ -2763,13 +2773,21 @@ final class SidebarSessionDragController: ObservableObject {
         let visible = scrollView.documentVisibleRect
         let topDistance = content.y - visible.minY
         let bottomDistance = visible.maxY - content.y
+        // Fork-only: sidebar sections. PROJECTS can be as short as 80 pt, so
+        // the fixed zones would cover real rows (or the whole viewport);
+        // clamp both edges to the section's viewport.
+        let zone = Self.effectiveAutoScrollZone(
+            viewportHeight: visible.height,
+            zone: Self.autoScrollZone
+        )
+        guard zone > 0 else { return stopAutoScroll() }
         var step: CGFloat = 0
-        if topDistance < Self.autoScrollZone {
+        if topDistance < zone {
             step = -Self.autoScrollMaxStep
-                * (1 - max(0, topDistance) / Self.autoScrollZone)
-        } else if bottomDistance < Self.autoScrollZone {
+                * (1 - max(0, topDistance) / zone)
+        } else if bottomDistance < zone {
             step = Self.autoScrollMaxStep
-                * (1 - max(0, bottomDistance) / Self.autoScrollZone)
+                * (1 - max(0, bottomDistance) / zone)
         }
         autoScrollStep = step
         guard step != 0 else { return stopAutoScroll() }

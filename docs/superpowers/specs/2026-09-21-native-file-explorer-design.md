@@ -232,7 +232,8 @@ block marked `// Fork-only: sidebar sections`):
     and the pooled page's fade ramp.
 12. `Views/SidebarSessionDrag.swift` — the detached drag's press band: no
     top occlusion (the list no longer scrolls under the titlebar; the fade
-    only dims rows).
+    only dims rows); the drag auto-scroll edge zones are clamped to a
+    quarter of the PROJECTS viewport.
 
 ### 3.4 Data flow
 
