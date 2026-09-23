@@ -24,4 +24,20 @@ final class ExplorerPanelViewTests: XCTestCase {
             "Gone"
         )
     }
+
+    func testRootNameIsTheLastPathComponentOrNil() {
+        XCTAssertEqual(
+            ExplorerPanelView.rootName(for: .local(root: "/Users/me/my-proj", projectRoot: "/Users/me/my-proj")),
+            "my-proj"
+        )
+        XCTAssertNil(ExplorerPanelView.rootName(for: .none))
+        XCTAssertNil(ExplorerPanelView.rootName(for: .remote))
+    }
+
+    func testPanelMenuItemsInOrder() {
+        XCTAssertEqual(
+            ExplorerPanelMenu.itemTitles,
+            ["Refresh", "Collapse All", "Show Hidden Files", "Show Git-Ignored Files"]
+        )
+    }
 }
