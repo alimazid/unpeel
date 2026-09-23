@@ -161,8 +161,8 @@ struct SurfaceBackdrop: View {
 /// The main window sets `isMovable = false` — the system's own titlebar-band
 /// drag ran IN PARALLEL with SwiftUI gestures under the pane headers, and no
 /// view-level opt-out reaches that server-side machinery. That flag also
-/// disables `performDrag(with:)`, so this view drags the frame by hand:
-/// programmatic moves are always allowed.
+/// disables `performDrag(with:)`, so this view hands each drag to
+/// `SystemWindowDrag`, which lifts the flag for the one drag (fork-only).
 struct WindowDragArea: NSViewRepresentable {
     final class DragView: NSView {
         override func mouseDown(with event: NSEvent) {
@@ -171,19 +171,10 @@ struct WindowDragArea: NSViewRepresentable {
                 window.zoom(nil)
                 return
             }
-            let startMouse = NSEvent.mouseLocation
-            let startOrigin = window.frame.origin
-            while true {
-                guard let next = window.nextEvent(
-                    matching: [.leftMouseDragged, .leftMouseUp]
-                ) else { break }
-                if next.type == .leftMouseUp { break }
-                let now = NSEvent.mouseLocation
-                window.setFrameOrigin(NSPoint(
-                    x: startOrigin.x + (now.x - startMouse.x),
-                    y: startOrigin.y + (now.y - startMouse.y)
-                ))
-            }
+            // Fork-only: upstream moved the frame by hand here
+            // (`setFrameOrigin` per drag event), which the window server
+            // cannot see, so macOS never offered drag-to-edge tiling.
+            SystemWindowDrag.begin(window, with: event)
         }
     }
 
