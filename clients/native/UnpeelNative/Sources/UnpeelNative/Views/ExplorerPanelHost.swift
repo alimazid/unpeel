@@ -135,6 +135,20 @@ final class ExplorerHostActions: ExplorerActionHandler {
     }
 }
 
+/// Fork-only: sidebar sections. The explorer's view model and host actions
+/// outlive the EXPLORER section's content, so the section header can show
+/// the panel menu while the tree itself is unmounted (collapsed or hidden).
+/// Publishes nothing: owning it never re-renders the sidebar.
+@MainActor
+final class ExplorerSectionModel: ObservableObject {
+    let viewModel: ExplorerViewModel
+    let actions = ExplorerHostActions()
+
+    init(defaults: UserDefaults = AppDefaults.shared) {
+        viewModel = ExplorerViewModel(stateStore: ExplorerStateStore(defaults: defaults))
+    }
+}
+
 struct ExplorerPanelHost: View {
     @ObservedObject var store: UnpeelStore
     /// Selection has its own publication boundary (`SessionSelectionState`):
@@ -143,16 +157,15 @@ struct ExplorerPanelHost: View {
     /// showing the previous session's root (see `WorkspaceTitleStrip`, which
     /// observes selection for the same reason).
     @ObservedObject private var selection: SessionSelectionState
+    @ObservedObject private var viewModel: ExplorerViewModel
+    private let actions: ExplorerHostActions
     let cache: SurfaceCache
 
-    @StateObject private var viewModel = ExplorerViewModel(
-        stateStore: ExplorerStateStore(defaults: AppDefaults.shared)
-    )
-    @State private var actions = ExplorerHostActions()
-
-    init(store: UnpeelStore, cache: SurfaceCache) {
+    init(store: UnpeelStore, cache: SurfaceCache, section: ExplorerSectionModel) {
         self.store = store
         self.selection = store.sessionSelection
+        self.viewModel = section.viewModel
+        self.actions = section.actions
         self.cache = cache
     }
 
@@ -165,9 +178,9 @@ struct ExplorerPanelHost: View {
     /// different worktrees. `focusedSoloSessionID` also covers the
     /// right-hand project panel's panes (`UnpeelStore.focusedSoloSessionID`),
     /// which would yank the tree to a worktree the main area is not even
-    /// showing.
-    private var resolvedContext: ExplorerContext {
-        let session = selection.sessionID.flatMap { store.displaySessionsByID[$0] }
+    /// showing. Static so the section header resolves the same root.
+    static func context(store: UnpeelStore, sessionID: String?) -> ExplorerContext {
+        let session = sessionID.flatMap { store.displaySessionsByID[$0] }
         return ExplorerContextResolver.resolve(
             isLocalScope: store.selectedHostScope == .local,
             hasSession: session != nil,
@@ -177,7 +190,11 @@ struct ExplorerPanelHost: View {
         )
     }
 
-    private var palette: ExplorerPalette {
+    private var resolvedContext: ExplorerContext {
+        Self.context(store: store, sessionID: selection.sessionID)
+    }
+
+    static var palette: ExplorerPalette {
         ExplorerPalette(
             text: NSColor(Theme.foreground),
             secondaryText: NSColor(Theme.mutedForeground),
@@ -186,7 +203,7 @@ struct ExplorerPanelHost: View {
     }
 
     var body: some View {
-        ExplorerPanelView(viewModel: viewModel, palette: palette, actionHandler: actions)
+        ExplorerPanelView(viewModel: viewModel, palette: Self.palette, actionHandler: actions, showsHeader: false)
             .onAppear { sync(resolvedContext) }
             .onChange(of: resolvedContext) { sync($0) }
             // Two sessions in the same worktree resolve to an EQUAL context,
@@ -194,7 +211,10 @@ struct ExplorerPanelHost: View {
             // them; the open target must still follow the selection or a
             // plugin pane would attach to the previously selected session.
             .onChange(of: selection.sessionID) { actions.rootSessionID = $0 }
-            .onDisappear { viewModel.persistState() }
+            // Collapsed or hidden: persist the tree's state and stop the
+            // FSEvents watcher (`setContext` does both); re-expanding
+            // re-opens the root and restores the saved expansions.
+            .onDisappear { viewModel.setContext(.none) }
             // Quitting does not dismantle the view hierarchy, so
             // `onDisappear` never fires on termination: without this, the
             // selection and scroll offset since the last expand/collapse or

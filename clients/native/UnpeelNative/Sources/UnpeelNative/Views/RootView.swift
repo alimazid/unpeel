@@ -43,6 +43,10 @@ struct RootView: View {
 
     // Fork-only: file explorer column (UnpeelExplorer).
     @ObservedObject private var explorerState = ExplorerPanelState.shared
+    // Fork-only: sidebar sections. Long-lived so the view model and host
+    // actions survive the column's re-renders; Task 6 removes this along
+    // with the column.
+    @StateObject private var explorerSection = ExplorerSectionModel()
     @State private var draggingExplorerWidth: Double?
     @State private var explorerDragStartWidth: Double?
     @State private var explorerResizerHovering = false
@@ -263,7 +267,7 @@ struct RootView: View {
                 // a hidden explorer holds no FSEvents stream.
                 ZStack(alignment: .trailing) {
                     if explorerShown {
-                        ExplorerPanelHost(store: store, cache: cache)
+                        ExplorerPanelHost(store: store, cache: cache, section: explorerSection)
                             .frame(width: CGFloat(explorerWidth))
                             .padding(.top, surfaceInset + (store.showsWindowTitleStrip ? Theme.titleStripHeight : 0))
                             .padding(.bottom, surfaceInset)
