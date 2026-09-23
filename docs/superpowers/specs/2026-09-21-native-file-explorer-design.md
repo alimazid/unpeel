@@ -194,13 +194,20 @@ matches the sidebar's typography (13 pt row labels) and light/dark handling.
    explorer column (and its resize handle) was removed by the sidebar-sections
    change (`2026-09-23-sidebar-sections-design.md`); the explorer is a section
    of the left sidebar.
-3. `AppDelegate.swift` — one View-menu item, "Show Explorer" ⌘⇧E.
-4. `UnpeelStore.swift` — **no edits.** Visibility/width persistence lives in a
-   new `ExplorerPanelState` object (new file), using `AppDefaults` like
-   `sidebarCollapsed` does.
+3. `AppDelegate.swift` — one View-menu item ⌘⇧E. Originally a plain "Show
+   Explorer" toggle; replaced by the sidebar-sections change
+   (`2026-09-23-sidebar-sections-design.md`): ⌘⇧E now reveals and focuses the
+   EXPLORER section, or collapses it when the tree already has focus, titled
+   "Show Explorer" / "Hide Explorer" accordingly.
+4. `UnpeelStore.swift` — **no edits.** Visibility/width persistence originally
+   lived in a new `ExplorerPanelState` object (new file). Removed by the
+   sidebar-sections change: section visibility, collapse and heights live in
+   `SidebarSectionLayoutStore` (`AppDefaults`, key
+   `unpeel.sidebarSections.layout`).
 
 New app-target files: `Views/ExplorerPanelHost.swift` (adapter + action
-handler), `ExplorerPanelState.swift`.
+handler). `ExplorerPanelState.swift` was removed by the sidebar-sections
+change (replaced by `Views/SidebarSections/`).
 
 Added 2026-09-22 by `2026-09-22-markdown-preview-pane-design.md` (every
 edited block marked `// Fork-only: markdown preview pane`):
@@ -223,6 +230,9 @@ block marked `// Fork-only: sidebar sections`):
     ramp height; the row-reveal top occlusion.
 11. `Views/SidebarWorkspaceDots.swift` — `SidebarListPageMetrics.topInset`
     and the pooled page's fade ramp.
+12. `Views/SidebarSessionDrag.swift` — the detached drag's press band: the
+    PROJECTS list's top occlusion is the in-section fade ramp, not the
+    titlebar height.
 
 ### 3.4 Data flow
 

@@ -437,6 +437,25 @@ final class SidebarSessionDragController: ObservableObject {
         return rowFrame.minY < safeMinY || rowFrame.maxY > safeMaxY
     }
 
+    // Fork-only: sidebar sections. The press band test, extracted so the
+    // occlusion the PROJECTS list uses can be pinned by focused tests. Only
+    // the in-section fade covers the list's top now, not the titlebar.
+    nonisolated static let pressBandTopOcclusion = SidebarSectionMetrics.projectsFadeRamp
+
+    nonisolated static func pressIsInVisibleBand(
+        point: CGPoint,
+        visibleRect: CGRect,
+        topOcclusion: CGFloat
+    ) -> Bool {
+        let band = CGRect(
+            x: visibleRect.minX,
+            y: visibleRect.minY + topOcclusion,
+            width: visibleRect.width,
+            height: visibleRect.height - topOcclusion
+        )
+        return band.contains(point)
+    }
+
     func registerPaneSource(
         view: NSView,
         session: SessionEntry,
@@ -754,11 +773,14 @@ final class SidebarSessionDragController: ObservableObject {
         // Only arm a press for a row the user can actually see: content-space
         // hit-testing would otherwise match rows scrolled under the titlebar
         // chrome (a window drag over the sidebar) or below the viewport.
+        // Fork-only: sidebar sections. The list sits below the PROJECTS
+        // header, so only its in-section fade covers rows, not the titlebar.
         if let scrollView = view.enclosingScrollView {
-            var visible = scrollView.documentVisibleRect
-            visible.origin.y += Theme.titlebarHeight
-            visible.size.height -= Theme.titlebarHeight
-            guard visible.contains(point) else { return event }
+            guard Self.pressIsInVisibleBand(
+                point: point,
+                visibleRect: scrollView.documentVisibleRect,
+                topOcclusion: Self.pressBandTopOcclusion
+            ) else { return event }
         }
         // SwiftUI's TapGesture commits on mouse-up. That makes navigation
         // feel one physical click behind the keyboard-driven TUI even when

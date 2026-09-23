@@ -681,9 +681,12 @@ struct SidebarView: View {
         // this sidebar VStack only — the content pane's Metal-backed terminal
         // lives outside it, so this stays a sidebar-local transaction.
         .animation(SidebarMotion.slide, value: store.settingsVisible)
-        // Fork-only: sidebar sections. The trackpad workspace swipe monitor
-        // moved onto the PROJECTS section (`projectsSectionContent`), so a
-        // swipe over EXPLORER never switches workspace.
+        // Fork-only: sidebar sections. The trackpad workspace swipe monitor,
+        // the Finder-folder drop, the session-drop catch-all and the
+        // folder-drop highlight moved onto the PROJECTS section
+        // (`projectsSectionContent`), so a swipe or drop over EXPLORER never
+        // reaches them.
+
         // Fixed top drag chrome stays outside the sliding ZStack so it remains
         // stable as the list area slides between the project tree, worktrees
         // view and settings nav. It is visually transparent; row dissolution
@@ -733,6 +736,7 @@ struct SidebarView: View {
                 externallyTargeted: folderDropTargeted
             )
         }
+        // Fork-only: sidebar sections — this monitor now sits on PROJECTS.
         // The trackpad monitor drives the workspace carousel (the container
         // modifier on the list area above): same gating as the sidebar dots,
         // and inert while the settings nav occupies
@@ -951,7 +955,9 @@ private struct SidebarEmptyProjectsView: View {
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .padding(.horizontal, 18)
-        .padding(.top, Theme.titlebarHeight)
+        // Fork-only: sidebar sections. Was `Theme.titlebarHeight`; the view
+        // now sits inside PROJECTS, below its header, not under the glass.
+        .padding(.top, SidebarSectionMetrics.projectsTopInset)
     }
 }
 
