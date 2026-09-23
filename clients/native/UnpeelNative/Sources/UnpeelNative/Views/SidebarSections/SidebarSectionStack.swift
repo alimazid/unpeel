@@ -25,13 +25,15 @@ struct SidebarSectionStack: View {
     @ObservedObject var layoutStore: SidebarSectionLayoutStore
     let sections: [SidebarSectionDescriptor]
 
-    /// The committed layout when the current divider drag began.
-    @State private var dragBase: SidebarSectionLayout?
-    /// The live layout while a divider is being dragged (never persisted
-    /// until the drag ends).
-    @State private var liveLayout: SidebarSectionLayout?
+    /// The divider drag in progress, applied on top of the committed
+    /// layout while rendering and persisted only when the drag ends.
+    @State private var drag: DividerDrag?
 
-    private var layout: SidebarSectionLayout { liveLayout ?? layoutStore.layout }
+    private var layout: SidebarSectionLayout {
+        guard let drag, drag.isCurrent(for: layoutStore.layout) else { return layoutStore.layout }
+        return drag.applied(to: layoutStore.layout, minimums: minimums)
+    }
+
     private let minimums = SidebarSectionID.minimumContentHeights
 
     var body: some View {
@@ -80,6 +82,8 @@ struct SidebarSectionStack: View {
                 Spacer(minLength: 0)
             }
             .frame(width: geometry.size.width, height: geometry.size.height, alignment: .top)
+            // Headers alone can exceed a very short sidebar.
+            .clipped()
         }
         // Implicit, keyed on collapse/hide only: header clicks and menu
         // toggles animate; divider drags (weights) track the pointer
@@ -100,16 +104,77 @@ struct SidebarSectionStack: View {
     }
 
     private func resize(upper: SidebarSectionID, lower: SidebarSectionID, by delta: CGFloat, space: CGFloat) {
-        let base = dragBase ?? layoutStore.layout
-        dragBase = base
-        liveLayout = base.resizing(upper: upper, lower: lower, by: delta, space: space, minimums: minimums)
+        guard let current = drag else {
+            drag = DividerDrag(upper: upper, lower: lower, startedOn: layoutStore.layout, translation: delta, space: space)
+            return
+        }
+        // A drag overtaken by a collapse or hide stays dropped until it ends.
+        guard current.isCurrent(for: layoutStore.layout) else { return }
+        drag = current.moved(to: delta, space: space)
     }
 
+    /// Applies only the resize to the layout as it is now, so a collapse or
+    /// hide made during the drag is never written back over.
     private func commitDrag() {
-        if let final = liveLayout {
-            layoutStore.update { _ in final }
-        }
-        dragBase = nil
-        liveLayout = nil
+        guard let finished = drag else { return }
+        drag = nil
+        guard finished.isCurrent(for: layoutStore.layout) else { return }
+        layoutStore.update { finished.applied(to: $0, minimums: minimums) }
+    }
+}
+
+/// One divider drag: the pair it resizes, how far it has moved, and the
+/// collapse/hide state it started under (a change to either drops it).
+private struct DividerDrag {
+    let upper: SidebarSectionID
+    let lower: SidebarSectionID
+    let collapsed: Set<SidebarSectionID>
+    let hidden: Set<SidebarSectionID>
+    let translation: CGFloat
+    let space: CGFloat
+
+    init(
+        upper: SidebarSectionID,
+        lower: SidebarSectionID,
+        startedOn layout: SidebarSectionLayout,
+        translation: CGFloat,
+        space: CGFloat
+    ) {
+        self.init(
+            upper: upper,
+            lower: lower,
+            collapsed: layout.collapsed,
+            hidden: layout.hidden,
+            translation: translation,
+            space: space
+        )
+    }
+
+    private init(
+        upper: SidebarSectionID,
+        lower: SidebarSectionID,
+        collapsed: Set<SidebarSectionID>,
+        hidden: Set<SidebarSectionID>,
+        translation: CGFloat,
+        space: CGFloat
+    ) {
+        self.upper = upper
+        self.lower = lower
+        self.collapsed = collapsed
+        self.hidden = hidden
+        self.translation = translation
+        self.space = space
+    }
+
+    func isCurrent(for layout: SidebarSectionLayout) -> Bool {
+        layout.collapsed == collapsed && layout.hidden == hidden
+    }
+
+    func moved(to translation: CGFloat, space: CGFloat) -> DividerDrag {
+        DividerDrag(upper: upper, lower: lower, collapsed: collapsed, hidden: hidden, translation: translation, space: space)
+    }
+
+    func applied(to layout: SidebarSectionLayout, minimums: [SidebarSectionID: CGFloat]) -> SidebarSectionLayout {
+        layout.resizing(upper: upper, lower: lower, by: translation, space: space, minimums: minimums)
     }
 }

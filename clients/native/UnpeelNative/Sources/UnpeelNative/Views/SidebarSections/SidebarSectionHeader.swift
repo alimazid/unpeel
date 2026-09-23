@@ -59,6 +59,8 @@ struct SidebarSectionHeader: View {
         }
         .accessibilityElement(children: .contain)
         .accessibilityLabel(title)
+        .accessibilityValue(isExpanded ? "expanded" : "collapsed")
         .accessibilityAddTraits(.isHeader)
+        .accessibilityAction(named: isExpanded ? "Collapse" : "Expand", onToggleCollapse)
     }
 }
