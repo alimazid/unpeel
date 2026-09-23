@@ -230,9 +230,9 @@ block marked `// Fork-only: sidebar sections`):
     ramp height; the row-reveal top occlusion.
 11. `Views/SidebarWorkspaceDots.swift` — `SidebarListPageMetrics.topInset`
     and the pooled page's fade ramp.
-12. `Views/SidebarSessionDrag.swift` — the detached drag's press band: the
-    PROJECTS list's top occlusion is the in-section fade ramp, not the
-    titlebar height.
+12. `Views/SidebarSessionDrag.swift` — the detached drag's press band: no
+    top occlusion (the list no longer scrolls under the titlebar; the fade
+    only dims rows).
 
 ### 3.4 Data flow
 

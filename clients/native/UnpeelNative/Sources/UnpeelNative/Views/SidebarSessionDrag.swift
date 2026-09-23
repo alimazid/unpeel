@@ -438,9 +438,11 @@ final class SidebarSessionDragController: ObservableObject {
     }
 
     // Fork-only: sidebar sections. The press band test, extracted so the
-    // occlusion the PROJECTS list uses can be pinned by focused tests. Only
-    // the in-section fade covers the list's top now, not the titlebar.
-    nonisolated static let pressBandTopOcclusion = SidebarSectionMetrics.projectsFadeRamp
+    // occlusion the PROJECTS list uses can be pinned by focused tests.
+    // Nothing covers the list's top any more: the section header sits
+    // outside the scroll view and the top fade only dims rows, so the band
+    // excludes nothing (reveal scrolling still keeps rows clear of the fade).
+    nonisolated static let pressBandTopOcclusion: CGFloat = 0
 
     nonisolated static func pressIsInVisibleBand(
         point: CGPoint,
@@ -774,7 +776,8 @@ final class SidebarSessionDragController: ObservableObject {
         // hit-testing would otherwise match rows scrolled under the titlebar
         // chrome (a window drag over the sidebar) or below the viewport.
         // Fork-only: sidebar sections. The list sits below the PROJECTS
-        // header, so only its in-section fade covers rows, not the titlebar.
+        // header, so no chrome covers its top rows (see
+        // `pressBandTopOcclusion`).
         if let scrollView = view.enclosingScrollView {
             guard Self.pressIsInVisibleBand(
                 point: point,
