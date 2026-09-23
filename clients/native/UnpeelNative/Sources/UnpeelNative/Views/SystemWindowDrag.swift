@@ -19,10 +19,19 @@ import AppKit
 enum SystemWindowDrag {
     private static var monitors: [Any] = []
     private static weak var draggingWindow: NSWindow?
+    /// Bumped per armed drag so a release observed for an earlier drag can
+    /// never tear down a later one.
+    private static var generation = 0
+
+    /// Ends the drag in flight, if any: restores `isMovable = false` and
+    /// drops the release monitors. Safe to call when nothing is pending.
+    static func cancelPendingDrag() {
+        reset(ifGeneration: nil)
+    }
 
     /// Begins a system drag of `window` for the mouse-down `event`.
     static func begin(_ window: NSWindow, with event: NSEvent) {
-        endPendingDrag()
+        cancelPendingDrag()
         let wasMovable = window.isMovable
         window.isMovable = true
         window.performDrag(with: event)
@@ -37,22 +46,27 @@ enum SystemWindowDrag {
             return
         }
         draggingWindow = window
+        generation += 1
+        let armed = generation
         if let local = NSEvent.addLocalMonitorForEvents(matching: .leftMouseUp, handler: { event in
-            Task { @MainActor in endPendingDrag() }
+            MainActor.assumeIsolated { reset(ifGeneration: armed) }
             return event
         }) {
             monitors.append(local)
         }
         if let global = NSEvent.addGlobalMonitorForEvents(matching: .leftMouseUp, handler: { _ in
-            Task { @MainActor in endPendingDrag() }
+            MainActor.assumeIsolated { reset(ifGeneration: armed) }
         }) {
             monitors.append(global)
         }
     }
 
-    /// Restores `isMovable = false` on the window of the drag in flight, if
-    /// any, and drops the release monitors.
-    static func endPendingDrag() {
+    /// Restores `isMovable = false` on the window of the drag in flight and
+    /// drops the release monitors. With a generation, only the drag that
+    /// armed those monitors is affected; a release for a superseded drag
+    /// is a no-op.
+    private static func reset(ifGeneration expected: Int?) {
+        if let expected, expected != generation { return }
         monitors.forEach(NSEvent.removeMonitor)
         monitors.removeAll()
         draggingWindow?.isMovable = false

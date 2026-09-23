@@ -168,6 +168,7 @@ struct WindowDragArea: NSViewRepresentable {
         override func mouseDown(with event: NSEvent) {
             guard let window else { return }
             if event.clickCount == 2 {
+                SystemWindowDrag.cancelPendingDrag()
                 window.zoom(nil)
                 return
             }
