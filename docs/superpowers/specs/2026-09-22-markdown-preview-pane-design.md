@@ -1,7 +1,8 @@
 # Native Markdown preview pane — Design
 
 Date: 2026-09-22
-Status: approved 2026-09-22 (design agreed in conversation)
+Status: approved 2026-09-22; implemented (evidence in
+`docs/superpowers/verification/2026-09-22-markdown-preview-pane.md`)
 Repo: `alimazid/unpeel` fork, branch `feat/markdown-preview-pane`
 Amends: `2026-09-21-native-file-explorer-design.md` (§3.3 touchpoints, non-goal
 "no change to the pane-layout contract") and
