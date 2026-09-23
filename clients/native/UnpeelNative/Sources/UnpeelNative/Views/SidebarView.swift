@@ -18,6 +18,8 @@
 import AppKit
 import SwiftUI
 import UniformTypeIdentifiers
+// Fork-only: sidebar sections (the EXPLORER header's `…` menu).
+import UnpeelExplorer
 
 // MARK: - Drag-to-reorder state
 
@@ -560,6 +562,14 @@ struct SidebarView: View {
     /// hosts the floating-card overlay at the WINDOW level so the card can
     /// cross the sidebar edge and render above the Metal terminal.
     let sessionDragController: SidebarSessionDragController
+    // Fork-only: sidebar sections. The explorer needs the surface cache for
+    // "send path to agent"; the section model keeps the explorer's view
+    // model alive while its section is collapsed (it publishes nothing, so
+    // owning it never re-renders this body); the layout store is the
+    // persisted section layout.
+    let cache: SurfaceCache
+    @StateObject private var explorerSection = ExplorerSectionModel()
+    private let sectionLayout = SidebarSectionLayoutStore.shared
 
     /// Absolute-top scroll anchor for the project tree (a 1pt marker pinned
     /// to the padded content's top edge, so `anchor: .top` means offset 0).
@@ -594,14 +604,13 @@ struct SidebarView: View {
                     // is a tiny modifier observing the per-event gesture
                     // state, so the heavy tree is never re-diffed per scroll
                     // event.
-                    SidebarListPage(source: .live, store: store) {
-                        projectTreePanel
-                    }
-                    .modifier(SidebarWorkspaceCarousel(
-                        pager: workspacePager,
-                        store: store
-                    ))
-                    .transition(.sidebarPanel(fromTrailing: false))
+                    // Fork-only: sidebar sections. The list area is a stack
+                    // of sections — PROJECTS (the upstream carousel list
+                    // above, see `projectsSectionContent`) and EXPLORER —
+                    // starting under the traffic-light strip.
+                    SidebarSectionStack(layoutStore: sectionLayout, sections: sidebarSections)
+                        .padding(.top, SidebarSectionMetrics.stackTopInset)
+                        .transition(.sidebarPanel(fromTrailing: false))
                 }
             }
             .animation(SidebarMotion.slide, value: store.settingsVisible)
@@ -627,33 +636,6 @@ struct SidebarView: View {
                 sessionDragController.isSurfaceBusy = { [weak workspacePager] in
                     workspacePager?.isTranslated ?? false
                 }
-            }
-            .onDrop(of: [.fileURL], isTargeted: $folderDropTargeted) { providers in
-                guard store.selectedHostScope.isLocalMachine else { return false }
-                dragState.folderHoverReset()
-                return store.addProjectFolders(from: providers)
-            }
-            // Catch-all delegate over the whole list area: commits the final
-            // session preview on drop anywhere (the visual order was already
-            // applied by row-level dropEntered moves) and keeps the cursor on the
-            // `.move` proposal in row gaps / empty space — the closure-based
-            // onDrop used here before let AppKit fall back to `.copy`,
-            // which showed the green "+" badge between rows.
-            .onDrop(of: [.plainText], delegate: SidebarContainerDropDelegate(
-                isDragActive: { [weak dragState] in dragState?.isActive ?? false },
-                finish: { [weak dragState] in dragState?.finish() }
-            ))
-            .overlay {
-                // Highlight whether the folder hovers empty list space (parent
-                // onDrop `folderDropTargeted`) or directly over a row (the row
-                // delegates' hover counter) — both mean "drop to add project".
-                // A separate observing view: the row hover counter's churn
-                // during a Finder drag wakes only this overlay, never the
-                // heavy tree body above.
-                SidebarFolderDropHighlight(
-                    dragState: dragState,
-                    externallyTargeted: folderDropTargeted
-                )
             }
             // The button chrome hides while Settings owns the sidebar, but
             // workspace identity does not: keep the dot switcher mounted in
@@ -699,6 +681,58 @@ struct SidebarView: View {
         // this sidebar VStack only — the content pane's Metal-backed terminal
         // lives outside it, so this stays a sidebar-local transaction.
         .animation(SidebarMotion.slide, value: store.settingsVisible)
+        // Fork-only: sidebar sections. The trackpad workspace swipe monitor
+        // moved onto the PROJECTS section (`projectsSectionContent`), so a
+        // swipe over EXPLORER never switches workspace.
+        // Fixed top drag chrome stays outside the sliding ZStack so it remains
+        // stable as the list area slides between the project tree, worktrees
+        // view and settings nav. It is visually transparent; row dissolution
+        // is owned by `SidebarListFadeMask`.
+        .overlay(alignment: .top) {
+            SidebarTopGlassOverlay()
+        }
+    }
+
+    // MARK: - Fork-only: sidebar sections
+
+    /// PROJECTS: the upstream list area unchanged — carousel, Finder-folder
+    /// drop, the session-drop catch-all, and the workspace swipe monitor,
+    /// now scoped to this section instead of the whole sidebar.
+    private var projectsSectionContent: some View {
+        SidebarListPage(source: .live, store: store) {
+            projectTreePanel
+        }
+        .modifier(SidebarWorkspaceCarousel(
+            pager: workspacePager,
+            store: store
+        ))
+        .onDrop(of: [.fileURL], isTargeted: $folderDropTargeted) { providers in
+            guard store.selectedHostScope.isLocalMachine else { return false }
+            dragState.folderHoverReset()
+            return store.addProjectFolders(from: providers)
+        }
+        // Catch-all delegate over the whole list area: commits the final
+        // session preview on drop anywhere (the visual order was already
+        // applied by row-level dropEntered moves) and keeps the cursor on the
+        // `.move` proposal in row gaps / empty space — the closure-based
+        // onDrop used here before let AppKit fall back to `.copy`,
+        // which showed the green "+" badge between rows.
+        .onDrop(of: [.plainText], delegate: SidebarContainerDropDelegate(
+            isDragActive: { [weak dragState] in dragState?.isActive ?? false },
+            finish: { [weak dragState] in dragState?.finish() }
+        ))
+        .overlay {
+            // Highlight whether the folder hovers empty list space (parent
+            // onDrop `folderDropTargeted`) or directly over a row (the row
+            // delegates' hover counter) — both mean "drop to add project".
+            // A separate observing view: the row hover counter's churn
+            // during a Finder drag wakes only this overlay, never the
+            // heavy tree body above.
+            SidebarFolderDropHighlight(
+                dragState: dragState,
+                externallyTargeted: folderDropTargeted
+            )
+        }
         // The trackpad monitor drives the workspace carousel (the container
         // modifier on the list area above): same gating as the sidebar dots,
         // and inert while the settings nav occupies
@@ -725,13 +759,26 @@ struct SidebarView: View {
                 )
             }
         }
-        // Fixed top drag chrome stays outside the sliding ZStack so it remains
-        // stable as the list area slides between the project tree, worktrees
-        // view and settings nav. It is visually transparent; row dissolution
-        // is owned by `SidebarListFadeMask`.
-        .overlay(alignment: .top) {
-            SidebarTopGlassOverlay()
-        }
+    }
+
+    private var sidebarSections: [SidebarSectionDescriptor] {
+        [
+            SidebarSectionDescriptor(
+                id: .projects,
+                accessory: AnyView(EmptyView()),
+                actions: AnyView(ProjectsSectionActions(store: store)),
+                content: { AnyView(projectsSectionContent) }
+            ),
+            SidebarSectionDescriptor(
+                id: .explorer,
+                accessory: AnyView(ExplorerSectionTitleAccessory(store: store)),
+                actions: AnyView(ExplorerPanelMenu(
+                    viewModel: explorerSection.viewModel,
+                    tint: NSColor(Theme.mutedForeground)
+                )),
+                content: { AnyView(ExplorerPanelHost(store: store, cache: cache, section: explorerSection)) }
+            ),
+        ]
     }
 
     private var projectTreePanel: some View {
@@ -805,7 +852,8 @@ struct SidebarView: View {
                 }
             }
             .scrollIndicators(.hidden)
-            .mask(SidebarListFadeMask())
+            // Fork-only: sidebar sections — same ramp as the live list.
+            .mask(SidebarListFadeMask(opaqueAt: SidebarSectionMetrics.projectsFadeRamp))
             .environment(\.sidebarSessionDragController, sessionDragController)
             .overlay {
                 if store.displayNodes.isEmpty {
@@ -948,7 +996,9 @@ private struct SidebarSelectionScrollObserver: View {
                 } else if let id = newCue.selection,
                           sessionDragController.sessionRowNeedsReveal(
                               id,
-                              topOcclusion: Theme.titlebarHeight,
+                              // Fork-only: sidebar sections — rows are only
+                              // occluded by the in-section fade now.
+                              topOcclusion: SidebarSectionMetrics.projectsFadeRamp,
                               edgeMargin: SessionScrollTarget.margin
                           ) {
                     withAnimation(.easeOut(duration: 0.15)) {
@@ -973,7 +1023,9 @@ enum SessionScrollTarget {
 /// cut.
 struct SidebarListFadeMask: View {
     private static let topMinOpacity: CGFloat = 0
-    private static let opaqueAt: CGFloat = 76
+    // Fork-only: sidebar sections. Was `private static let opaqueAt = 76`;
+    // the PROJECTS section passes its short in-section ramp.
+    var opaqueAt: CGFloat = 76
 
     var body: some View {
         VStack(spacing: 0) {
@@ -981,7 +1033,7 @@ struct SidebarListFadeMask: View {
                 gradient: Gradient(stops: Self.topStops),
                 startPoint: .top, endPoint: .bottom
             )
-            .frame(height: Self.opaqueAt)
+            .frame(height: opaqueAt)
             Color.black
             LinearGradient(
                 colors: [.black, .clear],

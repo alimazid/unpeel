@@ -550,7 +550,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, SPUU
         )
         resetFontItem.target = self
         viewMenu.addItem(resetFontItem)
-        // Fork-only: file explorer column (UnpeelExplorer).
+        // Fork-only: sidebar sections (⇧⌘E).
         viewMenu.addItem(.separator())
         let explorerItem = NSMenuItem(
             title: "Show Explorer",
@@ -691,9 +691,40 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, SPUU
         TerminalFontModel.shared.resetSize()
     }
 
-    // Fork-only: file explorer column (UnpeelExplorer).
+    // Fork-only: sidebar sections. ⇧⌘E reveals and focuses the EXPLORER
+    // section, or collapses it when the tree already has focus
+    // (`ExplorerFocusCommand` is the decision).
     @objc private func toggleExplorerFromMenu() {
-        ExplorerPanelState.shared.toggle()
+        guard let store else { return }
+        let sections = SidebarSectionLayoutStore.shared
+        switch currentExplorerCommand() {
+        case .collapseExplorer:
+            sections.update { $0.settingCollapsed(.explorer, true) }
+            let target = ExplorerContextResolver.targetSessionID(
+                activePane: store.activeTerminalPane?.sessionID,
+                focusedSolo: store.focusedSoloSessionID,
+                selected: store.selectedSessionID
+            )
+            if let target, let pane = surfaceCache.existingPane(for: target) {
+                pane.focus()
+            } else {
+                window?.makeFirstResponder(nil)
+            }
+        case .revealAndFocus:
+            store.sidebarCollapsed = false
+            sections.update { $0.revealing(.explorer) }
+            ExplorerFocus.focusTree(in: window)
+        }
+    }
+
+    private func currentExplorerCommand() -> ExplorerCommandAction {
+        let layout = SidebarSectionLayoutStore.shared.layout
+        return ExplorerFocusCommand.action(
+            treeFocused: ExplorerFocus.isTreeFocused(in: window),
+            explorerExpanded: layout.isExpanded(.explorer),
+            explorerHidden: !layout.isVisible(.explorer),
+            sidebarCollapsed: store?.sidebarCollapsed ?? false
+        )
     }
 
     @objc private func equalizeSplitsFromMenu() {
@@ -747,9 +778,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, SPUU
     /// disabled (Appearance ▸ "Session gallery") — the gallery chip owns the
     /// capture flow, so with no chip mounted the notification goes nowhere.
     func validateMenuItem(_ menuItem: NSMenuItem) -> Bool {
-        // Fork-only: file explorer column (UnpeelExplorer).
+        // Fork-only: sidebar sections.
         if menuItem.action == #selector(toggleExplorerFromMenu) {
-            menuItem.title = ExplorerPanelState.shared.isVisible ? "Hide Explorer" : "Show Explorer"
+            menuItem.title = ExplorerFocusCommand.menuTitle(for: currentExplorerCommand())
             return window != nil
         }
         if menuItem.action == #selector(closePaneOrWindowFromMenu) {

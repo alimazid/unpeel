@@ -190,10 +190,10 @@ matches the sidebar's typography (13 pt row labels) and light/dark handling.
 
 1. `Package.swift` — add the `UnpeelExplorer` target, its test target, and
    the app target's dependency on it.
-2. `Views/RootView.swift` — insert the explorer column into the `appLayout`
-   `HStack` between the sidebar `ZStack` and `ContentArea`, with a width
-   computed the same way as `shownProjectSidebarWidth`, plus a resize handle
-   modelled on the existing sidebar handle.
+2. `Views/RootView.swift` — now only passes `cache` to `SidebarView`. The
+   explorer column (and its resize handle) was removed by the sidebar-sections
+   change (`2026-09-23-sidebar-sections-design.md`); the explorer is a section
+   of the left sidebar.
 3. `AppDelegate.swift` — one View-menu item, "Show Explorer" ⌘⇧E.
 4. `UnpeelStore.swift` — **no edits.** Visibility/width persistence lives in a
    new `ExplorerPanelState` object (new file), using `AppDefaults` like
@@ -213,6 +213,16 @@ edited block marked `// Fork-only: markdown preview pane`):
    the `validatedPaneGroup` arm.
 8. `Views/TerminalPaneView.swift` — the preview pane's render branch and menu.
 9. `docs/agents/clients/panes.md` — one paragraph on the transient leaf.
+
+Added 2026-09-23 by `2026-09-23-sidebar-sections-design.md` (every edited
+block marked `// Fork-only: sidebar sections`):
+
+10. `Views/SidebarView.swift` — the section stack hook (PROJECTS / EXPLORER
+    replace the list area); the Finder-folder drop, session-drop catch-all
+    and workspace swipe monitor scoped to PROJECTS; the `SidebarListFadeMask`
+    ramp height; the row-reveal top occlusion.
+11. `Views/SidebarWorkspaceDots.swift` — `SidebarListPageMetrics.topInset`
+    and the pooled page's fade ramp.
 
 ### 3.4 Data flow
 

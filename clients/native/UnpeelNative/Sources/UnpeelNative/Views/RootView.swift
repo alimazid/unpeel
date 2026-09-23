@@ -41,16 +41,6 @@ struct RootView: View {
     @State private var projectSidebarDragStartWidth: Double?
     @State private var projectSidebarResizerHovering = false
 
-    // Fork-only: file explorer column (UnpeelExplorer).
-    @ObservedObject private var explorerState = ExplorerPanelState.shared
-    // Fork-only: sidebar sections. Long-lived so the view model and host
-    // actions survive the column's re-renders; Task 6 removes this along
-    // with the column.
-    @StateObject private var explorerSection = ExplorerSectionModel()
-    @State private var draggingExplorerWidth: Double?
-    @State private var explorerDragStartWidth: Double?
-    @State private var explorerResizerHovering = false
-
     private static let projectSidebarWidthsKey = "unpeel.projectSidebar.widths"
 
     private static func loadProjectSidebarWidths() -> [String: Double] {
@@ -106,27 +96,6 @@ struct RootView: View {
         projectSidebarShown ? CGFloat(projectSidebarWidth) : 0
     }
 
-    // Fork-only: file explorer column (UnpeelExplorer).
-    private var explorerWidth: Double {
-        draggingExplorerWidth ?? explorerState.width
-    }
-
-    /// Like the project panel, the explorer slides away under full-content
-    /// pages (Settings) instead of being toggled off.
-    private var explorerShown: Bool {
-        explorerState.isVisible && !store.settingsVisible
-    }
-
-    /// With the sidebar collapsed the explorer is the leading-most panel, so
-    /// it needs the same `surfaceInset` sliver every other panel keeps
-    /// against the window edge — otherwise it sits flush against it.
-    private var explorerLeadingInset: CGFloat {
-        store.sidebarCollapsed ? surfaceInset : 0
-    }
-
-    private var shownExplorerWidth: CGFloat {
-        explorerShown ? CGFloat(explorerWidth) + explorerLeadingInset : 0
-    }
 
     /// The surface inset persists through a sidebar collapse — the content
     /// pane keeps floating in the frame (a leading gap appears in its place
@@ -254,28 +223,15 @@ struct RootView: View {
                 // Inner content keeps its layout width; the outer frame clips
                 // so the sidebar slides out behind the content pane.
                 ZStack(alignment: .trailing) {
+                    // Fork-only: sidebar sections — the explorer lives in the sidebar and needs the cache.
                     SidebarView(
                         store: store,
-                        sessionDragController: sessionDragController
+                        sessionDragController: sessionDragController,
+                        cache: cache
                     )
                     .frame(width: CGFloat(sidebarWidth))
                 }
                 .frame(width: shownSidebarWidth, alignment: .trailing)
-                .clipped()
-
-                // Fork-only: file explorer column. Mounted only while shown so
-                // a hidden explorer holds no FSEvents stream.
-                ZStack(alignment: .trailing) {
-                    if explorerShown {
-                        ExplorerPanelHost(store: store, cache: cache, section: explorerSection)
-                            .frame(width: CGFloat(explorerWidth))
-                            .padding(.top, surfaceInset + (store.showsWindowTitleStrip ? Theme.titleStripHeight : 0))
-                            .padding(.bottom, surfaceInset)
-                            // See `explorerLeadingInset`.
-                            .padding(.leading, explorerLeadingInset)
-                    }
-                }
-                .frame(width: shownExplorerWidth, alignment: .trailing)
                 .clipped()
 
                 ContentArea(
@@ -299,13 +255,7 @@ struct RootView: View {
                     // the frame gap must show between them and the main pane.
                     .padding(.trailing, surfaceInset)
                     .padding(.bottom, surfaceInset)
-                    // Fork-only: file explorer column. Upstream reads
-                    // `.padding(.leading, store.sidebarCollapsed ? surfaceInset : 0)`;
-                    // the `!explorerShown` clause keeps that same gap for a
-                    // collapsed sidebar, but drops it once the explorer
-                    // column is the leading panel instead (it keeps its own
-                    // matching gap via `explorerLeadingInset`).
-                    .padding(.leading, store.sidebarCollapsed && !explorerShown ? surfaceInset : 0)
+                    .padding(.leading, store.sidebarCollapsed ? surfaceInset : 0)
                     // With `isMovable` off, the frame/inset gaps around the
                     // content pane need an explicit drag surface. Behind the
                     // padded cell, so it peeks through the gaps (and any
@@ -346,11 +296,6 @@ struct RootView: View {
             .timingCurve(0.25, 0.1, 0.25, 1, duration: 0.15),
             value: projectSidebarShown
         )
-        // Fork-only: file explorer column (UnpeelExplorer).
-        .animation(
-            .timingCurve(0.25, 0.1, 0.25, 1, duration: 0.15),
-            value: explorerShown
-        )
         // The window title strip — WINDOW chrome, not content chrome: the
         // current page's title centers on the whole window like a macOS
         // window title, and the workspace's trailing Open-in/site chips sit
@@ -374,12 +319,6 @@ struct RootView: View {
         .overlay(alignment: .topTrailing) {
             if projectSidebarShown {
                 projectSidebarResizer
-            }
-        }
-        // Fork-only: file explorer column (UnpeelExplorer).
-        .overlay(alignment: .topLeading) {
-            if explorerShown {
-                explorerResizer
             }
         }
         .overlay(alignment: .topLeading) { titlebarButtons }
@@ -536,50 +475,6 @@ struct RootView: View {
         )
         .onHover { inside in
             projectSidebarResizerHovering = inside
-            if inside {
-                NSCursor.resizeLeftRight.push()
-            } else {
-                NSCursor.pop()
-            }
-        }
-    }
-
-    // Fork-only: file explorer column (UnpeelExplorer).
-    /// Trailing-edge handle of the explorer column; same feel as `resizer`.
-    private var explorerResizer: some View {
-        ZStack {
-            if explorerResizerHovering || draggingExplorerWidth != nil {
-                Capsule()
-                    .fill(Theme.paneDividerLineHover)
-                    .frame(width: 3, height: 36)
-                    .transition(.opacity)
-            }
-        }
-        .frame(width: 8)
-        .frame(maxHeight: .infinity)
-        .contentShape(Rectangle())
-        // `shownExplorerWidth` already folds in `explorerLeadingInset`, so
-        // the handle stays on the column's trailing edge whether or not the
-        // sidebar is collapsed.
-        .offset(x: shownSidebarWidth + shownExplorerWidth - 4)
-        .animation(.easeInOut(duration: 0.12), value: explorerResizerHovering)
-        .gesture(
-            DragGesture(minimumDistance: 1, coordinateSpace: .global)
-                .onChanged { value in
-                    let start = explorerDragStartWidth ?? explorerWidth
-                    explorerDragStartWidth = start
-                    draggingExplorerWidth = ExplorerPanelState.clamp(start + value.translation.width)
-                }
-                .onEnded { _ in
-                    if let final = draggingExplorerWidth {
-                        explorerState.width = final
-                    }
-                    draggingExplorerWidth = nil
-                    explorerDragStartWidth = nil
-                }
-        )
-        .onHover { inside in
-            explorerResizerHovering = inside
             if inside {
                 NSCursor.resizeLeftRight.push()
             } else {

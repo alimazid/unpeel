@@ -967,7 +967,9 @@ enum SidebarListPageMetrics {
     /// the first row exactly this far below the region's top edge on both
     /// pages (the pooled page renders from the top by construction; the
     /// live page top-lands on scope change via SidebarView's scroll cue).
-    static let topInset: CGFloat = 48
+    // Fork-only: sidebar sections. Was 48 (rows scrolled up under the
+    // traffic-light glass); the PROJECTS section header now sits above.
+    static let topInset: CGFloat = SidebarSectionMetrics.projectsTopInset
 }
 
 /// Which truth a `SidebarListPage` renders from.
@@ -1824,7 +1826,8 @@ private struct SidebarPooledListBody: View {
             .clipped()
             // The rows dissolve into the fixed top chrome exactly like the
             // real list (which masks its ScrollView with the same ramp).
-            .mask(SidebarListFadeMask())
+            // Fork-only: sidebar sections — same ramp as the live list.
+            .mask(SidebarListFadeMask(opaqueAt: SidebarSectionMetrics.projectsFadeRamp))
         }
     }
 
