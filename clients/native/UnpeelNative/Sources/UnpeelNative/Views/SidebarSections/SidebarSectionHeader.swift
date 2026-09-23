@@ -61,6 +61,7 @@ struct SidebarSectionHeader: View {
         .accessibilityLabel(title)
         .accessibilityValue(isExpanded ? "expanded" : "collapsed")
         .accessibilityAddTraits(.isHeader)
+        .accessibilityAction { onToggleCollapse() }
         .accessibilityAction(named: isExpanded ? "Collapse" : "Expand", onToggleCollapse)
     }
 }

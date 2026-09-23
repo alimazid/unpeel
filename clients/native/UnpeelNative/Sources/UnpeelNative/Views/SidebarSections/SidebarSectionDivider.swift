@@ -62,26 +62,28 @@ struct SidebarSectionDivider: View {
                         lastDragLocation = value.location
                         onDrag(value.translation.height)
                     }
+                    .onEnded { _ in finishDrag() }
             )
+            // Cancellation path: `onEnded` never runs for a cancelled drag.
             .onChange(of: dragging) { isDragging in
                 if !isDragging { finishDrag() }
             }
             .onDisappear {
-                if lastDragLocation != nil {
-                    lastDragLocation = nil
-                    onDragEnd()
-                }
+                finishDrag()
                 popCursor()
             }
     }
 
+    /// Reached from `onEnded` and the gesture-state reset; only the first
+    /// call for a drag does anything.
     private func finishDrag() {
+        guard let location = lastDragLocation else { return }
+        lastDragLocation = nil
         // Hover changes were ignored during the drag, so a pointer that left
         // the band (clamped at a minimum) still holds the pushed cursor.
-        if let location = lastDragLocation, !bandFrame.contains(location) {
+        if !bandFrame.contains(location) {
             popCursor()
         }
-        lastDragLocation = nil
         onDragEnd()
     }
 
