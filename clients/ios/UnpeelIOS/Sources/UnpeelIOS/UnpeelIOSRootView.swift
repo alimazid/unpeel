@@ -37,9 +37,7 @@ public struct UnpeelIOSRootView: View {
         }
         .animation(.easeOut(duration: 0.18), value: appLock.isLocked)
         .environmentObject(connection)
-        .sheet(isPresented: $connection.pairingSheetPresented) {
-            PairingView(connection: connection, store: store)
-        }
+        .background(PairingSheetHost(connection: connection, store: store))
         // Bell (activity) + organize sheets live at the ROOT — the same level
         // as pairing, which is the only place a `.sheet` presents reliably
         // over the Metal terminal surface.
@@ -187,7 +185,7 @@ public struct UnpeelIOSRootView: View {
             // A device build with no paired Mac has nothing to talk to —
             // land straight in pairing instead of an empty preview.
             if connection.needsPairing {
-                connection.pairingSheetPresented = true
+                connection.presentPairingSheet()
             }
             // Push: upload the APNs token to EVERY paired Mac whenever it
             // (re)arrives — notifications must work from non-active Macs
@@ -246,7 +244,7 @@ public struct UnpeelIOSRootView: View {
             case .active:
                 connection.retryKeychainHydrationIfNeeded()
                 if connection.needsPairing {
-                    connection.pairingSheetPresented = true
+                    connection.presentPairingSheet()
                 }
                 // Restart immediately (the loop's first step is a bootstrap
                 // fetch) so the first visible frame paints from fresh data.
@@ -263,7 +261,7 @@ public struct UnpeelIOSRootView: View {
         )) { _ in
             connection.retryKeychainHydrationIfNeeded()
             if connection.needsPairing {
-                connection.pairingSheetPresented = true
+                connection.presentPairingSheet()
             }
         }
         .onDisappear {
@@ -906,7 +904,7 @@ struct SessionSidebarView: View {
                     store: store,
                     usingRelay: connection.usingRelay
                 ) {
-                    connection.pairingSheetPresented = true
+                    connection.presentPairingSheet()
                 }
                 .padding(.horizontal, 8)
                 .padding(.top, effectiveTopInset + 14)
@@ -916,7 +914,7 @@ struct SessionSidebarView: View {
                 // section has the fix-it buttons (Open iOS Settings / retry).
                 if let warning = push.registrationState.sidebarWarning {
                     SidebarPushWarningBanner(message: warning) {
-                        connection.pairingSheetPresented = true
+                        connection.presentPairingSheet()
                     }
                     .padding(.horizontal, 8)
                     .padding(.top, 6)
@@ -929,7 +927,11 @@ struct SessionSidebarView: View {
                                 // No live connection means the session list
                                 // is stale by definition — say so instead of
                                 // rendering sessions the phone can't reach.
-                                SidebarDisconnectedView()
+                                SidebarDisconnectedView(
+                                    hint: connection.reachabilityHint(
+                                        unreachable: store.isUnreachable
+                                    )
+                                )
                             } else {
                                 listContent
                                     .id("main")
@@ -1893,6 +1895,10 @@ private struct SidebarPushWarningBanner: View {
 /// Reconnection retries the saved Direct endpoint and the E2E Relay, so this
 /// only informs — the pairing sheet stays one tap away via the status row.
 private struct SidebarDisconnectedView: View {
+    /// Why the Mac may be out of reach (`RemoteReachabilityHint`), once the
+    /// outage has outlived the grace period.
+    var hint: String? = nil
+
     var body: some View {
         VStack(spacing: 10) {
             // Friendlier company than a wifi-slash glyph — the user stares at
@@ -1906,6 +1912,13 @@ private struct SidebarDisconnectedView: View {
                 .font(.system(size: 12))
                 .foregroundStyle(IOSSidebarTheme.mutedForeground)
                 .multilineTextAlignment(.center)
+            if let hint {
+                Text(hint)
+                    .font(.system(size: 11))
+                    .foregroundStyle(IOSSidebarTheme.mutedForeground)
+                    .multilineTextAlignment(.center)
+                    .padding(.top, 4)
+            }
             ProgressView()
                 .controlSize(.small)
                 .tint(IOSSidebarTheme.mutedForeground)
@@ -2334,5 +2347,24 @@ struct ActivityPill: View {
         case .idle: return .secondary
         case .unknown: return .gray
         }
+    }
+}
+
+
+/// Owns the pairing/Workspaces sheet presentation. A dedicated observer of
+/// `RemoteConnectionStore`: on iPad (regular width, `NavigationSplitView`
+/// root) the root view stops re-rendering for the connection store's
+/// published changes, so a `.sheet` bound from the root body never fires —
+/// "Pair with your Mac does nothing" (community #12). This view subscribes on
+/// its own and presents the moment the flag flips, on every idiom.
+private struct PairingSheetHost: View {
+    @ObservedObject var connection: RemoteConnectionStore
+    var store: RemotePreviewStore
+
+    var body: some View {
+        Color.clear
+            .sheet(isPresented: $connection.pairingSheetPresented) {
+                PairingView(connection: connection, store: store)
+            }
     }
 }

@@ -13,6 +13,44 @@ final class PairedMacStorageTests: XCTestCase {
     private var defaults: UserDefaults!
     private var suiteName: String!
 
+    /// Community #12: on iPad the root view stopped re-rendering for the
+    /// connection store, so a pairing request could be latched `true` with
+    /// nothing on screen; every later request must re-present, and a
+    /// visible sheet must not be torn down by a repeat request.
+    func testPairingSheetPresentationPolicy() {
+        typealias Policy = RemotePairingSheetPresentationPolicy
+        XCTAssertEqual(Policy.request(presented: false, visible: false), .present)
+        XCTAssertEqual(Policy.request(presented: true, visible: false), .represent)
+        XCTAssertEqual(Policy.request(presented: true, visible: true), .alreadyVisible)
+        // Visible without a request cannot happen after dismissal, but a
+        // request must still be honored rather than ignored.
+        XCTAssertEqual(Policy.request(presented: false, visible: true), .present)
+
+        XCTAssertTrue(Policy.shouldRetry(presented: true, visible: false, attempt: 0, limit: 3))
+        XCTAssertFalse(Policy.shouldRetry(presented: true, visible: true, attempt: 0, limit: 3))
+        XCTAssertFalse(Policy.shouldRetry(presented: false, visible: false, attempt: 0, limit: 3))
+        XCTAssertFalse(Policy.shouldRetry(presented: true, visible: false, attempt: 3, limit: 3))
+    }
+
+    /// The Link/Tailscale hint appears only for a persistent Direct outage
+    /// of a paired Mac, never while Link is carrying the connection, and it
+    /// never carries a purchase link (App Store 3.1.3(b)).
+    func testReachabilityHintCopy() {
+        typealias Hint = RemoteReachabilityHint
+        XCTAssertNil(Hint.text(unreachable: false, hasPairedMac: true, usingRelay: false, linkConfigured: false))
+        XCTAssertNil(Hint.text(unreachable: true, hasPairedMac: false, usingRelay: false, linkConfigured: false))
+        XCTAssertNil(Hint.text(unreachable: true, hasPairedMac: true, usingRelay: true, linkConfigured: true))
+        let notConfigured = Hint.text(unreachable: true, hasPairedMac: true, usingRelay: false, linkConfigured: false)
+        XCTAssertTrue(notConfigured?.contains("Unpeel Link") == true)
+        XCTAssertTrue(notConfigured?.contains("Tailscale") == true)
+        let configured = Hint.text(unreachable: true, hasPairedMac: true, usingRelay: false, linkConfigured: true)
+        XCTAssertTrue(configured?.contains("enrolled") == true)
+        for text in [notConfigured, configured].compactMap({ $0 }) {
+            XCTAssertFalse(text.contains("http"), "the phone never links out to buy Link")
+            XCTAssertFalse(text.contains("$"))
+        }
+    }
+
     private let legacyRecordKey = "unpeel.ios.pairedMac"
     private let recordsKey = "unpeel.ios.pairedMacs"
     private let activeMacIDKey = "unpeel.ios.activeMacID"

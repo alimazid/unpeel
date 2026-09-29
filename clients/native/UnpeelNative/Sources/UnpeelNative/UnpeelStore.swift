@@ -1650,6 +1650,33 @@ final class UnpeelStore: ObservableObject {
 
     /// Capture the outgoing scope's selection before a scope switch clears
     /// it. Call at the top of every scope-changing verb.
+    /// Why a paired remote Mac is out of reach, in words the user can act on
+    /// (`RemoteScopeEmptySidebarView`, the content banner). Only for paired
+    /// Hosts in a persistent failure: SSH Hosts and local workspaces have no
+    /// Link, and a healthy or merely connecting scope says nothing.
+    var remoteScopeReachabilityHint: String? {
+        guard case let .remote(hostID) = selectedHostScope else { return nil }
+        switch remoteHostRuntime.connectionState {
+        case .failed, .reconnecting: break
+        default: return nil
+        }
+        guard let record = remoteHostStore.records.first(where: { $0.hostID == hostID }) else {
+            return nil
+        }
+        return RemoteHostReachabilityHint.text(
+            linkAllowed: record.isLinkEnabled,
+            route: remoteHostRuntime.connectionRoute
+        )
+    }
+
+    /// Opens the Unpeel Link explainer on the website (the Mac app may link
+    /// out; the phone never does).
+    func openLinkExplainer() {
+        if let url = URL(string: "https://unpeel.com/link") {
+            NSWorkspace.shared.open(url)
+        }
+    }
+
     private func rememberOutgoingScopeSelection() {
         guard selectedHostScope != .local, let id = selectedSessionID else { return }
         scopeSessionMemory[selectedHostScope.paneScopeID] = id
@@ -2092,11 +2119,58 @@ final class UnpeelStore: ObservableObject {
         // The initial disk scan remains as a no-flash fallback until the
         // first complete Host bootstrap. From this point forward the worker
         // is the sole lifecycle authority.
+        // A rename made through the Host (the Controller path Local takes
+        // once it is a client, `unpeel projects`, a phone) lands only in
+        // app-state.json; the mirror below would push the native record's
+        // stale name straight back over it (GitHub #26). Adopt the file's
+        // names first, then mirror.
+        adoptSharedProjectNames()
         // Old native Remove actions were stored as Controller-local tombstones.
         // Fold them into shared Host truth before the first projection so the
         // service cannot resurrect an intentionally removed legacy project.
         mirrorProjectsToSharedState()
         connectLocalHostServiceIfNeeded()
+    }
+
+    /// Pull `name` from `app-state.json` into the native project records for
+    /// every entry both sides know: the file is where every Host-routed
+    /// rename lands, and the mirror would otherwise clobber it.
+    private func adoptSharedProjectNames() {
+        let records = loadNativeProjects()
+        guard !records.isEmpty,
+              let raw = try? Data(contentsOf: LaunchConfig.appStateFile),
+              let object = (try? JSONSerialization.jsonObject(with: raw)) as? [String: Any],
+              let projects = object["projects"] as? [[String: Any]]
+        else { return }
+        let adopted = Self.adoptedProjectNames(records: records, sharedProjects: projects)
+        guard adopted != records, let data = try? JSONEncoder().encode(adopted) else { return }
+        AppDefaults.shared.set(data, forKey: Self.nativeProjectsKey)
+    }
+
+    /// Pure half of `adoptSharedProjectNames`: a shared entry with a
+    /// different, non-blank `name` wins over the native record's. Entries the
+    /// file does not know keep their record name (they are about to be
+    /// mirrored in for the first time).
+    nonisolated static func adoptedProjectNames(
+        records: [NativeProjectRecord],
+        sharedProjects: [[String: Any]]
+    ) -> [NativeProjectRecord] {
+        let sharedNameByID = sharedProjects.reduce(into: [String: String]()) { result, entry in
+            guard let id = entry["id"] as? String,
+                  let name = (entry["name"] as? String)?
+                      .trimmingCharacters(in: .whitespacesAndNewlines),
+                  !name.isEmpty
+            else { return }
+            result[id] = name
+        }
+        return records.map { record in
+            guard let shared = sharedNameByID[record.id], shared != record.name else {
+                return record
+            }
+            var updated = record
+            updated.name = shared
+            return updated
+        }
     }
 
     private func connectLocalHostServiceIfNeeded() {
@@ -11505,11 +11579,15 @@ final class UnpeelStore: ObservableObject {
               project.acceptsSessionDrop
         else { return false }
         if routesProjectVerbThroughHost(projectID) {
-            performRemoteVerb("Couldn't rename the group") { runtime in
+            performRemoteVerb("Couldn't rename the group") { [weak self] runtime in
                 try await runtime.renameProjectGroup(
                     projectID: projectID,
                     displayName: name
                 )
+                // The Host wrote app-state.json; keep the native record (the
+                // source the mirror pushes from) in step so no later mirror
+                // or relaunch reverts the rename (GitHub #26).
+                self?.recordHostRenamedNativeProject(projectID, name: name)
             }
             return true
         }
@@ -11535,6 +11613,19 @@ final class UnpeelStore: ObservableObject {
         }
         rescan()
         return true
+    }
+
+    /// After a Host-routed rename succeeded: update the matching native
+    /// record without mirroring (the file already carries the new name).
+    private func recordHostRenamedNativeProject(_ projectID: String, name: String) {
+        var records = loadNativeProjects()
+        guard let index = records.firstIndex(where: { $0.id == projectID }),
+              records[index].name != name
+        else { return }
+        records[index].name = name
+        if let data = try? JSONEncoder().encode(records) {
+            AppDefaults.shared.set(data, forKey: Self.nativeProjectsKey)
+        }
     }
 
     /// Remove a group: unpin and rehome every session under its parent, then
@@ -15325,7 +15416,10 @@ final class UnpeelStore: ObservableObject {
     @Published var commandPaletteVisible = false
 
     func toggleCommandPalette() {
-        guard selectedHostScope == .local else { return }
+        // ⌘K is a Controller surface, not a local-host action: it opens in
+        // every workspace scope. Its cross-workspace activity rows reveal
+        // through `revealGlobalActivitySession`, and its current-scope rows
+        // through `revealSessionInCurrentScope`, both scope-correct.
         commandPaletteVisible.toggle()
     }
 
@@ -16528,6 +16622,29 @@ extension UnpeelStore {
         }
 
         rescopeToPooledWorkspace(key: workspaceKey, sessionID: sessionID)
+    }
+
+    /// The workspace-order key for the scope this window currently shows — the
+    /// same key space the activity dropdown and `revealGlobalActivitySession`
+    /// use. The ⌘K palette needs it to tell "this workspace" from the others.
+    var currentScopeWorkspaceKey: String {
+        let localKey = WorkspaceListOrder.localKey(home: Self.currentInstanceNormalizedHome())
+        guard selectedHostScope != .local else { return localKey }
+        return workspacePoolForegroundKey() ?? localKey
+    }
+
+    /// Reveal a Session in whatever scope this window is in. `revealSessionInSidebar`
+    /// is local-only (it no-ops under a Host projection); a projection selects the
+    /// row instead. The ⌘K palette, which now opens in every workspace, reveals
+    /// its current-scope rows through here.
+    func revealSessionInCurrentScope(_ sessionID: String) {
+        guard selectedHostScope != .local else {
+            revealSessionInSidebar(sessionID)
+            return
+        }
+        guard remoteSessionsByID[sessionID] != nil else { return }
+        closeSettings()
+        selectedSessionID = sessionID
     }
 
     /// Display name for a workspace-order key (registry/record names win, the
