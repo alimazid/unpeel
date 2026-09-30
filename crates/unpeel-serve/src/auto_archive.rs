@@ -136,14 +136,17 @@ impl Sweeper {
         let started_at_ms = self.started_at_ms;
         for row in rows {
             if row.running && row.status == Status::Idle {
+                // A host starting is a lifecycle event: Resume's replacement
+                // inherits the old `created_at`, and Reload keeps the id, so
+                // neither may inherit an idle clock from before it existed.
+                let lifecycle_at = row.activity_at.max(row.host_started_at.unwrap_or(0));
                 self.idle_since_ms
                     .entry(row.id.clone())
                     .and_modify(|idle_since| {
-                        *idle_since =
-                            observed_idle_since(Some(*idle_since), row.activity_at, now_ms)
+                        *idle_since = observed_idle_since(Some(*idle_since), lifecycle_at, now_ms)
                     })
                     .or_insert_with(|| {
-                        observed_idle_since(None, row.activity_at, now_ms).max(started_at_ms)
+                        observed_idle_since(None, lifecycle_at, now_ms).max(started_at_ms)
                     });
             } else {
                 self.idle_since_ms.remove(&row.id);
@@ -551,6 +554,69 @@ mod tests {
             started + 60 * 60_000,
         );
         assert_eq!(due, Some("seen".to_string()));
+    }
+
+    /// Resume replaces a stopped Session with a new host that inherits the
+    /// old `created_at` (to keep its sidebar position), so its lifecycle
+    /// stamp can be days old the moment it starts. The idle clock must
+    /// never start before the host process did — otherwise a Host that has
+    /// itself been up past the cutoff archives the resumed Session on the
+    /// very next sweep, seconds after the user clicked Resume.
+    #[test]
+    fn a_freshly_started_host_is_not_archived_for_an_inherited_stale_stamp() {
+        let now = 90_000_000_000;
+        let worker_started = now - 3 * 24 * 60 * 60_000;
+        let inherited_created_at = now - 2 * 24 * 60 * 60_000;
+        let mut row = idle_row("resumed", inherited_created_at);
+        row.created_at = inherited_created_at;
+        row.host_started_at = Some(now);
+        let mut sweeper = Sweeper::starting_at(worker_started);
+        // `minutes == 0` primes the idle clock without ever spawning a real
+        // archive, so a regression here cannot touch session state.
+        sweeper.step(std::slice::from_ref(&row), &HashSet::new(), 0, now);
+        assert_eq!(sweeper.idle_since_ms.get("resumed"), Some(&now));
+        let (immediate, _) = sweeper.next_due(
+            std::slice::from_ref(&row),
+            &HashSet::new(),
+            60 * 60_000,
+            now,
+        );
+        assert_eq!(immediate, None);
+        let (early, _) = sweeper.next_due(
+            std::slice::from_ref(&row),
+            &HashSet::new(),
+            60 * 60_000,
+            now + 59 * 60_000,
+        );
+        assert_eq!(early, None);
+        let (due, _) = sweeper.next_due(
+            std::slice::from_ref(&row),
+            &HashSet::new(),
+            60 * 60_000,
+            now + 60 * 60_000,
+        );
+        assert_eq!(due, Some("resumed".to_string()));
+    }
+
+    /// Reload keeps the Session id, so the worker may already hold an idle
+    /// clock from the previous host. The new host's start moves it forward.
+    #[test]
+    fn a_host_restarted_under_the_same_id_restarts_its_idle_clock() {
+        let now = 90_000_000_000;
+        let worker_started = now - 3 * 24 * 60 * 60_000;
+        let mut row = idle_row("reloaded", worker_started);
+        row.host_started_at = Some(worker_started);
+        let mut sweeper = Sweeper::starting_at(worker_started);
+        sweeper.step(
+            std::slice::from_ref(&row),
+            &HashSet::new(),
+            0,
+            worker_started,
+        );
+        assert_eq!(sweeper.idle_since_ms.get("reloaded"), Some(&worker_started));
+        row.host_started_at = Some(now);
+        sweeper.step(std::slice::from_ref(&row), &HashSet::new(), 0, now);
+        assert_eq!(sweeper.idle_since_ms.get("reloaded"), Some(&now));
     }
 
     /// The first blocking condition is reported once per row per reason
