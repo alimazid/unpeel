@@ -12,12 +12,13 @@ were not touched.
 
 - `clients/native/test-native.sh` at `8652cfd`: `Executed 971 tests, with 0
   failures`; after the review fixes (§4): `Executed 976 tests, with 0
+  failures`; after the in-app scroll fix (§4): `Executed 977 tests, with 0
   failures`.
 - New suites (`UnpeelGitTests`): `GitRunnerTests` 9, `GitReaderHeadTests` 11,
   `GitReaderLogTests` 10, `GitReaderRefsTests` 4, `GitReaderDetailTests` 8,
   `GitHistoryViewModelTests` 9, `GitHistoryCommitListTests` 11,
   `GitHistoryFilterTests` 10, `GitHistoryDetailTests` 9,
-  `GitHistoryLiveTests` 13, `GitHistoryOutlineControllerTests` 13,
+  `GitHistoryLiveTests` 13, `GitHistoryOutlineControllerTests` 14,
   `GitHistoryOutlineDetailTests` 8, `GitHistoryHeaderTests` 2. Reader tests
   run against real throwaway repositories (a local bare repository as
   `origin`), never a mocked git.
@@ -30,7 +31,9 @@ were not touched.
 
 ## 2. Runtime evidence
 
-The screen was locked for the whole run (past midnight, user away), so
+### Offscreen, while the screen was locked
+
+The screen was locked for the whole build (past midnight, user away), so
 window screenshots and synthetic input were unavailable (`screencapture`:
 "could not create image"; the accessibility tree came back empty). The
 checks below therefore drove the real views and the real reader, runner and
@@ -65,24 +68,54 @@ deleted branch leaves filter: ok after 0.28s
 index.lock exists: false
 ```
 
-## 3. Not yet exercised in the running app
+### In the running app
 
-Pending an unlocked screen. The dev build is built from `9608770` and was
-left running against `UNPEEL_HOME=~/udgh` with the scratch repository as a
-Project and one shell Session; its saved sidebar layout was seeded with a
-pre-Git-History record (PROJECTS 0.35 / EXPLORER 0.65).
+Later the same morning, with the screen unlocked: the dev build (`Unpeel
+Dev`, built from `9608770`, then rebuilt with the §4 scroll fix) against
+`UNPEEL_HOME=~/udgh`, its saved sidebar layout seeded with a pre-Git-History
+record (PROJECTS 0.35 / EXPLORER 0.65). Driven with synthetic clicks and
+keys, read back through window screenshots and the accessibility tree
+(focused element, scroller value, View menu titles). Projects: the scratch
+repository, a plain folder (`notrepo`) and a `git init`-ed folder with no
+commits (`emptyrepo`), each with a Terminal Session. Screenshots are the
+`app-*.png` files.
 
-- GIT HISTORY appended collapsed under EXPLORER on that pre-existing layout;
-  collapse / expand / resize / hide like the other sections.
-- Each empty state in the sidebar: no Session, remote Host, not a
-  repository, no commits.
-- ⌃⇧G from every state, including while a terminal has focus; the View
-  menu title.
-- Clicking a changed file: reveal in the EXPLORER and open (Markdown in the
-  preview pane, a source file through Open With).
-- The History Branch Filter menu itself (its rendering as a popup), and
-  scroll position held while commits land on top (covered by
-  `GitHistoryOutlineControllerTests`).
+| # | Check | Result |
+|---|---|---|
+| 11 | Pre-existing layout | PASS — GIT HISTORY appended collapsed under EXPLORER; nothing above it moved (`app-01-start.png`) |
+| 12 | Collapse / expand / resize / hide | PASS — header click expands; divider drag resizes; the header menu hides it (✓ Projects / Explorer / Git History); layout (expanded, weights) survives a quit and relaunch (`app-06-resized.png`, `app-21-header-menu.png`, `app-38-after-relaunch.png`) |
+| 13 | Empty states | PASS — no Session: "Select a session to browse its history."; plain folder: "This folder is not a git repository."; empty repository: "No commits yet." with a plain `main` label and no filter menu (`app-03…`, `app-32…`, `app-34…`) |
+| 14 | Header | PASS — `main ⌄  ↑4 ↓0` matches `git status -sb`; `feature/history` (no upstream) shows no counts (`app-05-session.png`, `app-29-switched.png`) |
+| 15 | History Branch Filter popup | PASS — feature/history, ✓ main, topic │ origin/main │ All branches; `topic` lists its own history while the header keeps `main ↑4 ↓0`; All branches puts `feature/history`'s commit in date order (`app-07…`, `app-08…`, `app-10…`) |
+| 16 | Commit detail | PASS — a click expands in place (message wraps; `A`/`R`/`D` in VS Code colours; `docs ← docs/notes.md`); clicking another commit collapses the first (`app-12…`, `app-13…`, `app-43…`) |
+| 17 | Changed file → Markdown | PASS — `README.md` selected in the EXPLORER and opened in the preview pane (`app-14-readme.png`) |
+| 18 | Changed file → source | PASS — `src` expanded, `main.swift` selected in the EXPLORER, opened through Open With in the preferred editor (VS Code) (`app-15-mainswift.png`) |
+| 19 | Changed file no longer on disk | PASS — `docs/notes.md` (since renamed): row selects, nothing opens, no error (`app-16…`) |
+| 20 | Changed file with EXPLORER collapsed | As decided — `guide.md` opens in the preview pane; EXPLORER stays collapsed and, re-expanded, shows its own last selection, not `guide.md` (`app-44…`, `app-45…`) |
+| 21 | ⌃⇧G, Git History focused | PASS — collapses; focus goes to the terminal; View menu read "Hide Git History" before, "Show Git History" after (`app-17…`) |
+| 22 | ⌃⇧G, collapsed, terminal focused | PASS — expands and focuses the list; nothing typed into the terminal (`app-18…`) |
+| 23 | ⌃⇧G, expanded, EXPLORER focused | PASS — focuses the list, stays expanded; menu "Hide Explorer, Show Git History" → "Show Explorer, Hide Git History" |
+| 24 | ⌃⇧G, expanded, terminal focused | PASS — focuses the list |
+| 25 | ⌃⇧G, sidebar hidden (section collapsed) | PASS — sidebar shown, section expanded and focused (`app-19…`, `app-20…`) |
+| 26 | ⌃⇧G, section hidden | PASS — shown again at its old size, expanded, focused (`app-22…`, `app-23…`) |
+| 27 | Keyboard and menus | PASS — ↓↓ Return expands the second commit; ⌘C copies its full SHA; the context menu's Copy SHA / Copy Subject put the exact values on the pasteboard (`app-24…`, `app-25…`) |
+| 28 | Live: commit typed in the Session, list scrolled down | PASS — `↑4` → `↑5`; the rows in view stay put; at the top, the new commit is there with HEAD/main and the expanded commit still open (`app-26…`, `app-27…`, `app-28…`) |
+| 29 | Live: `git switch` in the Session | PASS — header and list follow `feature/history` and back (`app-29…`) |
+| 30 | Live: commit loop (6 commits, 0.4 s apart) | PASS after the §4 fix — counts track the loop; at the top the new commits come into view, scrolled down the rows stay put (`app-51…`, `app-56…`, `app-58…`). Before the fix: FAIL, see §4 |
+| 31 | Live: first commit in an empty repository | PASS — "No commits yet." becomes the commit, and the label becomes the filter menu (`app-35…`) |
+| 32 | Live: `git init` + commit in a plain folder | FAIL (open) — stays "This folder is not a git repository." until the Session is reselected (`app-33…`, `app-36…`); see §4 |
+
+One false negative while testing: clicks that selected a commit without
+expanding it were traced to the test harness leaving Command latched after
+a synthetic ⌘C (⌘-click is deliberately ignored, as in the EXPLORER); with
+the modifier released, clicks expand.
+
+## 3. Not exercised in the running app
+
+Not reachable in this throwaway home; covered by the view-model tests.
+
+- Remote Host empty state (no paired remote Host).
+- git not found (would mean removing git from this Mac).
 
 ## 4. Review
 
@@ -111,3 +144,24 @@ Kept by decision: a changed file is revealed in the EXPLORER only while its
 tree is showing (a collapsed EXPLORER is not expanded); GIT HISTORY also
 starts collapsed on a fresh install; Return toggles a commit and ⌘C copies
 its SHA.
+
+Found in the running app (§2):
+
+- **Fixed — new commits hidden at the top.** After a section resize or a
+  scroll back up, the list can rest a fraction of a point below the top
+  (scroller value 1.8e-5 and 8.5e-5 in the app). Landing commits treated
+  that as "scrolled down" and kept the old rows in view, so new commits
+  arrived out of sight. "At the top" now allows up to one point
+  (`GitHistoryOutlineController.atTopTolerance`), with a test that sets a
+  0.3 pt offset and failed first; re-checked in the rebuilt app at an
+  8.5e-5 offset (`app-56…`) and scrolled down (`app-58…`).
+- **Open — a folder that becomes a repository.** "Not a git repository"
+  stops watching (there is no git directory to watch), so an agent's
+  `git init` in the Session's folder is not noticed until the Session is
+  reselected or the section re-expanded. Natural home: the shared
+  repository-change signal Phase A (#5) introduces, which could also watch
+  a non-repository root for a `.git` appearing.
+- **By design, noted** — collapsing or hiding GIT HISTORY stops its reads
+  and watching; re-expanding reloads, so the expanded commit and scroll
+  position are not kept. The EXPLORER, which persists its own state, keeps
+  them.
