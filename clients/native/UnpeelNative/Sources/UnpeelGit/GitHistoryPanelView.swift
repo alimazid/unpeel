@@ -15,7 +15,7 @@ public struct GitHistoryPanelView: View {
     public var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             if let head = viewModel.head {
-                GitHistoryHeaderView(head: head, palette: palette)
+                GitHistoryHeaderView(viewModel: viewModel, head: head, palette: palette)
             }
             if let message = viewModel.status.message {
                 emptyState(message)

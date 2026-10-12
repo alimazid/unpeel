@@ -15,6 +15,7 @@ final class FakeGitHistory: @unchecked Sendable {
     private var heads: [String: GitReadResult<GitHead>] = [:]
     private var logs: [String: [GitLogScope: [GitCommit]]] = [:]
     private var logFailures: [String: GitReadFailure] = [:]
+    private var branchLists: [String: [GitRef]] = [:]
     private var delays: [String: TimeInterval] = [:]
     private var logDelays: [String: TimeInterval] = [:]
     private var headReads: [String] = []
@@ -31,6 +32,10 @@ final class FakeGitHistory: @unchecked Sendable {
 
     func setCommits(_ commits: [GitCommit], for root: String, scope: GitLogScope = .head) {
         locked { logs[root, default: [:]][scope] = commits }
+    }
+
+    func setBranches(_ refs: [GitRef], for root: String) {
+        locked { branchLists[root] = refs }
     }
 
     func setLogFailure(_ failure: GitReadFailure?, for root: String) {
@@ -62,6 +67,11 @@ final class FakeGitHistory: @unchecked Sendable {
         }
     }
 
+    func branches(_ root: String) -> GitReadResult<[GitRef]> {
+        pause(locked { delays[root] })
+        return locked { .success(branchLists[root] ?? []) }
+    }
+
     func logPage(_ root: String, _ scope: GitLogScope, _ offset: Int, _ limit: Int) -> GitReadResult<GitLogPage> {
         pause(locked { delays[root] ?? logDelays[root] })
         return locked {
@@ -76,6 +86,7 @@ final class FakeGitHistory: @unchecked Sendable {
     var services: GitHistoryServices {
         GitHistoryServices(
             head: { [self] root in head(root) },
+            branches: { [self] root in branches(root) },
             logPage: { [self] root, scope, offset, limit in logPage(root, scope, offset, limit) }
         )
     }
@@ -108,4 +119,12 @@ func fakeCommits(_ count: Int, prefix: String = "c") -> [GitCommit] {
             refs: []
         )
     }
+}
+
+func localBranch(_ name: String) -> GitRef {
+    GitRef(kind: .localBranch, name: name, fullName: "refs/heads/\(name)")
+}
+
+func remoteBranch(_ name: String) -> GitRef {
+    GitRef(kind: .remoteBranch, name: name, fullName: "refs/remotes/\(name)")
 }

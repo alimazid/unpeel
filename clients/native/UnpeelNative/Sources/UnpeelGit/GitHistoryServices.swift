@@ -5,15 +5,18 @@ import Foundation
 /// thread.
 public struct GitHistoryServices: Sendable {
     public typealias Head = @Sendable (_ root: String) -> GitReadResult<GitHead>
+    public typealias Branches = @Sendable (_ root: String) -> GitReadResult<[GitRef]>
     public typealias LogPage = @Sendable (
         _ root: String, _ scope: GitLogScope, _ offset: Int, _ limit: Int
     ) -> GitReadResult<GitLogPage>
 
     public let head: Head
+    public let branches: Branches
     public let logPage: LogPage
 
-    public init(head: @escaping Head, logPage: @escaping LogPage) {
+    public init(head: @escaping Head, branches: @escaping Branches, logPage: @escaping LogPage) {
         self.head = head
+        self.branches = branches
         self.logPage = logPage
     }
 
@@ -21,6 +24,7 @@ public struct GitHistoryServices: Sendable {
     public static func reading(_ reader: GitReader) -> GitHistoryServices {
         GitHistoryServices(
             head: { reader.head(at: $0) },
+            branches: { reader.branches(at: $0) },
             logPage: { reader.logPage(at: $0, scope: $1, offset: $2, limit: $3) }
         )
     }

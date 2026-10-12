@@ -25,6 +25,21 @@ public struct GitReader: Sendable {
         .map { GitHead.parse(porcelainV2: $0.stdout) }
     }
 
+    /// Local branches, then remote-tracking branches, each in name order
+    /// (sorting full names puts `refs/heads/` before `refs/remotes/`). Ref
+    /// names cannot contain a newline, so records are newline-separated.
+    public func branches(at root: String) -> GitReadResult<[GitRef]> {
+        runner.run(
+            .forEachRef,
+            ["--sort=refname", "--format=%(refname)%00%(symref)", "refs/heads", "refs/remotes"],
+            in: root
+        )
+        .readResult()
+        .map { output in
+            output.text.split(separator: "\n").compactMap(GitRef.parse(record:))
+        }
+    }
+
     /// Fields of one log record, NUL-separated; `-z` ends each record with
     /// another NUL. The subject is last and never contains a NUL.
     private static let logFormat = "--format=%H%x00%P%x00%aN%x00%at%x00%D%x00%s"
