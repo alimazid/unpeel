@@ -3,6 +3,7 @@ import AppKit
 /// Geometry shared by the commit rows and the rows of an expanded commit.
 enum GitHistoryRowMetrics {
     static let commitRowHeight: CGFloat = 36
+    static let fileRowHeight: CGFloat = 22
     static let gutterWidth: CGFloat = 20
     static let dotDiameter: CGFloat = 7
     /// The y of a commit dot's centre, from the row's top (flipped).

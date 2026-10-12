@@ -115,15 +115,24 @@ final class GitHistoryViewModelTests: XCTestCase {
                 recorder.record(Thread.isMainThread)
                 return .success([])
             },
+            repository: { root in
+                recorder.record(Thread.isMainThread)
+                return .success(GitRepositoryLocation(workTree: root, gitDirectory: root, commonDirectory: root))
+            },
             logPage: { _, _, _, _ in
                 recorder.record(Thread.isMainThread)
                 return .success(GitLogPage(commits: fakeCommits(1), hasMore: false))
+            },
+            commitDetail: { _, commit in
+                recorder.record(Thread.isMainThread)
+                return .success(GitCommitDetail(sha: commit.sha, message: "", files: []))
             }
         ))
 
         await viewModel.setContext(local("/repo")).value
+        await viewModel.toggleExpanded("c-0").value
 
-        XCTAssertEqual(recorder.values, [false, false, false])
+        XCTAssertEqual(recorder.values, [false, false, false, false, false])
     }
 
     func testEmptyStateMessages() {

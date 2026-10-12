@@ -5,6 +5,7 @@ import SwiftUI
 struct GitHistoryOutlineView: NSViewRepresentable {
     @ObservedObject var viewModel: GitHistoryViewModel
     let palette: GitHistoryPalette
+    let actionHandler: (any GitHistoryActionHandler)?
 
     @MainActor
     final class Coordinator {
@@ -72,7 +73,8 @@ struct GitHistoryOutlineView: NSViewRepresentable {
     func updateNSView(_: NSScrollView, context: Context) {
         let controller = context.coordinator.controller
         controller.palette = palette
-        controller.apply(commits: viewModel.commits)
+        controller.actionHandler = actionHandler
+        controller.apply(commits: viewModel.commits, expanded: viewModel.expanded)
     }
 
     static func dismantleNSView(_: NSScrollView, coordinator: Coordinator) {

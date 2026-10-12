@@ -6,10 +6,12 @@ import SwiftUI
 public struct GitHistoryPanelView: View {
     @ObservedObject private var viewModel: GitHistoryViewModel
     private let palette: GitHistoryPalette
+    private let actionHandler: (any GitHistoryActionHandler)?
 
-    public init(viewModel: GitHistoryViewModel, palette: GitHistoryPalette) {
+    public init(viewModel: GitHistoryViewModel, palette: GitHistoryPalette, actionHandler: (any GitHistoryActionHandler)?) {
         self.viewModel = viewModel
         self.palette = palette
+        self.actionHandler = actionHandler
     }
 
     public var body: some View {
@@ -20,7 +22,7 @@ public struct GitHistoryPanelView: View {
             if let message = viewModel.status.message {
                 emptyState(message)
             } else if viewModel.status == .ready {
-                GitHistoryOutlineView(viewModel: viewModel, palette: palette)
+                GitHistoryOutlineView(viewModel: viewModel, palette: palette, actionHandler: actionHandler)
             } else {
                 Spacer(minLength: 0)
             }

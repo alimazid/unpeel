@@ -40,6 +40,48 @@ public struct GitReader: Sendable {
         }
     }
 
+    /// The work tree, git directory and common directory, canonicalised so
+    /// they compare equal to paths FSEvents reports.
+    public func repository(at root: String) -> GitReadResult<GitRepositoryLocation> {
+        runner.run(
+            .revParse,
+            ["--path-format=absolute", "--show-toplevel", "--git-dir", "--git-common-dir"],
+            in: root
+        )
+        .readResult()
+        .flatMap { output in
+            let lines = output.text.split(separator: "\n", omittingEmptySubsequences: false).map(String.init)
+            guard lines.count >= 3 else { return .failure(.failed("git rev-parse gave no repository paths")) }
+            return .success(GitRepositoryLocation(
+                workTree: Self.canonical(lines[0]),
+                gitDirectory: Self.canonical(lines[1]),
+                commonDirectory: Self.canonical(lines[2])
+            ))
+        }
+    }
+
+    /// The commit's full message and the files it changed against its
+    /// first parent (everything is added in a root commit), with rename and
+    /// copy detection.
+    public func commitDetail(at root: String, commit: GitCommit) -> GitReadResult<GitCommitDetail> {
+        let message = runner.run(.show, ["-s", "--no-show-signature", "--no-color", "--format=%B", commit.sha, "--"], in: root)
+            .readResult()
+            .map { $0.text.trimmingCharacters(in: .newlines) }
+        let against = commit.parents.first.map { [$0, commit.sha] } ?? ["--root", commit.sha]
+        let files = runner.run(.diffTree, ["-r", "-z", "--name-status", "-M", "-C", "--no-ext-diff"] + against + ["--"], in: root)
+            .readResult()
+            .map { GitChangedFile.parse(nameStatus: $0.stdout) }
+        return message.flatMap { message in
+            files.map { GitCommitDetail(sha: commit.sha, message: message, files: $0) }
+        }
+    }
+
+    private static func canonical(_ path: String) -> String {
+        guard let resolved = realpath(path, nil) else { return path }
+        defer { free(resolved) }
+        return String(cString: resolved)
+    }
+
     /// Fields of one log record, NUL-separated; `-z` ends each record with
     /// another NUL. The subject is last and never contains a NUL.
     private static let logFormat = "--format=%H%x00%P%x00%aN%x00%at%x00%D%x00%s"

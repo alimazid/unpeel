@@ -16,6 +16,10 @@ final class FakeGitHistory: @unchecked Sendable {
     private var logs: [String: [GitLogScope: [GitCommit]]] = [:]
     private var logFailures: [String: GitReadFailure] = [:]
     private var branchLists: [String: [GitRef]] = [:]
+    private var locations: [String: GitRepositoryLocation] = [:]
+    private var details: [String: GitReadResult<GitCommitDetail>] = [:]
+    private var detailDelays: [String: TimeInterval] = [:]
+    private var detailReads: [String] = []
     private var delays: [String: TimeInterval] = [:]
     private var logDelays: [String: TimeInterval] = [:]
     private var headReads: [String] = []
@@ -37,6 +41,19 @@ final class FakeGitHistory: @unchecked Sendable {
     func setBranches(_ refs: [GitRef], for root: String) {
         locked { branchLists[root] = refs }
     }
+
+    func setLocation(_ location: GitRepositoryLocation, for root: String) {
+        locked { locations[root] = location }
+    }
+
+    func setDetail(_ result: GitReadResult<GitCommitDetail>, for sha: String, delay: TimeInterval? = nil) {
+        locked {
+            details[sha] = result
+            detailDelays[sha] = delay
+        }
+    }
+
+    var detailReadSHAs: [String] { locked { detailReads } }
 
     func setLogFailure(_ failure: GitReadFailure?, for root: String) {
         locked { logFailures[root] = failure }
@@ -72,6 +89,22 @@ final class FakeGitHistory: @unchecked Sendable {
         return locked { .success(branchLists[root] ?? []) }
     }
 
+    func repository(_ root: String) -> GitReadResult<GitRepositoryLocation> {
+        locked {
+            .success(locations[root] ?? GitRepositoryLocation(
+                workTree: root, gitDirectory: root + "/.git", commonDirectory: root + "/.git"
+            ))
+        }
+    }
+
+    func detail(_ root: String, _ commit: GitCommit) -> GitReadResult<GitCommitDetail> {
+        pause(locked { detailDelays[commit.sha] })
+        return locked {
+            detailReads.append(commit.sha)
+            return details[commit.sha] ?? .success(GitCommitDetail(sha: commit.sha, message: commit.subject, files: []))
+        }
+    }
+
     func logPage(_ root: String, _ scope: GitLogScope, _ offset: Int, _ limit: Int) -> GitReadResult<GitLogPage> {
         pause(locked { delays[root] ?? logDelays[root] })
         return locked {
@@ -87,7 +120,9 @@ final class FakeGitHistory: @unchecked Sendable {
         GitHistoryServices(
             head: { [self] root in head(root) },
             branches: { [self] root in branches(root) },
-            logPage: { [self] root, scope, offset, limit in logPage(root, scope, offset, limit) }
+            repository: { [self] root in repository(root) },
+            logPage: { [self] root, scope, offset, limit in logPage(root, scope, offset, limit) },
+            commitDetail: { [self] root, commit in detail(root, commit) }
         )
     }
 }

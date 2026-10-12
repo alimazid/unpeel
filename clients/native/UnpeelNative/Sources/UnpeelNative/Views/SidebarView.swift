@@ -790,7 +790,7 @@ struct SidebarView: View {
                 id: .gitHistory,
                 accessory: AnyView(EmptyView()),
                 actions: AnyView(EmptyView()),
-                content: { AnyView(GitHistoryPanelHost(store: store, section: gitHistorySection)) }
+                content: { AnyView(GitHistoryPanelHost(store: store, section: gitHistorySection, explorer: explorerSection)) }
             ),
         ]
     }

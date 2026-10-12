@@ -1,8 +1,17 @@
 import AppKit
 
+/// What Git History cannot do on its own; implemented by the app.
+@MainActor
+public protocol GitHistoryActionHandler: AnyObject {
+    /// Reveal `path` in the EXPLORER and open it with the open-with rules.
+    /// Only called for a file that exists in the working tree.
+    func openChangedFile(path: String)
+}
+
 /// Drives Git History's `NSOutlineView` from the view model: one row per
-/// commit, the commit menu (Copy SHA, Copy Subject), ⌘C, and loading the
-/// next page as the list nears its end.
+/// commit; under the one expanded commit, its message and changed files.
+/// Also the commit menu (Copy SHA, Copy Subject), ⌘C, Return, clicks, and
+/// loading the next page as the list nears its end.
 @MainActor
 final class GitHistoryOutlineController: NSObject, NSOutlineViewDataSource, NSOutlineViewDelegate, NSMenuDelegate {
     enum MenuAction: Equatable {
@@ -17,12 +26,15 @@ final class GitHistoryOutlineController: NSObject, NSOutlineViewDataSource, NSOu
     }
 
     private static let commitCellIdentifier = NSUserInterfaceItemIdentifier("unpeel.git.commit")
+    private static let messageCellIdentifier = NSUserInterfaceItemIdentifier("unpeel.git.message")
+    private static let fileCellIdentifier = NSUserInterfaceItemIdentifier("unpeel.git.file")
     /// Start loading the next page once fewer than this many rows remain
     /// below the visible area.
     private static let loadMoreRowThreshold: CGFloat = 8
 
     let viewModel: GitHistoryViewModel
     var palette: GitHistoryPalette
+    weak var actionHandler: (any GitHistoryActionHandler)?
     var pasteboard: NSPasteboard = .general
     /// The clock relative dates are measured against; injectable for tests.
     var now: () -> Date = Date.init
@@ -30,8 +42,11 @@ final class GitHistoryOutlineController: NSObject, NSOutlineViewDataSource, NSOu
 
     private var commits: [GitCommit] = []
     private var commitsBySHA: [String: GitCommit] = [:]
+    private var commitIndex: [String: Int] = [:]
+    private var expanded: GitExpandedCommit?
     private var items: [GitHistoryItem.Role: GitHistoryItem] = [:]
-    /// True while this controller changes the outline itself.
+    /// True while this controller changes the outline itself, so its
+    /// delegate callbacks are not echoed back into the view model.
     private var isApplying = false
 
     init(viewModel: GitHistoryViewModel, palette: GitHistoryPalette) {
@@ -44,21 +59,28 @@ final class GitHistoryOutlineController: NSObject, NSOutlineViewDataSource, NSOu
         self.outlineView = outlineView
         outlineView.dataSource = self
         outlineView.delegate = self
+        outlineView.target = self
+        outlineView.action = #selector(handleClick)
         let menu = NSMenu()
         menu.delegate = self
         outlineView.menu = menu
         outlineView.onCopy = { [weak self] in self?.copySelection() ?? false }
+        outlineView.onToggle = { [weak self] in self?.activateSelection() ?? false }
+        outlineView.onColumnResize = { [weak self] in self?.noteMessageHeightChanged() }
     }
 
     // MARK: - Applying
 
-    func apply(commits next: [GitCommit]) {
+    func apply(commits next: [GitCommit], expanded nextExpanded: GitExpandedCommit? = nil) {
         isApplying = true
         defer { isApplying = false }
         let previous = commits
-        let selectedSHA = selectedCommitSHA()
+        let previousExpanded = expanded
+        let selectedSHA = selectedSHA()
         commits = next
         commitsBySHA = Dictionary(next.map { ($0.sha, $0) }, uniquingKeysWith: { first, _ in first })
+        commitIndex = Dictionary(next.enumerated().map { ($0.element.sha, $0.offset) }, uniquingKeysWith: { first, _ in first })
+        expanded = nextExpanded
         guard let outlineView else { return }
         if previous.map(\.sha) == next.map(\.sha) {
             reloadVisibleCommitRows()
@@ -66,12 +88,32 @@ final class GitHistoryOutlineController: NSObject, NSOutlineViewDataSource, NSOu
             // A page appended: insert below, and redraw the old last row,
             // whose lane now continues downwards.
             outlineView.insertItems(at: IndexSet(previous.count..<next.count), inParent: nil, withAnimation: [])
-            if !previous.isEmpty { outlineView.reloadItem(item(for: .commit(sha: previous[previous.count - 1].sha))) }
+            if let last = previous.last { outlineView.reloadItem(item(for: .commit(sha: last.sha))) }
         } else {
             outlineView.reloadData()
             restoreSelection(selectedSHA)
         }
+        syncExpansion(from: previousExpanded)
         dropStaleItems()
+    }
+
+    /// Makes the outline's expansion match the view model's one expanded
+    /// commit, reloading its rows when its detail changed.
+    private func syncExpansion(from previous: GitExpandedCommit?) {
+        guard let outlineView else { return }
+        if let previous, previous.sha != expanded?.sha, let old = items[.commit(sha: previous.sha)],
+           outlineView.isItemExpanded(old) {
+            outlineView.collapseItem(old)
+        }
+        guard let expanded, commitsBySHA[expanded.sha] != nil else { return }
+        let item = item(for: .commit(sha: expanded.sha))
+        guard outlineView.row(forItem: item) >= 0 else { return }
+        if previous != expanded {
+            outlineView.reloadItem(item, reloadChildren: true)
+        }
+        if !outlineView.isItemExpanded(item) {
+            outlineView.expandItem(item)
+        }
     }
 
     private func reloadVisibleCommitRows() {
@@ -79,7 +121,8 @@ final class GitHistoryOutlineController: NSObject, NSOutlineViewDataSource, NSOu
         let rows = outlineView.rows(in: outlineView.visibleRect)
         guard rows.length > 0 else { return }
         for row in rows.location..<(rows.location + rows.length) {
-            outlineView.reloadItem(outlineView.item(atRow: row))
+            guard let item = outlineView.item(atRow: row) as? GitHistoryItem, case .commit = item.role else { continue }
+            outlineView.reloadItem(item)
         }
     }
 
@@ -104,6 +147,29 @@ final class GitHistoryOutlineController: NSObject, NSOutlineViewDataSource, NSOu
         return created
     }
 
+    /// The expanded commit's rows: its message (or a loading / failure
+    /// line), then one row per changed file.
+    private func detailRows(of sha: String) -> [GitHistoryItem] {
+        guard let expanded, expanded.sha == sha else { return [] }
+        let message = item(for: .message(sha: sha))
+        guard case .loaded(let detail) = expanded.state else { return [message] }
+        return [message] + detail.files.indices.map { item(for: .file(sha: sha, index: $0)) }
+    }
+
+    private func loadedDetail(_ sha: String) -> GitCommitDetail? {
+        guard let expanded, expanded.sha == sha, case .loaded(let detail) = expanded.state else { return nil }
+        return detail
+    }
+
+    private func messageText(_ sha: String) -> String {
+        guard let expanded, expanded.sha == sha else { return "" }
+        switch expanded.state {
+        case .loading: return "Loading…"
+        case .loaded(let detail): return detail.message
+        case .failed(let message): return message
+        }
+    }
+
     // MARK: - Scrolling
 
     /// Called as the list scrolls; loads the next page when the visible
@@ -117,36 +183,64 @@ final class GitHistoryOutlineController: NSObject, NSOutlineViewDataSource, NSOu
         return viewModel.loadMore()
     }
 
+    private func noteMessageHeightChanged() {
+        guard let outlineView, let sha = expanded?.sha, let message = items[.message(sha: sha)] else { return }
+        let row = outlineView.row(forItem: message)
+        guard row >= 0 else { return }
+        outlineView.noteHeightOfRows(withIndexesChanged: IndexSet(integer: row))
+    }
+
     // MARK: - NSOutlineViewDataSource
 
     func outlineView(_: NSOutlineView, numberOfChildrenOfItem item: Any?) -> Int {
-        item == nil ? commits.count : 0
+        guard let item = item as? GitHistoryItem else { return commits.count }
+        guard case .commit(let sha) = item.role else { return 0 }
+        return detailRows(of: sha).count
     }
 
-    func outlineView(_: NSOutlineView, child index: Int, ofItem _: Any?) -> Any {
-        item(for: .commit(sha: commits[index].sha))
+    func outlineView(_: NSOutlineView, child index: Int, ofItem item: Any?) -> Any {
+        guard let item = item as? GitHistoryItem, case .commit(let sha) = item.role else {
+            return self.item(for: .commit(sha: commits[index].sha))
+        }
+        return detailRows(of: sha)[index]
     }
 
-    func outlineView(_: NSOutlineView, isItemExpandable _: Any) -> Bool {
-        false
+    func outlineView(_: NSOutlineView, isItemExpandable item: Any) -> Bool {
+        guard let item = item as? GitHistoryItem, case .commit = item.role else { return false }
+        return true
     }
 
     // MARK: - NSOutlineViewDelegate
 
     func outlineView(_ outlineView: NSOutlineView, viewFor _: NSTableColumn?, item: Any) -> NSView? {
-        guard let item = item as? GitHistoryItem, case .commit(let sha) = item.role,
-              let commit = commitsBySHA[sha]
-        else { return nil }
-        let cell = (outlineView.makeView(withIdentifier: Self.commitCellIdentifier, owner: self) as? GitCommitCellView)
-            ?? makeCommitCell()
-        let index = commits.firstIndex { $0.sha == sha } ?? 0
-        cell.configure(
-            commit: commit,
-            lineAbove: index > 0,
-            lineBelow: hasLaneBelow(index),
-            palette: palette,
-            now: now()
-        )
+        guard let item = item as? GitHistoryItem, let index = commitIndex[item.sha] else { return nil }
+        let lane = hasLaneBelow(index)
+        switch item.role {
+        case .commit(let sha):
+            guard let commit = commitsBySHA[sha] else { return nil }
+            let cell: GitCommitCellView = reuse(outlineView, Self.commitCellIdentifier) { GitCommitCellView(frame: .zero) }
+            cell.configure(commit: commit, lineAbove: index > 0, lineBelow: lane, palette: palette, now: now())
+            return cell
+        case .message(let sha):
+            let cell: GitMessageCellView = reuse(outlineView, Self.messageCellIdentifier) { GitMessageCellView(frame: .zero) }
+            cell.configure(message: messageText(sha), lane: lane, palette: palette)
+            return cell
+        case .file(let sha, let fileIndex):
+            guard let detail = loadedDetail(sha), detail.files.indices.contains(fileIndex) else { return nil }
+            let cell: GitChangedFileCellView = reuse(outlineView, Self.fileCellIdentifier) { GitChangedFileCellView(frame: .zero) }
+            cell.configure(file: detail.files[fileIndex], lane: lane, palette: palette)
+            return cell
+        }
+    }
+
+    private func reuse<Cell: NSTableCellView>(
+        _ outlineView: NSOutlineView,
+        _ identifier: NSUserInterfaceItemIdentifier,
+        make: () -> Cell
+    ) -> Cell {
+        if let cell = outlineView.makeView(withIdentifier: identifier, owner: self) as? Cell { return cell }
+        let cell = make()
+        cell.identifier = identifier
         return cell
     }
 
@@ -157,20 +251,82 @@ final class GitHistoryOutlineController: NSObject, NSOutlineViewDataSource, NSOu
         return index < commits.count - 1 || viewModel.hasMore
     }
 
-    func outlineView(_: NSOutlineView, heightOfRowByItem _: Any) -> CGFloat {
-        GitHistoryRowMetrics.commitRowHeight
+    func outlineView(_ outlineView: NSOutlineView, heightOfRowByItem item: Any) -> CGFloat {
+        guard let item = item as? GitHistoryItem else { return GitHistoryRowMetrics.commitRowHeight }
+        switch item.role {
+        case .commit: return GitHistoryRowMetrics.commitRowHeight
+        case .file: return GitHistoryRowMetrics.fileRowHeight
+        case .message(let sha):
+            let width = outlineView.tableColumns.last?.width ?? outlineView.bounds.width
+            return GitMessageCellView.height(for: messageText(sha), width: width, palette: palette)
+        }
     }
 
-    private func makeCommitCell() -> GitCommitCellView {
-        let cell = GitCommitCellView(frame: .zero)
-        cell.identifier = Self.commitCellIdentifier
-        return cell
+    func outlineView(_: NSOutlineView, shouldSelectItem item: Any) -> Bool {
+        guard let item = item as? GitHistoryItem, case .message = item.role else { return true }
+        return false
+    }
+
+    func outlineViewItemDidExpand(_ notification: Notification) {
+        guard !isApplying, let item = notification.userInfo?["NSObject"] as? GitHistoryItem,
+              case .commit(let sha) = item.role, viewModel.expanded?.sha != sha
+        else { return }
+        viewModel.expand(sha)
+    }
+
+    func outlineViewItemDidCollapse(_ notification: Notification) {
+        guard !isApplying, let item = notification.userInfo?["NSObject"] as? GitHistoryItem,
+              case .commit(let sha) = item.role, viewModel.expanded?.sha == sha
+        else { return }
+        viewModel.collapse()
+    }
+
+    // MARK: - Clicks and keys
+
+    @objc private func handleClick() {
+        guard let outlineView, outlineView.clickedRow >= 0 else { return }
+        let modifiers = NSApp.currentEvent?.modifierFlags ?? []
+        guard modifiers.intersection([.command, .shift]).isEmpty else { return }
+        activate(row: outlineView.clickedRow)
+    }
+
+    /// A click (or Return) on a row: a commit expands or collapses; a
+    /// changed file that still exists is revealed and opened; anything
+    /// else does nothing. Internal so tests can drive it — `clickedRow` is
+    /// read-only and needs a real click.
+    @discardableResult
+    func activate(row: Int) -> Task<Void, Never>? {
+        guard let outlineView, let item = outlineView.item(atRow: row) as? GitHistoryItem else { return nil }
+        switch item.role {
+        case .commit(let sha):
+            return viewModel.toggleExpanded(sha)
+        case .file(let sha, let index):
+            guard let detail = loadedDetail(sha), detail.files.indices.contains(index),
+                  let path = viewModel.workTreePath(for: detail.files[index])
+            else { return nil }
+            actionHandler?.openChangedFile(path: path)
+            return nil
+        case .message:
+            return nil
+        }
+    }
+
+    private func activateSelection() -> Bool {
+        guard let outlineView, outlineView.selectedRow >= 0 else { return false }
+        activate(row: outlineView.selectedRow)
+        return true
     }
 
     // MARK: - Menu and copying
 
     func menuNeedsUpdate(_ menu: NSMenu) {
-        rebuildMenuItems(menu, forCommit: clickedCommitSHA())
+        rebuildMenuItems(menu, forRow: outlineView?.clickedRow ?? -1)
+    }
+
+    /// Every row of a commit (its detail rows too) offers the commit's menu.
+    func rebuildMenuItems(_ menu: NSMenu, forRow row: Int) {
+        let sha = row >= 0 ? (outlineView?.item(atRow: row) as? GitHistoryItem)?.sha : nil
+        rebuildMenuItems(menu, forCommit: sha)
     }
 
     /// Captures the target commit once, so the action acts on the commit
@@ -209,9 +365,9 @@ final class GitHistoryOutlineController: NSObject, NSOutlineViewDataSource, NSOu
         }
     }
 
-    /// ⌘C on a selected commit copies its SHA.
+    /// ⌘C on a selected row copies its commit's SHA.
     func copySelection() -> Bool {
-        guard let sha = selectedCommitSHA() else { return false }
+        guard let sha = selectedSHA() else { return false }
         perform(.copySHA, on: sha)
         return true
     }
@@ -221,12 +377,7 @@ final class GitHistoryOutlineController: NSObject, NSOutlineViewDataSource, NSOu
         pasteboard.setString(text, forType: .string)
     }
 
-    private func clickedCommitSHA() -> String? {
-        guard let outlineView, outlineView.clickedRow >= 0 else { return nil }
-        return (outlineView.item(atRow: outlineView.clickedRow) as? GitHistoryItem)?.sha
-    }
-
-    private func selectedCommitSHA() -> String? {
+    private func selectedSHA() -> String? {
         guard let outlineView, outlineView.selectedRow >= 0 else { return nil }
         return (outlineView.item(atRow: outlineView.selectedRow) as? GitHistoryItem)?.sha
     }

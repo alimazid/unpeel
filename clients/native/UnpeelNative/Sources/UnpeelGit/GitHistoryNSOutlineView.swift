@@ -8,6 +8,8 @@ public final class GitHistoryNSOutlineView: NSOutlineView {
     var onToggle: (() -> Bool)?
     /// ⌘C: copy the selected commit's SHA.
     var onCopy: (() -> Bool)?
+    /// The column's width changed, so wrapped rows need new heights.
+    var onColumnResize: (() -> Void)?
 
     /// See `ExplorerNSOutlineView.fitColumnToClipView`: the single column
     /// must follow the clip view's width on every layout pass.
@@ -21,8 +23,16 @@ public final class GitHistoryNSOutlineView: NSOutlineView {
               clipWidth != fittedClipWidth || column.width != fittedColumnWidth
         else { return }
         sizeLastColumnToFit()
+        let resized = column.width != fittedColumnWidth
         fittedClipWidth = clipWidth
         fittedColumnWidth = column.width
+        if resized { onColumnResize?() }
+    }
+
+    /// No disclosure triangles: a click on the row expands a commit, and the
+    /// dot gutter owns the leading edge.
+    public override func frameOfOutlineCell(atRow _: Int) -> NSRect {
+        .zero
     }
 
     public override func keyDown(with event: NSEvent) {
