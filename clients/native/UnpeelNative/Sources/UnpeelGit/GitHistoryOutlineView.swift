@@ -62,6 +62,7 @@ struct GitHistoryOutlineView: NSViewRepresentable {
         ) { [weak controller, weak scroll] _ in
             MainActor.assumeIsolated {
                 guard let scroll else { return }
+                controller?.noteScrollOffset(scroll.contentView.bounds.minY)
                 controller?.noteScrolled(visibleMaxY: scroll.contentView.bounds.maxY)
             }
         }

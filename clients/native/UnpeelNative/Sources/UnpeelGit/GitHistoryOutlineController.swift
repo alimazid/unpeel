@@ -51,6 +51,11 @@ final class GitHistoryOutlineController: NSObject, NSOutlineViewDataSource, NSOu
     /// True while this controller changes the outline itself, so its
     /// delegate callbacks are not echoed back into the view model.
     private var isApplying = false
+    /// The outline was just built (GIT HISTORY expanded again) and has not
+    /// yet been scrolled to the view model's kept offset. Until it has, its
+    /// own scroll reports — a fresh outline sits at the top — are not
+    /// recorded.
+    private var needsScrollRestore = false
 
     init(viewModel: GitHistoryViewModel, palette: GitHistoryPalette) {
         self.viewModel = viewModel
@@ -60,6 +65,7 @@ final class GitHistoryOutlineController: NSObject, NSOutlineViewDataSource, NSOu
 
     func attach(to outlineView: GitHistoryNSOutlineView) {
         self.outlineView = outlineView
+        needsScrollRestore = viewModel.scrollOffset > 0
         outlineView.dataSource = self
         outlineView.delegate = self
         outlineView.target = self
@@ -102,6 +108,18 @@ final class GitHistoryOutlineController: NSObject, NSOutlineViewDataSource, NSOu
         }
         syncExpansion(from: previousExpanded)
         dropStaleItems()
+        restoreScrollIfNeeded()
+    }
+
+    /// Scrolls a rebuilt outline to where the list was, once it has rows.
+    /// The offset is read now, not at attach: a new root resets it.
+    private func restoreScrollIfNeeded() {
+        guard needsScrollRestore, !commits.isEmpty, let outlineView,
+              let clip = outlineView.enclosingScrollView?.contentView
+        else { return }
+        needsScrollRestore = false
+        clip.scroll(to: NSPoint(x: clip.bounds.minX, y: CGFloat(viewModel.scrollOffset)))
+        outlineView.enclosingScrollView?.reflectScrolledClipView(clip)
     }
 
     /// Commits that landed on top (an agent committed). Scrolled down, the
@@ -196,6 +214,13 @@ final class GitHistoryOutlineController: NSObject, NSOutlineViewDataSource, NSOu
     }
 
     // MARK: - Scrolling
+
+    /// Records where the list is scrolled, so collapsing and expanding the
+    /// section comes back to it.
+    func noteScrollOffset(_ offset: CGFloat) {
+        guard !needsScrollRestore, !isApplying else { return }
+        viewModel.scrollOffset = Double(offset)
+    }
 
     /// Called as the list scrolls; loads the next page when the visible
     /// area nears the end. Returns the load, if one started.

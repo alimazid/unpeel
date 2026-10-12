@@ -103,7 +103,7 @@ final class GitRunnerTests: XCTestCase {
         setenv("LANGUAGE", "de", 1); setenv("LC_ALL", "de_DE.UTF-8", 1)
         defer { unsetenv("LANGUAGE"); unsetenv("LC_ALL") }
 
-        let result = GitReader(runner: try systemRunner()).head(at: plain.root)
+        let result = GitReader(runner: try systemRunner()).status(at: plain.root)
 
         XCTAssertEqual(result, .failure(.notARepository))
     }

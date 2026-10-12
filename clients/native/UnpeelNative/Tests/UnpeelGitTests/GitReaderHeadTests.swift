@@ -32,7 +32,7 @@ final class GitReaderHeadTests: XCTestCase {
         let (local, origin, other) = try trackedRepo()
         defer { [local, origin, other].forEach { $0.delete() } }
 
-        let head = try reader.head(at: local.root).get()
+        let head = try reader.status(at: local.root).map(\.head).get()
 
         XCTAssertEqual(head.branch, "main")
         XCTAssertEqual(head.upstream, "origin/main")
@@ -48,7 +48,7 @@ final class GitReaderHeadTests: XCTestCase {
         try local.write("b.txt", "b"); try local.commit("second")
         try local.write("c.txt", "c"); try local.commit("third")
 
-        let head = try reader.head(at: local.root).get()
+        let head = try reader.status(at: local.root).map(\.head).get()
 
         XCTAssertEqual(head.ahead, 2)
         XCTAssertEqual(head.behind, 0)
@@ -60,10 +60,10 @@ final class GitReaderHeadTests: XCTestCase {
         try pushFromOther(other, "theirs")
 
         // Nothing fetched yet: the reader never fetches, so it cannot know.
-        XCTAssertEqual(try reader.head(at: local.root).get().behind, 0)
+        XCTAssertEqual(try reader.status(at: local.root).map(\.head).get().behind, 0)
 
         try local.git("fetch", "-q")
-        let head = try reader.head(at: local.root).get()
+        let head = try reader.status(at: local.root).map(\.head).get()
         XCTAssertEqual(head.ahead, 0)
         XCTAssertEqual(head.behind, 1)
     }
@@ -75,7 +75,7 @@ final class GitReaderHeadTests: XCTestCase {
         try local.git("fetch", "-q")
         try local.write("mine.txt", "mine"); try local.commit("mine")
 
-        let head = try reader.head(at: local.root).get()
+        let head = try reader.status(at: local.root).map(\.head).get()
 
         XCTAssertEqual(head.ahead, 1)
         XCTAssertEqual(head.behind, 1)
@@ -86,7 +86,7 @@ final class GitReaderHeadTests: XCTestCase {
         try repo.commit("first")
         try repo.git("checkout", "-q", "-b", "feature/x")
 
-        let head = try reader.head(at: repo.root).get()
+        let head = try reader.status(at: repo.root).map(\.head).get()
 
         XCTAssertEqual(head.branch, "feature/x")
         XCTAssertNil(head.upstream)
@@ -99,7 +99,7 @@ final class GitReaderHeadTests: XCTestCase {
         let sha = try repo.commit("first")
         try repo.git("checkout", "-q", "--detach")
 
-        let head = try reader.head(at: repo.root).get()
+        let head = try reader.status(at: repo.root).map(\.head).get()
 
         XCTAssertNil(head.branch)
         XCTAssertTrue(head.isDetached)
@@ -111,7 +111,7 @@ final class GitReaderHeadTests: XCTestCase {
     func testEmptyRepositoryHasABranchButNoCommits() throws {
         let repo = try GitTestRepo(); defer { repo.delete() }
 
-        let head = try reader.head(at: repo.root).get()
+        let head = try reader.status(at: repo.root).map(\.head).get()
 
         XCTAssertEqual(head.branch, "main")
         XCTAssertNil(head.oid)
@@ -123,19 +123,19 @@ final class GitReaderHeadTests: XCTestCase {
         try repo.write("docs/readme.md", "x")
         try repo.commit("first")
 
-        XCTAssertEqual(try reader.head(at: repo.path("docs")).get().branch, "main")
+        XCTAssertEqual(try reader.status(at: repo.path("docs")).map(\.head).get().branch, "main")
     }
 
     func testNotARepository() throws {
         let plain = try GitTestRepo(initialize: false); defer { plain.delete() }
 
-        XCTAssertEqual(reader.head(at: plain.root), .failure(.notARepository))
+        XCTAssertEqual(reader.status(at: plain.root).map(\.head), .failure(.notARepository))
     }
 
     func testGitUnavailable() {
         let reader = GitReader(runner: GitRunner(resolver: GitExecutableResolver { nil }))
 
-        XCTAssertEqual(reader.head(at: "/tmp"), .failure(.gitUnavailable))
+        XCTAssertEqual(reader.status(at: "/tmp").map(\.head), .failure(.gitUnavailable))
     }
 
     func testParsesPorcelainHeaders() {

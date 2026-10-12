@@ -183,13 +183,13 @@ final class GitHistoryLiveTests: XCTestCase {
         let fake = scripted()
         let model = GitHistoryViewModel(services: fake.services, pageSize: 3, changeDebounce: 0.05)
         await model.setContext(local("/repo")).value
-        let headsBefore = fake.headReadRoots.count
+        let statusReadsBefore = fake.statusReadRoots.count
         let logsBefore = fake.logCalls.count
 
         let tasks = (0..<5).map { _ in model.repositoryDidChange() }
         for task in tasks { await task.value }
 
-        XCTAssertEqual(fake.headReadRoots.count - headsBefore, 1)
+        XCTAssertEqual(fake.statusReadRoots.count - statusReadsBefore, 1)
         XCTAssertEqual(fake.logCalls.count - logsBefore, 1)
     }
 
@@ -199,7 +199,7 @@ final class GitHistoryLiveTests: XCTestCase {
         let fake = scripted()
         let model = viewModel(fake)
         await model.setContext(local("/repo")).value
-        let before = fake.headReadRoots.count
+        let before = fake.statusReadRoots.count
         fake.setDelay(0.15, for: "/repo")
 
         let first = model.repositoryDidChange()
@@ -210,7 +210,7 @@ final class GitHistoryLiveTests: XCTestCase {
         await second.value
         await third.value
 
-        XCTAssertEqual(fake.headReadRoots.count - before, 2)
+        XCTAssertEqual(fake.statusReadRoots.count - before, 2)
     }
 
     func testTheMonitorSignalRefreshes() async throws {
@@ -228,18 +228,104 @@ final class GitHistoryLiveTests: XCTestCase {
         XCTAssertEqual(model.localBranches.map(\.name), ["main", "new", "topic"])
     }
 
+    // MARK: - The shared signal (#5, #10)
+
+    /// A Session's folder that becomes a repository is noticed without
+    /// reselecting it: a non-repository is watched for a `.git`.
+    func testAFolderThatBecomesARepositoryIsNoticed() async throws {
+        let fake = FakeGitHistory()
+        let model = viewModel(fake)
+        await model.setContext(local("/plain")).value
+        XCTAssertEqual(model.status, .notARepository)
+        let folderWatch = try XCTUnwrap(fake.monitors.active.first)
+        XCTAssertEqual(folderWatch.folder, "/plain")
+
+        fake.setHead(.success(GitHead(oid: "c-1", branch: "main")), for: "/plain")
+        fake.setCommits(fakeCommits(2), for: "/plain")
+        folderWatch.handler()
+        for _ in 0..<50 where model.status != .ready {
+            try await Task.sleep(nanoseconds: 20_000_000)
+        }
+
+        XCTAssertEqual(model.status, .ready)
+        XCTAssertEqual(model.commits.map(\.sha), ["c-1", "c-0"])
+        XCTAssertEqual(fake.monitors.active.map(\.location?.gitDirectory), ["/plain/.git"])
+    }
+
+    // MARK: - Collapsed (#10)
+
+    func testCollapsingKeepsWhatIsShownAndStopsWatching() async {
+        let fake = scripted(commits: 8)
+        let model = viewModel(fake)
+        await model.setContext(local("/repo")).value
+        await model.loadMore().value
+        await model.toggleExpanded("c-3").value
+        model.scrollOffset = 140
+        let reads = fake.statusReadRoots.count
+
+        model.suspend()
+
+        XCTAssertTrue(fake.monitors.active.isEmpty)
+        XCTAssertEqual(model.commits.count, 6)
+        XCTAssertEqual(model.expanded?.sha, "c-3")
+        XCTAssertEqual(model.scrollOffset, 140)
+        await model.repositoryDidChange().value
+        XCTAssertEqual(fake.statusReadRoots.count, reads, "nothing is read while collapsed")
+    }
+
+    /// Expanding again on the same root catches up in place: an agent's
+    /// commit made meanwhile lands on top, and the loaded pages, the
+    /// expanded commit and the scroll position stay.
+    func testExpandingAgainCatchesUpInPlace() async {
+        let fake = scripted(commits: 8)
+        let model = viewModel(fake)
+        await model.setContext(local("/repo")).value
+        await model.loadMore().value
+        await model.toggleExpanded("c-3").value
+        model.scrollOffset = 140
+        model.suspend()
+
+        fake.setCommits(fakeCommits(1, prefix: "new") + fakeCommits(8), for: "/repo")
+        fake.setHead(.success(GitHead(oid: "new-0", branch: "main", upstream: "origin/main", ahead: 1, behind: 0)), for: "/repo")
+        await model.setContext(local("/repo")).value
+
+        XCTAssertEqual(model.commits.map(\.sha), ["new-0", "c-7", "c-6", "c-5", "c-4", "c-3", "c-2"])
+        XCTAssertEqual(model.expanded?.sha, "c-3")
+        XCTAssertEqual(model.scrollOffset, 140)
+        XCTAssertEqual(model.head?.ahead, 1)
+        XCTAssertEqual(fake.monitors.active.count, 1)
+    }
+
+    func testAnotherRootAfterCollapsingStartsFresh() async {
+        let fake = scripted()
+        fake.setHead(.success(GitHead(oid: "o-0", branch: "main")), for: "/other")
+        fake.setCommits(fakeCommits(1, prefix: "o"), for: "/other")
+        let model = viewModel(fake)
+        await model.setContext(local("/repo")).value
+        await model.toggleExpanded("c-4").value
+        model.scrollOffset = 90
+        model.suspend()
+
+        await model.setContext(local("/other")).value
+
+        XCTAssertEqual(model.commits.map(\.sha), ["o-0"])
+        XCTAssertNil(model.expanded)
+        XCTAssertEqual(model.scrollOffset, 0)
+        XCTAssertEqual(fake.monitors.active.map(\.location?.workTree), ["/other"])
+    }
+
     func testAChangeForAPreviousRootIsIgnored() async throws {
         let fake = scripted()
         let model = viewModel(fake)
         await model.setContext(local("/repo")).value
         let stale = try XCTUnwrap(fake.monitors.active.first)
         await model.setContext(.remote).value
-        let reads = fake.headReadRoots.count
+        let reads = fake.statusReadRoots.count
 
         stale.handler()
         try await Task.sleep(nanoseconds: 100_000_000)
 
-        XCTAssertEqual(fake.headReadRoots.count, reads)
+        XCTAssertEqual(fake.statusReadRoots.count, reads)
         XCTAssertEqual(model.status, .remote)
     }
 }

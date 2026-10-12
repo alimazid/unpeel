@@ -5,7 +5,9 @@
 //  Fork-only: git support. Where Git History meets app state: it follows
 //  the same Explorer Root as the EXPLORER (`ExplorerPanelHost.context`, so
 //  the worktree-over-project rule and the remote / no-Session cases are
-//  shared) and keeps its view model alive while the section is collapsed.
+//  shared), shares the EXPLORER's `GitRepositoryHub` (one status read per
+//  change for both views), and keeps its view model alive — suspended,
+//  with its list and place — while the section is collapsed.
 //
 
 import AppKit
@@ -38,10 +40,11 @@ final class GitHistorySectionModel: ObservableObject {
     let actions = GitHistoryHostActions()
     private var activeHost = SectionMountClaim()
 
-    /// Reads with the shared runner and refreshes on its own: the
-    /// repository monitor watches HEAD, the index and refs.
+    /// Reads with the shared runner and refreshes on its own through the
+    /// hub the EXPLORER's decorations use, which watches HEAD, the index
+    /// and refs.
     init(viewModel: GitHistoryViewModel = GitHistoryViewModel(
-        services: .reading(GitReader(), makeMonitor: GitRepositoryMonitor.make)
+        services: .reading(GitReader(), repositories: .shared)
     )) {
         self.viewModel = viewModel
     }
@@ -94,10 +97,12 @@ struct GitHistoryPanelHost: View {
             // attach to the selected one (see `ExplorerPanelHost`).
             .onChange(of: selection.sessionID) { section.actions.opener.rootSessionID = $0 }
             // Collapsed or hidden: no git reads and no repository watching
-            // behind a section nobody can see. Re-expanding reloads.
+            // behind a section nobody can see, but the list, the expanded
+            // commit and the scroll position stay; re-expanding catches up
+            // in place (`setContext` with the same root resumes).
             .onDisappear {
                 guard section.release(mountToken) else { return }
-                section.viewModel.setContext(.none)
+                section.viewModel.suspend()
             }
     }
 

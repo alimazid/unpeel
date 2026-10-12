@@ -151,7 +151,10 @@ final class GitHistoryCommitListTests: XCTestCase {
             try repository.commit("commit \(index)", date: 1_700_000_000 + index * 60)
         }
         let expected = try repository.output("log", "--format=%H").split(separator: "\n").map(String.init)
-        let viewModel = GitHistoryViewModel(services: .reading(GitReader()), pageSize: 3)
+        let viewModel = GitHistoryViewModel(
+            services: .reading(GitReader(), repositories: GitRepositoryHub(services: .reading(GitReader()))),
+            pageSize: 3
+        )
 
         await viewModel.setContext(local(repository.root)).value
         while viewModel.hasMore { await viewModel.loadMore().value }

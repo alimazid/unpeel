@@ -1,7 +1,7 @@
 import Foundation
 
-/// The git reader: everything Git History (and later the EXPLORER's
-/// decorations) needs from a repository, given an Explorer Root, as typed
+/// The git reader: everything Git History and the EXPLORER's Git Status
+/// Decorations need from a repository, given an Explorer Root, as typed
 /// results. Every read is one or two `GitRunner` processes and blocks, so
 /// call it off the main thread. NUL-delimited output is used wherever a
 /// path or free text can appear.
@@ -12,20 +12,8 @@ public struct GitReader: Sendable {
         self.runner = runner
     }
 
-    /// The Checked-out Branch and its upstream counts, from the porcelain v2
-    /// branch headers. Untracked files are skipped: only the headers are
-    /// read here.
-    public func head(at root: String) -> GitReadResult<GitHead> {
-        runner.run(
-            .status,
-            ["--porcelain=v2", "--branch", "-z", "--untracked-files=no", "--ignore-submodules=all"],
-            in: root
-        )
-        .readResult()
-        .map { GitHead.parse(porcelainV2: $0.stdout) }
-    }
-
-    /// Every changed path under `root` and HEAD, from one status read. Only
+    /// Every changed path under `root` and HEAD — the Checked-out Branch
+    /// and its upstream counts — from one status read. Only
     /// `root`'s own subtree is read (paths stay relative to the work tree);
     /// an untracked folder is listed once rather than file by file, and a
     /// submodule counts only when its checked-out commit changed.

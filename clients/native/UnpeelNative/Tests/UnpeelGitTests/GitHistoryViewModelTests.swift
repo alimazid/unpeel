@@ -19,7 +19,7 @@ final class GitHistoryViewModelTests: XCTestCase {
         await viewModel.setContext(.none).value
         XCTAssertEqual(viewModel.status, .noSession)
         XCTAssertNil(viewModel.head)
-        XCTAssertTrue(fake.headReadRoots.isEmpty)
+        XCTAssertTrue(fake.statusReadRoots.isEmpty)
     }
 
     func testRepositoryShowsItsHead() async {
@@ -68,7 +68,7 @@ final class GitHistoryViewModelTests: XCTestCase {
         await viewModel.setContext(local("/repo")).value
         await viewModel.setContext(local("/repo")).value
 
-        XCTAssertEqual(fake.headReadRoots, ["/repo"])
+        XCTAssertEqual(fake.statusReadRoots, ["/repo"])
     }
 
     /// A slow read for the previous Explorer Root finishing after the
@@ -106,18 +106,17 @@ final class GitHistoryViewModelTests: XCTestCase {
 
     func testReadsRunOffTheMainThread() async {
         let recorder = ThreadRecorder()
+        let hub = GitRepositoryHub(services: GitRepositoryHubServices(read: { root in
+            recorder.record(Thread.isMainThread)
+            return .success(GitRepositorySnapshot(
+                location: GitRepositoryLocation(workTree: root, gitDirectory: root, commonDirectory: root),
+                status: GitStatus(head: GitHead(oid: "a", branch: "main"), entries: [])
+            ))
+        }))
         let viewModel = GitHistoryViewModel(services: GitHistoryServices(
-            head: { _ in
-                recorder.record(Thread.isMainThread)
-                return .success(GitHead(oid: "a", branch: "main"))
-            },
             branches: { _ in
                 recorder.record(Thread.isMainThread)
                 return .success([])
-            },
-            repository: { root in
-                recorder.record(Thread.isMainThread)
-                return .success(GitRepositoryLocation(workTree: root, gitDirectory: root, commonDirectory: root))
             },
             logPage: { _, _, _, _ in
                 recorder.record(Thread.isMainThread)
@@ -127,13 +126,13 @@ final class GitHistoryViewModelTests: XCTestCase {
                 recorder.record(Thread.isMainThread)
                 return .success(GitCommitDetail(sha: commit.sha, message: "", files: []))
             },
-            makeMonitor: { _, _ in nil }
+            repositories: hub
         ))
 
         await viewModel.setContext(local("/repo")).value
         await viewModel.toggleExpanded("c-0").value
 
-        XCTAssertEqual(recorder.values, [false, false, false, false, false])
+        XCTAssertEqual(recorder.values, [false, false, false, false])
     }
 
     func testEmptyStateMessages() {

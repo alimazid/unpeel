@@ -3,7 +3,8 @@ import Foundation
 
 /// Scripted reader results per root, with optional per-root delays, so a
 /// test controls exactly what each read returns and when. Every read is
-/// recorded in order.
+/// recorded in order. HEAD and the location are served as the shared
+/// hub's status read (`hubServices`), the way the app shares them.
 final class FakeGitHistory: @unchecked Sendable {
     struct LogCall: Equatable {
         let root: String
@@ -22,7 +23,7 @@ final class FakeGitHistory: @unchecked Sendable {
     private var detailReads: [String] = []
     private var delays: [String: TimeInterval] = [:]
     private var logDelays: [String: TimeInterval] = [:]
-    private var headReads: [String] = []
+    private var statusReads: [String] = []
     private var logReads: [LogCall] = []
 
     private func locked<T>(_ body: () -> T) -> T {
@@ -73,32 +74,30 @@ final class FakeGitHistory: @unchecked Sendable {
         locked { logDelays[root] = delay }
     }
 
-    var headReadRoots: [String] { locked { headReads } }
+    /// Every status read the hub made, by root.
+    var statusReadRoots: [String] { locked { statusReads } }
     var logCalls: [LogCall] { locked { logReads } }
 
     private func pause(_ delay: TimeInterval?) {
         if let delay { Thread.sleep(forTimeInterval: delay) }
     }
 
-    func head(_ root: String) -> GitReadResult<GitHead> {
+    func snapshot(_ root: String) -> GitReadResult<GitRepositorySnapshot> {
         pause(locked { delays[root] })
         return locked {
-            headReads.append(root)
-            return heads[root] ?? .failure(.notARepository)
+            statusReads.append(root)
+            let location = locations[root] ?? GitRepositoryLocation(
+                workTree: root, gitDirectory: root + "/.git", commonDirectory: root + "/.git"
+            )
+            return (heads[root] ?? .failure(.notARepository)).map {
+                GitRepositorySnapshot(location: location, status: GitStatus(head: $0, entries: []))
+            }
         }
     }
 
     func branches(_ root: String) -> GitReadResult<[GitRef]> {
         pause(locked { delays[root] })
         return locked { branchLists[root] ?? .success([]) }
-    }
-
-    func repository(_ root: String) -> GitReadResult<GitRepositoryLocation> {
-        locked {
-            .success(locations[root] ?? GitRepositoryLocation(
-                workTree: root, gitDirectory: root + "/.git", commonDirectory: root + "/.git"
-            ))
-        }
     }
 
     func detail(_ root: String, _ commit: GitCommit) -> GitReadResult<GitCommitDetail> {
@@ -123,14 +122,26 @@ final class FakeGitHistory: @unchecked Sendable {
     /// Monitors handed out by `services`, in creation order.
     let monitors = FakeMonitors()
 
+    /// The hub's reads and watches, served by this fake.
+    var hubServices: GitRepositoryHubServices {
+        GitRepositoryHubServices(
+            read: { [self] root in snapshot(root) },
+            makeMonitor: { [monitors] location, handler in monitors.make(location, handler) },
+            makeFolderMonitor: { [monitors] folder, handler in monitors.makeFolder(folder, handler) }
+        )
+    }
+
+    /// Services with a hub of their own.
     var services: GitHistoryServices {
+        services(sharing: GitRepositoryHub(services: hubServices))
+    }
+
+    func services(sharing repositories: GitRepositoryHub) -> GitHistoryServices {
         GitHistoryServices(
-            head: { [self] root in head(root) },
             branches: { [self] root in branches(root) },
-            repository: { [self] root in repository(root) },
             logPage: { [self] root, scope, offset, limit in logPage(root, scope, offset, limit) },
             commitDetail: { [self] root, commit in detail(root, commit) },
-            makeMonitor: { [monitors] location, handler in monitors.make(location, handler) }
+            repositories: repositories
         )
     }
 }

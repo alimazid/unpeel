@@ -176,7 +176,9 @@ final class GitHistoryFilterTests: XCTestCase {
             ]
         }
         let before = try snapshot()
-        let viewModel = GitHistoryViewModel(services: .reading(GitReader()))
+        let viewModel = GitHistoryViewModel(services: .reading(
+            GitReader(), repositories: GitRepositoryHub(services: .reading(GitReader()))
+        ))
         await viewModel.setContext(local(repository.root)).value
 
         for branch in viewModel.localBranches + viewModel.remoteBranches {

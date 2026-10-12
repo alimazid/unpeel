@@ -2,58 +2,41 @@ import Foundation
 
 /// Everything `GitHistoryViewModel` asks of the outside world, injectable so
 /// tests control results and timing. Every read is called off the main
-/// thread.
+/// thread. HEAD, the repository's location and change signals come from
+/// `repositories`, shared with the EXPLORER's decorations, so one change
+/// costs one status read across both views.
 public struct GitHistoryServices: Sendable {
-    public typealias Head = @Sendable (_ root: String) -> GitReadResult<GitHead>
     public typealias Branches = @Sendable (_ root: String) -> GitReadResult<[GitRef]>
-    public typealias Repository = @Sendable (_ root: String) -> GitReadResult<GitRepositoryLocation>
     public typealias CommitDetail = @Sendable (_ root: String, _ commit: GitCommit) -> GitReadResult<GitCommitDetail>
-    /// Starts watching a repository; the handler may be called on any
-    /// thread. Nil when the repository cannot be watched.
-    public typealias MakeMonitor = @Sendable (
-        _ location: GitRepositoryLocation, _ handler: @escaping @Sendable () -> Void
-    ) -> (any GitChangeMonitoring)?
     public typealias LogPage = @Sendable (
         _ root: String, _ scope: GitLogScope, _ offset: Int, _ limit: Int
     ) -> GitReadResult<GitLogPage>
 
-    public let head: Head
     public let branches: Branches
-    public let repository: Repository
     public let logPage: LogPage
     public let commitDetail: CommitDetail
-    public let makeMonitor: MakeMonitor
+    public let repositories: GitRepositoryHub
 
     public init(
-        head: @escaping Head,
         branches: @escaping Branches,
-        repository: @escaping Repository,
         logPage: @escaping LogPage,
         commitDetail: @escaping CommitDetail,
-        makeMonitor: @escaping MakeMonitor
+        repositories: GitRepositoryHub
     ) {
-        self.head = head
         self.branches = branches
-        self.repository = repository
         self.logPage = logPage
         self.commitDetail = commitDetail
-        self.makeMonitor = makeMonitor
+        self.repositories = repositories
     }
 
-    /// Services backed by a real reader; `makeMonitor` watches for changes
-    /// (the default watches nothing — the FSEvents monitor lives with the
-    /// EXPLORER's watcher in `UnpeelExplorer`).
-    public static func reading(
-        _ reader: GitReader,
-        makeMonitor: @escaping MakeMonitor = { _, _ in nil }
-    ) -> GitHistoryServices {
+    /// Services backed by a real reader, following repositories through
+    /// `repositories`.
+    public static func reading(_ reader: GitReader, repositories: GitRepositoryHub) -> GitHistoryServices {
         GitHistoryServices(
-            head: { reader.head(at: $0) },
             branches: { reader.branches(at: $0) },
-            repository: { reader.repository(at: $0) },
             logPage: { reader.logPage(at: $0, scope: $1, offset: $2, limit: $3) },
             commitDetail: { reader.commitDetail(at: $0, commit: $1) },
-            makeMonitor: makeMonitor
+            repositories: repositories
         )
     }
 }

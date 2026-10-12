@@ -8,8 +8,11 @@ import os
 /// not. Shaped like `ExplorerViewModel`: `setContext` follows the selected
 /// Session, every git read runs off the main thread, and a generation
 /// counter discards results that belong to a root no longer shown. While a
-/// repository is shown it is watched, and changes refresh everything in
-/// place (`repositoryDidChange`).
+/// root is shown it is followed through the shared `GitRepositoryHub` —
+/// HEAD and the repository's location come from the status read the
+/// EXPLORER's decorations share — and its change signal refreshes
+/// everything in place. Collapsing the section (`suspend`) stops reading
+/// and watching but keeps what is shown, for expanding again.
 @MainActor
 public final class GitHistoryViewModel: ObservableObject {
     public static let defaultPageSize = 200
@@ -33,6 +36,10 @@ public final class GitHistoryViewModel: ObservableObject {
     /// Where the repository lives; changed-file paths are relative to its
     /// work tree.
     @Published public private(set) var location: GitRepositoryLocation?
+    /// Where the list is scrolled; kept while the section is collapsed so
+    /// expanding it lands where the user left off. Not published: only the
+    /// outline reads it, when it is rebuilt.
+    public var scrollOffset: Double = 0
 
     let services: GitHistoryServices
     private let pageSize: Int
@@ -50,8 +57,10 @@ public final class GitHistoryViewModel: ObservableObject {
     /// Commit details read so far for this root; a commit never changes.
     var detailCache: [String: GitCommitDetail] = [:]
 
-    private var monitor: (any GitChangeMonitoring)?
-    private var monitoredLocation: GitRepositoryLocation?
+    /// This root's hold on the shared hub: its status and change signal.
+    private var subscription: GitRepositorySubscription?
+    /// Collapsed or hidden: not following the root, but keeping the list.
+    private var isSuspended = false
     /// A change arrived that no refresh has read yet.
     private var pendingChange = false
     /// The refresh loop serving change signals, while one runs.
@@ -68,7 +77,7 @@ public final class GitHistoryViewModel: ObservableObject {
     }
 
     deinit {
-        monitor?.stop()
+        subscription?.cancel()
     }
 
     /// The Explorer Root git reads run in, when there is one.
@@ -109,15 +118,17 @@ public final class GitHistoryViewModel: ObservableObject {
 
     // MARK: - Context
 
+    /// Shows `next`'s history. The same root again after `suspend`
+    /// resumes in place instead.
     @discardableResult
     public func setContext(_ next: ExplorerContext) -> Task<Void, Never> {
-        guard next != context else { return Task {} }
+        guard next != context else { return isSuspended ? resume() : Task {} }
         generation += 1
         listGeneration += 1
         loadingMore = false
         pendingChange = false
         changeTask = nil
-        watch(nil)
+        isSuspended = false
         context = next
         head = nil
         filter = .checkedOut
@@ -127,9 +138,28 @@ public final class GitHistoryViewModel: ObservableObject {
         detailCache = [:]
         commits = []
         hasMore = false
+        scrollOffset = 0
         status = Self.initialStatus(for: next)
+        follow(root)
         let current = generation
         return Task { await self.load(generation: current, merging: false) }
+    }
+
+    /// The section was collapsed or hidden: no reads and no watching while
+    /// nobody can see it, but the list, the expanded commit and the scroll
+    /// position stay for when it is shown again.
+    public func suspend() {
+        guard !isSuspended else { return }
+        isSuspended = true
+        follow(nil)
+    }
+
+    /// Shown again: follow the root once more and catch up in place — new
+    /// commits land on top, and the expanded commit stays if still listed.
+    private func resume() -> Task<Void, Never> {
+        isSuspended = false
+        follow(root)
+        return refresh()
     }
 
     /// Re-reads everything for the current root, keeping what is shown —
@@ -151,10 +181,21 @@ public final class GitHistoryViewModel: ObservableObject {
     // MARK: - Live updates
 
     /// The repository changed (a commit, checkout, fetch, branch created or
-    /// deleted). Signals are coalesced: a burst costs one refresh, and one
-    /// arriving mid-refresh costs exactly one more.
+    /// deleted). Reported to the shared hub, so every view of the root —
+    /// the EXPLORER's decorations too — reads it once; this view hears it
+    /// back through its subscription. Nothing happens while suspended.
     @discardableResult
     public func repositoryDidChange() -> Task<Void, Never> {
+        guard let root, subscription != nil else { return Task {} }
+        services.repositories.repositoryDidChange(root: root)
+        return changeTask ?? Task {}
+    }
+
+    /// The hub's change signal for this root. Signals are coalesced: a
+    /// burst costs one refresh, and one arriving mid-refresh costs exactly
+    /// one more.
+    @discardableResult
+    private func heardRepositoryChange() -> Task<Void, Never> {
         guard root != nil else { return Task {} }
         pendingChange = true
         if let changeTask { return changeTask }
@@ -172,20 +213,18 @@ public final class GitHistoryViewModel: ObservableObject {
         return task
     }
 
-    /// Watches `location` (nil stops watching). A signal from a monitor of a
-    /// previous generation is ignored.
-    private func watch(_ location: GitRepositoryLocation?) {
-        guard location != monitoredLocation else { return }
-        monitor?.stop()
-        monitor = nil
-        monitoredLocation = location
-        guard let location else { return }
+    /// Follows `root` through the hub (nil lets go). The hub watches the
+    /// repository — or, for a folder that is not one yet, waits for a
+    /// `.git` — while any view follows it. A signal for a previous
+    /// generation is ignored.
+    private func follow(_ root: String?) {
+        subscription?.cancel()
+        subscription = nil
+        guard let root else { return }
         let current = generation
-        monitor = services.makeMonitor(location) { [weak self] in
-            Task { @MainActor in
-                guard let self, current == self.generation else { return }
-                self.repositoryDidChange()
-            }
+        subscription = services.repositories.subscribe(root: root) { [weak self] in
+            guard let self, current == self.generation else { return }
+            self.heardRepositoryChange()
         }
     }
 
@@ -194,31 +233,22 @@ public final class GitHistoryViewModel: ObservableObject {
     private func load(generation current: Int, merging: Bool) async {
         guard current == generation, let root else { return }
         let token = nextReplacementToken()
-        let readHead = services.head
         let readBranches = services.branches
-        let readRepository = services.repository
-        let (headResult, branchesResult, locationResult) = await Task.detached(priority: .userInitiated) {
-            (readHead(root), readBranches(root), readRepository(root))
-        }.value
+        let branchesRead = Task.detached(priority: .userInitiated) { readBranches(root) }
+        let snapshotResult = await services.repositories.status(root: root)
+        let branchesResult = await branchesRead.value
         guard current == generation, token == replacementToken else { return }
-        let read: GitHead
-        switch headResult {
+        let snapshot: GitRepositorySnapshot
+        switch snapshotResult {
         case .success(let value):
-            read = value
+            snapshot = value
         case .failure(let failure):
             show(failure)
             return
         }
+        let read = snapshot.status.head
         head = read
-        switch locationResult {
-        case .success(let value):
-            location = value
-        case .failure(let failure):
-            // Costs opening changed files and live updates, not the list.
-            Self.logger.error("repository location unreadable: \(String(describing: failure), privacy: .public)")
-            location = nil
-        }
-        watch(location)
+        location = snapshot.location
         let previousFilter = filter
         switch branchesResult {
         case .success(let value):
@@ -354,7 +384,6 @@ public final class GitHistoryViewModel: ObservableObject {
         head = nil
         branches = []
         location = nil
-        watch(nil)
         replaceList(with: GitLogPage(commits: [], hasMore: false))
         status = GitHistoryStatus(failure)
     }

@@ -193,6 +193,31 @@ final class GitHistoryOutlineControllerTests: XCTestCase {
         XCTAssertEqual((outline.item(atRow: 0) as? GitHistoryItem)?.sha, "new0")
     }
 
+    /// Expanding GIT HISTORY again builds a new outline over the kept view
+    /// model; it reopens where the user left it, and the fresh outline's
+    /// own report of being at the top does not overwrite that.
+    func testARebuiltListReopensWhereItWasScrolled() async {
+        let commits = (0..<40).map { commit("c\($0)") }
+        let (controller, _, scroll) = await makeController(commits: commits)
+        scroll.contentView.scroll(to: NSPoint(x: 0, y: 200))
+        controller.noteScrollOffset(scroll.contentView.bounds.minY)
+        XCTAssertEqual(controller.viewModel.scrollOffset, 200)
+
+        let rebuilt = GitHistoryOutlineController(viewModel: controller.viewModel, palette: .system)
+        let outline = GitHistoryOutlineView.makeOutlineView()
+        rebuilt.attach(to: outline)
+        let rebuiltScroll = GitHistoryOutlineView.makeScrollView(documentView: outline)
+        rebuiltScroll.frame = NSRect(x: 0, y: 0, width: 280, height: 300)
+        rebuilt.noteScrollOffset(0)
+        rebuilt.apply(commits: controller.viewModel.commits)
+
+        XCTAssertEqual(rebuiltScroll.contentView.bounds.minY, 200)
+        XCTAssertEqual(controller.viewModel.scrollOffset, 200)
+        rebuiltScroll.contentView.scroll(to: NSPoint(x: 0, y: 120))
+        rebuilt.noteScrollOffset(rebuiltScroll.contentView.bounds.minY)
+        XCTAssertEqual(controller.viewModel.scrollOffset, 120)
+    }
+
     func testScrollingNearTheBottomLoadsMore() async {
         let fake = FakeGitHistory()
         let all = (0..<60).map { commit("c\($0)") }
