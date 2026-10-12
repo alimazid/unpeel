@@ -82,9 +82,13 @@ final class GitHistoryOutlineController: NSObject, NSOutlineViewDataSource, NSOu
         commitIndex = Dictionary(next.enumerated().map { ($0.element.sha, $0.offset) }, uniquingKeysWith: { first, _ in first })
         expanded = nextExpanded
         guard let outlineView else { return }
-        if previous.map(\.sha) == next.map(\.sha) {
+        let previousSHAs = previous.map(\.sha)
+        if previousSHAs == next.map(\.sha) {
             reloadVisibleCommitRows()
-        } else if next.count > previous.count, Array(next.prefix(previous.count)).map(\.sha) == previous.map(\.sha) {
+        } else if !previous.isEmpty, next.count > previous.count,
+                  next.suffix(previous.count).map(\.sha) == previousSHAs {
+            insertOnTop(next.count - previous.count, oldTop: previous[0].sha)
+        } else if next.count > previous.count, next.prefix(previous.count).map(\.sha) == previousSHAs {
             // A page appended: insert below, and redraw the old last row,
             // whose lane now continues downwards.
             outlineView.insertItems(at: IndexSet(previous.count..<next.count), inParent: nil, withAnimation: [])
@@ -95,6 +99,23 @@ final class GitHistoryOutlineController: NSObject, NSOutlineViewDataSource, NSOu
         }
         syncExpansion(from: previousExpanded)
         dropStaleItems()
+    }
+
+    /// Commits that landed on top (an agent committed). Scrolled down, the
+    /// rows the user is looking at stay where they are; at the very top,
+    /// the new commits come into view.
+    private func insertOnTop(_ count: Int, oldTop: String) {
+        guard let outlineView else { return }
+        let clip = outlineView.enclosingScrollView?.contentView
+        let wasScrolled = (clip?.bounds.minY ?? 0) > 0
+        outlineView.insertItems(at: IndexSet(0..<count), inParent: nil, withAnimation: [])
+        // The old top row's lane now continues upwards; labels may have moved.
+        reloadVisibleCommitRows()
+        outlineView.reloadItem(item(for: .commit(sha: oldTop)))
+        guard wasScrolled, let clip else { return }
+        let inserted = outlineView.rect(ofRow: count - 1).maxY
+        clip.scroll(to: NSPoint(x: clip.bounds.minX, y: clip.bounds.minY + inserted))
+        outlineView.enclosingScrollView?.reflectScrolledClipView(clip)
     }
 
     /// Makes the outline's expansion match the view model's one expanded

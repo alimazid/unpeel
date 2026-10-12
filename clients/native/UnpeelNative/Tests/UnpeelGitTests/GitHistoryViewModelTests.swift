@@ -126,7 +126,8 @@ final class GitHistoryViewModelTests: XCTestCase {
             commitDetail: { _, commit in
                 recorder.record(Thread.isMainThread)
                 return .success(GitCommitDetail(sha: commit.sha, message: "", files: []))
-            }
+            },
+            makeMonitor: { _, _ in nil }
         ))
 
         await viewModel.setContext(local("/repo")).value

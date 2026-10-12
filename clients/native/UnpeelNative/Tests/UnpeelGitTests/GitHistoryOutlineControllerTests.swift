@@ -152,6 +152,33 @@ final class GitHistoryOutlineControllerTests: XCTestCase {
         XCTAssertEqual(outline.selectedRow, -1)
     }
 
+    /// New commits landing on top while the user is scrolled down must not
+    /// move what they are looking at.
+    func testCommitsLandingOnTopKeepTheVisibleRowsInPlace() async throws {
+        let first = (0..<40).map { commit("c\($0)") }
+        let (controller, outline, scroll) = await makeController(commits: first)
+        let clip = scroll.contentView
+        clip.scroll(to: NSPoint(x: 0, y: 10 * GitHistoryRowMetrics.commitRowHeight))
+        let topRow = outline.row(at: NSPoint(x: 1, y: clip.bounds.minY + 1))
+        let topSHA = try XCTUnwrap(outline.item(atRow: topRow) as? GitHistoryItem).sha
+
+        controller.apply(commits: [commit("new1"), commit("new0")] + first)
+
+        XCTAssertEqual(outline.numberOfRows, 42)
+        let nowTop = outline.row(at: NSPoint(x: 1, y: clip.bounds.minY + 1))
+        XCTAssertEqual((outline.item(atRow: nowTop) as? GitHistoryItem)?.sha, topSHA)
+    }
+
+    func testCommitsLandingOnTopAreShownWhenAtTheTop() async {
+        let first = (0..<40).map { commit("c\($0)") }
+        let (controller, outline, scroll) = await makeController(commits: first)
+
+        controller.apply(commits: [commit("new0")] + first)
+
+        XCTAssertEqual(scroll.contentView.bounds.minY, 0)
+        XCTAssertEqual((outline.item(atRow: 0) as? GitHistoryItem)?.sha, "new0")
+    }
+
     func testScrollingNearTheBottomLoadsMore() async {
         let fake = FakeGitHistory()
         let all = (0..<60).map { commit("c\($0)") }

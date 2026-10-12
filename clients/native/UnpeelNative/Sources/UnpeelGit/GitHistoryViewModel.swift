@@ -2,14 +2,18 @@ import Combine
 import Foundation
 
 /// Git History's state for one Explorer Root: the header (Checked-out
-/// Branch, upstream counts), the commit list, and why there is nothing to
-/// show when there is not. Shaped like `ExplorerViewModel`: `setContext`
-/// follows the selected Session, every git read runs off the main thread,
-/// and a generation counter discards results that belong to a root no
-/// longer shown.
+/// Branch, upstream counts), the History Branch Filter, the commit list,
+/// the one expanded commit, and why there is nothing to show when there is
+/// not. Shaped like `ExplorerViewModel`: `setContext` follows the selected
+/// Session, every git read runs off the main thread, and a generation
+/// counter discards results that belong to a root no longer shown. While a
+/// repository is shown it is watched, and changes refresh everything in
+/// place (`repositoryDidChange`).
 @MainActor
 public final class GitHistoryViewModel: ObservableObject {
     public static let defaultPageSize = 200
+    /// How long a change signal waits for more before the refresh starts.
+    public static let defaultChangeDebounce: TimeInterval = 0.2
 
     @Published public private(set) var context: ExplorerContext = .none
     @Published public private(set) var status: GitHistoryStatus = .noSession
@@ -21,31 +25,47 @@ public final class GitHistoryViewModel: ObservableObject {
     @Published public private(set) var commits: [GitCommit] = []
     /// More commits exist beyond the loaded ones (`loadMore`).
     @Published public private(set) var hasMore = false
-    /// The one expanded commit, if any.
-    @Published public private(set) var expanded: GitExpandedCommit?
+    /// The one expanded commit, if any (see `GitHistoryViewModel+Detail`).
+    @Published public internal(set) var expanded: GitExpandedCommit?
     /// Where the repository lives; changed-file paths are relative to its
     /// work tree.
     @Published public private(set) var location: GitRepositoryLocation?
 
-    private let services: GitHistoryServices
+    let services: GitHistoryServices
     private let pageSize: Int
+    private let changeDebounce: TimeInterval
     /// Bumped on every context change; a read that finishes under an older
     /// generation belongs to a root that is no longer shown.
-    private var generation = 0
+    private(set) var generation = 0
     /// Bumped whenever the list is replaced rather than extended, so an
     /// in-flight page for the old list is dropped instead of appended.
     private var listGeneration = 0
-    /// Bumped by every read that will replace the list (a load, a filter
-    /// choice); a replacement started earlier is dropped when it finishes.
+    /// Bumped by every read that will replace the list (a load, a refresh,
+    /// a filter choice); one started earlier is dropped when it finishes.
     private var replacementToken = 0
     private var loadingMore = false
     /// Commit details read so far for this root; a commit never changes.
-    private var detailCache: [String: GitCommitDetail] = [:]
-    private static let detailCacheLimit = 64
+    var detailCache: [String: GitCommitDetail] = [:]
 
-    public init(services: GitHistoryServices = .live, pageSize: Int = GitHistoryViewModel.defaultPageSize) {
+    private var monitor: (any GitChangeMonitoring)?
+    private var monitoredLocation: GitRepositoryLocation?
+    /// A change arrived that no refresh has read yet.
+    private var pendingChange = false
+    /// The refresh loop serving change signals, while one runs.
+    private var changeTask: Task<Void, Never>?
+
+    public init(
+        services: GitHistoryServices = .live,
+        pageSize: Int = GitHistoryViewModel.defaultPageSize,
+        changeDebounce: TimeInterval = GitHistoryViewModel.defaultChangeDebounce
+    ) {
         self.services = services
         self.pageSize = max(1, pageSize)
+        self.changeDebounce = max(0, changeDebounce)
+    }
+
+    deinit {
+        monitor?.stop()
     }
 
     /// The Explorer Root git reads run in, when there is one.
@@ -78,6 +98,9 @@ public final class GitHistoryViewModel: ObservableObject {
         generation += 1
         listGeneration += 1
         loadingMore = false
+        pendingChange = false
+        changeTask = nil
+        watch(nil)
         context = next
         head = nil
         filter = .checkedOut
@@ -89,15 +112,15 @@ public final class GitHistoryViewModel: ObservableObject {
         hasMore = false
         status = Self.initialStatus(for: next)
         let current = generation
-        return Task { await self.load(generation: current) }
+        return Task { await self.load(generation: current, merging: false) }
     }
 
-    /// Re-reads everything for the current root, keeping what is shown
-    /// until the new results arrive.
+    /// Re-reads everything for the current root, keeping what is shown —
+    /// loaded pages, the expanded commit — where history allows.
     @discardableResult
     public func refresh() -> Task<Void, Never> {
         let current = generation
-        return Task { await self.load(generation: current) }
+        return Task { await self.load(generation: current, merging: true) }
     }
 
     private static func initialStatus(for context: ExplorerContext) -> GitHistoryStatus {
@@ -108,9 +131,50 @@ public final class GitHistoryViewModel: ObservableObject {
         }
     }
 
+    // MARK: - Live updates
+
+    /// The repository changed (a commit, checkout, fetch, branch created or
+    /// deleted). Signals are coalesced: a burst costs one refresh, and one
+    /// arriving mid-refresh costs exactly one more.
+    @discardableResult
+    public func repositoryDidChange() -> Task<Void, Never> {
+        guard root != nil else { return Task {} }
+        pendingChange = true
+        if let changeTask { return changeTask }
+        let current = generation
+        let debounce = changeDebounce
+        let task = Task {
+            if debounce > 0 { try? await Task.sleep(nanoseconds: UInt64(debounce * 1_000_000_000)) }
+            while self.pendingChange, current == self.generation {
+                self.pendingChange = false
+                await self.load(generation: current, merging: true)
+            }
+            if current == self.generation { self.changeTask = nil }
+        }
+        changeTask = task
+        return task
+    }
+
+    /// Watches `location` (nil stops watching). A signal from a monitor of a
+    /// previous generation is ignored.
+    private func watch(_ location: GitRepositoryLocation?) {
+        guard location != monitoredLocation else { return }
+        monitor?.stop()
+        monitor = nil
+        monitoredLocation = location
+        guard let location else { return }
+        let current = generation
+        monitor = services.makeMonitor(location) { [weak self] in
+            Task { @MainActor in
+                guard let self, current == self.generation else { return }
+                self.repositoryDidChange()
+            }
+        }
+    }
+
     // MARK: - Loading
 
-    private func load(generation current: Int) async {
+    private func load(generation current: Int, merging: Bool) async {
         guard current == generation, let root else { return }
         let token = nextReplacementToken()
         let readHead = services.head
@@ -130,30 +194,47 @@ public final class GitHistoryViewModel: ObservableObject {
         }
         head = read
         location = try? locationResult.get()
+        watch(location)
         // A failed branch listing only costs the filter its choices.
         branches = (try? branchesResult.get()) ?? []
+        let previousFilter = filter
         filter = filter.normalized(head: read).validated(against: branches)
         guard read.hasCommits else {
             replaceList(with: GitLogPage(commits: [], hasMore: false))
             status = .noCommits
             return
         }
+        let canMerge = merging && filter == previousFilter && status == .ready
         let page = await readPage(root: root, scope: scope, offset: 0)
         guard current == generation, token == replacementToken else { return }
         switch page {
         case .success(let page):
-            replaceList(with: page)
+            if canMerge { merge(page) } else { replaceList(with: page) }
             status = .ready
         case .failure(let failure):
             show(failure)
         }
     }
 
-    /// Whether `choice` is what the filter shows now (the Checked-out
-    /// Branch chosen by name counts as the default).
-    public func isChosen(_ choice: GitHistoryFilter) -> Bool {
-        choice.normalized(head: head) == filter
+    /// Merges a fresh first page into the listed commits: when the old top
+    /// is still there with the same history below it, only the new commits
+    /// are added on top, so loaded pages, the expanded commit and the
+    /// user's place survive an agent's commit. Anything else (an amend, a
+    /// reset, a checkout) replaces the list.
+    private func merge(_ page: GitLogPage) {
+        guard let top = commits.first,
+              let newCount = page.commits.firstIndex(where: { $0.sha == top.sha })
+        else { return replaceList(with: page) }
+        let overlap = page.commits.count - newCount
+        guard zip(page.commits[newCount...], commits).allSatisfy({ $0.sha == $1.sha }),
+              commits.count > overlap
+        else { return replaceList(with: page) }
+        // The page's copies replace the old ones it covers (their ref
+        // labels may have moved); older loaded commits are kept.
+        commits = page.commits + commits.dropFirst(overlap)
     }
+
+    // MARK: - History Branch Filter
 
     /// Chooses which branch's commits to list and reloads the list for it.
     /// Never touches the working tree: it only changes what is read.
@@ -178,10 +259,18 @@ public final class GitHistoryViewModel: ObservableObject {
         }
     }
 
+    /// Whether `choice` is what the filter shows now (the Checked-out
+    /// Branch chosen by name counts as the default).
+    public func isChosen(_ choice: GitHistoryFilter) -> Bool {
+        choice.normalized(head: head) == filter
+    }
+
     private func nextReplacementToken() -> Int {
         replacementToken += 1
         return replacementToken
     }
+
+    // MARK: - Paging
 
     /// Loads the next page; a no-op at the end, while one is loading, or
     /// with nothing listed.
@@ -228,73 +317,11 @@ public final class GitHistoryViewModel: ObservableObject {
         }
     }
 
-    // MARK: - Commit detail
-
-    /// Expands `sha` in place (collapsing any other commit), or collapses it
-    /// when it is the expanded one. The detail is read once per commit.
-    @discardableResult
-    public func toggleExpanded(_ sha: String) -> Task<Void, Never> {
-        if expanded?.sha == sha {
-            expanded = nil
-            return Task {}
-        }
-        return expand(sha)
-    }
-
-    @discardableResult
-    public func expand(_ sha: String) -> Task<Void, Never> {
-        guard expanded?.sha != sha, let root, let commit = commits.first(where: { $0.sha == sha }) else {
-            return Task {}
-        }
-        if let cached = detailCache[sha] {
-            expanded = GitExpandedCommit(sha: sha, state: .loaded(cached))
-            return Task {}
-        }
-        expanded = GitExpandedCommit(sha: sha, state: .loading)
-        let current = generation
-        let readDetail = services.commitDetail
-        return Task {
-            let result = await Task.detached(priority: .userInitiated) { readDetail(root, commit) }.value
-            guard current == self.generation, self.expanded?.sha == sha else { return }
-            switch result {
-            case .success(let detail):
-                self.remember(detail)
-                self.expanded = GitExpandedCommit(sha: sha, state: .loaded(detail))
-            case .failure(let failure):
-                self.expanded = GitExpandedCommit(sha: sha, state: .failed(GitHistoryStatus(failure).message ?? ""))
-            }
-        }
-    }
-
-    public func collapse() {
-        expanded = nil
-    }
-
-    private func remember(_ detail: GitCommitDetail) {
-        if detailCache.count >= Self.detailCacheLimit { detailCache.removeAll(keepingCapacity: true) }
-        detailCache[detail.sha] = detail
-    }
-
-    /// The changed file's absolute path in the working tree, or nil when it
-    /// no longer exists there as a file (deleted, renamed away, now a
-    /// folder) — old commits stay browsable without errors.
-    public func workTreePath(for file: GitChangedFile) -> String? {
-        // git never reports `..` components; refusing them keeps a path
-        // from ever resolving outside the work tree.
-        guard let workTree = location?.workTree, !file.path.hasPrefix("/"),
-              !file.path.split(separator: "/").contains("..")
-        else { return nil }
-        let path = (workTree as NSString).appendingPathComponent(file.path)
-        var isDirectory: ObjCBool = false
-        guard FileManager.default.fileExists(atPath: path, isDirectory: &isDirectory), !isDirectory.boolValue else {
-            return nil
-        }
-        return path
-    }
-
     private func show(_ failure: GitReadFailure) {
         head = nil
         branches = []
+        location = nil
+        watch(nil)
         replaceList(with: GitLogPage(commits: [], hasMore: false))
         status = GitHistoryStatus(failure)
     }

@@ -116,13 +116,17 @@ final class FakeGitHistory: @unchecked Sendable {
         }
     }
 
+    /// Monitors handed out by `services`, in creation order.
+    let monitors = FakeMonitors()
+
     var services: GitHistoryServices {
         GitHistoryServices(
             head: { [self] root in head(root) },
             branches: { [self] root in branches(root) },
             repository: { [self] root in repository(root) },
             logPage: { [self] root, scope, offset, limit in logPage(root, scope, offset, limit) },
-            commitDetail: { [self] root, commit in detail(root, commit) }
+            commitDetail: { [self] root, commit in detail(root, commit) },
+            makeMonitor: { [monitors] location, handler in monitors.make(location, handler) }
         )
     }
 }
@@ -162,4 +166,40 @@ func localBranch(_ name: String) -> GitRef {
 
 func remoteBranch(_ name: String) -> GitRef {
     GitRef(kind: .remoteBranch, name: name, fullName: "refs/remotes/\(name)")
+}
+
+/// Records every repository monitor the view model asks for, so a test can
+/// fire a change and check that monitors are released.
+final class FakeMonitors: @unchecked Sendable {
+    final class Monitor: GitChangeMonitoring, @unchecked Sendable {
+        let location: GitRepositoryLocation
+        let handler: @Sendable () -> Void
+        private(set) var isStopped = false
+
+        init(location: GitRepositoryLocation, handler: @escaping @Sendable () -> Void) {
+            self.location = location
+            self.handler = handler
+        }
+
+        func stop() {
+            isStopped = true
+        }
+    }
+
+    private let lock = NSLock()
+    private var created: [Monitor] = []
+
+    func make(_ location: GitRepositoryLocation, _ handler: @escaping @Sendable () -> Void) -> Monitor {
+        let monitor = Monitor(location: location, handler: handler)
+        lock.lock(); defer { lock.unlock() }
+        created.append(monitor)
+        return monitor
+    }
+
+    var all: [Monitor] {
+        lock.lock(); defer { lock.unlock() }
+        return created
+    }
+
+    var active: [Monitor] { all.filter { !$0.isStopped } }
 }

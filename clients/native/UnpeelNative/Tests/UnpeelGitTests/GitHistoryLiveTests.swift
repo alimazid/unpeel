@@ -1,0 +1,209 @@
+import XCTest
+@testable import UnpeelGit
+
+@MainActor
+final class GitHistoryLiveTests: XCTestCase {
+    private func local(_ root: String) -> ExplorerContext {
+        .local(root: root, projectRoot: root)
+    }
+
+    private func scripted(commits: Int = 5) -> FakeGitHistory {
+        let fake = FakeGitHistory()
+        fake.setHead(.success(GitHead(oid: "c-\(commits - 1)", branch: "main", upstream: "origin/main", ahead: 0, behind: 0)), for: "/repo")
+        fake.setBranches([localBranch("main"), localBranch("topic")], for: "/repo")
+        fake.setCommits(fakeCommits(commits), for: "/repo")
+        fake.setCommits(fakeCommits(2, prefix: "t"), for: "/repo", scope: .ref("refs/heads/topic"))
+        fake.setLocation(GitRepositoryLocation(workTree: "/repo", gitDirectory: "/repo/.git", commonDirectory: "/repo/.git"), for: "/repo")
+        return fake
+    }
+
+    private func viewModel(_ fake: FakeGitHistory, pageSize: Int = 3) -> GitHistoryViewModel {
+        GitHistoryViewModel(services: fake.services, pageSize: pageSize, changeDebounce: 0)
+    }
+
+    func testTheRepositoryIsWatchedWhileShown() async {
+        let fake = scripted()
+        let model = viewModel(fake)
+
+        await model.setContext(local("/repo")).value
+
+        XCTAssertEqual(fake.monitors.active.count, 1)
+        XCTAssertEqual(fake.monitors.active.first?.location.gitDirectory, "/repo/.git")
+    }
+
+    func testTheWatchIsReleasedWhenTheExplorerRootChanges() async {
+        let fake = scripted()
+        let model = viewModel(fake)
+        await model.setContext(local("/repo")).value
+
+        await model.setContext(.none).value
+
+        XCTAssertEqual(fake.monitors.all.count, 1)
+        XCTAssertTrue(fake.monitors.active.isEmpty)
+    }
+
+    func testRefreshesDoNotStackWatches() async {
+        let fake = scripted()
+        let model = viewModel(fake)
+        await model.setContext(local("/repo")).value
+
+        await model.refresh().value
+        await model.repositoryDidChange().value
+
+        XCTAssertEqual(fake.monitors.all.count, 1)
+    }
+
+    /// An agent commits while the user has scrolled two pages in and has a
+    /// commit open: the new commit lands on top, nothing loaded is lost.
+    func testAnExternalCommitLandsOnTopKeepingPagesAndTheExpandedCommit() async {
+        let fake = scripted(commits: 8)
+        let model = viewModel(fake)
+        await model.setContext(local("/repo")).value
+        await model.loadMore().value
+        await model.toggleExpanded("c-3").value
+        XCTAssertEqual(model.commits.count, 6)
+
+        fake.setCommits(fakeCommits(1, prefix: "new") + fakeCommits(8), for: "/repo")
+        fake.setHead(.success(GitHead(oid: "new-0", branch: "main", upstream: "origin/main", ahead: 1, behind: 0)), for: "/repo")
+        await model.repositoryDidChange().value
+
+        XCTAssertEqual(model.commits.map(\.sha), ["new-0", "c-7", "c-6", "c-5", "c-4", "c-3", "c-2"])
+        XCTAssertEqual(model.expanded?.sha, "c-3")
+        XCTAssertEqual(model.head?.ahead, 1)
+        XCTAssertTrue(model.hasMore)
+    }
+
+    func testARewrittenTopReplacesTheList() async {
+        let fake = scripted(commits: 4)
+        let model = viewModel(fake)
+        await model.setContext(local("/repo")).value
+        await model.toggleExpanded("c-2").value
+
+        // `commit --amend` of the tip: c-3 is gone, its replacement is new.
+        fake.setCommits(fakeCommits(1, prefix: "amended") + Array(fakeCommits(4).dropFirst()), for: "/repo")
+        await model.repositoryDidChange().value
+
+        XCTAssertEqual(model.commits.map(\.sha), ["amended-0", "c-2", "c-1"])
+        XCTAssertEqual(model.expanded?.sha, "c-2")
+    }
+
+    func testAnExternalCheckoutUpdatesTheHeaderAndTheDefaultList() async {
+        let fake = scripted()
+        let model = viewModel(fake)
+        await model.setContext(local("/repo")).value
+
+        fake.setHead(.success(GitHead(oid: "t-1", branch: "topic")), for: "/repo")
+        fake.setCommits(fakeCommits(2, prefix: "t"), for: "/repo")
+        await model.repositoryDidChange().value
+
+        XCTAssertEqual(model.head?.branch, "topic")
+        XCTAssertEqual(model.filter, .checkedOut)
+        XCTAssertEqual(model.filterTitle, "topic")
+        XCTAssertEqual(model.commits.map(\.sha), ["t-1", "t-0"])
+    }
+
+    func testAnExternalCheckoutKeepsABranchTheUserChose() async {
+        let fake = scripted()
+        fake.setBranches([localBranch("main"), localBranch("topic"), localBranch("other")], for: "/repo")
+        let model = viewModel(fake)
+        await model.setContext(local("/repo")).value
+        await model.selectFilter(.branch(localBranch("topic"))).value
+
+        fake.setHead(.success(GitHead(oid: "x", branch: "other")), for: "/repo")
+        await model.repositoryDidChange().value
+
+        XCTAssertEqual(model.filter, .branch(localBranch("topic")))
+        XCTAssertEqual(model.commits.map(\.sha), ["t-1", "t-0"])
+        XCTAssertEqual(model.head?.branch, "other")
+    }
+
+    func testANewBranchAppearsInTheFilter() async {
+        let fake = scripted()
+        let model = viewModel(fake)
+        await model.setContext(local("/repo")).value
+
+        fake.setBranches([localBranch("agent/fix"), localBranch("main"), localBranch("topic")], for: "/repo")
+        await model.repositoryDidChange().value
+
+        XCTAssertEqual(model.localBranches.map(\.name), ["agent/fix", "main", "topic"])
+    }
+
+    func testADeletedChosenBranchFallsBackOnAChange() async {
+        let fake = scripted()
+        let model = viewModel(fake)
+        await model.setContext(local("/repo")).value
+        await model.selectFilter(.branch(localBranch("topic"))).value
+
+        fake.setBranches([localBranch("main")], for: "/repo")
+        await model.repositoryDidChange().value
+
+        XCTAssertEqual(model.filter, .checkedOut)
+        XCTAssertEqual(model.commits.map(\.sha), ["c-4", "c-3", "c-2"])
+    }
+
+    /// A burst of change signals (one commit touches the index, HEAD, refs
+    /// and logs) costs one status read and one log-head read.
+    func testABurstOfChangesIsOneRead() async {
+        let fake = scripted()
+        let model = GitHistoryViewModel(services: fake.services, pageSize: 3, changeDebounce: 0.05)
+        await model.setContext(local("/repo")).value
+        let headsBefore = fake.headReadRoots.count
+        let logsBefore = fake.logCalls.count
+
+        let tasks = (0..<5).map { _ in model.repositoryDidChange() }
+        for task in tasks { await task.value }
+
+        XCTAssertEqual(fake.headReadRoots.count - headsBefore, 1)
+        XCTAssertEqual(fake.logCalls.count - logsBefore, 1)
+    }
+
+    /// A change that arrives while a refresh is reading is not lost: one
+    /// more refresh follows, never more.
+    func testAChangeDuringARefreshRunsExactlyOneMore() async {
+        let fake = scripted()
+        let model = viewModel(fake)
+        await model.setContext(local("/repo")).value
+        let before = fake.headReadRoots.count
+        fake.setDelay(0.15, for: "/repo")
+
+        let first = model.repositoryDidChange()
+        try? await Task.sleep(nanoseconds: 50_000_000)
+        let second = model.repositoryDidChange()
+        let third = model.repositoryDidChange()
+        await first.value
+        await second.value
+        await third.value
+
+        XCTAssertEqual(fake.headReadRoots.count - before, 2)
+    }
+
+    func testTheMonitorSignalRefreshes() async throws {
+        let fake = scripted()
+        let model = viewModel(fake)
+        await model.setContext(local("/repo")).value
+        fake.setBranches([localBranch("main"), localBranch("new"), localBranch("topic")], for: "/repo")
+
+        let monitor = try XCTUnwrap(fake.monitors.active.first)
+        monitor.handler()
+        for _ in 0..<50 where model.localBranches.count < 3 {
+            try await Task.sleep(nanoseconds: 20_000_000)
+        }
+
+        XCTAssertEqual(model.localBranches.map(\.name), ["main", "new", "topic"])
+    }
+
+    func testAChangeForAPreviousRootIsIgnored() async throws {
+        let fake = scripted()
+        let model = viewModel(fake)
+        await model.setContext(local("/repo")).value
+        let stale = try XCTUnwrap(fake.monitors.active.first)
+        await model.setContext(.remote).value
+        let reads = fake.headReadRoots.count
+
+        stale.handler()
+        try await Task.sleep(nanoseconds: 100_000_000)
+
+        XCTAssertEqual(fake.headReadRoots.count, reads)
+        XCTAssertEqual(model.status, .remote)
+    }
+}

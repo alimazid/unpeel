@@ -38,7 +38,11 @@ final class GitHistorySectionModel: ObservableObject {
     let actions = GitHistoryHostActions()
     private var activeHost = SectionMountClaim()
 
-    init(viewModel: GitHistoryViewModel = GitHistoryViewModel()) {
+    /// Reads with the shared runner and refreshes on its own: the
+    /// repository monitor watches HEAD, the index and refs.
+    init(viewModel: GitHistoryViewModel = GitHistoryViewModel(
+        services: .reading(GitReader(), makeMonitor: GitRepositoryMonitor.make)
+    )) {
         self.viewModel = viewModel
     }
 
