@@ -1,6 +1,7 @@
 import XCTest
 @testable import UnpeelGit
 
+@MainActor
 final class GitHistoryHeaderTests: XCTestCase {
     func testCountsShowOnlyWithAUsableUpstream() {
         XCTAssertEqual(

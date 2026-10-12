@@ -1,48 +1,6 @@
 import XCTest
 @testable import UnpeelGit
 
-/// Scripted reader results per root, with optional per-root delays, so a
-/// test controls exactly what each read returns and when.
-final class FakeGitHistory: @unchecked Sendable {
-    private let lock = NSLock()
-    private var heads: [String: GitReadResult<GitHead>] = [:]
-    private var delays: [String: TimeInterval] = [:]
-    private var headReads: [String] = []
-
-    func setHead(_ result: GitReadResult<GitHead>, for root: String) {
-        lock.lock(); defer { lock.unlock() }
-        heads[root] = result
-    }
-
-    func setDelay(_ delay: TimeInterval, for root: String) {
-        lock.lock(); defer { lock.unlock() }
-        delays[root] = delay
-    }
-
-    var headReadRoots: [String] {
-        lock.lock(); defer { lock.unlock() }
-        return headReads
-    }
-
-    private func pause(_ root: String) {
-        lock.lock()
-        let delay = delays[root]
-        lock.unlock()
-        if let delay { Thread.sleep(forTimeInterval: delay) }
-    }
-
-    func head(_ root: String) -> GitReadResult<GitHead> {
-        pause(root)
-        lock.lock(); defer { lock.unlock() }
-        headReads.append(root)
-        return heads[root] ?? .failure(.notARepository)
-    }
-
-    var services: GitHistoryServices {
-        GitHistoryServices(head: { [self] root in head(root) })
-    }
-}
-
 @MainActor
 final class GitHistoryViewModelTests: XCTestCase {
     private func local(_ root: String) -> ExplorerContext {
@@ -148,14 +106,20 @@ final class GitHistoryViewModelTests: XCTestCase {
 
     func testReadsRunOffTheMainThread() async {
         let recorder = ThreadRecorder()
-        let viewModel = GitHistoryViewModel(services: GitHistoryServices(head: { _ in
-            recorder.record(Thread.isMainThread)
-            return .success(GitHead(oid: "a", branch: "main"))
-        }))
+        let viewModel = GitHistoryViewModel(services: GitHistoryServices(
+            head: { _ in
+                recorder.record(Thread.isMainThread)
+                return .success(GitHead(oid: "a", branch: "main"))
+            },
+            logPage: { _, _, _, _ in
+                recorder.record(Thread.isMainThread)
+                return .success(GitLogPage(commits: fakeCommits(1), hasMore: false))
+            }
+        ))
 
         await viewModel.setContext(local("/repo")).value
 
-        XCTAssertEqual(recorder.values, [false])
+        XCTAssertEqual(recorder.values, [false, false])
     }
 
     func testEmptyStateMessages() {
@@ -167,20 +131,5 @@ final class GitHistoryViewModelTests: XCTestCase {
         XCTAssertEqual(GitHistoryStatus.failed("fatal: x").message, "fatal: x")
         XCTAssertNil(GitHistoryStatus.ready.message)
         XCTAssertNil(GitHistoryStatus.loading.message)
-    }
-}
-
-final class ThreadRecorder: @unchecked Sendable {
-    private let lock = NSLock()
-    private var recorded: [Bool] = []
-
-    func record(_ value: Bool) {
-        lock.lock(); defer { lock.unlock() }
-        recorded.append(value)
-    }
-
-    var values: [Bool] {
-        lock.lock(); defer { lock.unlock() }
-        return recorded
     }
 }

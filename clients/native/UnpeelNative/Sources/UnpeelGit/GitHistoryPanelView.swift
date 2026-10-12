@@ -19,6 +19,8 @@ public struct GitHistoryPanelView: View {
             }
             if let message = viewModel.status.message {
                 emptyState(message)
+            } else if viewModel.status == .ready {
+                GitHistoryOutlineView(viewModel: viewModel, palette: palette)
             } else {
                 Spacer(minLength: 0)
             }
