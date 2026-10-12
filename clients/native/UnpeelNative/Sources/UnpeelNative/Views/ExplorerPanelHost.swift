@@ -156,9 +156,39 @@ final class ExplorerSectionModel: ObservableObject {
     /// that ordering safe: only the host that is still the active claim may
     /// tear down.
     private var activeHost = SectionMountClaim()
+    /// Fork-only: git support. A reveal asked for while the tree was not
+    /// mounted (EXPLORER collapsed or hidden): applied when it next opens,
+    /// so a changed file opened from Git History still ends up selected
+    /// without the EXPLORER expanding over Git History.
+    private var pendingReveal: String?
 
     init(defaults: UserDefaults = AppDefaults.shared) {
         viewModel = ExplorerViewModel(stateStore: ExplorerStateStore(defaults: defaults))
+    }
+
+    /// Fork-only: git support. Reveals `path` in the tree now when it is
+    /// showing, otherwise the next time it opens.
+    @discardableResult
+    func reveal(_ path: String) -> Task<Void, Never> {
+        guard activeHost.isClaimed else {
+            pendingReveal = path
+            return Task {}
+        }
+        pendingReveal = nil
+        return viewModel.reveal(path)
+    }
+
+    /// Shows `context` in the tree, then applies a reveal saved while the
+    /// tree was not mounted.
+    @discardableResult
+    func open(_ context: ExplorerContext) -> Task<Void, Never> {
+        let opening = viewModel.setContext(context)
+        guard let path = pendingReveal, activeHost.isClaimed else { return opening }
+        pendingReveal = nil
+        return Task {
+            await opening.value
+            await self.viewModel.reveal(path).value
+        }
     }
 
     /// Marks `token` as the active host. Call from `onAppear`, before
@@ -182,6 +212,9 @@ final class ExplorerSectionModel: ObservableObject {
 /// only the most recent claim may tear the shared model down.
 struct SectionMountClaim {
     private var active: UUID?
+
+    /// Whether a host is mounted.
+    var isClaimed: Bool { active != nil }
 
     mutating func claim(_ token: UUID) {
         active = token
@@ -291,6 +324,6 @@ struct ExplorerPanelHost: View {
         } else {
             actions.root = nil
         }
-        viewModel.setContext(context)
+        section.open(context)
     }
 }

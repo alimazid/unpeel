@@ -16,13 +16,14 @@ import UnpeelExplorer
 import UnpeelGit
 
 /// A changed file clicked in an expanded commit: revealed in the EXPLORER
-/// (when its tree is showing) and opened through the EXPLORER's own
-/// open-with path — Markdown in the preview pane, other types by the
-/// Settings ▸ Open With rules — attached to the Explorer Root's Session.
+/// (at once when its tree is showing, otherwise the next time it opens)
+/// and opened through the EXPLORER's own open-with path — Markdown in the
+/// preview pane, other types by the Settings ▸ Open With rules — attached
+/// to the Explorer Root's Session.
 @MainActor
 final class GitHistoryHostActions: GitHistoryActionHandler {
     let opener = ExplorerHostActions()
-    /// Reveals a path in the EXPLORER; a no-op while its tree is unmounted.
+    /// Reveals a path in the EXPLORER (`ExplorerSectionModel.reveal`).
     var reveal: (String) -> Void = { _ in }
 
     func openChangedFile(path: String) {
@@ -115,7 +116,7 @@ struct GitHistoryPanelHost: View {
         } else {
             actions.opener.root = nil
         }
-        actions.reveal = { [weak explorer] path in explorer?.viewModel.reveal(path) }
+        actions.reveal = { [weak explorer] path in explorer?.reveal(path) }
         section.viewModel.setContext(context)
     }
 }
