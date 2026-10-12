@@ -235,6 +235,19 @@ block marked `// Fork-only: sidebar sections`):
     only dims rows); the drag auto-scroll edge zones are clamped to a
     quarter of the PROJECTS viewport.
 
+Added 2026-10-11 by the git support spec (alimazid/unpeel#1; every edited
+block marked `// Fork-only: git support`):
+
+13. `Package.swift` — the `UnpeelGit` target and its test target, and
+    `UnpeelExplorer`'s and the app target's dependency on it.
+14. `Views/SidebarView.swift` — the GIT HISTORY section descriptor and the
+    section model that keeps its view model alive while collapsed.
+15. `AppDelegate.swift` — the View-menu item ⌃⇧G ("Show Git History" /
+    "Hide Git History") and its action, sharing the ⇧⌘E decision.
+
+`Views/SidebarSections/*` and `Views/ExplorerPanelHost.swift` are fork-only
+files, not upstream ones; the Git History host is a new fork-only file.
+
 ### 3.4 Data flow
 
 **Context.** `ExplorerPanelHost` observes `store.selectedSession` and

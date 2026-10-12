@@ -45,10 +45,18 @@ let package = Package(
             path: "Sources/CUnpeelNativeBridge",
             publicHeadersPath: "include"
         ),
+        // Fork-only: git support. The read-only git reader and Git History;
+        // Foundation/AppKit only, like the explorer.
+        .target(
+            name: "UnpeelGit",
+            path: "Sources/UnpeelGit"
+        ),
         // VS Code-style file explorer (fork-only feature). Foundation/AppKit
         // only: it must build and test without Ghostty or the Rust bridge.
         .target(
             name: "UnpeelExplorer",
+            // Fork-only: git support
+            dependencies: ["UnpeelGit"],
             path: "Sources/UnpeelExplorer"
         ),
         // Rendered Markdown preview pane (fork-only feature). WebKit +
@@ -64,6 +72,8 @@ let package = Package(
             name: "UnpeelNative",
             dependencies: [
                 "UnpeelExplorer",
+                // Fork-only: git support
+                "UnpeelGit",
                 // Fork-only: markdown preview pane
                 "UnpeelMarkdownPreview",
                 "CUnpeelNativeBridge",
@@ -110,8 +120,15 @@ let package = Package(
         ),
         .testTarget(
             name: "UnpeelExplorerTests",
-            dependencies: ["UnpeelExplorer"],
+            // Fork-only: git support
+            dependencies: ["UnpeelExplorer", "UnpeelGit"],
             path: "Tests/UnpeelExplorerTests"
+        ),
+        // Fork-only: git support
+        .testTarget(
+            name: "UnpeelGitTests",
+            dependencies: ["UnpeelGit"],
+            path: "Tests/UnpeelGitTests"
         ),
         // Fork-only: markdown preview pane
         .testTarget(
