@@ -41,16 +41,11 @@ public struct GitRefLabel: Hashable, Sendable {
     }
 
     private static func label(forRef ref: String) -> [GitRefLabel] {
-        if let name = ref.dropping(prefix: "refs/heads/") {
-            return [GitRefLabel(kind: .localBranch, name: name)]
-        }
         if let name = ref.dropping(prefix: "refs/tags/") {
             return [GitRefLabel(kind: .tag, name: name)]
         }
-        if let name = ref.dropping(prefix: "refs/remotes/"), !name.hasSuffix("/HEAD") {
-            return [GitRefLabel(kind: .remoteBranch, name: name)]
-        }
-        return []
+        guard let branch = GitRef(fullName: ref) else { return [] }
+        return [GitRefLabel(kind: branch.kind == .localBranch ? .localBranch : .remoteBranch, name: branch.name)]
     }
 }
 
@@ -75,7 +70,6 @@ public struct GitCommit: Equatable, Sendable, Identifiable {
     }
 
     public var id: String { sha }
-    public var shortSHA: String { String(sha.prefix(GitHead.shortSHALength)) }
     /// The commit HEAD points to.
     public var isHead: Bool { refs.contains { $0.kind == .head } }
     public var isMerge: Bool { parents.count > 1 }

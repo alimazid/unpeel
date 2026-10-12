@@ -34,11 +34,7 @@ final class GitCommitCellView: NSTableCellView {
             addSubview(view)
         }
         textField = subjectField
-        NSLayoutConstraint.activate([
-            gutter.leadingAnchor.constraint(equalTo: leadingAnchor),
-            gutter.topAnchor.constraint(equalTo: topAnchor),
-            gutter.bottomAnchor.constraint(equalTo: bottomAnchor),
-            gutter.widthAnchor.constraint(equalToConstant: GitHistoryRowMetrics.gutterWidth),
+        NSLayoutConstraint.activate(gutter.constraints(pinningTo: self) + [
             subjectField.leadingAnchor.constraint(equalTo: gutter.trailingAnchor, constant: 2),
             subjectField.topAnchor.constraint(equalTo: topAnchor, constant: 3),
             pills.leadingAnchor.constraint(equalTo: subjectField.trailingAnchor, constant: 4),
@@ -97,6 +93,17 @@ final class GitCommitGutterView: NSView {
     var color: NSColor = .secondaryLabelColor { didSet { needsDisplay = true } }
 
     override var isFlipped: Bool { true }
+
+    /// The gutter's place in every Git History row: the leading strip, full
+    /// height, so the lane joins up from row to row.
+    func constraints(pinningTo cell: NSView) -> [NSLayoutConstraint] {
+        [
+            leadingAnchor.constraint(equalTo: cell.leadingAnchor),
+            topAnchor.constraint(equalTo: cell.topAnchor),
+            bottomAnchor.constraint(equalTo: cell.bottomAnchor),
+            widthAnchor.constraint(equalToConstant: GitHistoryRowMetrics.gutterWidth),
+        ]
+    }
 
     override func draw(_ dirtyRect: NSRect) {
         let centerX = bounds.midX

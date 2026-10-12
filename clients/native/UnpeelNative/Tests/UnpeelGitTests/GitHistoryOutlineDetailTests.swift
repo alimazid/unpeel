@@ -147,6 +147,27 @@ final class GitHistoryOutlineDetailTests: XCTestCase {
         XCTAssertNotNil(controller.outlineView)
     }
 
+    /// Return and the keypad's Enter (which carries the numeric-pad flag)
+    /// both toggle the selected commit.
+    func testReturnAndKeypadEnterToggleTheSelectedCommit() async throws {
+        let (viewModel, controller, outline, _) = await make()
+        outline.selectRowIndexes(IndexSet(integer: 1), byExtendingSelection: false)
+        func key(_ code: UInt16, _ flags: NSEvent.ModifierFlags) throws -> NSEvent {
+            try XCTUnwrap(NSEvent.keyEvent(
+                with: .keyDown, location: .zero, modifierFlags: flags, timestamp: 0, windowNumber: 0,
+                context: nil, characters: "\r", charactersIgnoringModifiers: "\r", isARepeat: false, keyCode: code
+            ))
+        }
+
+        outline.keyDown(with: try key(36, []))
+        try await Task.sleep(nanoseconds: 50_000_000)
+        XCTAssertEqual(viewModel.expanded?.sha, "c-1")
+
+        outline.keyDown(with: try key(76, [.numericPad]))
+        XCTAssertNil(viewModel.expanded)
+        XCTAssertNotNil(controller.outlineView)
+    }
+
     func testCommitMenuWorksFromItsDetailRows() async {
         let (viewModel, controller, _, _) = await make()
         await viewModel.toggleExpanded("c-1").value

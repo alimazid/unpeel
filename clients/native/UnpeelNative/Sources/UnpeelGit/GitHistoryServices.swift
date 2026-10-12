@@ -56,6 +56,4 @@ public struct GitHistoryServices: Sendable {
             makeMonitor: makeMonitor
         )
     }
-
-    public static let live = reading(GitReader())
 }

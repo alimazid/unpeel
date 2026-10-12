@@ -12,9 +12,15 @@ struct GitHistoryHeaderView: View {
 
     var body: some View {
         HStack(spacing: 6) {
-            GitHistoryFilterMenu(viewModel: viewModel, head: head)
+            if viewModel.canChooseFilter {
+                GitHistoryFilterMenu(viewModel: viewModel, head: head)
+            } else {
+                Label(head.displayName, systemImage: "arrow.triangle.branch")
+                    .font(.system(size: 12, weight: .medium))
+                    .lineLimit(1)
+            }
             Spacer(minLength: 4)
-            if viewModel.filter != .checkedOut {
+            if !viewModel.filterShowsCheckedOutBranch {
                 Text(head.displayName)
                     .font(.system(size: 11, weight: .regular))
                     .lineLimit(1)
@@ -46,17 +52,15 @@ struct GitHistoryHeaderView: View {
     }
 }
 
-/// The History Branch Filter: "All branches", then local branches, then
-/// remote-tracking branches under a separator. A detached HEAD is offered
-/// as its own `detached@…` entry, the default.
+/// The History Branch Filter: local branches, then remote-tracking branches
+/// under a separator, then "All branches". A detached HEAD is offered as
+/// its own `detached@…` entry, the default, first.
 struct GitHistoryFilterMenu: View {
     @ObservedObject var viewModel: GitHistoryViewModel
     let head: GitHead
 
     var body: some View {
         Menu {
-            choice(GitHistoryFilter.allBranchesTitle, .allBranches)
-            Divider()
             if head.isDetached {
                 choice(head.displayName, .checkedOut)
             }
@@ -69,6 +73,8 @@ struct GitHistoryFilterMenu: View {
                     choice(ref.name, .branch(ref))
                 }
             }
+            Divider()
+            choice(GitHistoryFilter.allBranchesTitle, .allBranches)
         } label: {
             HStack(spacing: 4) {
                 Image(systemName: head.isDetached && viewModel.filter == .checkedOut

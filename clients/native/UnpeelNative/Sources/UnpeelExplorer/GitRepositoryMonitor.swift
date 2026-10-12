@@ -1,4 +1,5 @@
 import Foundation
+import os
 import UnpeelGit
 
 /// Fork-only: git support. Watches one repository's git directory with the
@@ -19,6 +20,8 @@ public final class GitRepositoryMonitor: GitChangeMonitoring, @unchecked Sendabl
         "HEAD", "index", "ORIG_HEAD", "FETCH_HEAD", "MERGE_HEAD", "CHERRY_PICK_HEAD", "REBASE_HEAD",
     ]
 
+    private static let logger = Logger(subsystem: "com.unpeel.git", category: "monitor")
+
     private let watchers: [FileSystemWatcher]
 
     /// Nil when FSEvents could not start a stream; Git History then simply
@@ -31,6 +34,7 @@ public final class GitRepositoryMonitor: GitChangeMonitoring, @unchecked Sendabl
         }
         guard watchers.allSatisfy({ $0.start() }) else {
             watchers.forEach { $0.stop() }
+            Self.logger.error("git directory watch did not start; Git History will not refresh by itself")
             return nil
         }
     }
@@ -52,6 +56,8 @@ public final class GitRepositoryMonitor: GitChangeMonitoring, @unchecked Sendabl
         return git == common || git.hasPrefix(common + "/") ? [common] : [common, git]
     }
 
+    /// `FileSystemChange.directories` holds every event path itself as well
+    /// as its parent, so the changed files are in there to test.
     static func isRelevant(_ change: FileSystemChange, in location: GitRepositoryLocation) -> Bool {
         change.needsFullRescan || change.directories.contains { isRelevant($0, in: location) }
     }

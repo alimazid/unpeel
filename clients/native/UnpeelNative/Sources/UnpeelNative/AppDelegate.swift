@@ -739,21 +739,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, SPUU
         case .revealAndFocus:
             store.sidebarCollapsed = false
             sections.update { $0.revealing(section) }
-            if section == .gitHistory {
-                GitHistoryFocus.focusList(in: window)
-            } else {
-                ExplorerFocus.focusTree(in: window)
-            }
+            SidebarSectionFocus.focus(section, in: window)
+        }
+    }
+
+    /// The section a View-menu item reveals, if it is one of those items.
+    private static func sidebarSection(for action: Selector?) -> SidebarSectionID? {
+        switch action {
+        case #selector(toggleExplorerFromMenu): return .explorer
+        case #selector(toggleGitHistoryFromMenu): return .gitHistory
+        default: return nil
         }
     }
 
     private func currentSectionCommand(_ section: SidebarSectionID) -> SidebarSectionCommandAction {
         let layout = SidebarSectionLayoutStore.shared.layout
-        let focused = section == .gitHistory
-            ? GitHistoryFocus.isListFocused(in: window)
-            : ExplorerFocus.isTreeFocused(in: window)
         return SidebarSectionFocusCommand.action(
-            focused: focused,
+            focused: SidebarSectionFocus.isFocused(section, in: window),
             expanded: layout.isExpanded(section),
             hidden: !layout.isVisible(section),
             sidebarCollapsed: store?.sidebarCollapsed ?? false
@@ -812,12 +814,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, SPUU
     /// capture flow, so with no chip mounted the notification goes nowhere.
     func validateMenuItem(_ menuItem: NSMenuItem) -> Bool {
         // Fork-only: sidebar sections and git support.
-        if menuItem.action == #selector(toggleExplorerFromMenu) {
-            menuItem.title = SidebarSectionFocusCommand.menuTitle(for: currentSectionCommand(.explorer), section: .explorer)
-            return window != nil
-        }
-        if menuItem.action == #selector(toggleGitHistoryFromMenu) {
-            menuItem.title = SidebarSectionFocusCommand.menuTitle(for: currentSectionCommand(.gitHistory), section: .gitHistory)
+        if let section = Self.sidebarSection(for: menuItem.action) {
+            menuItem.title = SidebarSectionFocusCommand.menuTitle(for: currentSectionCommand(section), section: section)
             return window != nil
         }
         if menuItem.action == #selector(closePaneOrWindowFromMenu) {

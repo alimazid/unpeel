@@ -21,18 +21,23 @@ public struct GitRef: Hashable, Sendable, Identifiable {
 
     public var id: String { fullName }
 
+    /// The branch a full ref name names, or nil for anything that is not a
+    /// branch: tags, stash, notes, and a remote's `HEAD` symref.
+    init?(fullName: String) {
+        if let name = fullName.dropping(prefix: "refs/heads/") {
+            self.init(kind: .localBranch, name: name, fullName: fullName)
+        } else if let name = fullName.dropping(prefix: "refs/remotes/"), !name.hasSuffix("/HEAD") {
+            self.init(kind: .remoteBranch, name: name, fullName: fullName)
+        } else {
+            return nil
+        }
+    }
+
     /// One `for-each-ref` record: full name, NUL, symref target (empty for
-    /// a real branch). Symrefs (`origin/HEAD`) are not branches of their
-    /// own and are dropped.
+    /// a real branch). Symrefs are not branches of their own.
     static func parse(record: Substring) -> GitRef? {
         let fields = record.split(separator: "\0", omittingEmptySubsequences: false).map(String.init)
         guard let fullName = fields.first, fields.dropFirst().first?.isEmpty ?? true else { return nil }
-        if let name = fullName.dropping(prefix: "refs/heads/") {
-            return GitRef(kind: .localBranch, name: name, fullName: fullName)
-        }
-        if let name = fullName.dropping(prefix: "refs/remotes/"), !name.hasSuffix("/HEAD") {
-            return GitRef(kind: .remoteBranch, name: name, fullName: fullName)
-        }
-        return nil
+        return GitRef(fullName: fullName)
     }
 }

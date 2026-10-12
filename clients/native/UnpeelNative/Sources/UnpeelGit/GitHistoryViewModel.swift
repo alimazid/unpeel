@@ -1,5 +1,6 @@
 import Combine
 import Foundation
+import os
 
 /// Git History's state for one Explorer Root: the header (Checked-out
 /// Branch, upstream counts), the History Branch Filter, the commit list,
@@ -14,6 +15,8 @@ public final class GitHistoryViewModel: ObservableObject {
     public static let defaultPageSize = 200
     /// How long a change signal waits for more before the refresh starts.
     public static let defaultChangeDebounce: TimeInterval = 0.2
+
+    private static let logger = Logger(subsystem: "com.unpeel.git", category: "history")
 
     @Published public private(set) var context: ExplorerContext = .none
     @Published public private(set) var status: GitHistoryStatus = .noSession
@@ -55,7 +58,7 @@ public final class GitHistoryViewModel: ObservableObject {
     private var changeTask: Task<Void, Never>?
 
     public init(
-        services: GitHistoryServices = .live,
+        services: GitHistoryServices,
         pageSize: Int = GitHistoryViewModel.defaultPageSize,
         changeDebounce: TimeInterval = GitHistoryViewModel.defaultChangeDebounce
     ) {
@@ -87,6 +90,20 @@ public final class GitHistoryViewModel: ObservableObject {
         case .checkedOut: return head?.displayName ?? ""
         case .branch(let ref): return ref.name
         case .allBranches: return GitHistoryFilter.allBranchesTitle
+        }
+    }
+
+    /// The History Branch Filter only has choices once there are commits;
+    /// a repository without any keeps its empty state.
+    public var canChooseFilter: Bool { head?.hasCommits == true }
+
+    /// Whether the list shows the Checked-out Branch — by default, or
+    /// because the branch the user chose is the one checked out now.
+    public var filterShowsCheckedOutBranch: Bool {
+        switch filter {
+        case .checkedOut: return true
+        case .branch(let ref): return ref.kind == .localBranch && ref.name == head?.branch
+        case .allBranches: return false
         }
     }
 
@@ -193,12 +210,28 @@ public final class GitHistoryViewModel: ObservableObject {
             return
         }
         head = read
-        location = try? locationResult.get()
+        switch locationResult {
+        case .success(let value):
+            location = value
+        case .failure(let failure):
+            // Costs opening changed files and live updates, not the list.
+            Self.logger.error("repository location unreadable: \(String(describing: failure), privacy: .public)")
+            location = nil
+        }
         watch(location)
-        // A failed branch listing only costs the filter its choices.
-        branches = (try? branchesResult.get()) ?? []
         let previousFilter = filter
-        filter = filter.normalized(head: read).validated(against: branches)
+        switch branchesResult {
+        case .success(let value):
+            branches = value
+            // A chosen branch that no longer exists falls back. The choice
+            // is never rewritten otherwise: a chosen branch an agent checks
+            // out stays chosen when HEAD moves on.
+            filter = filter.validated(against: value)
+        case .failure(let failure):
+            // Keep the last known branches and the choice; the next change
+            // reads them again.
+            Self.logger.error("branch listing failed: \(String(describing: failure), privacy: .public)")
+        }
         guard read.hasCommits else {
             replaceList(with: GitLogPage(commits: [], hasMore: false))
             status = .noCommits
@@ -241,7 +274,7 @@ public final class GitHistoryViewModel: ObservableObject {
     @discardableResult
     public func selectFilter(_ choice: GitHistoryFilter) -> Task<Void, Never> {
         let next = choice.normalized(head: head)
-        guard next != filter, let root else { return Task {} }
+        guard canChooseFilter, next != filter, let root else { return Task {} }
         filter = next
         let current = generation
         let token = nextReplacementToken()
@@ -262,7 +295,7 @@ public final class GitHistoryViewModel: ObservableObject {
     /// Whether `choice` is what the filter shows now (the Checked-out
     /// Branch chosen by name counts as the default).
     public func isChosen(_ choice: GitHistoryFilter) -> Bool {
-        choice.normalized(head: head) == filter
+        choice.normalized(head: head) == filter.normalized(head: head)
     }
 
     private func nextReplacementToken() -> Int {

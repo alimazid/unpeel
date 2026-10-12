@@ -117,6 +117,42 @@ final class GitHistoryLiveTests: XCTestCase {
         XCTAssertEqual(model.head?.branch, "other")
     }
 
+    /// Review fix: choosing a branch that an agent then checks out must not
+    /// turn the choice into "follow HEAD" — it stays when HEAD moves on.
+    func testAChosenBranchSurvivesBeingCheckedOutAndLeft() async {
+        let fake = scripted()
+        let model = viewModel(fake)
+        await model.setContext(local("/repo")).value
+        await model.selectFilter(.branch(localBranch("topic"))).value
+
+        fake.setHead(.success(GitHead(oid: "t-1", branch: "topic")), for: "/repo")
+        await model.repositoryDidChange().value
+        XCTAssertEqual(model.filter, .branch(localBranch("topic")))
+        XCTAssertTrue(model.isChosen(.branch(localBranch("topic"))))
+        XCTAssertTrue(model.filterShowsCheckedOutBranch)
+
+        fake.setHead(.success(GitHead(oid: "c-4", branch: "main")), for: "/repo")
+        await model.repositoryDidChange().value
+        XCTAssertEqual(model.filter, .branch(localBranch("topic")))
+        XCTAssertEqual(model.commits.map(\.sha), ["t-1", "t-0"])
+        XCTAssertFalse(model.filterShowsCheckedOutBranch)
+    }
+
+    /// Review fix: a failed branch listing keeps the choice and the list.
+    func testAFailedBranchListingKeepsTheChosenBranch() async {
+        let fake = scripted()
+        let model = viewModel(fake)
+        await model.setContext(local("/repo")).value
+        await model.selectFilter(.branch(localBranch("topic"))).value
+
+        fake.setBranchFailure(.failed("fatal: unable to read refs"), for: "/repo")
+        await model.repositoryDidChange().value
+
+        XCTAssertEqual(model.filter, .branch(localBranch("topic")))
+        XCTAssertEqual(model.localBranches.map(\.name), ["main", "topic"])
+        XCTAssertEqual(model.commits.map(\.sha), ["t-1", "t-0"])
+    }
+
     func testANewBranchAppearsInTheFilter() async {
         let fake = scripted()
         let model = viewModel(fake)

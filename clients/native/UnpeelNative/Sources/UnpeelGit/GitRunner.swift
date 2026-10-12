@@ -55,12 +55,16 @@ public final class GitRunner: @unchecked Sendable {
     }
 
     /// Whether git can currently be run (resolving it if not yet done).
-    public var isAvailable: Bool { executable() != nil }
+    var isAvailable: Bool { executable() != nil }
 
     static func environment(base: [String: String]) -> [String: String] {
         var environment = base.filter { !strippedVariables.contains($0.key) }
         environment["GIT_OPTIONAL_LOCKS"] = "0"
         environment["GIT_TERMINAL_PROMPT"] = "0"
+        // Untranslated messages: "not a git repository" is recognised by
+        // its text. Output with paths or messages is NUL-delimited bytes,
+        // which the locale does not touch.
+        environment["LC_ALL"] = "C"
         return environment
     }
 

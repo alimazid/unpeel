@@ -50,8 +50,10 @@ final class GitHistoryFocusCommandTests: XCTestCase {
         root.addSubview(middle)
         middle.addSubview(list)
 
-        XCTAssertTrue(GitHistoryFocus.list(in: root) === list)
-        XCTAssertNil(GitHistoryFocus.list(in: NSView()))
+        XCTAssertTrue(SidebarSectionFocus.list(of: .gitHistory, in: root) === list)
+        XCTAssertNil(SidebarSectionFocus.list(of: .gitHistory, in: NSView()))
+        XCTAssertNil(SidebarSectionFocus.list(of: .explorer, in: root), "the explorer's outline is another type")
+        XCTAssertNil(SidebarSectionFocus.list(of: .projects, in: root))
     }
 
     func testHistoryFocusFollowsTheFirstResponder() {
@@ -63,9 +65,10 @@ final class GitHistoryFocusCommandTests: XCTestCase {
         window.contentView?.addSubview(other)
 
         XCTAssertTrue(window.makeFirstResponder(list))
-        XCTAssertTrue(GitHistoryFocus.isListFocused(in: window))
+        XCTAssertTrue(SidebarSectionFocus.isFocused(.gitHistory, in: window))
+        XCTAssertFalse(SidebarSectionFocus.isFocused(.explorer, in: window))
         XCTAssertTrue(window.makeFirstResponder(other))
-        XCTAssertFalse(GitHistoryFocus.isListFocused(in: window))
+        XCTAssertFalse(SidebarSectionFocus.isFocused(.gitHistory, in: window))
     }
 
     /// ⌃⇧G sits next to ⇧⌘E in the View menu, which keeps its own chord.

@@ -114,6 +114,22 @@ final class GitHistoryFilterTests: XCTestCase {
         XCTAssertEqual(viewModel.localBranches.map(\.name), ["main"])
     }
 
+    /// Review fix: a repository with no commits keeps its empty state — no
+    /// filter choice can turn it into a git error.
+    func testNoChoiceIsReadInARepositoryWithoutCommits() async {
+        let fake = FakeGitHistory()
+        fake.setHead(.success(GitHead(oid: nil, branch: "main")), for: "/fresh")
+        let viewModel = GitHistoryViewModel(services: fake.services)
+        await viewModel.setContext(local("/fresh")).value
+
+        await viewModel.selectFilter(.allBranches).value
+
+        XCTAssertEqual(viewModel.status, .noCommits)
+        XCTAssertEqual(viewModel.filter, .checkedOut)
+        XCTAssertTrue(fake.logCalls.isEmpty)
+        XCTAssertFalse(viewModel.canChooseFilter)
+    }
+
     func testADetachedHeadIsTheDefaultTitle() async {
         let fake = scripted()
         fake.setHead(.success(GitHead(oid: "0123456789abcdef0123", branch: nil)), for: "/repo")

@@ -15,7 +15,7 @@ final class FakeGitHistory: @unchecked Sendable {
     private var heads: [String: GitReadResult<GitHead>] = [:]
     private var logs: [String: [GitLogScope: [GitCommit]]] = [:]
     private var logFailures: [String: GitReadFailure] = [:]
-    private var branchLists: [String: [GitRef]] = [:]
+    private var branchLists: [String: GitReadResult<[GitRef]>] = [:]
     private var locations: [String: GitRepositoryLocation] = [:]
     private var details: [String: GitReadResult<GitCommitDetail>] = [:]
     private var detailDelays: [String: TimeInterval] = [:]
@@ -39,7 +39,11 @@ final class FakeGitHistory: @unchecked Sendable {
     }
 
     func setBranches(_ refs: [GitRef], for root: String) {
-        locked { branchLists[root] = refs }
+        locked { branchLists[root] = .success(refs) }
+    }
+
+    func setBranchFailure(_ failure: GitReadFailure, for root: String) {
+        locked { branchLists[root] = .failure(failure) }
     }
 
     func setLocation(_ location: GitRepositoryLocation, for root: String) {
@@ -86,7 +90,7 @@ final class FakeGitHistory: @unchecked Sendable {
 
     func branches(_ root: String) -> GitReadResult<[GitRef]> {
         pause(locked { delays[root] })
-        return locked { .success(branchLists[root] ?? []) }
+        return locked { branchLists[root] ?? .success([]) }
     }
 
     func repository(_ root: String) -> GitReadResult<GitRepositoryLocation> {

@@ -19,11 +19,7 @@ final class GitMessageCellView: NSTableCellView {
             addSubview(view)
         }
         textField = messageField
-        NSLayoutConstraint.activate([
-            gutter.leadingAnchor.constraint(equalTo: leadingAnchor),
-            gutter.topAnchor.constraint(equalTo: topAnchor),
-            gutter.bottomAnchor.constraint(equalTo: bottomAnchor),
-            gutter.widthAnchor.constraint(equalToConstant: GitHistoryRowMetrics.gutterWidth),
+        NSLayoutConstraint.activate(gutter.constraints(pinningTo: self) + [
             messageField.leadingAnchor.constraint(equalTo: gutter.trailingAnchor, constant: 2),
             messageField.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -Self.trailingPadding),
             messageField.topAnchor.constraint(equalTo: topAnchor, constant: Self.verticalPadding),
@@ -83,11 +79,7 @@ final class GitChangedFileCellView: NSTableCellView {
             addSubview(view)
         }
         textField = nameField
-        NSLayoutConstraint.activate([
-            gutter.leadingAnchor.constraint(equalTo: leadingAnchor),
-            gutter.topAnchor.constraint(equalTo: topAnchor),
-            gutter.bottomAnchor.constraint(equalTo: bottomAnchor),
-            gutter.widthAnchor.constraint(equalToConstant: GitHistoryRowMetrics.gutterWidth),
+        NSLayoutConstraint.activate(gutter.constraints(pinningTo: self) + [
             letterField.leadingAnchor.constraint(equalTo: gutter.trailingAnchor, constant: 2),
             letterField.widthAnchor.constraint(equalToConstant: 14),
             letterField.centerYAnchor.constraint(equalTo: centerYAnchor),

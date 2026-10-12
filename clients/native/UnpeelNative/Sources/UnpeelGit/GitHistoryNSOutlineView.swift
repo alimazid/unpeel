@@ -4,6 +4,9 @@ import AppKit
 /// tell whether GIT HISTORY holds keyboard focus (⌃⇧G).
 @MainActor
 public final class GitHistoryNSOutlineView: NSOutlineView {
+    private static let returnKeyCode: UInt16 = 36
+    private static let keypadEnterKeyCode: UInt16 = 76
+
     /// Return: expand or collapse the selected commit.
     var onToggle: (() -> Bool)?
     /// ⌘C: copy the selected commit's SHA.
@@ -36,8 +39,10 @@ public final class GitHistoryNSOutlineView: NSOutlineView {
     }
 
     public override func keyDown(with event: NSEvent) {
-        let modifiers = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
-        let isReturn = event.keyCode == 36 || event.keyCode == 76
+        // Keypad Enter carries the numeric-pad flag; only real modifiers
+        // turn Return into something else.
+        let modifiers = event.modifierFlags.intersection([.command, .option, .control, .shift])
+        let isReturn = event.keyCode == Self.returnKeyCode || event.keyCode == Self.keypadEnterKeyCode
         if isReturn, modifiers.isEmpty, onToggle?() == true { return }
         super.keyDown(with: event)
     }

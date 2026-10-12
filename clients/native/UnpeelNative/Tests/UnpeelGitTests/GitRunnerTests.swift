@@ -89,10 +89,23 @@ final class GitRunnerTests: XCTestCase {
         XCTAssertEqual(environment["GIT_OPTIONAL_LOCKS"], "0")
         XCTAssertEqual(environment["GIT_TERMINAL_PROMPT"], "0")
         XCTAssertEqual(environment["PATH"], "/usr/bin")
+        // Messages in English whatever the user's locale: "not a git
+        // repository" is recognised by its text.
+        XCTAssertEqual(environment["LC_ALL"], "C")
         // An inherited repository override would point every read at the
         // wrong repository, whatever `-C` says.
         XCTAssertNil(environment["GIT_DIR"])
         XCTAssertNil(environment["GIT_INDEX_FILE"])
+    }
+
+    func testNotARepositoryIsRecognisedUnderAForeignLocale() throws {
+        let plain = try GitTestRepo(initialize: false); defer { plain.delete() }
+        setenv("LANGUAGE", "de", 1); setenv("LC_ALL", "de_DE.UTF-8", 1)
+        defer { unsetenv("LANGUAGE"); unsetenv("LC_ALL") }
+
+        let result = GitReader(runner: try systemRunner()).head(at: plain.root)
+
+        XCTAssertEqual(result, .failure(.notARepository))
     }
 
     func testOnlyReadCommandsExist() {

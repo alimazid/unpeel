@@ -11,6 +11,7 @@ were not touched.
 ## 1. Tests
 
 - `clients/native/test-native.sh` at `8652cfd`: `Executed 971 tests, with 0
+  failures`; after the review fixes (§4): `Executed 976 tests, with 0
   failures`.
 - New suites (`UnpeelGitTests`): `GitRunnerTests` 9, `GitReaderHeadTests` 11,
   `GitReaderLogTests` 10, `GitReaderRefsTests` 4, `GitReaderDetailTests` 8,
@@ -82,3 +83,31 @@ pre-Git-History record (PROJECTS 0.35 / EXPLORER 0.65).
 - The History Branch Filter menu itself (its rendering as a popup), and
   scroll position held while commits land on top (covered by
   `GitHistoryOutlineControllerTests`).
+
+## 4. Review
+
+Two-axis review (standards, spec) of `main...HEAD`. Fixed, each with a test
+that failed first:
+
+- An empty repository's "All branches" turned the "No commits yet" state
+  into `fatal: bad revision 'HEAD'` and stopped live updates — the filter now
+  has no choices until there are commits (the header shows a plain label).
+- A chosen branch became "follow HEAD" once an agent checked it out, so it
+  was lost when HEAD moved on — the choice is no longer rewritten on refresh.
+- A failed branch listing reset a chosen branch — the last listing and the
+  choice are kept, and the failure is logged.
+- Keypad Enter (numeric-pad flag) did not toggle a commit.
+- git now runs with `LC_ALL=C`, so "not a git repository" is recognised
+  under any locale.
+
+Also: swallowed read failures are logged; the section focus lookup is one
+per-section table instead of repeated `if` cascades in `AppDelegate`; branch
+ref parsing and the gutter constraints have one home each; the
+non-monitoring `GitHistoryServices.live` default and an unused property were
+removed. The History Branch Filter now lists local branches first, then
+remote-tracking ones, then "All branches".
+
+Kept by decision: a changed file is revealed in the EXPLORER only while its
+tree is showing (a collapsed EXPLORER is not expanded); GIT HISTORY also
+starts collapsed on a fresh install; Return toggles a commit and ⌘C copies
+its SHA.
