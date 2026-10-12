@@ -26,12 +26,15 @@ final class FakeRepositoryReads: @unchecked Sendable {
 
     var readRoots: [String] { locked { reads } }
 
+    /// A read answers with the state when it started, however long it
+    /// then takes — as git does.
     func read(_ root: String) -> GitReadResult<GitRepositorySnapshot> {
-        if let delay = locked({ delays[root] }) { Thread.sleep(forTimeInterval: delay) }
-        return locked {
+        let (result, delay) = locked {
             reads.append(root)
-            return results[root] ?? .failure(.notARepository)
+            return (results[root] ?? .failure(.notARepository), delays[root])
         }
+        if let delay { Thread.sleep(forTimeInterval: delay) }
+        return result
     }
 }
 
@@ -226,6 +229,31 @@ final class GitRepositoryHubTests: XCTestCase {
         _ = await hub.status(root: "/repo")
 
         XCTAssertEqual(monitors.active.map(\.folder), ["/repo"])
+    }
+
+    /// A slow read from before a change that lands after a newer read must
+    /// not point the watch back at what it saw: after `git init`, the old
+    /// "not a repository" answer arriving last would leave the repository
+    /// unwatched.
+    func testALateReadFromBeforeAChangeDoesNotMoveTheWatch() async throws {
+        let reads = FakeRepositoryReads()
+        reads.set(.failure(.notARepository), for: "/plain", delay: 0.3)
+        let monitors = FakeMonitors()
+        let hub = watchingHub(reads, monitors)
+        let subscription = hub.subscribe(root: "/plain")
+        defer { subscription.cancel() }
+
+        let early = Task { await hub.status(root: "/plain") }
+        try await Task.sleep(nanoseconds: 100_000_000)
+        reads.set(.success(snapshot(root: "/plain")), for: "/plain")
+        hub.repositoryDidChange(root: "/plain")
+        _ = await hub.status(root: "/plain")
+        XCTAssertEqual(monitors.active.map(\.location?.gitDirectory), ["/plain/.git"])
+        _ = await early.value
+
+        XCTAssertEqual(monitors.active.map(\.location?.gitDirectory), ["/plain/.git"])
+        let latest = await hub.status(root: "/plain")
+        XCTAssertNotNil(try? latest.get(), "the newer read stays the answer")
     }
 
     func testWithoutGitNothingIsWatched() async {

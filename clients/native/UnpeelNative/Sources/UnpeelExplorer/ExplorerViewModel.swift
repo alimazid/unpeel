@@ -85,11 +85,8 @@ public final class ExplorerViewModel: ObservableObject {
     /// Fork-only: git support. Decoration state, owned by
     /// `ExplorerViewModel+Decorations`.
     let decorationDebounce: TimeInterval
-    var repositorySubscription: GitRepositorySubscription?
-    /// The root as the context names it: the key its status is shared under.
-    var decorationsRoot: String?
-    var decorationsPending = false
-    var decorationTask: Task<Void, Never>?
+    var followedRepository: FollowedRepository?
+    let decorationRefresh = RefreshCoalescer()
 
     public init(
         services: ExplorerServices = .live,

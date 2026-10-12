@@ -80,23 +80,6 @@ final class GitRepositoryMonitorTests: XCTestCase {
 
     // MARK: - Real FSEvents
 
-    private func git(_ arguments: [String], in directory: String) throws {
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: "/usr/bin/env")
-        process.arguments = ["git", "-C", directory] + arguments
-        var environment = ProcessInfo.processInfo.environment
-        environment["GIT_CONFIG_GLOBAL"] = "/dev/null"
-        environment["GIT_CONFIG_NOSYSTEM"] = "1"
-        environment["GIT_AUTHOR_NAME"] = "T"; environment["GIT_AUTHOR_EMAIL"] = "t@example.com"
-        environment["GIT_COMMITTER_NAME"] = "T"; environment["GIT_COMMITTER_EMAIL"] = "t@example.com"
-        process.environment = environment
-        process.standardOutput = FileHandle.nullDevice
-        process.standardError = FileHandle.nullDevice
-        try process.run()
-        process.waitUntilExit()
-        XCTAssertEqual(process.terminationStatus, 0, "git \(arguments.joined(separator: " "))")
-    }
-
     private func waitFor(_ condition: () -> Bool, timeout: TimeInterval = 5) {
         let deadline = Date().addingTimeInterval(timeout)
         while !condition(), Date() < deadline {
@@ -106,10 +89,10 @@ final class GitRepositoryMonitorTests: XCTestCase {
 
     func testACommitSignalsAndAWorkTreeEditDoesNot() throws {
         let tree = try TempTree(); defer { tree.remove() }
-        try git(["init", "-q", "-b", "main"], in: tree.root)
+        try tree.git("init", "-q", "-b", "main")
         try tree.file("a.txt", "a")
-        try git(["add", "-A"], in: tree.root)
-        try git(["commit", "-q", "-m", "first"], in: tree.root)
+        try tree.git("add", "-A")
+        try tree.git("commit", "-q", "-m", "first")
         let location = try GitReader().repository(at: tree.root).get()
         let counter = SignalCounter()
         let monitor = try XCTUnwrap(GitRepositoryMonitor(location: location, latency: 0.05) { counter.record() })
@@ -120,20 +103,20 @@ final class GitRepositoryMonitorTests: XCTestCase {
         RunLoop.current.run(until: Date().addingTimeInterval(0.6))
         XCTAssertEqual(counter.value, 0, "working-tree edits are the EXPLORER's business")
 
-        try git(["commit", "-q", "-am", "second"], in: tree.root)
+        try tree.git("commit", "-q", "-am", "second")
         waitFor { counter.value > 0 }
         XCTAssertGreaterThan(counter.value, 0)
     }
 
     func testStoppedMonitorStaysQuiet() throws {
         let tree = try TempTree(); defer { tree.remove() }
-        try git(["init", "-q", "-b", "main"], in: tree.root)
+        try tree.git("init", "-q", "-b", "main")
         let location = try GitReader().repository(at: tree.root).get()
         let counter = SignalCounter()
         let monitor = try XCTUnwrap(GitRepositoryMonitor(location: location, latency: 0.05) { counter.record() })
 
         monitor.stop()
-        try git(["commit", "-q", "--allow-empty", "-m", "first"], in: tree.root)
+        try tree.git("commit", "-q", "--allow-empty", "-m", "first")
         RunLoop.current.run(until: Date().addingTimeInterval(0.6))
 
         XCTAssertEqual(counter.value, 0)

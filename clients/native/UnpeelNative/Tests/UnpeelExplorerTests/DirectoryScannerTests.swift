@@ -2,20 +2,9 @@ import XCTest
 @testable import UnpeelExplorer
 
 final class DirectoryScannerTests: XCTestCase {
-    private func git(_ arguments: [String], in directory: String) throws {
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: "/usr/bin/env")
-        process.arguments = ["git", "-C", directory] + arguments
-        process.standardOutput = FileHandle.nullDevice
-        process.standardError = FileHandle.nullDevice
-        try process.run()
-        process.waitUntilExit()
-        XCTAssertEqual(process.terminationStatus, 0, "git \(arguments.joined(separator: " "))")
-    }
-
     func testGitIgnoredFilesAndFoldersAreMarked() throws {
         let tree = try TempTree(); defer { tree.remove() }
-        try git(["init", "-q"], in: tree.root)
+        try tree.git("init", "-q")
         try tree.file(".gitignore", "build/\n*.log\n")
         try tree.dir("build"); try tree.file("build/out.o")
         try tree.file("debug.log"); try tree.file("keep.txt")
@@ -29,7 +18,7 @@ final class DirectoryScannerTests: XCTestCase {
 
     func testNestedDirectoryUsesTheRepositoryRules() throws {
         let tree = try TempTree(); defer { tree.remove() }
-        try git(["init", "-q"], in: tree.root)
+        try tree.git("init", "-q")
         try tree.file(".gitignore", "*.tmp\n")
         try tree.file("src/a.tmp"); try tree.file("src/a.swift")
 
@@ -54,7 +43,7 @@ final class DirectoryScannerTests: XCTestCase {
 
     func testManyPathsDoNotDeadlockThePipes() throws {
         let tree = try TempTree(); defer { tree.remove() }
-        try git(["init", "-q"], in: tree.root)
+        try tree.git("init", "-q")
         try tree.file(".gitignore", "*.log\n")
         let paths = (0..<4000).map { tree.path("some/deeply/nested/folder/name/file-\($0).log") }
 

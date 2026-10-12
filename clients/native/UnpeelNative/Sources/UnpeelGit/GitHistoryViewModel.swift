@@ -61,10 +61,8 @@ public final class GitHistoryViewModel: ObservableObject {
     private var subscription: GitRepositorySubscription?
     /// Collapsed or hidden: not following the root, but keeping the list.
     private var isSuspended = false
-    /// A change arrived that no refresh has read yet.
-    private var pendingChange = false
-    /// The refresh loop serving change signals, while one runs.
-    private var changeTask: Task<Void, Never>?
+    /// Serves change signals: a burst costs one refresh.
+    private let changeRefresh = RefreshCoalescer()
 
     public init(
         services: GitHistoryServices,
@@ -126,8 +124,7 @@ public final class GitHistoryViewModel: ObservableObject {
         generation += 1
         listGeneration += 1
         loadingMore = false
-        pendingChange = false
-        changeTask = nil
+        changeRefresh.reset()
         isSuspended = false
         context = next
         head = nil
@@ -146,11 +143,13 @@ public final class GitHistoryViewModel: ObservableObject {
     }
 
     /// The section was collapsed or hidden: no reads and no watching while
-    /// nobody can see it, but the list, the expanded commit and the scroll
-    /// position stay for when it is shown again.
+    /// nobody can see it — a refresh still waiting out its debounce is
+    /// dropped — but the list, the expanded commit and the scroll position
+    /// stay for when it is shown again.
     public func suspend() {
         guard !isSuspended else { return }
         isSuspended = true
+        changeRefresh.reset()
         follow(nil)
     }
 
@@ -183,12 +182,13 @@ public final class GitHistoryViewModel: ObservableObject {
     /// The repository changed (a commit, checkout, fetch, branch created or
     /// deleted). Reported to the shared hub, so every view of the root —
     /// the EXPLORER's decorations too — reads it once; this view hears it
-    /// back through its subscription. Nothing happens while suspended.
+    /// back through its subscription (synchronously), and the refresh that
+    /// starts is returned. Nothing happens while suspended.
     @discardableResult
     public func repositoryDidChange() -> Task<Void, Never> {
         guard let root, subscription != nil else { return Task {} }
         services.repositories.repositoryDidChange(root: root)
-        return changeTask ?? Task {}
+        return changeRefresh.current ?? Task {}
     }
 
     /// The hub's change signal for this root. Signals are coalesced: a
@@ -196,21 +196,10 @@ public final class GitHistoryViewModel: ObservableObject {
     /// one more.
     @discardableResult
     private func heardRepositoryChange() -> Task<Void, Never> {
-        guard root != nil else { return Task {} }
-        pendingChange = true
-        if let changeTask { return changeTask }
         let current = generation
-        let debounce = changeDebounce
-        let task = Task {
-            if debounce > 0 { try? await Task.sleep(nanoseconds: UInt64(debounce * 1_000_000_000)) }
-            while self.pendingChange, current == self.generation {
-                self.pendingChange = false
-                await self.load(generation: current, merging: true)
-            }
-            if current == self.generation { self.changeTask = nil }
+        return changeRefresh.request(debounce: changeDebounce) { [weak self] in
+            await self?.load(generation: current, merging: true)
         }
-        changeTask = task
-        return task
     }
 
     /// Follows `root` through the hub (nil lets go). The hub watches the

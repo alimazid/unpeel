@@ -43,14 +43,10 @@ public struct FileTreeModel: Sendable, Equatable {
         path == ancestor || path.hasPrefix(ancestor + "/")
     }
 
-    /// The folders whose rows are on screen: the root, and every expanded
+    /// Whether a folder's rows are on screen: the root, or an expanded
     /// folder whose ancestors are all expanded too. A folder can stay
     /// expanded under a collapsed parent (so re-expanding restores it); it
     /// is not shown until the parent is.
-    public var shownDirectories: Set<String> {
-        Set([root] + expanded.filter(isShown))
-    }
-
     public func isShown(_ directory: String) -> Bool {
         if directory == root { return true }
         guard expanded.contains(directory), directory.hasPrefix(root + "/") else { return false }

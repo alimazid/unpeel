@@ -3,40 +3,10 @@ import UnpeelGit
 import XCTest
 @testable import UnpeelExplorer
 
-/// Counts the hub's snapshot reads per root, with optional per-root delays.
-final class SnapshotReadLog: @unchecked Sendable {
-    private let lock = NSLock()
-    private var reads: [String] = []
-    private var delays: [String: TimeInterval] = [:]
-
-    func setDelay(_ delay: TimeInterval, for root: String) {
-        lock.lock(); defer { lock.unlock() }
-        delays[root] = delay
-    }
-
-    func record(_ root: String) -> TimeInterval? {
-        lock.lock(); defer { lock.unlock() }
-        reads.append(root)
-        return delays[root]
-    }
-
-    var roots: [String] {
-        lock.lock(); defer { lock.unlock() }
-        return reads
-    }
-}
-
 /// Git Status Decorations in the EXPLORER's view model, against real
 /// throwaway repositories (no mocked git).
 @MainActor
-final class ExplorerDecorationTests: XCTestCase {
-    private var suites: [String] = []
-
-    override func tearDown() async throws {
-        for suite in suites { UserDefaults().removePersistentDomain(forName: suite) }
-        suites = []
-    }
-
+final class ExplorerDecorationTests: ExplorerViewModelTestCase {
     private func hub(reader: GitReader = GitReader(), log: SnapshotReadLog? = nil) -> GitRepositoryHub {
         GitRepositoryHub(services: GitRepositoryHubServices(read: { root in
             if let delay = log?.record(root) { Thread.sleep(forTimeInterval: delay) }
@@ -45,26 +15,8 @@ final class ExplorerDecorationTests: XCTestCase {
     }
 
     private func makeViewModel(_ hub: GitRepositoryHub, debounce: TimeInterval = 0) -> ExplorerViewModel {
-        let suite = "unpeel.explorer.decorationtests.\(UUID().uuidString)"
-        suites.append(suite)
-        return ExplorerViewModel(
-            services: ExplorerServices(
-                scan: { directory, root in
-                    try DirectoryScanner(ignore: NoIgnoreChecker()).scan(directory: directory, root: root)
-                },
-                makeWatcher: { _, _ in nil },
-                repositories: hub
-            ),
-            stateStore: ExplorerStateStore(defaults: UserDefaults(suiteName: suite)!),
-            decorationDebounce: debounce
-        )
+        makeViewModel(services(repositories: hub), decorationDebounce: debounce)
     }
-
-    private func local(_ tree: TempTree) -> ExplorerContext {
-        .local(root: tree.root, projectRoot: tree.root)
-    }
-
-    private let everything = VisibilityFilter(showHidden: true, showIgnored: true)
 
     func testChangedFilesAndTheirFoldersAreDecorated() async throws {
         let tree = try TempTree(); defer { tree.remove() }
@@ -153,6 +105,46 @@ final class ExplorerDecorationTests: XCTestCase {
         for task in tasks { await task.value }
 
         XCTAssertEqual(log.roots.count, 2)
+    }
+
+    /// Collapsing the EXPLORER stops its watcher, but Git History can keep
+    /// following the root (and its last read) meanwhile. Edits made while
+    /// collapsed must show when it opens again.
+    func testReopeningWhileAnotherViewFollowsTheRootShowsEditsMadeMeanwhile() async throws {
+        let tree = try TempTree(); defer { tree.remove() }
+        try tree.file("a.txt", "a"); try tree.initRepository()
+        let hub = hub()
+        let history = hub.subscribe(root: tree.root)
+        defer { history.cancel() }
+        _ = await hub.status(root: tree.root)
+        let viewModel = makeViewModel(hub)
+        await viewModel.setContext(local(tree)).value
+        await viewModel.setContext(.none).value
+
+        try tree.file("a.txt", "edited while collapsed")
+        await viewModel.setContext(local(tree)).value
+
+        XCTAssertEqual(viewModel.decorations.kind(at: tree.path("a.txt")), .modified)
+    }
+
+    /// A root that fails to load shows no decorations, even when its
+    /// status read finishes afterwards.
+    func testAFailedRootShowsNoDecorations() async throws {
+        let tree = try TempTree(); defer { tree.remove() }
+        try tree.file("a.txt"); try tree.initRepository(); try tree.file("a.txt", "edited")
+        let log = SnapshotReadLog()
+        log.setDelay(0.3, for: tree.root)
+        let viewModel = makeViewModel(ExplorerServices(
+            scan: { _, _ in throw CocoaError(.fileReadNoPermission) },
+            makeWatcher: { _, _ in nil },
+            repositories: hub(log: log)
+        ))
+
+        await viewModel.setContext(local(tree)).value
+        XCTAssertNotNil(viewModel.rootError)
+        try await Task.sleep(nanoseconds: 500_000_000)
+
+        XCTAssertTrue(viewModel.decorations.isEmpty)
     }
 
     /// A slow read for the root being left is never shown for the next one.

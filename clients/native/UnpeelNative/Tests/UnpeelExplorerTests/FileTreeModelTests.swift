@@ -50,7 +50,8 @@ final class FileTreeModelTests: XCTestCase {
             .expanding("/r/c").expanding("/r/c/d")
             .collapsing("/r/c")
 
-        XCTAssertEqual(model.shownDirectories, [root, "/r/a", "/r/a/b"])
+        XCTAssertTrue(model.isShown(root))
+        XCTAssertTrue(model.isShown("/r/a"))
         XCTAssertTrue(model.isShown("/r/a/b"))
         XCTAssertFalse(model.isShown("/r/c/d"))
         XCTAssertFalse(model.isShown("/r/c"))

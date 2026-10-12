@@ -111,12 +111,20 @@ public final class ExplorerOutlineController: NSObject,
             outlineView?.reloadData()
             return
         }
+        reloadRows(from: previous, to: model, filterChanged: previousFilter != filter)
+        syncExpansion(model)
+        syncSelection(selection)
+        if decorationsChanged { reconfigureLoadedRows() }
+    }
+
+    /// Reloads what changed between two models: everything for a new root
+    /// or filter, otherwise only the directories whose contents changed.
+    private func reloadRows(from previous: FileTreeModel?, to model: FileTreeModel, filterChanged: Bool) {
         let rootChanged = previous?.root != model.root
-        let filterChanged = previousFilter != filter
         // Item identity is path-based and filter-independent (a filter only
         // changes which paths are children, never what a given path's item
         // is) — clearing `items` here too would make `syncExpansion` and
-        // `syncSelection` below depend on `reloadData()` having already
+        // `syncSelection` depend on `reloadData()` having already
         // re-queried the data source synchronously to repopulate it, which
         // AppKit does not guarantee, and could silently drop expansion and
         // selection until the next reload.
@@ -127,22 +135,20 @@ public final class ExplorerOutlineController: NSObject,
         if rootChanged || filterChanged {
             childCache = [:]
             outlineView?.reloadData()
-        } else if let previous {
-            let changed = Set(previous.directories.keys).union(model.directories.keys)
-                .filter { previous.directories[$0] != model.directories[$0] }
-                .sorted { ExplorerPaths.depth($0) < ExplorerPaths.depth($1) }
-            for directory in changed {
-                childCache[directory] = nil
-                if directory == model.root {
-                    outlineView?.reloadItem(nil, reloadChildren: true)
-                } else if let item = items[directory] {
-                    outlineView?.reloadItem(item, reloadChildren: true)
-                }
+            return
+        }
+        guard let previous else { return }
+        let changed = Set(previous.directories.keys).union(model.directories.keys)
+            .filter { previous.directories[$0] != model.directories[$0] }
+            .sorted { ExplorerPaths.depth($0) < ExplorerPaths.depth($1) }
+        for directory in changed {
+            childCache[directory] = nil
+            if directory == model.root {
+                outlineView?.reloadItem(nil, reloadChildren: true)
+            } else if let item = items[directory] {
+                outlineView?.reloadItem(item, reloadChildren: true)
             }
         }
-        syncExpansion(model)
-        syncSelection(selection)
-        if decorationsChanged { reconfigureLoadedRows() }
     }
 
     /// Fork-only: git support. Rows AppKit already holds views for — on

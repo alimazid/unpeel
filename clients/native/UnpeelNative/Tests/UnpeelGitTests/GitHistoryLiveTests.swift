@@ -273,6 +273,22 @@ final class GitHistoryLiveTests: XCTestCase {
         XCTAssertEqual(fake.statusReadRoots.count, reads, "nothing is read while collapsed")
     }
 
+    /// A change that arrived just before collapsing, still waiting out its
+    /// debounce, is dropped: nothing is read once collapsed.
+    func testCollapsingDropsARefreshStillWaiting() async throws {
+        let fake = scripted()
+        let model = GitHistoryViewModel(services: fake.services, pageSize: 3, changeDebounce: 0.2)
+        await model.setContext(local("/repo")).value
+        let reads = fake.statusReadRoots.count
+
+        let waiting = model.repositoryDidChange()
+        model.suspend()
+        await waiting.value
+        try await Task.sleep(nanoseconds: 300_000_000)
+
+        XCTAssertEqual(fake.statusReadRoots.count, reads)
+    }
+
     /// Expanding again on the same root catches up in place: an agent's
     /// commit made meanwhile lands on top, and the loaded pages, the
     /// expanded commit and the scroll position stay.

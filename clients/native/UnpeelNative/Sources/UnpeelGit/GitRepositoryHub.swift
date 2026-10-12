@@ -120,9 +120,12 @@ public final class GitRepositoryHub {
             entry.inFlight = (epoch, task)
         }
         let result = await task.value
-        if entries[root] === entry {
+        // Only the newest read may steer the watch: one from before a
+        // change landing after a newer one (a "not a repository" from before
+        // `git init`) would point it back at what no longer holds.
+        if entries[root] === entry, (entry.cached?.epoch ?? -1) <= epoch {
             if entry.inFlight?.epoch == epoch { entry.inFlight = nil }
-            if (entry.cached?.epoch ?? -1) <= epoch { entry.cached = (epoch, result) }
+            entry.cached = (epoch, result)
             watch(root, entry, for: result)
         }
         return result

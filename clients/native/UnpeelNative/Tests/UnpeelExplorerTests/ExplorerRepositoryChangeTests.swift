@@ -23,14 +23,7 @@ private final class RecordedMonitor: GitChangeMonitoring, @unchecked Sendable {
 /// driven by real FSEvents on real repositories, with the EXPLORER's own
 /// watcher off so no working-tree event can be what refreshed them.
 @MainActor
-final class ExplorerRepositoryChangeTests: XCTestCase {
-    private var suites: [String] = []
-
-    override func tearDown() async throws {
-        for suite in suites { UserDefaults().removePersistentDomain(forName: suite) }
-        suites = []
-    }
-
+final class ExplorerRepositoryChangeTests: ExplorerViewModelTestCase {
     private func liveHub(log: SnapshotReadLog? = nil) -> GitRepositoryHub {
         let reader = GitReader()
         return GitRepositoryHub(services: GitRepositoryHubServices(
@@ -44,30 +37,7 @@ final class ExplorerRepositoryChangeTests: XCTestCase {
     }
 
     private func makeViewModel(_ hub: GitRepositoryHub) -> ExplorerViewModel {
-        let suite = "unpeel.explorer.repochangetests.\(UUID().uuidString)"
-        suites.append(suite)
-        return ExplorerViewModel(
-            services: ExplorerServices(
-                scan: { directory, root in
-                    try DirectoryScanner(ignore: NoIgnoreChecker()).scan(directory: directory, root: root)
-                },
-                makeWatcher: { _, _ in nil },
-                repositories: hub
-            ),
-            stateStore: ExplorerStateStore(defaults: UserDefaults(suiteName: suite)!),
-            decorationDebounce: 0.05
-        )
-    }
-
-    private func local(_ root: String) -> ExplorerContext {
-        .local(root: root, projectRoot: root)
-    }
-
-    private func waitUntil(timeout: TimeInterval = 5, _ condition: () -> Bool) async {
-        let deadline = Date().addingTimeInterval(timeout)
-        while !condition(), Date() < deadline {
-            try? await Task.sleep(nanoseconds: 50_000_000)
-        }
+        makeViewModel(services(repositories: hub), decorationDebounce: 0.05)
     }
 
     func testAnExternalCommitClearsTheCommittedFiles() async throws {
@@ -143,6 +113,25 @@ final class ExplorerRepositoryChangeTests: XCTestCase {
 
         XCTAssertEqual(viewModel.decorations.kind(at: tree.path("notes.txt")), .untracked)
         XCTAssertNil(viewModel.decorations.kind(at: tree.path("a.txt")))
+    }
+
+    /// A repository removed from under the root is noticed too; the folder
+    /// is then watched for a new one.
+    func testRemovingTheRepositoryClearsTheDecorationsAndANewOneIsNoticed() async throws {
+        let tree = try TempTree(); defer { tree.remove() }
+        try tree.file("a.txt", "a"); try tree.initRepository()
+        try tree.file("a.txt", "edited")
+        let viewModel = makeViewModel(liveHub())
+        await viewModel.setContext(local(tree.root)).value
+        XCTAssertEqual(viewModel.decorations.kind(at: tree.path("a.txt")), .modified)
+
+        try FileManager.default.removeItem(atPath: tree.path(".git"))
+        await waitUntil { viewModel.decorations.isEmpty }
+        XCTAssertTrue(viewModel.decorations.isEmpty)
+
+        try tree.git("init", "-q", "-b", "main")
+        await waitUntil { viewModel.decorations.kind(at: tree.path("a.txt")) == .untracked }
+        XCTAssertEqual(viewModel.decorations.kind(at: tree.path("a.txt")), .untracked)
     }
 
     /// One watch per Explorer Root, released when the root changes.

@@ -14,13 +14,14 @@ public struct GitReader: Sendable {
 
     /// Every changed path under `root` and HEAD — the Checked-out Branch
     /// and its upstream counts — from one status read. Only
-    /// `root`'s own subtree is read (paths stay relative to the work tree);
-    /// an untracked folder is listed once rather than file by file, and a
-    /// submodule counts only when its checked-out commit changed.
+    /// `root`'s own subtree is read (paths stay relative to the work tree),
+    /// and an untracked folder is listed once rather than file by file.
+    /// Submodules are reported as `git status` reports them (the user's
+    /// `ignoreSubmodules` settings apply), like any other folder content.
     public func status(at root: String) -> GitReadResult<GitStatus> {
         runner.run(
             .status,
-            ["--porcelain=v2", "--branch", "-z", "--untracked-files=normal", "--ignore-submodules=dirty", "--", "."],
+            ["--porcelain=v2", "--branch", "-z", "--untracked-files=normal", "--", "."],
             in: root
         )
         .readResult()
