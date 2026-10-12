@@ -163,6 +163,8 @@ public final class ExplorerViewModel: ObservableObject {
         startWatcher(root: root)
         let decorating = startDecorations(root: requestedRoot)
         await load(root, generation: current)
+        // The saved expansions below need the root's entries.
+        await settle(root)
         guard current == generation, model != nil else {
             finishOpening(current)
             return
@@ -241,6 +243,16 @@ public final class ExplorerViewModel: ObservableObject {
         }
     }
 
+    /// A watcher batch arriving while `directory` was being scanned for the
+    /// first time reloads it, and that first result is dropped as stale:
+    /// the directory's contents are the reload's. Waits for them, so a
+    /// caller that goes on to use the entries (restoring expansions, a
+    /// reveal) does not find the directory still loading.
+    private func settle(_ directory: String) async {
+        guard case .loading? = model?.directories[directory], let reloadTask else { return }
+        await reloadTask.value
+    }
+
     /// Rescans `directories` — the ones on screen; the rest are marked stale
     /// for their next expansion. One loop serves every request: a batch
     /// arriving while it scans joins `pendingReloads`, and the chain in
@@ -295,6 +307,7 @@ public final class ExplorerViewModel: ObservableObject {
             let current = generation
             return Task {
                 await self.load(path, generation: current)
+                await self.settle(path)
                 // Safe even when that load was discarded (a superseded
                 // generation, or a newer token for this directory):
                 // `persistState` writes only live main-actor state — the

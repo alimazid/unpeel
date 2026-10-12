@@ -330,6 +330,73 @@ final class ExplorerViewModelTests: XCTestCase {
         XCTAssertEqual(viewModel.model?.visibleChildren(of: second.root, filter: everything).map(\.name), ["y.txt"])
     }
 
+    /// A watcher batch can reload the root while its first scan is still
+    /// running; that first result is then stale and dropped. Opening must
+    /// wait for the reload's contents rather than replay the saved
+    /// expansions (or a pending reveal) against a root still loading.
+    func testOpeningWaitsForAReloadThatSupersedesTheFirstScan() async throws {
+        let tree = try TempTree(); defer { tree.remove() }
+        try tree.file("sub/a.txt")
+        let defaults = makeDefaults()
+        ExplorerStateStore(defaults: defaults).save(
+            RootViewState(expanded: [tree.path("sub")], selection: [tree.path("sub/a.txt")], scrollOffset: 0),
+            forRoot: tree.root
+        )
+        let counter = ScanCallCounter()
+        let viewModel = makeViewModel(ExplorerServices(
+            scan: { directory, root in
+                if directory == root {
+                    switch counter.next(for: directory) {
+                    case 1: Thread.sleep(forTimeInterval: 0.2)
+                    case 2: Thread.sleep(forTimeInterval: 0.4)
+                    default: break
+                    }
+                }
+                return try DirectoryScanner(ignore: NoIgnoreChecker()).scan(directory: directory, root: root)
+            },
+            makeWatcher: { _, _ in nil }
+        ), defaults: defaults)
+
+        let opening = viewModel.setContext(local(tree))
+        try await Task.sleep(nanoseconds: 100_000_000)
+        let reload = viewModel.handleChange(FileSystemChange(directories: [tree.root], touchedGitignore: false))
+        await opening.value
+
+        XCTAssertEqual(viewModel.model?.expanded, [tree.path("sub")])
+        XCTAssertEqual(viewModel.selection, [tree.path("sub/a.txt")])
+        await reload.value
+    }
+
+    /// The same race on an expansion: a reveal right after it must find the
+    /// folder's contents, not a folder still loading.
+    func testExpandingWaitsForAReloadThatSupersedesItsScan() async throws {
+        let tree = try TempTree(); defer { tree.remove() }
+        let target = try tree.file("sub/a.txt")
+        let counter = ScanCallCounter()
+        let viewModel = makeViewModel(ExplorerServices(
+            scan: { directory, root in
+                if directory.hasSuffix("/sub") {
+                    switch counter.next(for: directory) {
+                    case 1: Thread.sleep(forTimeInterval: 0.2)
+                    case 2: Thread.sleep(forTimeInterval: 0.4)
+                    default: break
+                    }
+                }
+                return try DirectoryScanner(ignore: NoIgnoreChecker()).scan(directory: directory, root: root)
+            },
+            makeWatcher: { _, _ in nil }
+        ))
+        await viewModel.setContext(local(tree)).value
+
+        let revealing = viewModel.reveal(target)
+        try await Task.sleep(nanoseconds: 100_000_000)
+        let reload = viewModel.handleChange(FileSystemChange(directories: [tree.path("sub")], touchedGitignore: false))
+        await revealing.value
+
+        XCTAssertEqual(viewModel.selection, [target])
+        await reload.value
+    }
+
     /// A collapsed folder keeps its contents for an instant re-expand, but
     /// watcher reloads and Refresh skip it; expanding it rescans it.
     func testCollapsedFoldersAreSkippedAndRescannedWhenExpanded() async throws {
