@@ -569,6 +569,9 @@ struct SidebarView: View {
     // persisted section layout.
     let cache: SurfaceCache
     @StateObject private var explorerSection = ExplorerSectionModel()
+    // Fork-only: git support. Git History's view model, kept alive while
+    // its section is collapsed (publishes nothing, like the explorer's).
+    @StateObject private var gitHistorySection = GitHistorySectionModel()
     private let sectionLayout = SidebarSectionLayoutStore.shared
 
     /// Absolute-top scroll anchor for the project tree (a 1pt marker pinned
@@ -781,6 +784,13 @@ struct SidebarView: View {
                     tint: NSColor(Theme.mutedForeground)
                 )),
                 content: { AnyView(ExplorerPanelHost(store: store, cache: cache, section: explorerSection)) }
+            ),
+            // Fork-only: git support
+            SidebarSectionDescriptor(
+                id: .gitHistory,
+                accessory: AnyView(EmptyView()),
+                actions: AnyView(EmptyView()),
+                content: { AnyView(GitHistoryPanelHost(store: store, section: gitHistorySection)) }
             ),
         ]
     }

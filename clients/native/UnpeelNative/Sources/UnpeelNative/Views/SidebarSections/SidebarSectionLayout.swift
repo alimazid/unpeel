@@ -13,7 +13,7 @@ import Foundation
 
 struct SidebarSectionLayout: Equatable, Sendable {
     static let currentVersion = 1
-    static let defaultWeights: [SidebarSectionID: Double] = [.projects: 0.4, .explorer: 0.6]
+    static let defaultWeights: [SidebarSectionID: Double] = [.projects: 0.4, .explorer: 0.6, .gitHistory: 0.4]
     /// Weight for an id with neither a stored nor a default weight.
     static let fallbackWeight = 0.5
     /// Floor so a section dragged to zero can still be proportioned.
@@ -36,10 +36,12 @@ struct SidebarSectionLayout: Equatable, Sendable {
         self.weights = weights
     }
 
+    /// GIT HISTORY starts collapsed: until it is opened, the sidebar looks
+    /// as it did before the section existed, and no git process runs.
     static let `default` = SidebarSectionLayout(
         order: SidebarSectionID.allCases,
         hidden: [],
-        collapsed: [],
+        collapsed: [.gitHistory],
         weights: defaultWeights
     )
 
@@ -197,8 +199,9 @@ extension SidebarSectionLayout {
 
     /// Never fails: nil, unreadable or other-version data gives `.default`;
     /// unknown ids are dropped; known ids missing from the record are
-    /// appended visible and expanded with their default weight; a record
-    /// that hides every section shows them all again.
+    /// appended visible, with their default weight and their fresh-install
+    /// collapse state (so GIT HISTORY joins an existing sidebar collapsed);
+    /// a record that hides every section shows them all again.
     static func decode(_ data: Data?) -> SidebarSectionLayout {
         guard let data,
               let stored = try? JSONDecoder().decode(Stored.self, from: data),
@@ -211,13 +214,14 @@ extension SidebarSectionLayout {
                 order.append(id)
             }
         }
-        for id in SidebarSectionID.allCases where !order.contains(id) {
-            order.append(id)
-        }
+        let appended = SidebarSectionID.allCases.filter { !order.contains($0) }
+        order += appended
 
         func ids(_ raws: [String]) -> Set<SidebarSectionID> {
             Set(raws.compactMap(SidebarSectionID.init(rawValue:)))
         }
+        let collapsed = ids(stored.collapsed)
+            .union(appended.filter { Self.default.collapsed.contains($0) })
         var hidden = ids(stored.hidden)
         if hidden.count >= order.count { hidden = [] }
 
@@ -227,6 +231,6 @@ extension SidebarSectionLayout {
                 weights[id] = value
             }
         }
-        return SidebarSectionLayout(order: order, hidden: hidden, collapsed: ids(stored.collapsed), weights: weights)
+        return SidebarSectionLayout(order: order, hidden: hidden, collapsed: collapsed, weights: weights)
     }
 }

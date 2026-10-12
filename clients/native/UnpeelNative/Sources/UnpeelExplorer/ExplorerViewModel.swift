@@ -1,14 +1,11 @@
 import Combine
 import Foundation
 import os
+import UnpeelGit
 
-public enum ExplorerContext: Sendable, Equatable {
-    /// No session is selected.
-    case none
-    /// The selected session runs on another Host; its files are not local.
-    case remote
-    case local(root: String, projectRoot: String)
-}
+/// Fork-only: git support. The context moved to `UnpeelGit` so Git History
+/// follows the same Explorer Root; this keeps the explorer's API unchanged.
+public typealias ExplorerContext = UnpeelGit.ExplorerContext
 
 public struct ExplorerServices: Sendable {
     public typealias Scan = @Sendable (_ directory: String, _ root: String) throws -> DirectoryListing

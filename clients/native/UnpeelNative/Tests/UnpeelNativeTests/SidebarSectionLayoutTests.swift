@@ -6,27 +6,34 @@ final class SidebarSectionLayoutTests: XCTestCase {
 
     // MARK: Defaults
 
-    func testDefaultLayoutShowsAndExpandsBothSections() {
+    // Fork-only: git support — GIT HISTORY is in the default stack but
+    // starts collapsed, so a fresh sidebar looks like it did before.
+    func testDefaultLayoutShowsEverySectionWithGitHistoryCollapsed() {
         let layout = SidebarSectionLayout.default
-        XCTAssertEqual(layout.order, [.projects, .explorer])
-        XCTAssertEqual(layout.visible, [.projects, .explorer])
+        XCTAssertEqual(layout.order, [.projects, .explorer, .gitHistory])
+        XCTAssertEqual(layout.visible, [.projects, .explorer, .gitHistory])
         XCTAssertEqual(layout.expanded, [.projects, .explorer])
         XCTAssertEqual(layout.weight(of: .projects), 0.4, accuracy: 1e-9)
         XCTAssertEqual(layout.weight(of: .explorer), 0.6, accuracy: 1e-9)
+        XCTAssertEqual(layout.weight(of: .gitHistory), 0.4, accuracy: 1e-9)
     }
 
     func testIdsCarryTitlesAndMinimums() {
         XCTAssertEqual(SidebarSectionID.projects.title, "PROJECTS")
         XCTAssertEqual(SidebarSectionID.explorer.title, "EXPLORER")
-        XCTAssertEqual(SidebarSectionID.minimumContentHeights, [.projects: 80, .explorer: 120])
+        XCTAssertEqual(SidebarSectionID.gitHistory.title, "GIT HISTORY")
+        XCTAssertEqual(
+            SidebarSectionID.minimumContentHeights,
+            [.projects: 80, .explorer: 120, .gitHistory: 100]
+        )
     }
 
     // MARK: Heights
 
     func testContentSpaceSubtractsHeadersAndSeparators() {
         let layout = SidebarSectionLayout.default
-        XCTAssertEqual(layout.contentSpace(available: 600, headerHeight: 22, separatorHeight: 1), 600 - 44 - 1)
-        let oneVisible = layout.settingHidden(.explorer, true)
+        XCTAssertEqual(layout.contentSpace(available: 600, headerHeight: 22, separatorHeight: 1), 600 - 66 - 2)
+        let oneVisible = layout.settingHidden(.explorer, true).settingHidden(.gitHistory, true)
         XCTAssertEqual(oneVisible.contentSpace(available: 600, headerHeight: 22, separatorHeight: 1), 578)
         XCTAssertEqual(layout.contentSpace(available: 10, headerHeight: 22, separatorHeight: 1), 0)
     }
@@ -115,7 +122,7 @@ final class SidebarSectionLayoutTests: XCTestCase {
     }
 
     func testHidingTheLastVisibleSectionIsRefused() {
-        let one = SidebarSectionLayout.default.settingHidden(.projects, true)
+        let one = SidebarSectionLayout.default.settingHidden(.projects, true).settingHidden(.gitHistory, true)
         XCTAssertEqual(one.visible, [.explorer])
         XCTAssertEqual(one.settingHidden(.explorer, true), one)
         XCTAssertEqual(one.settingHidden(.projects, false).visible, [.projects, .explorer])
@@ -127,7 +134,12 @@ final class SidebarSectionLayoutTests: XCTestCase {
             .settingHidden(.explorer, true)
         let revealed = hidden.revealing(.explorer)
         XCTAssertTrue(revealed.isExpanded(.explorer))
-        XCTAssertEqual(revealed.visible, [.projects, .explorer])
+        XCTAssertEqual(revealed.visible, [.projects, .explorer, .gitHistory])
+    }
+
+    func testRevealingGitHistoryExpandsIt() {
+        let revealed = SidebarSectionLayout.default.revealing(.gitHistory)
+        XCTAssertEqual(revealed.expanded, [.projects, .explorer, .gitHistory])
     }
 
     // MARK: Persistence
@@ -147,18 +159,43 @@ final class SidebarSectionLayoutTests: XCTestCase {
     }
 
     func testDecodeDropsUnknownIdsAndAppendsMissingKnownOnes() {
-        let json = #"{"version":1,"order":["explorer","gitHistory"],"hidden":["gitHistory"],"collapsed":["explorer"],"weights":{"explorer":0.7,"gitHistory":0.3}}"#
+        let json = #"{"version":1,"order":["explorer","timeline"],"hidden":["timeline"],"collapsed":["explorer"],"weights":{"explorer":0.7,"timeline":0.3}}"#
         let layout = SidebarSectionLayout.decode(Data(json.utf8))
-        XCTAssertEqual(layout.order, [.explorer, .projects])
+        XCTAssertEqual(layout.order, [.explorer, .projects, .gitHistory])
         XCTAssertEqual(layout.hidden, [])
-        XCTAssertEqual(layout.collapsed, [.explorer])
+        // An appended id takes its fresh-install state: PROJECTS expanded,
+        // GIT HISTORY collapsed.
+        XCTAssertEqual(layout.collapsed, [.explorer, .gitHistory])
         XCTAssertEqual(layout.weight(of: .explorer), 0.7, accuracy: 1e-9)
         XCTAssertEqual(layout.weight(of: .projects), 0.4, accuracy: 1e-9)
     }
 
+    // Fork-only: git support — a layout saved before GIT HISTORY existed
+    // gains it at the bottom, collapsed, so the existing sidebar does not
+    // shift; everything the record said is kept.
+    func testLayoutSavedBeforeGitHistoryGainsItCollapsed() {
+        let json = #"{"version":1,"order":["projects","explorer"],"hidden":[],"collapsed":["projects"],"weights":{"projects":0.3,"explorer":0.7}}"#
+        let layout = SidebarSectionLayout.decode(Data(json.utf8))
+        XCTAssertEqual(layout.order, [.projects, .explorer, .gitHistory])
+        XCTAssertEqual(layout.collapsed, [.projects, .gitHistory])
+        XCTAssertEqual(layout.hidden, [])
+        XCTAssertEqual(layout.expanded, [.explorer])
+        XCTAssertEqual(layout.weight(of: .projects), 0.3, accuracy: 1e-9)
+        XCTAssertEqual(layout.weight(of: .explorer), 0.7, accuracy: 1e-9)
+        XCTAssertEqual(layout.contentHeights(space: 500, minimums: minimums), [.explorer: 500])
+    }
+
+    func testLayoutSavedWithHiddenSectionsKeepsThemHidden() {
+        let json = #"{"version":1,"order":["projects","explorer"],"hidden":["projects"],"collapsed":[],"weights":{}}"#
+        let layout = SidebarSectionLayout.decode(Data(json.utf8))
+        XCTAssertEqual(layout.hidden, [.projects])
+        XCTAssertEqual(layout.visible, [.explorer, .gitHistory])
+        XCTAssertEqual(layout.expanded, [.explorer])
+    }
+
     func testDecodeNeverHidesEverySection() {
-        let json = #"{"version":1,"order":["projects","explorer"],"hidden":["projects","explorer"],"collapsed":[],"weights":{}}"#
-        XCTAssertEqual(SidebarSectionLayout.decode(Data(json.utf8)).visible, [.projects, .explorer])
+        let json = #"{"version":1,"order":["projects","explorer","gitHistory"],"hidden":["projects","explorer","gitHistory"],"collapsed":[],"weights":{}}"#
+        XCTAssertEqual(SidebarSectionLayout.decode(Data(json.utf8)).visible, [.projects, .explorer, .gitHistory])
     }
 
     func testDecodeIgnoresNonPositiveOrNonFiniteWeights() {

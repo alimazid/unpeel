@@ -100,6 +100,19 @@ final class SidebarSectionStackTests: XCTestCase {
         XCTAssertGreaterThanOrEqual(counter.builds(.explorer), 1)
     }
 
+    // Fork-only: git support — collapsed by default, so nothing is built
+    // (and no git process runs) until the user opens it.
+    func testGitHistoryStartsCollapsedAndUnbuilt() {
+        let (store, defaults, suite) = makeStore()
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let counter = BuildCounter()
+        let host = render(store, counter: counter, height: 700)
+        XCTAssertEqual(counter.builds(.gitHistory), 0)
+        store.update { $0.revealing(.gitHistory) }
+        flush(host)
+        XCTAssertGreaterThanOrEqual(counter.builds(.gitHistory), 1)
+    }
+
     /// No trap (e.g. a negative frame) when the headers alone overflow.
     func testTinyHeightLaysOutWithoutTrapping() {
         let (store, defaults, suite) = makeStore()

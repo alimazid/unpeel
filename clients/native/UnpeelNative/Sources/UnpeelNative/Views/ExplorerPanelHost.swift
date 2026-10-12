@@ -155,7 +155,7 @@ final class ExplorerSectionModel: ObservableObject {
     /// under the new host that is already on screen. `claim`/`release` make
     /// that ordering safe: only the host that is still the active claim may
     /// tear down.
-    private var activeHost: UUID?
+    private var activeHost = SectionMountClaim()
 
     init(defaults: UserDefaults = AppDefaults.shared) {
         viewModel = ExplorerViewModel(stateStore: ExplorerStateStore(defaults: defaults))
@@ -164,7 +164,7 @@ final class ExplorerSectionModel: ObservableObject {
     /// Marks `token` as the active host. Call from `onAppear`, before
     /// syncing the tree's context.
     func claim(_ token: UUID) {
-        activeHost = token
+        activeHost.claim(token)
     }
 
     /// Releases `token`. Returns whether it was still the active host —
@@ -172,8 +172,25 @@ final class ExplorerSectionModel: ObservableObject {
     /// watcher) when this returns `true`; a superseded host's own teardown
     /// (its claim already replaced by a newer host's `onAppear`) is a no-op.
     func release(_ token: UUID) -> Bool {
-        guard activeHost == token else { return false }
-        activeHost = nil
+        activeHost.release(token)
+    }
+}
+
+/// Fork-only: git support (extracted from `ExplorerSectionModel`). Which
+/// mounted host of a section's shared model is the current one: SwiftUI can
+/// deliver a new host's `onAppear` before the old host's `onDisappear`, so
+/// only the most recent claim may tear the shared model down.
+struct SectionMountClaim {
+    private var active: UUID?
+
+    mutating func claim(_ token: UUID) {
+        active = token
+    }
+
+    /// Whether `token` was still the active claim (and is now released).
+    mutating func release(_ token: UUID) -> Bool {
+        guard active == token else { return false }
+        active = nil
         return true
     }
 }
