@@ -67,7 +67,7 @@ index.lock exists: false
 
 ## 3. Not yet exercised in the running app
 
-Pending an unlocked screen. The dev build is built from `8652cfd` and was
+Pending an unlocked screen. The dev build is built from `9608770` and was
 left running against `UNPEEL_HOME=~/udgh` with the scratch repository as a
 Project and one shell Session; its saved sidebar layout was seeded with a
 pre-Git-History record (PROJECTS 0.35 / EXPLORER 0.65).
