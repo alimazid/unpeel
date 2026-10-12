@@ -348,7 +348,7 @@ public final class ExplorerViewModel: ObservableObject {
     @discardableResult
     public func handleChange(_ change: FileSystemChange) -> Task<Void, Never> {
         guard let model else { return Task {} }
-        let decorating = workingTreeDidChange()
+        let decorating = Self.touchesWorkingTree(change, root: model.root) ? workingTreeDidChange() : Task {}
         let tracked = Set(model.directories.keys)
         // A dropped/coalesced event says nothing usable about WHICH paths
         // changed, so — like a `.gitignore` edit — everything tracked is

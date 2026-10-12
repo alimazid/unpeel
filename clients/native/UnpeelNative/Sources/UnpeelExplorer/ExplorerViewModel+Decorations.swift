@@ -3,8 +3,10 @@ import UnpeelGit
 
 /// Fork-only: git support. Git Status Decorations: while a root is shown
 /// its repository is followed through the shared `GitRepositoryHub`, and
-/// the decorations are re-read (debounced) when the working tree changes or
-/// on Refresh. A non-repository or a Mac without git simply has none.
+/// the decorations are re-read (debounced) when the working tree changes,
+/// when the repository changes (the hub's signal: a commit, checkout or
+/// stage made outside Unpeel), or on Refresh. A non-repository or a Mac
+/// without git simply has none.
 extension ExplorerViewModel {
     /// How long a change waits for more before the decorations are re-read.
     public nonisolated static let defaultDecorationDebounce: TimeInterval = 0.2
@@ -12,9 +14,28 @@ extension ExplorerViewModel {
     /// Follows `root`'s repository and reads its decorations right away.
     func startDecorations(root: String) -> Task<Void, Never> {
         guard let hub = services.repositories else { return Task {} }
-        repositorySubscription = hub.subscribe(root: root)
+        let current = generation
+        repositorySubscription = hub.subscribe(root: root) { [weak self] in
+            guard let self, current == self.generation else { return }
+            self.scheduleDecorations(debounce: self.decorationDebounce)
+        }
         decorationsRoot = root
         return scheduleDecorations(debounce: 0)
+    }
+
+    /// Whether a watcher batch can have changed the status. The root's own
+    /// `.git` is the repository signal's to report — counting it here too
+    /// would read the status twice for one commit — so a batch only inside
+    /// it (and the folders holding a `.git`, which FSEvents names along
+    /// with it) does not count. A batch that lost events always does.
+    static func touchesWorkingTree(_ change: FileSystemChange, root: String) -> Bool {
+        if change.needsFullRescan { return true }
+        let holdersOfDotGit = Set(change.directories
+            .filter { ($0 as NSString).lastPathComponent == ".git" }
+            .map { ($0 as NSString).deletingLastPathComponent })
+        return change.directories.contains { path in
+            !ExplorerPaths.isInsideDotGit(path, root: root) && !holdersOfDotGit.contains(path)
+        }
     }
 
     func stopDecorations() {
@@ -36,6 +57,7 @@ extension ExplorerViewModel {
 
     /// One loop serves every request: a request while it waits or reads
     /// costs at most one more read, never one per request.
+    @discardableResult
     func scheduleDecorations(debounce: TimeInterval) -> Task<Void, Never> {
         guard let hub = services.repositories, let root = decorationsRoot else { return Task {} }
         decorationsPending = true

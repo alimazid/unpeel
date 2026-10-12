@@ -176,12 +176,15 @@ func remoteBranch(_ name: String) -> GitRef {
 /// fire a change and check that monitors are released.
 final class FakeMonitors: @unchecked Sendable {
     final class Monitor: GitChangeMonitoring, @unchecked Sendable {
-        let location: GitRepositoryLocation
+        /// The repository watched, or nil for a folder watched for a `.git`.
+        let location: GitRepositoryLocation?
+        let folder: String?
         let handler: @Sendable () -> Void
         private(set) var isStopped = false
 
-        init(location: GitRepositoryLocation, handler: @escaping @Sendable () -> Void) {
+        init(location: GitRepositoryLocation?, folder: String? = nil, handler: @escaping @Sendable () -> Void) {
             self.location = location
+            self.folder = folder
             self.handler = handler
         }
 
@@ -194,7 +197,14 @@ final class FakeMonitors: @unchecked Sendable {
     private var created: [Monitor] = []
 
     func make(_ location: GitRepositoryLocation, _ handler: @escaping @Sendable () -> Void) -> Monitor {
-        let monitor = Monitor(location: location, handler: handler)
+        record(Monitor(location: location, handler: handler))
+    }
+
+    func makeFolder(_ folder: String, _ handler: @escaping @Sendable () -> Void) -> Monitor {
+        record(Monitor(location: nil, folder: folder, handler: handler))
+    }
+
+    private func record(_ monitor: Monitor) -> Monitor {
         lock.lock(); defer { lock.unlock() }
         created.append(monitor)
         return monitor

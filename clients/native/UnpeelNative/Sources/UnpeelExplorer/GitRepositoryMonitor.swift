@@ -3,15 +3,21 @@ import os
 import UnpeelGit
 
 /// Fork-only: git support. Watches one repository's git directory with the
-/// EXPLORER's FSEvents watcher and signals when what Git History shows can
-/// have changed: HEAD or the index (a commit, checkout, merge), refs or
-/// packed-refs (a branch created or deleted, a fetch, a push). Objects,
-/// logs, lock files and other worktrees' state are ignored, and working-tree
-/// edits never reach it — those are the EXPLORER's watcher's business.
+/// EXPLORER's FSEvents watcher and signals when the repository's git state
+/// can have changed: HEAD or the index (a commit, checkout, stage, merge),
+/// refs or packed-refs (a branch created or deleted, a fetch, a push).
+/// Objects, logs, lock files and other worktrees' state are ignored, and
+/// working-tree edits never reach it — those are the EXPLORER's watcher's
+/// business. A folder that is not a repository is watched for a `.git`
+/// appearing in it instead.
 public final class GitRepositoryMonitor: GitChangeMonitoring, @unchecked Sendable {
-    /// The monitor factory Git History's live services use.
-    public static let make: GitHistoryServices.MakeMonitor = { location, handler in
+    /// The monitor factories `GitRepositoryHub`'s live services use.
+    public static let make: GitRepositoryHubServices.MakeMonitor = { location, handler in
         GitRepositoryMonitor(location: location, handler: handler)
+    }
+
+    public static let makeFolder: GitRepositoryHubServices.MakeFolderMonitor = { folder, handler in
+        GitRepositoryMonitor(awaitingRepositoryIn: folder, handler: handler)
     }
 
     /// Files directly in a git directory whose change means HEAD, the index
@@ -24,17 +30,36 @@ public final class GitRepositoryMonitor: GitChangeMonitoring, @unchecked Sendabl
 
     private let watchers: [FileSystemWatcher]
 
-    /// Nil when FSEvents could not start a stream; Git History then simply
-    /// does not refresh by itself.
-    public init?(location: GitRepositoryLocation, latency: TimeInterval = 0.15, handler: @escaping @Sendable () -> Void) {
-        watchers = Self.watchedRoots(for: location).map { root in
+    /// Nil when FSEvents could not start a stream; the repository's views
+    /// then simply do not refresh by themselves.
+    public convenience init?(location: GitRepositoryLocation, latency: TimeInterval = 0.15, handler: @escaping @Sendable () -> Void) {
+        self.init(roots: Self.watchedRoots(for: location), latency: latency, handler: handler) { change in
+            Self.isRelevant(change, in: location)
+        }
+    }
+
+    /// Watches `folder`, not a repository, for a `.git` (a directory, or a
+    /// worktree's link file) appearing or changing in it — `git init`, a
+    /// clone into it. Nil when the folder cannot be resolved or watched.
+    public convenience init?(awaitingRepositoryIn folder: String, latency: TimeInterval = 0.15, handler: @escaping @Sendable () -> Void) {
+        guard let root = CanonicalPath.resolve(folder) else { return nil }
+        self.init(roots: [root], latency: latency, handler: handler) { change in
+            Self.isGitAppearing(change, in: root)
+        }
+    }
+
+    private init?(
+        roots: [String], latency: TimeInterval, handler: @escaping @Sendable () -> Void,
+        isRelevant: @escaping @Sendable (FileSystemChange) -> Bool
+    ) {
+        watchers = roots.map { root in
             FileSystemWatcher(root: root, latency: latency) { change in
-                if Self.isRelevant(change, in: location) { handler() }
+                if isRelevant(change) { handler() }
             }
         }
         guard watchers.allSatisfy({ $0.start() }) else {
             watchers.forEach { $0.stop() }
-            Self.logger.error("git directory watch did not start; Git History will not refresh by itself")
+            Self.logger.error("git watch did not start; the repository views will not refresh by themselves")
             return nil
         }
     }
@@ -60,6 +85,11 @@ public final class GitRepositoryMonitor: GitChangeMonitoring, @unchecked Sendabl
     /// as its parent, so the changed files are in there to test.
     static func isRelevant(_ change: FileSystemChange, in location: GitRepositoryLocation) -> Bool {
         change.needsFullRescan || change.directories.contains { isRelevant($0, in: location) }
+    }
+
+    static func isGitAppearing(_ change: FileSystemChange, in folder: String) -> Bool {
+        let dotGit = folder + "/.git"
+        return change.needsFullRescan || change.directories.contains { $0 == dotGit || $0.hasPrefix(dotGit + "/") }
     }
 
     static func isRelevant(_ path: String, in location: GitRepositoryLocation) -> Bool {

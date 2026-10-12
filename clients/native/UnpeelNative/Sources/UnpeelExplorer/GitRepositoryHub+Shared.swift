@@ -1,8 +1,16 @@
 import UnpeelGit
 
-/// Fork-only: git support. The one hub the app's repository views share,
-/// reading with the shared runner. Lives here rather than in `UnpeelGit`
-/// because the FSEvents watcher it will use does.
+/// Fork-only: git support. The hub the app's repository views share: reads
+/// with the shared runner and watches with the EXPLORER's FSEvents watcher
+/// (`GitRepositoryMonitor`), which is why it lives here, not in `UnpeelGit`.
 extension GitRepositoryHub {
-    public static let shared = GitRepositoryHub(services: .reading(GitReader()))
+    public static let shared = GitRepositoryHub(services: .live)
+}
+
+extension GitRepositoryHubServices {
+    public static let live = GitRepositoryHubServices.reading(
+        GitReader(),
+        makeMonitor: GitRepositoryMonitor.make,
+        makeFolderMonitor: GitRepositoryMonitor.makeFolder
+    )
 }

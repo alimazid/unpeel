@@ -60,6 +60,17 @@ final class GitRepositoryMonitorTests: XCTestCase {
         XCTAssertTrue(GitRepositoryMonitor.isRelevant(commit, in: main))
     }
 
+    /// A folder that is not a repository only cares about a `.git` in it.
+    func testAFolderAwaitingARepositoryHearsOnlyItsDotGit() {
+        XCTAssertTrue(GitRepositoryMonitor.isGitAppearing(.from(eventPaths: ["/p/.git"]), in: "/p"))
+        XCTAssertTrue(GitRepositoryMonitor.isGitAppearing(.from(eventPaths: ["/p/.git/HEAD"]), in: "/p"))
+        XCTAssertFalse(GitRepositoryMonitor.isGitAppearing(.from(eventPaths: ["/p/notes.txt"]), in: "/p"))
+        XCTAssertFalse(GitRepositoryMonitor.isGitAppearing(.from(eventPaths: ["/p/sub/.git/HEAD"]), in: "/p"))
+        XCTAssertFalse(GitRepositoryMonitor.isGitAppearing(.from(eventPaths: ["/p/.github/ci.yml"]), in: "/p"))
+        let dropped = FileSystemChange(directories: [], touchedGitignore: false, needsFullRescan: true)
+        XCTAssertTrue(GitRepositoryMonitor.isGitAppearing(dropped, in: "/p"))
+    }
+
     func testOneWatchCoversAWorktreeInsideItsCommonDirectory() {
         XCTAssertEqual(GitRepositoryMonitor.watchedRoots(for: main), ["/r/.git"])
         XCTAssertEqual(GitRepositoryMonitor.watchedRoots(for: worktree), ["/r/.git"])

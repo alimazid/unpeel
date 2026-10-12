@@ -28,7 +28,7 @@ final class GitHistoryLiveTests: XCTestCase {
         await model.setContext(local("/repo")).value
 
         XCTAssertEqual(fake.monitors.active.count, 1)
-        XCTAssertEqual(fake.monitors.active.first?.location.gitDirectory, "/repo/.git")
+        XCTAssertEqual(fake.monitors.active.first?.location?.gitDirectory, "/repo/.git")
     }
 
     func testTheWatchIsReleasedWhenTheExplorerRootChanges() async {
