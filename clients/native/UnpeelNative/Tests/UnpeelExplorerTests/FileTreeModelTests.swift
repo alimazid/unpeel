@@ -41,6 +41,21 @@ final class FileTreeModelTests: XCTestCase {
         XCTAssertEqual(model.expanded, ["/r/src/views"])
     }
 
+    /// Only folders whose rows are on screen count: the root, and expanded
+    /// folders whose every ancestor is expanded too. A folder that keeps its
+    /// expansion under a collapsed parent is not shown.
+    func testShownDirectoriesAreTheRootAndExpandedFoldersUnderExpandedParents() {
+        let model = FileTreeModel(root: root)
+            .expanding("/r/a").expanding("/r/a/b")
+            .expanding("/r/c").expanding("/r/c/d")
+            .collapsing("/r/c")
+
+        XCTAssertEqual(model.shownDirectories, [root, "/r/a", "/r/a/b"])
+        XCTAssertTrue(model.isShown("/r/a/b"))
+        XCTAssertFalse(model.isShown("/r/c/d"))
+        XCTAssertFalse(model.isShown("/r/c"))
+    }
+
     func testCollapsingAllClearsExpansion() {
         let model = FileTreeModel(root: root).expanding("/r/a").expanding("/r/b").collapsingAll()
         XCTAssertTrue(model.expanded.isEmpty)

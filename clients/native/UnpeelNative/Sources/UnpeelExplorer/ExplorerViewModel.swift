@@ -63,6 +63,15 @@ public final class ExplorerViewModel: ObservableObject {
     /// pre-change scan) can never overwrite a later one's result, no matter
     /// which one's scan happens to finish last.
     private var loadTokens: [String: Int] = [:]
+    /// Directories a reload still has to scan, and the one loop scanning
+    /// them. A batch that arrives mid-reload joins this set instead of
+    /// starting a chain of its own (see `scheduleReload`).
+    private var pendingReloads: Set<String> = []
+    private var reloadTask: Task<Void, Never>?
+    /// Folders that changed while they were not on screen (collapsed, or
+    /// under a collapsed parent). They keep their old contents and are
+    /// rescanned when an expansion shows them again.
+    private var staleDirectories: Set<String> = []
 
     public init(services: ExplorerServices = .live, stateStore: ExplorerStateStore) {
         self.services = services
@@ -94,6 +103,9 @@ public final class ExplorerViewModel: ObservableObject {
     private func teardown() {
         generation += 1
         loadTokens.removeAll()
+        pendingReloads = []
+        reloadTask = nil
+        staleDirectories = []
         stopWatcher()
         model = nil
         rootError = nil
@@ -189,6 +201,7 @@ public final class ExplorerViewModel: ObservableObject {
         else { return }
         switch result {
         case .success(let listing):
+            staleDirectories.remove(directory)
             self.model = model.settingContents(.loaded(listing), for: directory)
         case .failure(let error) where directory == model.root:
             self.model = nil
@@ -201,11 +214,39 @@ public final class ExplorerViewModel: ObservableObject {
         }
     }
 
-    private func reload(_ directories: Set<String>) async {
+    /// Rescans `directories` — the ones on screen; the rest are marked stale
+    /// for their next expansion. One loop serves every request: a batch
+    /// arriving while it scans joins `pendingReloads`, and the chain in
+    /// flight gives way after its current directory, so a burst of agent
+    /// writes costs one reload of the union, not one chain per batch.
+    private func scheduleReload(_ directories: Set<String>) -> Task<Void, Never> {
+        guard let model else { return Task {} }
+        let shown = directories.filter(model.isShown)
+        staleDirectories.formUnion(directories.subtracting(shown))
+        guard !shown.isEmpty else { return reloadTask ?? Task {} }
+        pendingReloads.formUnion(shown)
+        if let reloadTask { return reloadTask }
         let current = generation
-        for directory in directories.sorted(by: { ExplorerPaths.depth($0) < ExplorerPaths.depth($1) }) {
-            await load(directory, generation: current)
+        let task = Task { await self.drainReloads(generation: current) }
+        reloadTask = task
+        return task
+    }
+
+    private func drainReloads(generation current: Int) async {
+        while current == generation, !pendingReloads.isEmpty {
+            var chain = pendingReloads.sorted { ExplorerPaths.depth($0) < ExplorerPaths.depth($1) }
+            pendingReloads = []
+            while current == generation, !chain.isEmpty {
+                guard pendingReloads.isEmpty else {
+                    // Superseded: what is left joins the newer batch, and
+                    // the union is reloaded shallow-first from the top.
+                    pendingReloads.formUnion(chain)
+                    break
+                }
+                await load(chain.removeFirst(), generation: current)
+            }
         }
+        if current == generation { reloadTask = nil }
     }
 
     // MARK: - Expansion
@@ -220,9 +261,10 @@ public final class ExplorerViewModel: ObservableObject {
         case .loaded?, .loading?:
             self.model = expanded
             persistState()
-            return Task {}
+            return rescanStaleDirectoriesNowShown()
         case .failed?, nil:
             self.model = expanded.settingContents(.loading, for: path)
+            staleDirectories.remove(path)
             let current = generation
             return Task {
                 await self.load(path, generation: current)
@@ -232,8 +274,20 @@ public final class ExplorerViewModel: ObservableObject {
                 // model and selection as they stand now — never this
                 // task's own result.
                 self.persistState()
+                await self.rescanStaleDirectoriesNowShown().value
             }
         }
+    }
+
+    /// An expansion can show folders that changed while hidden (the folder
+    /// itself, or expanded ones beneath it); they still hold their old
+    /// contents, so they are rescanned now.
+    private func rescanStaleDirectoriesNowShown() -> Task<Void, Never> {
+        guard let model else { return Task {} }
+        let shown = staleDirectories.filter { model.directories[$0] != nil && model.isShown($0) }
+        guard !shown.isEmpty else { return Task {} }
+        staleDirectories.subtract(shown)
+        return scheduleReload(shown)
     }
 
     public func collapse(_ path: String) {
@@ -250,11 +304,12 @@ public final class ExplorerViewModel: ObservableObject {
 
     // MARK: - Refresh
 
+    /// Rescans every folder on screen; collapsed ones are rescanned when
+    /// next expanded.
     @discardableResult
     public func refresh() -> Task<Void, Never> {
         guard let model else { return Task {} }
-        let tracked = Set(model.directories.keys)
-        return Task { await self.reload(tracked) }
+        return scheduleReload(Set(model.directories.keys))
     }
 
     @discardableResult
@@ -267,7 +322,7 @@ public final class ExplorerViewModel: ObservableObject {
         let reloadEverything = change.touchedGitignore || change.needsFullRescan
         let targets = reloadEverything ? tracked : tracked.intersection(change.directories)
         guard !targets.isEmpty else { return Task {} }
-        return Task { await self.reload(targets) }
+        return scheduleReload(targets)
     }
 
     // MARK: - Reveal

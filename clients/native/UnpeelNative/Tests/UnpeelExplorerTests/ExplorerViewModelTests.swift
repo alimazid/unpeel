@@ -225,20 +225,25 @@ final class ExplorerViewModelTests: XCTestCase {
         XCTAssertNil(viewModel.model?.directories[tree.path("sub")])
     }
 
-    func testGitignoreChangeRescansEveryTrackedDirectory() async throws {
+    func testGitignoreChangeRescansEveryExpandedDirectory() async throws {
         let tree = try TempTree(); defer { tree.remove() }
-        try tree.file("sub/a.txt")
+        try tree.file("sub/a.txt"); try tree.file("other/b.txt")
         let log = ScanLog()
         let viewModel = makeViewModel(services(log: log))
         await viewModel.setContext(local(tree)).value
         await viewModel.expand(tree.path("sub")).value
+        await viewModel.expand(tree.path("other")).value
+        viewModel.collapse(tree.path("other"))
 
         await viewModel.handleChange(FileSystemChange(directories: [], touchedGitignore: true)).value
 
-        XCTAssertEqual(log.directories, [tree.root, tree.path("sub"), tree.root, tree.path("sub")])
+        XCTAssertEqual(
+            log.directories,
+            [tree.root, tree.path("sub"), tree.path("other"), tree.root, tree.path("sub")]
+        )
     }
 
-    func testADroppedEventRescansEveryTrackedDirectory() async throws {
+    func testADroppedEventRescansEveryExpandedDirectory() async throws {
         let tree = try TempTree(); defer { tree.remove() }
         try tree.file("sub/a.txt")
         let log = ScanLog()
@@ -247,12 +252,136 @@ final class ExplorerViewModelTests: XCTestCase {
         await viewModel.expand(tree.path("sub")).value
 
         // FSEvents names no usable directory when it drops events, so the
-        // tracked set — not `directories` — is what must be reloaded.
+        // expanded set — not `directories` — is what must be reloaded.
         await viewModel.handleChange(
             FileSystemChange(directories: [], touchedGitignore: false, needsFullRescan: true)
         ).value
 
         XCTAssertEqual(log.directories, [tree.root, tree.path("sub"), tree.root, tree.path("sub")])
+    }
+
+    // MARK: - Reload coalescing (#2)
+
+    /// Batches that arrive while a reload is still scanning do not each
+    /// start a chain of their own: the chain in flight gives way, and one
+    /// reload covers the union of everything that changed.
+    func testABurstOfBatchesDuringAReloadIsOneCoalescedReload() async throws {
+        let tree = try TempTree(); defer { tree.remove() }
+        try tree.file("a/x.txt"); try tree.file("b/x.txt"); try tree.file("c/x.txt")
+        let log = ScanLog()
+        let counter = ScanCallCounter()
+        let viewModel = makeViewModel(ExplorerServices(
+            scan: { directory, root in
+                log.record(directory)
+                if directory == root, counter.next(for: directory) == 2 {
+                    Thread.sleep(forTimeInterval: 0.3)
+                }
+                return try DirectoryScanner(ignore: NoIgnoreChecker()).scan(directory: directory, root: root)
+            },
+            makeWatcher: { _, _ in nil }
+        ))
+        await viewModel.setContext(local(tree)).value
+        for name in ["a", "b", "c"] { await viewModel.expand(tree.path(name)).value }
+        let before = log.directories.count
+
+        let first = viewModel.handleChange(FileSystemChange(directories: [tree.root, tree.path("a")], touchedGitignore: false))
+        try await Task.sleep(nanoseconds: 100_000_000)
+        let burst = [
+            viewModel.handleChange(FileSystemChange(directories: [tree.path("a")], touchedGitignore: false)),
+            viewModel.handleChange(FileSystemChange(directories: [tree.path("b")], touchedGitignore: false)),
+            viewModel.handleChange(FileSystemChange(directories: [tree.path("a"), tree.path("c")], touchedGitignore: false)),
+        ]
+        await first.value
+        for task in burst { await task.value }
+
+        let reloads = Array(log.directories.dropFirst(before))
+        XCTAssertEqual(reloads.first, tree.root)
+        XCTAssertEqual(reloads.dropFirst().sorted(), [tree.path("a"), tree.path("b"), tree.path("c")])
+    }
+
+    /// Switching roots mid-reload ends the chain: nothing more of the old
+    /// root is scanned, and what was in flight is never applied.
+    func testAReloadInFlightStopsWhenTheRootChanges() async throws {
+        let first = try TempTree(); defer { first.remove() }
+        let second = try TempTree(); defer { second.remove() }
+        try first.file("a/x.txt"); try second.file("y.txt")
+        let log = ScanLog()
+        let counter = ScanCallCounter()
+        let viewModel = makeViewModel(ExplorerServices(
+            scan: { directory, root in
+                log.record(directory)
+                if directory == root, counter.next(for: directory) == 2 {
+                    Thread.sleep(forTimeInterval: 0.3)
+                }
+                return try DirectoryScanner(ignore: NoIgnoreChecker()).scan(directory: directory, root: root)
+            },
+            makeWatcher: { _, _ in nil }
+        ))
+        await viewModel.setContext(local(first)).value
+        await viewModel.expand(first.path("a")).value
+
+        let reload = viewModel.refresh()
+        try await Task.sleep(nanoseconds: 100_000_000)
+        await viewModel.setContext(local(second)).value
+        await reload.value
+
+        XCTAssertEqual(log.directories.filter { $0 == first.path("a") }.count, 1)
+        XCTAssertEqual(viewModel.model?.root, second.root)
+        XCTAssertEqual(viewModel.model?.visibleChildren(of: second.root, filter: everything).map(\.name), ["y.txt"])
+    }
+
+    /// A collapsed folder keeps its contents for an instant re-expand, but
+    /// watcher reloads and Refresh skip it; expanding it rescans it.
+    func testCollapsedFoldersAreSkippedAndRescannedWhenExpanded() async throws {
+        let tree = try TempTree(); defer { tree.remove() }
+        try tree.file("sub/a.txt")
+        let log = ScanLog()
+        let viewModel = makeViewModel(services(log: log))
+        await viewModel.setContext(local(tree)).value
+        await viewModel.expand(tree.path("sub")).value
+        viewModel.collapse(tree.path("sub"))
+        try tree.file("sub/b.txt")
+        let before = log.directories.count
+
+        await viewModel.handleChange(
+            FileSystemChange(directories: [tree.root, tree.path("sub")], touchedGitignore: false)
+        ).value
+        await viewModel.refresh().value
+        XCTAssertEqual(Array(log.directories.dropFirst(before)), [tree.root, tree.root])
+
+        await viewModel.expand(tree.path("sub")).value
+
+        XCTAssertEqual(log.directories.last, tree.path("sub"))
+        XCTAssertEqual(
+            viewModel.model?.visibleChildren(of: tree.path("sub"), filter: everything).map(\.name),
+            ["a.txt", "b.txt"]
+        )
+    }
+
+    /// A folder that stays expanded under a collapsed parent is not on
+    /// screen either; it is rescanned once its parent shows it again.
+    func testAnExpandedFolderUnderACollapsedParentIsRescannedWhenShownAgain() async throws {
+        let tree = try TempTree(); defer { tree.remove() }
+        try tree.file("a/b/old.txt")
+        let log = ScanLog()
+        let viewModel = makeViewModel(services(log: log))
+        await viewModel.setContext(local(tree)).value
+        await viewModel.expand(tree.path("a")).value
+        await viewModel.expand(tree.path("a/b")).value
+        viewModel.collapse(tree.path("a"))
+        try tree.file("a/b/new.txt")
+        let before = log.directories.count
+
+        await viewModel.handleChange(FileSystemChange(directories: [tree.path("a/b")], touchedGitignore: false)).value
+        XCTAssertEqual(log.directories.count, before)
+
+        await viewModel.expand(tree.path("a")).value
+
+        XCTAssertEqual(Array(log.directories.dropFirst(before)), [tree.path("a/b")])
+        XCTAssertEqual(
+            viewModel.model?.visibleChildren(of: tree.path("a/b"), filter: everything).map(\.name),
+            ["new.txt", "old.txt"]
+        )
     }
 
     func testAVanishedExpandedFolderIsDropped() async throws {
