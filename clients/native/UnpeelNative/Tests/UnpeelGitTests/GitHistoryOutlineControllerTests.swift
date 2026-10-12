@@ -179,6 +179,20 @@ final class GitHistoryOutlineControllerTests: XCTestCase {
         XCTAssertEqual((outline.item(atRow: 0) as? GitHistoryItem)?.sha, "new0")
     }
 
+    /// A scroll back to the top can settle a fraction of a point below it
+    /// (seen in the running app); that is still the top.
+    func testCommitsLandingOnTopAreShownWhenASubPointBelowTheTop() async {
+        let first = (0..<40).map { commit("c\($0)") }
+        let (controller, outline, scroll) = await makeController(commits: first)
+        scroll.contentView.setBoundsOrigin(NSPoint(x: 0, y: 0.3))
+
+        controller.apply(commits: [commit("new0")] + first)
+
+        XCTAssertEqual(scroll.contentView.bounds.minY, 0.3, accuracy: 0.001)
+        XCTAssertEqual(outline.row(at: NSPoint(x: 1, y: scroll.contentView.bounds.minY + 1)), 0)
+        XCTAssertEqual((outline.item(atRow: 0) as? GitHistoryItem)?.sha, "new0")
+    }
+
     func testScrollingNearTheBottomLoadsMore() async {
         let fake = FakeGitHistory()
         let all = (0..<60).map { commit("c\($0)") }

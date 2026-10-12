@@ -31,6 +31,9 @@ final class GitHistoryOutlineController: NSObject, NSOutlineViewDataSource, NSOu
     /// Start loading the next page once fewer than this many rows remain
     /// below the visible area.
     private static let loadMoreRowThreshold: CGFloat = 8
+    /// How far below the top still counts as the top: a scroll back up can
+    /// settle a fraction of a point short of it.
+    private static let atTopTolerance: CGFloat = 1
 
     let viewModel: GitHistoryViewModel
     var palette: GitHistoryPalette
@@ -107,7 +110,8 @@ final class GitHistoryOutlineController: NSObject, NSOutlineViewDataSource, NSOu
     private func insertOnTop(_ count: Int, oldTop: String) {
         guard let outlineView else { return }
         let clip = outlineView.enclosingScrollView?.contentView
-        let wasScrolled = (clip?.bounds.minY ?? 0) > 0
+        let offsetFromTop = clip.map { $0.bounds.minY + $0.contentInsets.top } ?? 0
+        let wasScrolled = offsetFromTop >= Self.atTopTolerance
         outlineView.insertItems(at: IndexSet(0..<count), inParent: nil, withAnimation: [])
         // The old top row's lane now continues upwards; labels may have moved.
         reloadVisibleCommitRows()
