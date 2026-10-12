@@ -98,7 +98,10 @@ struct ExplorerOutlineView: NSViewRepresentable {
         let controller = context.coordinator.controller
         controller.actionHandler = actionHandler
         controller.palette = palette
-        controller.apply(model: viewModel.model, filter: viewModel.filter, selection: viewModel.selection)
+        controller.apply(
+            model: viewModel.model, filter: viewModel.filter, selection: viewModel.selection,
+            decorations: viewModel.decorations
+        )
         controller.applyRestoredScrollIfNeeded()
     }
 

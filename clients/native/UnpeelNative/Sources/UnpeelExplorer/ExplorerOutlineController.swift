@@ -1,4 +1,5 @@
 import AppKit
+import UnpeelGit
 
 @MainActor
 public final class ExplorerOutlineController: NSObject,
@@ -26,6 +27,9 @@ public final class ExplorerOutlineController: NSObject,
 
     private static let cellIdentifier = NSUserInterfaceItemIdentifier("unpeel.explorer.cell")
     private static let noteSuffix = "/\u{0}note"
+    /// Fork-only: git support. A folder's decoration: VS Code marks a
+    /// folder holding changes with a dot in their colour, not a letter.
+    static let folderDecoration = "•"
 
     public let viewModel: ExplorerViewModel
     public weak var actionHandler: (any ExplorerActionHandler)?
@@ -58,6 +62,8 @@ public final class ExplorerOutlineController: NSObject,
     /// clears it.
     private var quickLookOverridePaths: [String]?
     private var appliedFilter = VisibilityFilter()
+    /// Fork-only: git support.
+    private var appliedDecorations = GitDecorations.none
     private var appliedRestoreToken = 0
     /// True while this controller changes the outline view itself, so its
     /// delegate callbacks are not echoed back into the view model.
@@ -87,13 +93,17 @@ public final class ExplorerOutlineController: NSObject,
 
     // MARK: - Applying model changes
 
-    public func apply(model: FileTreeModel?, filter: VisibilityFilter, selection: [String]) {
+    public func apply(
+        model: FileTreeModel?, filter: VisibilityFilter, selection: [String], decorations: GitDecorations = .none
+    ) {
         isApplying = true
         defer { isApplying = false }
         let previous = applied
         let previousFilter = appliedFilter
+        let decorationsChanged = decorations != appliedDecorations
         applied = model
         appliedFilter = filter
+        appliedDecorations = decorations
         guard let model else {
             items = [:]
             childCache = [:]
@@ -132,6 +142,19 @@ public final class ExplorerOutlineController: NSObject,
         }
         syncExpansion(model)
         syncSelection(selection)
+        if decorationsChanged { reconfigureLoadedRows() }
+    }
+
+    /// Fork-only: git support. Rows AppKit already holds views for — on
+    /// screen or prepared just off it — are not asked for again, so new
+    /// decorations are applied to them in place.
+    private func reconfigureLoadedRows() {
+        outlineView?.enumerateAvailableRowViews { rowView, row in
+            guard let item = self.outlineView?.item(atRow: row) as? ExplorerItem,
+                  let cell = rowView.view(atColumn: 0) as? ExplorerRowCellView
+            else { return }
+            self.configure(cell, for: item)
+        }
     }
 
     /// Scrolls to the view model's restored offset once per restore.
@@ -275,6 +298,8 @@ public final class ExplorerOutlineController: NSObject,
     /// reason: the two roles want different modes.
     func configure(_ cell: ExplorerRowCellView, for item: ExplorerItem) {
         cell.textField?.font = palette.rowFont
+        cell.decorationField?.font = palette.rowFont
+        cell.decorationField?.stringValue = ""
         cell.toolTip = nil
         cell.alphaValue = 1
         cell.imageView?.image = nil
@@ -292,12 +317,22 @@ public final class ExplorerOutlineController: NSObject,
             cell.textField?.lineBreakMode = .byTruncatingMiddle
             cell.imageView?.image = entry.map(icons.icon(for:))
             cell.textField?.stringValue = entry?.name ?? (item.path as NSString).lastPathComponent
-            cell.restingTextColor = palette.text
+            let decoration = entry.flatMap(decoration(for:))
+            cell.restingTextColor = decoration?.color ?? palette.text
+            cell.decorationField?.stringValue = decoration.map {
+                entry?.kind == .directory ? Self.folderDecoration : $0.letter
+            } ?? ""
             cell.alphaValue = (entry?.isIgnored == true || entry?.isHidden == true) ? 0.5 : 1
             cell.toolTip = entry?.isSymlink == true && entry?.isExpandable == false && entry?.kind == .directory
                 ? "This link points outside the project folder."
                 : nil
         }
+    }
+
+    /// Fork-only: git support. An ignored entry has no git state to show;
+    /// it stays dimmed as before.
+    private func decoration(for entry: FileEntry) -> GitChangeKind? {
+        entry.isIgnored ? nil : appliedDecorations.kind(at: entry.path)
     }
 
     public func outlineView(_: NSOutlineView, shouldSelectItem item: Any) -> Bool {
@@ -331,20 +366,32 @@ public final class ExplorerOutlineController: NSObject,
         let image = NSImageView()
         let label = NSTextField(labelWithString: "")
         label.lineBreakMode = .byTruncatingMiddle
+        // Fork-only: git support. The decoration keeps its width; a long
+        // name truncates instead.
+        let decoration = NSTextField(labelWithString: "")
+        decoration.alignment = .right
+        decoration.setContentHuggingPriority(.required, for: .horizontal)
+        decoration.setContentCompressionResistancePriority(.required, for: .horizontal)
+        label.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
         image.translatesAutoresizingMaskIntoConstraints = false
         label.translatesAutoresizingMaskIntoConstraints = false
+        decoration.translatesAutoresizingMaskIntoConstraints = false
         cell.addSubview(image)
         cell.addSubview(label)
+        cell.addSubview(decoration)
         cell.imageView = image
         cell.textField = label
+        cell.decorationField = decoration
         NSLayoutConstraint.activate([
             image.leadingAnchor.constraint(equalTo: cell.leadingAnchor, constant: 2),
             image.centerYAnchor.constraint(equalTo: cell.centerYAnchor),
             image.widthAnchor.constraint(equalToConstant: 16),
             image.heightAnchor.constraint(equalToConstant: 16),
             label.leadingAnchor.constraint(equalTo: image.trailingAnchor, constant: 6),
-            label.trailingAnchor.constraint(equalTo: cell.trailingAnchor, constant: -4),
+            label.trailingAnchor.constraint(equalTo: decoration.leadingAnchor, constant: -2),
             label.centerYAnchor.constraint(equalTo: cell.centerYAnchor),
+            decoration.trailingAnchor.constraint(equalTo: cell.trailingAnchor, constant: -6),
+            decoration.centerYAnchor.constraint(equalTo: cell.centerYAnchor),
         ])
         return cell
     }

@@ -25,6 +25,28 @@ public struct GitReader: Sendable {
         .map { GitHead.parse(porcelainV2: $0.stdout) }
     }
 
+    /// Every changed path under `root` and HEAD, from one status read. Only
+    /// `root`'s own subtree is read (paths stay relative to the work tree);
+    /// an untracked folder is listed once rather than file by file, and a
+    /// submodule counts only when its checked-out commit changed.
+    public func status(at root: String) -> GitReadResult<GitStatus> {
+        runner.run(
+            .status,
+            ["--porcelain=v2", "--branch", "-z", "--untracked-files=normal", "--ignore-submodules=dirty", "--", "."],
+            in: root
+        )
+        .readResult()
+        .map { GitStatus.parse(porcelainV2: $0.stdout) }
+    }
+
+    /// Where `root`'s repository lives and its status, as the repository
+    /// views share them (`GitRepositoryHub`).
+    public func snapshot(at root: String) -> GitReadResult<GitRepositorySnapshot> {
+        repository(at: root).flatMap { location in
+            status(at: root).map { GitRepositorySnapshot(location: location, status: $0) }
+        }
+    }
+
     /// Local branches, then remote-tracking branches, each in name order
     /// (sorting full names puts `refs/heads/` before `refs/remotes/`). Ref
     /// names cannot contain a newline, so records are newline-separated.

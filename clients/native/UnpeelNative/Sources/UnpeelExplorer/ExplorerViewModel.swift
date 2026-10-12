@@ -15,16 +15,23 @@ public struct ExplorerServices: Sendable {
 
     public let scan: Scan
     public let makeWatcher: MakeWatcher
+    /// Fork-only: git support. Where Git Status Decorations come from; nil
+    /// shows none.
+    public let repositories: GitRepositoryHub?
 
-    public init(scan: @escaping Scan, makeWatcher: @escaping MakeWatcher) {
+    public init(scan: @escaping Scan, makeWatcher: @escaping MakeWatcher, repositories: GitRepositoryHub? = nil) {
         self.scan = scan
         self.makeWatcher = makeWatcher
+        self.repositories = repositories
     }
 
-    public static let live = ExplorerServices(
-        scan: { directory, root in try DirectoryScanner().scan(directory: directory, root: root) },
-        makeWatcher: { root, handler in FileSystemWatcher(root: root, handler: handler) }
-    )
+    @MainActor public static var live: ExplorerServices {
+        ExplorerServices(
+            scan: { directory, root in try DirectoryScanner().scan(directory: directory, root: root) },
+            makeWatcher: { root, handler in FileSystemWatcher(root: root, handler: handler) },
+            repositories: .shared
+        )
+    }
 }
 
 @MainActor
@@ -40,15 +47,18 @@ public final class ExplorerViewModel: ObservableObject {
     /// scroll in those states, and the next successful open bumps it anyway.
     @Published public private(set) var restoreToken = 0
     public var scrollOffset: Double = 0
+    /// Fork-only: git support. The current root's Git Status Decorations
+    /// (see `ExplorerViewModel+Decorations`).
+    @Published public internal(set) var decorations: GitDecorations = .none
 
-    private static let logger = Logger(subsystem: "com.unpeel.explorer", category: "viewmodel")
+    static let logger = Logger(subsystem: "com.unpeel.explorer", category: "viewmodel")
 
-    private let services: ExplorerServices
+    let services: ExplorerServices
     private let stateStore: ExplorerStateStore
     private var watcher: FileSystemWatcher?
     /// Bumped on every context change; a load that finishes under an older
     /// generation belongs to a root that is no longer shown.
-    private var generation = 0
+    private(set) var generation = 0
     /// The generation currently opening (initial load + saved-state replay),
     /// or `nil` when none is. `persistState()` is suppressed while this
     /// equals `generation` — i.e. while the *current, live* root is mid-open
@@ -72,10 +82,23 @@ public final class ExplorerViewModel: ObservableObject {
     /// under a collapsed parent). They keep their old contents and are
     /// rescanned when an expansion shows them again.
     private var staleDirectories: Set<String> = []
+    /// Fork-only: git support. Decoration state, owned by
+    /// `ExplorerViewModel+Decorations`.
+    let decorationDebounce: TimeInterval
+    var repositorySubscription: GitRepositorySubscription?
+    /// The root as the context names it: the key its status is shared under.
+    var decorationsRoot: String?
+    var decorationsPending = false
+    var decorationTask: Task<Void, Never>?
 
-    public init(services: ExplorerServices = .live, stateStore: ExplorerStateStore) {
+    public init(
+        services: ExplorerServices = .live,
+        stateStore: ExplorerStateStore,
+        decorationDebounce: TimeInterval = ExplorerViewModel.defaultDecorationDebounce
+    ) {
         self.services = services
         self.stateStore = stateStore
+        self.decorationDebounce = max(0, decorationDebounce)
         filter = stateStore.filter
     }
 
@@ -107,6 +130,7 @@ public final class ExplorerViewModel: ObservableObject {
         reloadTask = nil
         staleDirectories = []
         stopWatcher()
+        stopDecorations()
         model = nil
         rootError = nil
         selection = []
@@ -137,6 +161,7 @@ public final class ExplorerViewModel: ObservableObject {
         }
         model = FileTreeModel(root: root).settingContents(.loading, for: root)
         startWatcher(root: root)
+        let decorating = startDecorations(root: requestedRoot)
         await load(root, generation: current)
         guard current == generation, model != nil else {
             finishOpening(current)
@@ -144,6 +169,7 @@ public final class ExplorerViewModel: ObservableObject {
         }
         await restoreState(root: root, generation: current)
         finishOpening(current)
+        await decorating.value
     }
 
     /// Clears `restoringGeneration` only if it still names `current` — a
@@ -208,6 +234,7 @@ public final class ExplorerViewModel: ObservableObject {
             // Spec §3.5: no stream keeps running behind the error state; a
             // successful `retry()` builds a fresh one.
             stopWatcher()
+            stopDecorations()
             reportRootUnavailable(model.root, underlying: error)
         case .failure(let error):
             self.model = model.settingContents(.failed(error.localizedDescription), for: directory)
@@ -306,23 +333,34 @@ public final class ExplorerViewModel: ObservableObject {
 
     /// Rescans every folder on screen; collapsed ones are rescanned when
     /// next expanded.
+    /// Also re-reads the Git Status Decorations.
     @discardableResult
     public func refresh() -> Task<Void, Never> {
         guard let model else { return Task {} }
-        return scheduleReload(Set(model.directories.keys))
+        let reload = scheduleReload(Set(model.directories.keys))
+        let decorating = workingTreeDidChange()
+        return Task {
+            await reload.value
+            await decorating.value
+        }
     }
 
     @discardableResult
     public func handleChange(_ change: FileSystemChange) -> Task<Void, Never> {
         guard let model else { return Task {} }
+        let decorating = workingTreeDidChange()
         let tracked = Set(model.directories.keys)
         // A dropped/coalesced event says nothing usable about WHICH paths
         // changed, so — like a `.gitignore` edit — everything tracked is
         // suspect.
         let reloadEverything = change.touchedGitignore || change.needsFullRescan
         let targets = reloadEverything ? tracked : tracked.intersection(change.directories)
-        guard !targets.isEmpty else { return Task {} }
-        return scheduleReload(targets)
+        guard !targets.isEmpty else { return decorating }
+        let reload = scheduleReload(targets)
+        return Task {
+            await reload.value
+            await decorating.value
+        }
     }
 
     // MARK: - Reveal

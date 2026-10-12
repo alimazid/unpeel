@@ -59,9 +59,31 @@ public enum GitChangeKind: String, CaseIterable, Sendable {
         static let conflicting = dynamic(light: 0xAD0707, dark: 0xE4676B)
     }
 
-    /// `diff-tree --name-status` letters (similarity scores dropped).
-    init?(nameStatus: Substring) {
-        switch nameStatus.first {
+    /// Which state wins when one path has two (staged and unstaged), and
+    /// which a folder carries for its descendants: conflict > deleted >
+    /// modified > type change > renamed > copied > added > untracked. A
+    /// file renamed or added and then edited therefore reads as modified.
+    public var precedence: Int {
+        switch self {
+        case .untracked: return 0
+        case .added: return 1
+        case .copied: return 2
+        case .renamed: return 3
+        case .typeChanged: return 4
+        case .modified: return 5
+        case .deleted: return 6
+        case .conflicted: return 7
+        }
+    }
+
+    public static func strongest(_ lhs: GitChangeKind, _ rhs: GitChangeKind) -> GitChangeKind {
+        rhs.precedence > lhs.precedence ? rhs : lhs
+    }
+
+    /// One side (`X` staged or `Y` unstaged) of a `git status --porcelain`
+    /// code; `.` (unchanged) and anything unknown are nil.
+    init?(statusCode: Character) {
+        switch statusCode {
         case "A": self = .added
         case "M": self = .modified
         case "D": self = .deleted
@@ -71,6 +93,12 @@ public enum GitChangeKind: String, CaseIterable, Sendable {
         case "U": self = .conflicted
         default: return nil
         }
+    }
+
+    /// `diff-tree --name-status` letters (similarity scores dropped).
+    init?(nameStatus: Substring) {
+        guard let letter = nameStatus.first else { return nil }
+        self.init(statusCode: letter)
     }
 
     fileprivate static func dynamic(light: UInt32, dark: UInt32) -> NSColor {

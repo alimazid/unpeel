@@ -13,13 +13,18 @@ final class ExplorerRowCellView: NSTableCellView {
         didSet { applyTextColor() }
     }
 
+    /// Fork-only: git support. The trailing Git Status Decoration (a
+    /// letter, or a dot on a folder); empty when the row has none. It is
+    /// drawn in the label's colour.
+    var decorationField: NSTextField?
+
     override var backgroundStyle: NSView.BackgroundStyle {
         didSet { applyTextColor() }
     }
 
     private func applyTextColor() {
-        textField?.textColor = backgroundStyle == .emphasized
-            ? .alternateSelectedControlTextColor
-            : restingTextColor
+        let color = backgroundStyle == .emphasized ? .alternateSelectedControlTextColor : restingTextColor
+        textField?.textColor = color
+        decorationField?.textColor = color
     }
 }
