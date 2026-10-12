@@ -15,5 +15,4 @@ final class GitHistoryHostActionsTests: XCTestCase {
 
         XCTAssertEqual(revealed, ["/repo/docs/readme.md"])
     }
-
 }

@@ -550,16 +550,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, SPUU
         )
         resetFontItem.target = self
         viewMenu.addItem(resetFontItem)
-        // Fork-only: sidebar sections (⇧⌘E).
+        // Fork-only: sidebar sections (⇧⌘E) and git support (⌃⇧G).
         viewMenu.addItem(.separator())
-        let explorerItem = NSMenuItem(
-            title: "Show Explorer",
-            action: #selector(toggleExplorerFromMenu),
-            keyEquivalent: "e"
-        )
-        explorerItem.keyEquivalentModifierMask = [.command, .shift]
-        explorerItem.target = self
-        viewMenu.addItem(explorerItem)
+        for item in Self.sidebarSectionMenuItems(target: self) {
+            viewMenu.addItem(item)
+        }
         viewItem.submenu = viewMenu
         mainMenu.addItem(viewItem)
 
@@ -691,15 +686,46 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, SPUU
         TerminalFontModel.shared.resetSize()
     }
 
+    // Fork-only: sidebar sections (⇧⌘E) and git support (⌃⇧G). The View
+    // menu items that reveal and focus a section, or collapse it when its
+    // list already has focus. Static so the tests read the real chords.
+    static func sidebarSectionMenuItems(target: AnyObject?) -> [NSMenuItem] {
+        let explorerItem = NSMenuItem(
+            title: SidebarSectionFocusCommand.menuTitle(for: .revealAndFocus, section: .explorer),
+            action: #selector(toggleExplorerFromMenu),
+            keyEquivalent: "e"
+        )
+        explorerItem.keyEquivalentModifierMask = [.command, .shift]
+        let gitHistoryItem = NSMenuItem(
+            title: SidebarSectionFocusCommand.menuTitle(for: .revealAndFocus, section: .gitHistory),
+            action: #selector(toggleGitHistoryFromMenu),
+            keyEquivalent: "g"
+        )
+        gitHistoryItem.keyEquivalentModifierMask = [.control, .shift]
+        for item in [explorerItem, gitHistoryItem] {
+            item.target = target
+        }
+        return [explorerItem, gitHistoryItem]
+    }
+
     // Fork-only: sidebar sections. ⇧⌘E reveals and focuses the EXPLORER
     // section, or collapses it when the tree already has focus
-    // (`ExplorerFocusCommand` is the decision).
+    // (`SidebarSectionFocusCommand` is the decision).
     @objc private func toggleExplorerFromMenu() {
+        toggleSidebarSection(.explorer)
+    }
+
+    // Fork-only: git support. ⌃⇧G does the same for GIT HISTORY.
+    @objc private func toggleGitHistoryFromMenu() {
+        toggleSidebarSection(.gitHistory)
+    }
+
+    private func toggleSidebarSection(_ section: SidebarSectionID) {
         guard let store else { return }
         let sections = SidebarSectionLayoutStore.shared
-        switch currentExplorerCommand() {
-        case .collapseExplorer:
-            sections.update { $0.settingCollapsed(.explorer, true) }
+        switch currentSectionCommand(section) {
+        case .collapse:
+            sections.update { $0.settingCollapsed(section, true) }
             let target = ExplorerContextResolver.targetSessionID(
                 activePane: store.activeTerminalPane?.sessionID,
                 focusedSolo: store.focusedSoloSessionID,
@@ -712,17 +738,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, SPUU
             }
         case .revealAndFocus:
             store.sidebarCollapsed = false
-            sections.update { $0.revealing(.explorer) }
-            ExplorerFocus.focusTree(in: window)
+            sections.update { $0.revealing(section) }
+            if section == .gitHistory {
+                GitHistoryFocus.focusList(in: window)
+            } else {
+                ExplorerFocus.focusTree(in: window)
+            }
         }
     }
 
-    private func currentExplorerCommand() -> ExplorerCommandAction {
+    private func currentSectionCommand(_ section: SidebarSectionID) -> SidebarSectionCommandAction {
         let layout = SidebarSectionLayoutStore.shared.layout
-        return ExplorerFocusCommand.action(
-            treeFocused: ExplorerFocus.isTreeFocused(in: window),
-            explorerExpanded: layout.isExpanded(.explorer),
-            explorerHidden: !layout.isVisible(.explorer),
+        let focused = section == .gitHistory
+            ? GitHistoryFocus.isListFocused(in: window)
+            : ExplorerFocus.isTreeFocused(in: window)
+        return SidebarSectionFocusCommand.action(
+            focused: focused,
+            expanded: layout.isExpanded(section),
+            hidden: !layout.isVisible(section),
             sidebarCollapsed: store?.sidebarCollapsed ?? false
         )
     }
@@ -778,9 +811,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, SPUU
     /// disabled (Appearance ▸ "Session gallery") — the gallery chip owns the
     /// capture flow, so with no chip mounted the notification goes nowhere.
     func validateMenuItem(_ menuItem: NSMenuItem) -> Bool {
-        // Fork-only: sidebar sections.
+        // Fork-only: sidebar sections and git support.
         if menuItem.action == #selector(toggleExplorerFromMenu) {
-            menuItem.title = ExplorerFocusCommand.menuTitle(for: currentExplorerCommand())
+            menuItem.title = SidebarSectionFocusCommand.menuTitle(for: currentSectionCommand(.explorer), section: .explorer)
+            return window != nil
+        }
+        if menuItem.action == #selector(toggleGitHistoryFromMenu) {
+            menuItem.title = SidebarSectionFocusCommand.menuTitle(for: currentSectionCommand(.gitHistory), section: .gitHistory)
             return window != nil
         }
         if menuItem.action == #selector(closePaneOrWindowFromMenu) {
