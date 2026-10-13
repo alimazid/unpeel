@@ -52,8 +52,11 @@ struct ExplorerOutlineView: NSViewRepresentable {
         outline.autosaveExpandedItems = false
         // The terminal panes live in this same app, so the local mask matters
         // as much as the external one for "drag a row onto a terminal".
-        outline.setDraggingSourceOperationMask([.copy, .generic], forLocal: true)
+        // Fork-only: explorer operations — `.move` for rows dragged within
+        // the tree; a terminal pane still takes the drop as a pasted path.
+        outline.setDraggingSourceOperationMask([.copy, .move, .generic], forLocal: true)
         outline.setDraggingSourceOperationMask([.copy, .generic, .link], forLocal: false)
+        outline.registerForDraggedTypes([.fileURL])
         return outline
     }
 
