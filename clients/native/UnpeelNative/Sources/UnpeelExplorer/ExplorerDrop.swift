@@ -15,7 +15,7 @@ enum ExplorerDrop {
     static func operation(
         sources: [String], into folder: String, sourceMask: NSDragOperation, isInternal: Bool
     ) -> NSDragOperation {
-        guard isInternal, !sources.isEmpty else { return [] }
+        guard isInternal, !sources.isEmpty, !sourceMask.isDisjoint(with: [.copy, .move, .generic]) else { return [] }
         if sources.contains(where: { folder == $0 || folder.hasPrefix($0 + "/") }) { return [] }
         let copying = sourceMask == .copy
         if !copying, sources.allSatisfy({ FileTreeModel.parent(of: $0) == folder }) { return [] }

@@ -32,6 +32,11 @@ final class ExplorerDropRuleTests: XCTestCase {
         XCTAssertEqual(ExplorerDrop.operation(sources: ["/r/a"], into: "/r", sourceMask: .copy, isInternal: true), .copy)
     }
 
+    func testAModifierLeavingOnlyALinkIsNoDrop() {
+        XCTAssertEqual(ExplorerDrop.operation(sources: ["/r/a"], into: "/r/dest", sourceMask: .link, isInternal: true), [])
+        XCTAssertEqual(ExplorerDrop.operation(sources: ["/r/a"], into: "/r/dest", sourceMask: [], isInternal: true), [])
+    }
+
     func testDragsFromOutsideTheTreeAreNotAcceptedYet() {
         XCTAssertEqual(ExplorerDrop.operation(sources: ["/x/a"], into: "/r", sourceMask: all, isInternal: false), [])
     }
