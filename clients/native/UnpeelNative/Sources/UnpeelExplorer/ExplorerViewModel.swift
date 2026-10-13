@@ -415,12 +415,15 @@ public final class ExplorerViewModel: ObservableObject {
             relocated.formUnion(next.expanded.filter { $0 == to || $0.hasPrefix(to + "/") })
             staleDirectories = staleDirectories.filter { $0 != from && !$0.hasPrefix(from + "/") }
         }
-        for folder in relocated where next.isShown(folder) {
+        // Every relocated expanded folder is rescanned: now if it is on
+        // screen, else (as stale) when an expansion shows it — even one that
+        // landed under a collapsed folder, which a reveal then expands.
+        for folder in relocated {
             next = next.settingContents(.loading, for: folder)
         }
         model = next
-        let shown = next
-        return scheduleReload(changedFolders.union(relocated).filter { shown.directories[$0] != nil })
+        let loaded = next
+        return scheduleReload(changedFolders.filter { loaded.directories[$0] != nil }.union(relocated))
     }
 
     // MARK: - Reveal
@@ -482,7 +485,12 @@ public final class ExplorerViewModel: ObservableObject {
             await expand(path).value
         }
         guard current == generation, let model else { return }
-        selection = saved.selection.filter { model.entry(at: $0) != nil }
+        // Fork-only: explorer operations. A selection made meanwhile — a
+        // click, or the result of an operation undone right after switching
+        // back to this root — is newer than the saved one.
+        if selection.isEmpty {
+            selection = saved.selection.filter { model.entry(at: $0) != nil }
+        }
         scrollOffset = saved.scrollOffset
         restoreToken += 1
     }

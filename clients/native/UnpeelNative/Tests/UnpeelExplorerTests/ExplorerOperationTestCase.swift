@@ -18,17 +18,22 @@ class ExplorerOperationTestCase: ExplorerViewModelTestCase {
         try await super.tearDown()
     }
 
-    func operationServices(trasher: (any Trasher)? = nil) -> ExplorerServices {
+    func operationServices(trasher: (any Trasher)? = nil, delay: [String: TimeInterval] = [:]) -> ExplorerServices {
         let trasher = trasher ?? trash!
         return ExplorerServices(
-            scan: { directory, root in try DirectoryScanner(ignore: NoIgnoreChecker()).scan(directory: directory, root: root) },
+            scan: { directory, root in
+                if let pause = delay[directory] { Thread.sleep(forTimeInterval: pause) }
+                return try DirectoryScanner(ignore: NoIgnoreChecker()).scan(directory: directory, root: root)
+            },
             makeWatcher: { _, _ in nil },
             makeOperations: { FileOperations(root: $0, trasher: trasher) }
         )
     }
 
-    func opened(_ tree: TempTree, trasher: (any Trasher)? = nil) async -> ExplorerViewModel {
-        let viewModel = makeViewModel(operationServices(trasher: trasher))
+    func opened(
+        _ tree: TempTree, trasher: (any Trasher)? = nil, delay: [String: TimeInterval] = [:]
+    ) async -> ExplorerViewModel {
+        let viewModel = makeViewModel(operationServices(trasher: trasher, delay: delay))
         await viewModel.setContext(local(tree)).value
         return viewModel
     }

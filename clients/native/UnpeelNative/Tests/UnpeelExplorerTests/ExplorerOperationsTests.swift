@@ -57,6 +57,43 @@ final class ExplorerOperationsTests: ExplorerOperationTestCase {
         XCTAssertEqual(viewModel.selection, [tree.path("dest/a.txt")])
     }
 
+    func testAnExpandedFolderMovedIntoACollapsedOneIsListedWhenRevealed() async throws {
+        let tree = try TempTree(); defer { tree.remove() }
+        try tree.file("a/sub/x.txt"); try tree.file("P/p.txt")
+        let viewModel = await opened(tree)
+        await viewModel.expand(tree.path("a")).value
+        await viewModel.expand(tree.path("a/sub")).value
+
+        await viewModel.move([tree.path("a")], into: tree.path("P")).value
+        await waitUntil { self.names(viewModel, tree.path("P/a/sub")) == ["x.txt"] }
+
+        XCTAssertEqual(viewModel.model?.expanded, [tree.path("P"), tree.path("P/a"), tree.path("P/a/sub")])
+        XCTAssertEqual(names(viewModel, tree.path("P")), ["a", "p.txt"])
+        XCTAssertEqual(names(viewModel, tree.path("P/a")), ["sub"])
+        XCTAssertEqual(names(viewModel, tree.path("P/a/sub")), ["x.txt"])
+        XCTAssertEqual(viewModel.selection, [tree.path("P/a")])
+    }
+
+    func testAnUndoRightAfterReturningToARootKeepsItsSelection() async throws {
+        let tree = try TempTree(); defer { tree.remove() }
+        let other = try TempTree(); defer { other.remove() }
+        try tree.file("a.txt"); try tree.file("z.txt"); try tree.dir("slow")
+        let viewModel = await opened(tree, delay: [tree.path("slow"): 0.5])
+        await viewModel.expand(tree.path("slow")).value
+        await viewModel.rename(tree.path("a.txt"), to: "b.txt").value
+        await viewModel.setContext(local(other)).value
+
+        // Restoring the saved expansion of `slow` keeps the root opening
+        // while the undo runs.
+        let reopening = viewModel.setContext(local(tree))
+        await waitUntil { viewModel.model != nil && viewModel.undoActionTitle != nil }
+        let undoing = viewModel.undo()
+        await reopening.value
+        await undoing.value
+
+        XCTAssertEqual(viewModel.selection, [tree.path("a.txt")])
+    }
+
     func testTheWatchersOwnBatchAfterAnOperationChangesNothing() async throws {
         let tree = try TempTree(); defer { tree.remove() }
         try tree.file("src/a.txt")

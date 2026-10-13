@@ -113,7 +113,11 @@ extension ExplorerViewModel {
         selectingWhenEmpty fallback: [String] = [],
         _ body: @escaping @MainActor (String, FileOperations) async -> FileOperationOutcome?
     ) -> Task<Void, Never> {
-        guard let root = model?.root, let operations = services.makeOperations(root) else { return Task {} }
+        guard let root = model?.root else { return Task {} }
+        guard let operations = services.makeOperations(root) else {
+            operationMessage = ExplorerError.rootUnavailable(root).localizedDescription
+            return Task {}
+        }
         let current = generation
         let previous = operationTail
         let task = Task { @MainActor in
@@ -143,6 +147,7 @@ extension ExplorerViewModel {
         await reloadAfterOperation(changedFolders: effects.folders, relocations: effects.relocations).value
         guard current == generation else { return }
         await revealAll(record.resultPaths.isEmpty ? fallback : record.resultPaths)
+        guard current == generation else { return }
         persistState()
     }
 
@@ -177,11 +182,13 @@ extension ExplorerViewModel {
     /// still there.
     func revealAll(_ paths: [String]) async {
         guard let root = model?.root else { return }
+        let current = generation
         let ancestors = Set(paths.flatMap { Self.ancestors(of: $0, root: root) })
         for folder in ancestors.sorted(by: { ExplorerPaths.depth($0) < ExplorerPaths.depth($1) }) {
+            guard current == generation else { return }
             await expand(folder).value
         }
-        guard let model else { return }
+        guard current == generation, let model else { return }
         selection = paths.filter { model.entry(at: $0) != nil }
     }
 
