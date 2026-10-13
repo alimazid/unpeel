@@ -108,6 +108,20 @@ public struct FileTreeModel: Sendable, Equatable {
         )
     }
 
+    /// Fork-only: explorer operations. `from` was renamed or moved to `to`:
+    /// expansion beneath it follows to the new path, and its listings are
+    /// dropped — their entries name the old paths — to be rescanned there.
+    public func relocating(from: String, to: String) -> FileTreeModel {
+        let rewrite: (String) -> String = { path in
+            Self.isSameOrBelow(path, from) ? to + path.dropFirst(from.count) : path
+        }
+        return FileTreeModel(
+            root: root,
+            directories: directories.filter { !Self.isSameOrBelow($0.key, from) },
+            expanded: Set(expanded.map(rewrite))
+        )
+    }
+
     /// `.git` is never listed, regardless of filter settings.
     public func visibleChildren(of directory: String, filter: VisibilityFilter) -> [FileEntry] {
         guard case .loaded(let listing)? = directories[directory] else { return [] }

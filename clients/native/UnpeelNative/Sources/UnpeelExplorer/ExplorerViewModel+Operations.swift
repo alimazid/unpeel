@@ -1,0 +1,190 @@
+import Foundation
+
+/// Fork-only: explorer operations. File Operations as the EXPLORER performs
+/// them: one at a time, off the main actor, each recorded in its Explorer
+/// Root's Operation History and shown at once — the result selected and
+/// revealed, any failure in the message strip.
+extension ExplorerViewModel {
+    // MARK: - Operations
+
+    @discardableResult
+    public func createFile(_ relativePath: String, in folder: String) -> Task<Void, Never> {
+        record { $0.createFile(relativePath, in: folder) }
+    }
+
+    @discardableResult
+    public func createFolder(_ relativePath: String, in folder: String) -> Task<Void, Never> {
+        record { $0.createFolder(relativePath, in: folder) }
+    }
+
+    @discardableResult
+    public func rename(_ path: String, to name: String) -> Task<Void, Never> {
+        record { $0.rename(path, to: name) }
+    }
+
+    @discardableResult
+    public func move(
+        _ paths: [String], into folder: String, resolutions: [String: CollisionResolution] = [:]
+    ) -> Task<Void, Never> {
+        record { $0.move(paths, into: folder, resolutions: resolutions) }
+    }
+
+    @discardableResult
+    public func copy(
+        _ paths: [String], into folder: String, resolutions: [String: CollisionResolution] = [:]
+    ) -> Task<Void, Never> {
+        record { $0.copy(paths, into: folder, resolutions: resolutions) }
+    }
+
+    @discardableResult
+    public func duplicate(_ paths: [String]) -> Task<Void, Never> {
+        record { $0.duplicate(paths) }
+    }
+
+    @discardableResult
+    public func trash(_ paths: [String]) -> Task<Void, Never> {
+        record { $0.trash(paths) }
+    }
+
+    // MARK: - Undo and redo
+
+    /// "Undo <operation>" for the current root, nil when there is nothing.
+    public var undoActionTitle: String? {
+        currentHistory?.nextUndo.map { "Undo \($0.kind.title)" }
+    }
+
+    public var redoActionTitle: String? {
+        currentHistory?.nextRedo.map { "Redo \($0.kind.title)" }
+    }
+
+    @discardableResult
+    public func undo() -> Task<Void, Never> {
+        enqueue { root, operations in
+            guard let record = self.histories[root]?.nextUndo else { return nil }
+            let outcome = await Self.detached { operations.reverse(record) }
+            self.histories[root] = self.histories[root]?.undone(replacement: outcome.record)
+            return outcome
+        }
+    }
+
+    @discardableResult
+    public func redo() -> Task<Void, Never> {
+        enqueue { root, operations in
+            guard let record = self.histories[root]?.nextRedo else { return nil }
+            let outcome = await Self.detached { operations.reverse(record) }
+            self.histories[root] = self.histories[root]?.redone(replacement: outcome.record)
+            return outcome
+        }
+    }
+
+    public func dismissOperationMessage() {
+        operationMessage = nil
+    }
+
+    // MARK: - Running
+
+    private var currentHistory: OperationHistory? {
+        model.flatMap { histories[$0.root] }
+    }
+
+    /// A new operation: run, then pushed onto its root's history.
+    private func record(
+        _ work: @escaping @Sendable (FileOperations) -> FileOperationOutcome
+    ) -> Task<Void, Never> {
+        enqueue { root, operations in
+            let outcome = await Self.detached { work(operations) }
+            if let record = outcome.record {
+                self.histories[root] = (self.histories[root] ?? OperationHistory()).recording(record)
+            }
+            return outcome
+        }
+    }
+
+    /// Runs `body` after every operation asked for before it, against the
+    /// root shown when it was asked for. The history is updated even if the
+    /// root changed meanwhile — the files did change — but the result is
+    /// only shown while that root still is.
+    private func enqueue(
+        _ body: @escaping @MainActor (String, FileOperations) async -> FileOperationOutcome?
+    ) -> Task<Void, Never> {
+        guard let root = model?.root, let operations = services.makeOperations(root) else { return Task {} }
+        let current = generation
+        let previous = operationTail
+        let task = Task { @MainActor in
+            await previous?.value
+            guard let outcome = await body(root, operations) else { return }
+            await self.show(outcome, root: root, generation: current)
+        }
+        operationTail = task
+        return task
+    }
+
+    private static func detached(
+        _ work: @escaping @Sendable () -> FileOperationOutcome
+    ) async -> FileOperationOutcome {
+        await Task.detached(priority: .userInitiated) { work() }.value
+    }
+
+    // MARK: - Showing
+
+    private func show(_ outcome: FileOperationOutcome, root: String, generation current: Int) async {
+        guard current == generation, model?.root == root else { return }
+        operationMessage = Self.message(for: outcome.failures)
+        guard let record = outcome.record else { return }
+        let effects = Self.effects(of: record.steps, root: root)
+        await reloadAfterOperation(changedFolders: effects.folders, relocations: effects.relocations).value
+        guard current == generation else { return }
+        await revealAll(record.resultPaths)
+        persistState()
+    }
+
+    /// The first failure, and how many more there were.
+    static func message(for failures: [FileOperationFailure]) -> String? {
+        guard let first = failures.first?.localizedDescription else { return nil }
+        return failures.count > 1 ? "\(first) (and \(failures.count - 1) more)" : first
+    }
+
+    /// The folders inside `root` whose listings a record's steps changed,
+    /// and the items it moved.
+    static func effects(
+        of steps: [FileOperationStep], root: String
+    ) -> (folders: Set<String>, relocations: [(from: String, to: String)]) {
+        var folders: Set<String> = []
+        var relocations: [(from: String, to: String)] = []
+        for step in steps {
+            switch step {
+            case let .created(path, _, _):
+                folders.insert(FileTreeModel.parent(of: path))
+            case let .moved(from, to, _):
+                folders.formUnion([FileTreeModel.parent(of: from), FileTreeModel.parent(of: to)])
+                relocations.append((from, to))
+            case let .trashed(original, _, _, _):
+                folders.insert(FileTreeModel.parent(of: original))
+            }
+        }
+        return (folders.filter { $0 == root || $0.hasPrefix(root + "/") }, relocations)
+    }
+
+    /// Expands the folders holding `paths` and selects the ones that are
+    /// still there.
+    func revealAll(_ paths: [String]) async {
+        guard let root = model?.root else { return }
+        let ancestors = Set(paths.flatMap { Self.ancestors(of: $0, root: root) })
+        for folder in ancestors.sorted(by: { ExplorerPaths.depth($0) < ExplorerPaths.depth($1) }) {
+            await expand(folder).value
+        }
+        guard let model else { return }
+        selection = paths.filter { model.entry(at: $0) != nil }
+    }
+
+    private static func ancestors(of path: String, root: String) -> [String] {
+        guard path.hasPrefix(root + "/") else { return [] }
+        var folders: [String] = []
+        var folder = FileTreeModel.parent(of: path)
+        while folder != root, folder.count > root.count {
+            folders.append(folder)
+            folder = FileTreeModel.parent(of: folder)
+        }
+        return folders
+    }
+}

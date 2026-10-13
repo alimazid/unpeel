@@ -39,6 +39,57 @@ public final class ExplorerNSOutlineView: NSOutlineView {
         fittedColumnWidth = column.width
     }
 
+    // MARK: - Edit menu (Fork-only: explorer operations)
+
+    public weak var editTarget: (any ExplorerEditTarget)?
+
+    @objc public func undo(_: Any?) { performEdit(.undo) }
+    @objc public func redo(_: Any?) { performEdit(.redo) }
+    @objc public func cut(_: Any?) { performEdit(.cut) }
+    @objc public func copy(_: Any?) { performEdit(.copy) }
+    @objc public func paste(_: Any?) { performEdit(.paste) }
+
+    /// While a name field in a row is being edited, the field editor is
+    /// first responder and its undo/redo reach the tree through the
+    /// responder chain; those belong to the window's undo manager (the
+    /// text's own undo), never to the Operation History.
+    private var isEditingText: Bool {
+        window?.firstResponder !== self && window?.firstResponder is NSText
+    }
+
+    private func performEdit(_ command: ExplorerEditCommand) {
+        if isEditingText {
+            if command == .undo { window?.undoManager?.undo() }
+            if command == .redo { window?.undoManager?.redo() }
+            return
+        }
+        guard editTarget?.title(for: command) != nil else { return }
+        editTarget?.perform(command)
+    }
+
+    /// The menu item's enabled state and title for `command`.
+    func editState(for command: ExplorerEditCommand) -> (enabled: Bool, title: String) {
+        if isEditingText, let manager = window?.undoManager, command == .undo || command == .redo {
+            return command == .undo
+                ? (manager.canUndo, manager.undoMenuItemTitle)
+                : (manager.canRedo, manager.redoMenuItemTitle)
+        }
+        guard let title = editTarget?.title(for: command) else { return (false, command.defaultTitle) }
+        return (true, title)
+    }
+
+    /// `NSTableView` already validates its own items here (Select All), so
+    /// this extends that rather than adding `validateMenuItem`, which AppKit
+    /// would ask instead of it.
+    public override func validateUserInterfaceItem(_ item: any NSValidatedUserInterfaceItem) -> Bool {
+        guard let command = ExplorerEditCommand(action: item.action) else {
+            return super.validateUserInterfaceItem(item)
+        }
+        let state = editState(for: command)
+        (item as? NSMenuItem)?.title = state.title
+        return state.enabled
+    }
+
     public override func keyDown(with event: NSEvent) {
         if let command = ExplorerKeyCommand.from(keyCode: event.keyCode, modifiers: event.modifierFlags),
            keyCommandHandler?(command) == true {

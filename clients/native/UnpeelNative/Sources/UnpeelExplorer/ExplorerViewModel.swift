@@ -13,16 +13,26 @@ public struct ExplorerServices: Sendable {
         _ root: String, _ handler: @escaping FileSystemWatcher.Handler
     ) -> FileSystemWatcher?
 
+    public typealias MakeOperations = @Sendable (_ root: String) -> FileOperations?
+
     public let scan: Scan
     public let makeWatcher: MakeWatcher
     /// Fork-only: git support. Where Git Status Decorations come from; nil
     /// shows none.
     public let repositories: GitRepositoryHub?
+    /// Fork-only: explorer operations. The File Operations for a root.
+    public let makeOperations: MakeOperations
 
-    public init(scan: @escaping Scan, makeWatcher: @escaping MakeWatcher, repositories: GitRepositoryHub? = nil) {
+    public init(
+        scan: @escaping Scan,
+        makeWatcher: @escaping MakeWatcher,
+        repositories: GitRepositoryHub? = nil,
+        makeOperations: @escaping MakeOperations = { FileOperations(root: $0) }
+    ) {
         self.scan = scan
         self.makeWatcher = makeWatcher
         self.repositories = repositories
+        self.makeOperations = makeOperations
     }
 
     @MainActor public static var live: ExplorerServices {
@@ -50,6 +60,10 @@ public final class ExplorerViewModel: ObservableObject {
     /// Fork-only: git support. The current root's Git Status Decorations
     /// (see `ExplorerViewModel+Decorations`).
     @Published public internal(set) var decorations: GitDecorations = .none
+    /// Fork-only: explorer operations. The latest File Operation failure,
+    /// shown in the EXPLORER's message strip until dismissed, the next
+    /// operation succeeds, or the root changes.
+    @Published public internal(set) var operationMessage: String?
 
     static let logger = Logger(subsystem: "com.unpeel.explorer", category: "viewmodel")
 
@@ -87,6 +101,12 @@ public final class ExplorerViewModel: ObservableObject {
     let decorationDebounce: TimeInterval
     var followedRepository: FollowedRepository?
     let decorationRefresh = RefreshCoalescer()
+    /// Fork-only: explorer operations. Each Explorer Root's Operation
+    /// History, kept for the app's life (see `ExplorerViewModel+Operations`).
+    var histories: [String: OperationHistory] = [:]
+    /// The File Operation in flight; the next one waits for it, so an undo
+    /// always acts on the history as the previous operation left it.
+    var operationTail: Task<Void, Never>?
 
     public init(
         services: ExplorerServices = .live,
@@ -132,6 +152,7 @@ public final class ExplorerViewModel: ObservableObject {
         rootError = nil
         selection = []
         scrollOffset = 0
+        operationMessage = nil
     }
 
     /// Persistence is suppressed for the WHOLE window from the moment a
@@ -327,15 +348,19 @@ public final class ExplorerViewModel: ObservableObject {
         return scheduleReload(shown)
     }
 
+    /// Rows under the collapsed folder leave the selection: operations act
+    /// on what is visibly selected.
     public func collapse(_ path: String) {
         guard let model else { return }
         self.model = model.collapsing(path)
+        selection = selection.filter { !$0.hasPrefix(path + "/") }
         persistState()
     }
 
     public func collapseAll() {
         guard let model else { return }
         self.model = model.collapsingAll()
+        selection = selection.filter { FileTreeModel.parent(of: $0) == model.root }
         persistState()
     }
 
@@ -371,6 +396,31 @@ public final class ExplorerViewModel: ObservableObject {
             await reload.value
             await decorating.value
         }
+    }
+
+    // MARK: - Showing a File Operation
+
+    /// Fork-only: explorer operations. Shows an operation's result without
+    /// waiting for the watcher: a renamed or moved folder keeps its
+    /// expansion under the new path, and the folders whose listings changed
+    /// are rescanned now. A rescan of them already in flight started before
+    /// the operation, so its result is discarded — applied, it would prune a
+    /// relocated folder's expansion as an orphan.
+    func reloadAfterOperation(changedFolders: Set<String>, relocations: [(from: String, to: String)]) -> Task<Void, Never> {
+        guard var next = model else { return Task {} }
+        for folder in changedFolders { loadTokens[folder, default: 0] += 1 }
+        var relocated: Set<String> = []
+        for (from, to) in relocations where next.expanded.contains(from) || next.directories[from] != nil {
+            next = next.relocating(from: from, to: to)
+            relocated.formUnion(next.expanded.filter { $0 == to || $0.hasPrefix(to + "/") })
+            staleDirectories = staleDirectories.filter { $0 != from && !$0.hasPrefix(from + "/") }
+        }
+        for folder in relocated where next.isShown(folder) {
+            next = next.settingContents(.loading, for: folder)
+        }
+        model = next
+        let shown = next
+        return scheduleReload(changedFolders.union(relocated).filter { shown.directories[$0] != nil })
     }
 
     // MARK: - Reveal

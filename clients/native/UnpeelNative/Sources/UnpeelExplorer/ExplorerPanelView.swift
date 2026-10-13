@@ -45,6 +45,10 @@ public struct ExplorerPanelView: View {
             if showsHeader {
                 header
             }
+            // Fork-only: explorer operations.
+            if let failure = viewModel.operationMessage {
+                operationStrip(failure)
+            }
             if let message = Self.message(for: viewModel.context, rootError: viewModel.rootError) {
                 emptyState(message)
             } else {
@@ -66,6 +70,31 @@ public struct ExplorerPanelView: View {
         }
         .padding(.horizontal, 10)
         .frame(height: 28)
+    }
+
+    /// Fork-only: explorer operations. The latest File Operation failure.
+    private func operationStrip(_ message: String) -> some View {
+        HStack(alignment: .top, spacing: 6) {
+            Image(systemName: "exclamationmark.triangle.fill")
+                .foregroundColor(.orange)
+            Text(message)
+                .foregroundColor(Color(nsColor: palette.text))
+                .fixedSize(horizontal: false, vertical: true)
+                .frame(maxWidth: .infinity, alignment: .leading)
+            Button {
+                viewModel.dismissOperationMessage()
+            } label: {
+                Image(systemName: "xmark")
+                    .foregroundColor(Color(nsColor: palette.secondaryText))
+            }
+            .buttonStyle(.borderless)
+            .help("Dismiss")
+        }
+        .font(.system(size: 11))
+        .padding(.horizontal, 10)
+        .padding(.vertical, 6)
+        .background(Color.orange.opacity(0.12))
+        .accessibilityElement(children: .combine)
     }
 
     private func emptyState(_ message: String) -> some View {

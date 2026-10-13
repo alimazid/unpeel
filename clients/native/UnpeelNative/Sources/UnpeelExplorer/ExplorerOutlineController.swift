@@ -89,6 +89,8 @@ public final class ExplorerOutlineController: NSObject,
         outlineView.menu = menu
         outlineView.keyCommandHandler = { [weak self] in self?.handleKeyCommand($0) ?? false }
         outlineView.previewPaths = { [weak self] in self?.previewPaths() ?? [] }
+        // Fork-only: explorer operations.
+        outlineView.editTarget = self
     }
 
     // MARK: - Applying model changes

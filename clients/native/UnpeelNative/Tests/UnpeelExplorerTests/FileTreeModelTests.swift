@@ -138,3 +138,23 @@ final class FileTreeModelTests: XCTestCase {
         XCTAssertEqual(FileTreeModel.parent(of: "/r/src/a.txt"), "/r/src")
     }
 }
+
+/// Fork-only: explorer operations. A renamed or moved folder keeps its
+/// expansion under the new path; its old listings are dropped (their
+/// entries name the old paths) so they are rescanned.
+final class FileTreeModelRelocationTests: XCTestCase {
+    func testRelocatingRewritesTheExpandedSubtreeAndDropsOldListings() {
+        let listing = DirectoryListing(entries: [FileEntry(path: "/r/src/a", name: "a", kind: .file)])
+        let model = FileTreeModel(
+            root: "/r",
+            directories: ["/r": .loading, "/r/src": .loaded(listing), "/r/src/sub": .loading, "/r/srcx": .loading],
+            expanded: ["/r/src", "/r/src/sub", "/r/srcx"]
+        )
+
+        let moved = model.relocating(from: "/r/src", to: "/r/lib")
+
+        XCTAssertEqual(moved.expanded, ["/r/lib", "/r/lib/sub", "/r/srcx"])
+        XCTAssertEqual(Set(moved.directories.keys), ["/r", "/r/srcx"])
+        XCTAssertEqual(model.expanded, ["/r/src", "/r/src/sub", "/r/srcx"], "the input is unchanged")
+    }
+}
