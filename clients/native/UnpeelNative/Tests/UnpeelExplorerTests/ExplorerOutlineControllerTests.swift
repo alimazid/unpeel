@@ -139,11 +139,12 @@ final class ExplorerOutlineControllerTests: XCTestCase {
         XCTAssertEqual(
             controller.menuActions(for: "/r/a.txt"),
             [.open, .openInEditor, .revealInFinder, .quickLook, nil, .sendToAgent, nil, .copyPath, .copyRelativePath, nil,
-             .trash, nil, .refresh]
+             .rename, .trash, nil, .refresh]
         )
         XCTAssertEqual(
             controller.menuActions(for: "/r/src"),
-            [.revealInFinder, nil, .sendToAgent, nil, .copyPath, .copyRelativePath, nil, .trash, nil, .refresh, .collapse]
+            [.revealInFinder, nil, .sendToAgent, nil, .copyPath, .copyRelativePath, nil, .rename, .trash, nil, .refresh,
+             .collapse]
         )
 
         handler.canSendToAgent = false

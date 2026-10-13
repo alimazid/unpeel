@@ -12,6 +12,8 @@ public enum ExplorerKeyCommand: Equatable, Sendable {
     case revealInFinder
     /// Fork-only: explorer operations. ⌘⌫.
     case trash
+    /// Fork-only: explorer operations. Return, as in Finder and VS Code.
+    case rename
 
     public static func from(keyCode: UInt16, modifiers: NSEvent.ModifierFlags) -> ExplorerKeyCommand? {
         // Arrow keys always carry .numericPad/.function; only these four matter.
@@ -21,6 +23,7 @@ public enum ExplorerKeyCommand: Equatable, Sendable {
             case 49: return .quickLook
             case 124: return .expandOrDescend
             case 123: return .collapseOrAscend
+            case 36, 76: return .rename
             default: return nil
             }
         }

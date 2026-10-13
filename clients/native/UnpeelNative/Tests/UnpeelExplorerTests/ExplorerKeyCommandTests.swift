@@ -7,6 +7,9 @@ final class ExplorerKeyCommandTests: XCTestCase {
         XCTAssertEqual(ExplorerKeyCommand.from(keyCode: 49, modifiers: []), .quickLook)
         XCTAssertEqual(ExplorerKeyCommand.from(keyCode: 124, modifiers: []), .expandOrDescend)
         XCTAssertEqual(ExplorerKeyCommand.from(keyCode: 123, modifiers: []), .collapseOrAscend)
+        XCTAssertEqual(ExplorerKeyCommand.from(keyCode: 36, modifiers: []), .rename)
+        XCTAssertEqual(ExplorerKeyCommand.from(keyCode: 76, modifiers: []), .rename, "keypad Enter")
+        XCTAssertNil(ExplorerKeyCommand.from(keyCode: 36, modifiers: [.command, .shift]), "⇧⌘↩ is Zoom Pane")
     }
 
     func testArrowKeysCarryNumericPadAndFunctionFlags() {

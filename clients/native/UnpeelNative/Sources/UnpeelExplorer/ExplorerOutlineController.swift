@@ -9,7 +9,7 @@ public final class ExplorerOutlineController: NSObject,
         case open, openInMarkdownEditor, openInEditor, revealInFinder, quickLook, sendToAgent
         case copyPath, copyRelativePath, refresh, collapse
         // Fork-only: explorer operations.
-        case trash
+        case rename, trash
 
         var title: String {
             switch self {
@@ -23,6 +23,7 @@ public final class ExplorerOutlineController: NSObject,
             case .copyRelativePath: return "Copy Relative Path"
             case .refresh: return "Refresh"
             case .collapse: return "Collapse"
+            case .rename: return "Rename…"
             case .trash: return "Move to Trash"
             }
         }
@@ -49,7 +50,7 @@ public final class ExplorerOutlineController: NSObject,
     var showQuickLookHook: () -> Void = {}
 
     private let icons = FileIconProvider()
-    private var items: [String: ExplorerItem] = [:]
+    private(set) var items: [String: ExplorerItem] = [:]
     private var childCache: [String: [ExplorerItem]] = [:]
     private(set) var applied: FileTreeModel?
     /// What the OUTLINE VIEW currently has expanded, maintained from its
@@ -71,6 +72,13 @@ public final class ExplorerOutlineController: NSObject,
     /// True while this controller changes the outline view itself, so its
     /// delegate callbacks are not echoed back into the view model.
     private var isApplying = false
+    /// Fork-only: explorer operations. The name field being edited (a
+    /// rename or a Draft Row), the folder whose rows it sits among, and
+    /// that folder's reloads held back until it finishes — reloading the
+    /// folder would replace the row and end the edit.
+    var nameEditor: ExplorerNameEditor?
+    var nameEditingFolder: String?
+    var deferredReloads: Set<String> = []
 
     public init(viewModel: ExplorerViewModel, palette: ExplorerPalette) {
         self.viewModel = viewModel
@@ -138,6 +146,7 @@ public final class ExplorerOutlineController: NSObject,
             expandedPaths = []
         }
         if rootChanged || filterChanged {
+            nameEditor?.cancel()
             childCache = [:]
             outlineView?.reloadData()
             return
@@ -147,12 +156,20 @@ public final class ExplorerOutlineController: NSObject,
             .filter { previous.directories[$0] != model.directories[$0] }
             .sorted { ExplorerPaths.depth($0) < ExplorerPaths.depth($1) }
         for directory in changed {
-            childCache[directory] = nil
-            if directory == model.root {
-                outlineView?.reloadItem(nil, reloadChildren: true)
-            } else if let item = items[directory] {
-                outlineView?.reloadItem(item, reloadChildren: true)
+            if directory == nameEditingFolder {
+                deferredReloads.insert(directory)
+                continue
             }
+            reloadRows(of: directory)
+        }
+    }
+
+    func reloadRows(of directory: String) {
+        childCache[directory] = nil
+        if directory == applied?.root {
+            outlineView?.reloadItem(nil, reloadChildren: true)
+        } else if let item = items[directory] {
+            outlineView?.reloadItem(item, reloadChildren: true)
         }
     }
 
@@ -162,7 +179,8 @@ public final class ExplorerOutlineController: NSObject,
     private func reconfigureLoadedRows() {
         outlineView?.enumerateAvailableRowViews { rowView, row in
             guard let item = self.outlineView?.item(atRow: row) as? ExplorerItem,
-                  let cell = rowView.view(atColumn: 0) as? ExplorerRowCellView
+                  let cell = rowView.view(atColumn: 0) as? ExplorerRowCellView,
+                  cell.textField !== self.nameEditor?.field
             else { return }
             self.configure(cell, for: item)
         }
@@ -510,7 +528,7 @@ public final class ExplorerOutlineController: NSObject,
                 ? [.open, .openInMarkdownEditor, .openInEditor, .revealInFinder, .quickLook, nil]
                 : [.open, .openInEditor, .revealInFinder, .quickLook, nil])
             : [.revealInFinder, nil]
-        actions += send + copy + operationActions + [.refresh]
+        actions += send + copy + operationActions(forTargetCount: resolved.count) + [.refresh]
         if hasExpandedDirectory {
             actions.append(.collapse)
         }
@@ -581,6 +599,8 @@ public final class ExplorerOutlineController: NSObject,
             copyToPasteboard(paths.map { ExplorerPaths.relative($0, to: root) })
         case .refresh:
             viewModel.refresh()
+        case .rename:
+            if paths.count == 1 { beginRename(paths[0]) }
         case .trash:
             trash(paths)
         case .collapse:
@@ -652,6 +672,8 @@ public final class ExplorerOutlineController: NSObject,
             perform(.revealInFinder, on: selection)
         case .trash:
             perform(.trash, on: selection)
+        case .rename:
+            return selection.count == 1 && beginRename(selection[0])
         }
         return true
     }
