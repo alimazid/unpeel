@@ -4,7 +4,7 @@ import XCTest
 @testable import UnpeelNative
 
 @MainActor
-final class ExplorerFocusTests: XCTestCase {
+final class SidebarSectionFocusTests: XCTestCase {
     func testFindsANestedOutline() {
         let root = NSView()
         let middle = NSView()
@@ -12,14 +12,14 @@ final class ExplorerFocusTests: XCTestCase {
         root.addSubview(NSView())
         root.addSubview(middle)
         middle.addSubview(outline)
-        XCTAssertTrue(ExplorerFocus.outline(in: root) === outline)
+        XCTAssertTrue(SidebarSectionFocus.list(of: .explorer, in: root) === outline)
     }
 
     func testNoOutlineGivesNil() {
         let root = NSView()
         root.addSubview(NSView())
-        XCTAssertNil(ExplorerFocus.outline(in: root))
-        XCTAssertNil(ExplorerFocus.outline(in: nil))
+        XCTAssertNil(SidebarSectionFocus.list(of: .explorer, in: root))
+        XCTAssertNil(SidebarSectionFocus.list(of: .explorer, in: nil))
     }
 
     func testTreeFocusFollowsTheFirstResponder() {
@@ -35,9 +35,9 @@ final class ExplorerFocusTests: XCTestCase {
         window.contentView?.addSubview(other)
 
         XCTAssertTrue(window.makeFirstResponder(outline))
-        XCTAssertTrue(ExplorerFocus.isTreeFocused(in: window))
+        XCTAssertTrue(SidebarSectionFocus.isFocused(.explorer, in: window))
         XCTAssertTrue(window.makeFirstResponder(other))
-        XCTAssertFalse(ExplorerFocus.isTreeFocused(in: window))
-        XCTAssertFalse(ExplorerFocus.isTreeFocused(in: nil))
+        XCTAssertFalse(SidebarSectionFocus.isFocused(.explorer, in: window))
+        XCTAssertFalse(SidebarSectionFocus.isFocused(.explorer, in: nil))
     }
 }

@@ -87,6 +87,9 @@ private final class CallbackBox {
 public final class FileSystemWatcher: @unchecked Sendable {
     public typealias Handler = @Sendable (FileSystemChange) -> Void
 
+    /// How long FSEvents gathers changes before delivering them.
+    public static let defaultLatency: TimeInterval = 0.15
+
     private static let logger = Logger(subsystem: "com.unpeel.explorer", category: "watcher")
 
     private let root: String
@@ -107,7 +110,7 @@ public final class FileSystemWatcher: @unchecked Sendable {
     /// context; released exactly once, after the stream is fully torn down.
     private var callbackBox: Unmanaged<CallbackBox>?
 
-    public init(root: String, latency: TimeInterval = 0.15, handler: @escaping Handler) {
+    public init(root: String, latency: TimeInterval = FileSystemWatcher.defaultLatency, handler: @escaping Handler) {
         self.root = root
         self.latency = latency
         self.handler = handler

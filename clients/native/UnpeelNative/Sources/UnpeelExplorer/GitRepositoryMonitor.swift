@@ -32,7 +32,7 @@ public final class GitRepositoryMonitor: GitChangeMonitoring, @unchecked Sendabl
 
     /// Nil when FSEvents could not start a stream; the repository's views
     /// then simply do not refresh by themselves.
-    public convenience init?(location: GitRepositoryLocation, latency: TimeInterval = 0.15, handler: @escaping @Sendable () -> Void) {
+    public convenience init?(location: GitRepositoryLocation, latency: TimeInterval = FileSystemWatcher.defaultLatency, handler: @escaping @Sendable () -> Void) {
         self.init(roots: Self.watchedRoots(for: location), latency: latency, handler: handler) { change in
             Self.isRelevant(change, in: location)
         }
@@ -41,7 +41,7 @@ public final class GitRepositoryMonitor: GitChangeMonitoring, @unchecked Sendabl
     /// Watches `folder`, not a repository, for a `.git` (a directory, or a
     /// worktree's link file) appearing or changing in it — `git init`, a
     /// clone into it. Nil when the folder cannot be resolved or watched.
-    public convenience init?(awaitingRepositoryIn folder: String, latency: TimeInterval = 0.15, handler: @escaping @Sendable () -> Void) {
+    public convenience init?(awaitingRepositoryIn folder: String, latency: TimeInterval = FileSystemWatcher.defaultLatency, handler: @escaping @Sendable () -> Void) {
         guard let root = CanonicalPath.resolve(folder) else { return nil }
         self.init(roots: [root], latency: latency, handler: handler) { change in
             Self.isGitAppearing(change, in: root)

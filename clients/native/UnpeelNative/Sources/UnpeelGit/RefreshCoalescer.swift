@@ -9,6 +9,9 @@ import Foundation
 /// loop serves the whole burst.
 @MainActor
 public final class RefreshCoalescer {
+    /// How long a change waits for more before the git views refresh.
+    public nonisolated static let defaultDebounce: TimeInterval = 0.2
+
     private var pending = false
     private var running: Task<Void, Never>?
     /// Bumped by `reset`; a loop started before it stops.

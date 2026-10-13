@@ -18,9 +18,6 @@ struct FollowedRepository {
 /// stage made outside Unpeel), or on Refresh. A non-repository or a Mac
 /// without git simply has none.
 extension ExplorerViewModel {
-    /// How long a change waits for more before the decorations are re-read.
-    public nonisolated static let defaultDecorationDebounce: TimeInterval = 0.2
-
     /// Follows `root`'s repository and reads its decorations right away.
     /// Nothing watched the working tree while the EXPLORER was closed, so a
     /// read another view (Git History) kept meanwhile is not trusted.

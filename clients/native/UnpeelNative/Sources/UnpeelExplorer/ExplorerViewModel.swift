@@ -91,7 +91,7 @@ public final class ExplorerViewModel: ObservableObject {
     public init(
         services: ExplorerServices = .live,
         stateStore: ExplorerStateStore,
-        decorationDebounce: TimeInterval = ExplorerViewModel.defaultDecorationDebounce
+        decorationDebounce: TimeInterval = RefreshCoalescer.defaultDebounce
     ) {
         self.services = services
         self.stateStore = stateStore

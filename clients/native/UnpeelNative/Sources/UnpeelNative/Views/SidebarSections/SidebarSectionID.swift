@@ -3,8 +3,11 @@
 //  UnpeelNative
 //
 //  Fork-only: sidebar sections. The sections the left sidebar stacks, in
-//  their default top-to-bottom order. A new section is one more case here;
-//  saved layouts pick it up without a migration (`SidebarSectionLayout
+//  their default top-to-bottom order. A new section is a case here plus
+//  its default weight (`SidebarSectionLayout.defaultWeights`), its list
+//  type if it takes focus (`SidebarSectionFocus.listType`), its view in
+//  `SidebarView`, and, for a shortcut, a View-menu item in `AppDelegate`.
+//  Saved layouts pick it up without a migration (`SidebarSectionLayout
 //  .decode` appends missing ids in their fresh-install state).
 //
 

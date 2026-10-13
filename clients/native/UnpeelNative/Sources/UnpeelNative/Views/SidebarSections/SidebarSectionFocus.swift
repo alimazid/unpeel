@@ -1,5 +1,5 @@
 //
-//  ExplorerFocus.swift
+//  SidebarSectionFocus.swift
 //  UnpeelNative
 //
 //  Fork-only: sidebar sections. Finds a section's list view (the
@@ -13,8 +13,8 @@ import AppKit
 import UnpeelExplorer
 import UnpeelGit
 
-/// Fork-only: git support. The lookup and focus behind `ExplorerFocus`,
-/// generalised over the section whose list holds its keyboard focus.
+/// The lookup and focus of the section whose list holds its keyboard
+/// focus (generalised over the section for git support).
 @MainActor
 enum SidebarSectionFocus {
     private static let retryNanoseconds: UInt64 = 50_000_000
@@ -71,20 +71,5 @@ enum SidebarSectionFocus {
             if let list = find(type, in: subview) { return list }
         }
         return nil
-    }
-}
-
-@MainActor
-enum ExplorerFocus {
-    static func outline(in view: NSView?) -> ExplorerNSOutlineView? {
-        SidebarSectionFocus.list(of: .explorer, in: view) as? ExplorerNSOutlineView
-    }
-
-    static func isTreeFocused(in window: NSWindow?) -> Bool {
-        SidebarSectionFocus.isFocused(.explorer, in: window)
-    }
-
-    static func focusTree(in window: NSWindow?) {
-        SidebarSectionFocus.focus(.explorer, in: window)
     }
 }

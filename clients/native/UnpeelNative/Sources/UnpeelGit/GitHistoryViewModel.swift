@@ -16,8 +16,6 @@ import os
 @MainActor
 public final class GitHistoryViewModel: ObservableObject {
     public static let defaultPageSize = 200
-    /// How long a change signal waits for more before the refresh starts.
-    public static let defaultChangeDebounce: TimeInterval = 0.2
 
     private static let logger = Logger(subsystem: "com.unpeel.git", category: "history")
 
@@ -67,7 +65,7 @@ public final class GitHistoryViewModel: ObservableObject {
     public init(
         services: GitHistoryServices,
         pageSize: Int = GitHistoryViewModel.defaultPageSize,
-        changeDebounce: TimeInterval = GitHistoryViewModel.defaultChangeDebounce
+        changeDebounce: TimeInterval = RefreshCoalescer.defaultDebounce
     ) {
         self.services = services
         self.pageSize = max(1, pageSize)
@@ -90,29 +88,16 @@ public final class GitHistoryViewModel: ObservableObject {
     public var localBranches: [GitRef] { branches.filter { $0.kind == .localBranch } }
     public var remoteBranches: [GitRef] { branches.filter { $0.kind == .remoteBranch } }
 
-    /// The filter's label: the Checked-out Branch (or `detached@…`), the
-    /// chosen branch, or "All branches".
-    public var filterTitle: String {
-        switch filter {
-        case .checkedOut: return head?.displayName ?? ""
-        case .branch(let ref): return ref.name
-        case .allBranches: return GitHistoryFilter.allBranchesTitle
-        }
-    }
+    /// The filter's label (`GitHistoryFilter.title(head:)`).
+    public var filterTitle: String { filter.title(head: head) }
 
     /// The History Branch Filter only has choices once there are commits;
     /// a repository without any keeps its empty state.
     public var canChooseFilter: Bool { head?.hasCommits == true }
 
-    /// Whether the list shows the Checked-out Branch — by default, or
-    /// because the branch the user chose is the one checked out now.
-    public var filterShowsCheckedOutBranch: Bool {
-        switch filter {
-        case .checkedOut: return true
-        case .branch(let ref): return ref.kind == .localBranch && ref.name == head?.branch
-        case .allBranches: return false
-        }
-    }
+    /// Whether the list shows the Checked-out Branch
+    /// (`GitHistoryFilter.showsCheckedOutBranch(head:)`).
+    public var filterShowsCheckedOutBranch: Bool { filter.showsCheckedOutBranch(head: head) }
 
     // MARK: - Context
 

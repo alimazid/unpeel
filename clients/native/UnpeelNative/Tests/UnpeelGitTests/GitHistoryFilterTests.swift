@@ -20,6 +20,17 @@ final class GitHistoryFilterTests: XCTestCase {
         return fake
     }
 
+    func testShowsTheCheckedOutBranchByDefaultOrWhenTheChosenBranchIsCheckedOut() {
+        let head = GitHead(oid: "m-1", branch: "main")
+
+        XCTAssertTrue(GitHistoryFilter.checkedOut.showsCheckedOutBranch(head: head))
+        XCTAssertTrue(GitHistoryFilter.branch(localBranch("main")).showsCheckedOutBranch(head: head))
+        XCTAssertFalse(GitHistoryFilter.branch(localBranch("topic")).showsCheckedOutBranch(head: head))
+        XCTAssertFalse(GitHistoryFilter.branch(remoteBranch("main")).showsCheckedOutBranch(head: head), "a remote branch is never checked out")
+        XCTAssertFalse(GitHistoryFilter.branch(localBranch("main")).showsCheckedOutBranch(head: nil))
+        XCTAssertFalse(GitHistoryFilter.allBranches.showsCheckedOutBranch(head: head))
+    }
+
     func testDefaultsToTheCheckedOutBranchAndListsBranches() async {
         let fake = scripted()
         let viewModel = GitHistoryViewModel(services: fake.services)

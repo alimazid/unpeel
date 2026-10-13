@@ -28,6 +28,22 @@ public enum GitHistoryFilter: Hashable, Sendable {
         return self
     }
 
+    /// Whether this lists the Checked-out Branch — by default, or because
+    /// the branch chosen is the one checked out now.
+    func showsCheckedOutBranch(head: GitHead?) -> Bool {
+        normalized(head: head) == .checkedOut
+    }
+
+    /// The label: the Checked-out Branch (or `detached@…`), the chosen
+    /// branch, or "All branches".
+    func title(head: GitHead?) -> String {
+        switch self {
+        case .checkedOut: return head?.displayName ?? ""
+        case .branch(let ref): return ref.name
+        case .allBranches: return Self.allBranchesTitle
+        }
+    }
+
     /// Still meaningful given the branches that exist now; a chosen branch
     /// that was deleted falls back to the Checked-out Branch.
     func validated(against branches: [GitRef]) -> GitHistoryFilter {
