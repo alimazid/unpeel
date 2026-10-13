@@ -1,4 +1,5 @@
 import Foundation
+import os
 
 /// The git reader: everything Git History and the EXPLORER's Git Status
 /// Decorations need from a repository, given an Explorer Root, as typed
@@ -6,6 +7,8 @@ import Foundation
 /// call it off the main thread. NUL-delimited output is used wherever a
 /// path or free text can appear.
 public struct GitReader: Sendable {
+    private static let logger = Logger(subsystem: "com.unpeel.git", category: "reader")
+
     private let runner: GitRunner
 
     public init(runner: GitRunner = .shared) {
@@ -73,18 +76,32 @@ public struct GitReader: Sendable {
 
     /// The commit's full message and the files it changed against its
     /// first parent (everything is added in a root commit), with rename and
-    /// copy detection.
+    /// copy detection when the repository has the contents it compares.
     public func commitDetail(at root: String, commit: GitCommit) -> GitReadResult<GitCommitDetail> {
-        let message = runner.run(.show, ["-s", "--no-show-signature", "--no-color", "--format=%B", commit.sha, "--"], in: root)
+        // `show -s` still diffs the commit, detecting renames by content
+        // unless told not to; the message needs no diff.
+        let message = runner.run(.show, ["-s", "--no-renames", "--no-show-signature", "--no-color", "--format=%B", commit.sha, "--"], in: root)
             .readResult()
             .map { $0.text.trimmingCharacters(in: .newlines) }
-        let against = commit.parents.first.map { [$0, commit.sha] } ?? ["--root", commit.sha]
-        let files = runner.run(.diffTree, ["-r", "-z", "--name-status", "-M", "-C", "--no-ext-diff"] + against + ["--"], in: root)
-            .readResult()
-            .map { GitChangedFile.parse(nameStatus: $0.stdout) }
         return message.flatMap { message in
-            files.map { GitCommitDetail(sha: commit.sha, message: message, files: $0) }
+            changedFiles(at: root, commit: commit).map { GitCommitDetail(sha: commit.sha, message: message, files: $0) }
         }
+    }
+
+    /// Rename and copy detection compares file contents, which a partial
+    /// clone may lack (and never fetches, see `GitRunner`); then the files
+    /// are listed without it, a rename as a deletion and an addition.
+    private func changedFiles(at root: String, commit: GitCommit) -> GitReadResult<[GitChangedFile]> {
+        let against = commit.parents.first.map { [$0, commit.sha] } ?? ["--root", commit.sha]
+        let read = { (detection: [String]) in
+            runner.run(.diffTree, ["-r", "-z", "--name-status"] + detection + ["--no-ext-diff"] + against + ["--"], in: root)
+                .readResult()
+                .map { GitChangedFile.parse(nameStatus: $0.stdout) }
+        }
+        let detected = read(["-M", "-C"])
+        guard case .failure(.failed(let reason)) = detected else { return detected }
+        Self.logger.info("commit \(commit.sha, privacy: .public) listed without rename detection: \(reason, privacy: .public)")
+        return read([])
     }
 
     private static func canonical(_ path: String) -> String {

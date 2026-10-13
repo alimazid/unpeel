@@ -92,6 +92,9 @@ final class GitRunnerTests: XCTestCase {
         // Messages in English whatever the user's locale: "not a git
         // repository" is recognised by its text.
         XCTAssertEqual(environment["LC_ALL"], "C")
+        // A partial clone's missing contents are never fetched: that would
+        // write to the repository.
+        XCTAssertEqual(environment["GIT_NO_LAZY_FETCH"], "1")
         // An inherited repository override would point every read at the
         // wrong repository, whatever `-C` says.
         XCTAssertNil(environment["GIT_DIR"])

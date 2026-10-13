@@ -106,6 +106,28 @@ struct GitTestRepo {
         return bare
     }
 
+    /// A blobless partial clone of this repository (`--filter=blob:none`):
+    /// commits and trees only, plus the checked-out files' contents unless
+    /// `checkout` is false. A file contents read the clone lacks makes git
+    /// fetch it from this repository.
+    func partialClone(checkout: Bool) throws -> GitTestRepo {
+        try git("config", "uploadpack.allowFilter", "true")
+        let clone = try GitTestRepo(initialize: false)
+        // A plain path would clone locally and ignore the filter.
+        let arguments = ["clone", "-q", "--filter=blob:none"] + (checkout ? [] : ["--no-checkout"])
+        try clone.git(arguments + ["file://\(root)", "."])
+        return clone
+    }
+
+    /// How many files the object database holds; a fetch adds some.
+    func objectFileCount() throws -> Int {
+        let objects = URL(fileURLWithPath: path(".git/objects"))
+        let entries = FileManager.default.enumerator(at: objects, includingPropertiesForKeys: [.isRegularFileKey])
+        return try (entries?.allObjects ?? []).filter { entry in
+            try (entry as? URL)?.resourceValues(forKeys: [.isRegularFileKey]).isRegularFile == true
+        }.count
+    }
+
     func delete() {
         try? FileManager.default.removeItem(atPath: root)
     }

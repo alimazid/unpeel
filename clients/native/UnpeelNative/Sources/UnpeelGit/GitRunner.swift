@@ -24,8 +24,10 @@ public enum GitRunOutcome: Sendable, Equatable {
 
 /// The one way Unpeel runs git: read commands only (`GitReadCommand`), in a
 /// given directory, with `GIT_OPTIONAL_LOCKS=0` so a `status` never takes
-/// the index lock an agent's `git commit` needs, and `GIT_TERMINAL_PROMPT=0`
-/// so nothing can block on a credential prompt. `git` is located once per
+/// the index lock an agent's `git commit` needs, `GIT_TERMINAL_PROMPT=0`
+/// so nothing can block on a credential prompt, and `GIT_NO_LAZY_FETCH=1`
+/// so a partial clone's missing contents are never fetched into the
+/// repository (git 2.44 and later). `git` is located once per
 /// runner; when it cannot be found or launched, every later call returns
 /// `.unavailable` without spawning a process. Blocking: call it off the
 /// main thread.
@@ -61,6 +63,9 @@ public final class GitRunner: @unchecked Sendable {
         var environment = base.filter { !strippedVariables.contains($0.key) }
         environment["GIT_OPTIONAL_LOCKS"] = "0"
         environment["GIT_TERMINAL_PROMPT"] = "0"
+        // A read that needs contents a partial clone lacks fails instead of
+        // fetching them: a fetch writes to the repository.
+        environment["GIT_NO_LAZY_FETCH"] = "1"
         // Untranslated messages: "not a git repository" is recognised by
         // its text. Output with paths or messages is NUL-delimited bytes,
         // which the locale does not touch.
