@@ -103,6 +103,7 @@ public struct FileOperations: Sendable {
             let name = FileNameValidation.wellFormed(newName)
             guard name != currentName else { return .nothing }
             let target = Self.join(Self.parent(of: item), name)
+            if ExplorerPaths.isInsideDotGit(target, root: root) { throw FileOperationFailure.insideDotGit(target) }
             let identity = try identity(of: item)
             try renameExclusively(item, to: target)
             return .make(.rename, steps: [.moved(from: item, to: target, identity: identity)],
@@ -202,11 +203,8 @@ public struct FileOperations: Sendable {
     func renameExclusively(_ source: String, to target: String) throws {
         guard renamex_np(source, target, UInt32(RENAME_EXCL)) != 0 else { return }
         let code = errno
-        // A case-only rename on a case-insensitive volume finds the item
-        // itself at the destination on file systems that do not special-case
-        // it; the same object on both sides is safe to rename.
-        if code == EEXIST, let identity = ItemIdentity.of(source), identity == ItemIdentity.of(target) {
-            guard Darwin.rename(source, target) == 0 else { throw Self.posixFailure(source) }
+        if code == EEXIST, Self.isCaseOnlyRename(source, target) {
+            try renameThroughStaging(source, to: target)
             return
         }
         if code == EEXIST { throw FileOperationFailure.nameCollision(target) }
@@ -215,6 +213,26 @@ public struct FileOperations: Sendable {
             throw FileOperationFailure.underlying(path: source, message: "it can’t be moved to another disk from here.")
         }
         throw Self.posixFailure(source, code: code)
+    }
+
+    /// APFS renames `a` to `A` with `RENAME_EXCL`; a file system that finds
+    /// the item itself at the new spelling gets two exclusive renames
+    /// through a unique name instead, so no other item can be replaced.
+    private func renameThroughStaging(_ source: String, to target: String) throws {
+        let staging = Self.join(Self.parent(of: source), ".unpeel-rename-\(UUID().uuidString)")
+        guard renamex_np(source, staging, UInt32(RENAME_EXCL)) == 0 else { throw Self.posixFailure(source) }
+        guard renamex_np(staging, target, UInt32(RENAME_EXCL)) == 0 else {
+            let failure = Self.posixFailure(target)
+            renamex_np(staging, source, UInt32(RENAME_EXCL))
+            throw failure
+        }
+    }
+
+    static func isCaseOnlyRename(_ source: String, _ target: String) -> Bool {
+        let from = (source as NSString).lastPathComponent
+        let to = (target as NSString).lastPathComponent
+        return parent(of: source) == parent(of: target) && from != to
+            && from.compare(to, options: .caseInsensitive) == .orderedSame
     }
 
     func identity(of path: String) throws -> ItemIdentity {

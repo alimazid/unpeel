@@ -89,6 +89,9 @@ extension FileOperations {
                 let placed = try place(item, into: folder, kind: kind, resolution: resolutions[key])
                 steps += placed.steps
                 if let target = placed.target { results.append(target) }
+            } catch let partial as PartialTransfer {
+                steps += partial.steps
+                failures.append(partial.failure)
             } catch {
                 failures.append(Self.failure(error, path: item))
             }
@@ -101,9 +104,7 @@ extension FileOperations {
         _ item: String, into folder: String, kind: FileOperationKind, resolution: CollisionResolution?
     ) throws -> (steps: [FileOperationStep], target: String?) {
         if folder == item || folder.hasPrefix(item + "/") { throw FileOperationFailure.intoOwnDescendant(item) }
-        let name = (item as NSString).lastPathComponent
-        var target = Self.join(folder, name)
-        var steps: [FileOperationStep] = []
+        var target = Self.join(folder, (item as NSString).lastPathComponent)
         if kind == .copy, Self.parent(of: item) == folder {
             target = Self.join(folder, freeName(for: item, in: folder))
         } else if ItemIdentity.of(target) != nil {
@@ -111,21 +112,38 @@ extension FileOperations {
             case nil: throw FileOperationFailure.nameCollision(target)
             case .skip?: return ([], nil)
             case .keepBoth?: target = Self.join(folder, freeName(for: item, in: folder))
-            case .replace?:
-                if item == target || item.hasPrefix(target + "/") {
-                    throw FileOperationFailure.replaceContainsSource(target)
-                }
-                steps.append(try trashStep(target, onlyIfEmpty: false))
+            case .replace?: return (try replace(target, with: item, kind: kind), target)
             }
         }
-        if kind == .move {
-            let identity = try identity(of: item)
-            try renameExclusively(item, to: target)
-            steps.append(.moved(from: item, to: target, identity: identity))
-        } else {
-            steps.append(try copyItem(item, to: target))
+        return ([try transferItem(item, to: target, kind: kind)], target)
+    }
+
+    /// Trashes `target`, then puts `item` there. If putting it there fails,
+    /// the trashed item is put back; if even that fails, the trash step is
+    /// kept in the record (as a `PartialTransfer`) so ⌘Z can still restore
+    /// it — nothing is ever left changed without a record.
+    private func replace(_ target: String, with item: String, kind: FileOperationKind) throws -> [FileOperationStep] {
+        if item == target || item.hasPrefix(target + "/") {
+            throw FileOperationFailure.replaceContainsSource(target)
         }
-        return (steps, target)
+        let trashed = try trashStep(target, onlyIfEmpty: false)
+        do {
+            return [trashed, try transferItem(item, to: target, kind: kind)]
+        } catch {
+            let failure = Self.failure(error, path: item)
+            if case let .trashed(_, location, _, _) = trashed,
+               renamex_np(location, target, UInt32(RENAME_EXCL)) == 0 {
+                throw failure
+            }
+            throw PartialTransfer(steps: [trashed], failure: failure)
+        }
+    }
+
+    private func transferItem(_ item: String, to target: String, kind: FileOperationKind) throws -> FileOperationStep {
+        guard kind == .move else { return try copyItem(item, to: target) }
+        let identity = try identity(of: item)
+        try renameExclusively(item, to: target)
+        return .moved(from: item, to: target, identity: identity)
     }
 
     /// The first `IncrementalName` free in `folder`.
@@ -148,17 +166,37 @@ extension FileOperations {
         return item
     }
 
-    /// Clones where the volume can, copies otherwise; symlinks stay links;
-    /// never writes over an existing destination. A failed copy removes
-    /// what it had written.
-    private func copyItem(_ source: String, to target: String) throws -> FileOperationStep {
-        let flags = copyfile_flags_t(COPYFILE_ALL | COPYFILE_RECURSIVE | COPYFILE_EXCL | COPYFILE_NOFOLLOW_SRC | COPYFILE_CLONE)
-        if copyfile(source, target, nil, flags) != 0 {
+    /// Clones where the volume can, copies otherwise; symlinks stay links.
+    /// The copy is made under a unique hidden name in the destination folder
+    /// and then renamed into place exclusively: `copyfile` with
+    /// `COPYFILE_RECURSIVE` would merge into a folder (or write through a
+    /// symlink) an agent put at `target` meanwhile, and a failed copy must
+    /// only ever clean up what this call wrote.
+    func copyItem(_ source: String, to target: String) throws -> FileOperationStep {
+        let staging = Self.join(Self.parent(of: target), ".unpeel-copy-\(UUID().uuidString)")
+        let flags = copyfile_flags_t(
+            COPYFILE_ALL | COPYFILE_RECURSIVE | COPYFILE_EXCL | COPYFILE_NOFOLLOW_SRC | COPYFILE_CLONE
+        )
+        guard copyfile(source, staging, nil, flags) == 0 else {
             let code = errno
-            if code != EEXIST { try? FileManager.default.removeItem(atPath: target) }
-            if code == EEXIST { throw FileOperationFailure.nameCollision(target) }
-            throw Self.posixFailure(source, code: code)
+            try? FileManager.default.removeItem(atPath: staging)
+            throw ItemIdentity.of(source) == nil
+                ? FileOperationFailure.sourceMissing(source) : Self.posixFailure(source, code: code)
+        }
+        do {
+            try renameExclusively(staging, to: target)
+        } catch {
+            try? FileManager.default.removeItem(atPath: staging)
+            throw error
         }
         return .created(path: target, identity: try identity(of: target), onlyIfEmpty: false)
     }
+}
+
+/// A replace that trashed the existing item but could neither place the
+/// new one nor put the old one back: the trash step still belongs in the
+/// record so it can be undone.
+struct PartialTransfer: Error {
+    let steps: [FileOperationStep]
+    let failure: FileOperationFailure
 }

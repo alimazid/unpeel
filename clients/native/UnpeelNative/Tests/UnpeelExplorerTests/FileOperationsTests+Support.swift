@@ -85,3 +85,16 @@ extension TempTree {
         record?.steps.map(describe) ?? []
     }
 }
+
+/// A `FolderTrash` that runs `after` once an item is in the Trash — an
+/// agent acting in the gap between a Replace's trash and its move.
+struct HookTrash: Trasher {
+    let trash: FolderTrash
+    let after: @Sendable (String) -> Void
+
+    func trash(_ path: String) throws -> String {
+        let location = try trash.trash(path)
+        after(path)
+        return location
+    }
+}
