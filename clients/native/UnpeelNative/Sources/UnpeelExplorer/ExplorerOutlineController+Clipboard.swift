@@ -47,12 +47,18 @@ extension ExplorerOutlineController {
         let files = pasteableFiles
         guard !files.isEmpty, let folder = viewModel.draftFolder(for: targets) else { return }
         let moving = cutState.map { $0.changeCount == pasteboard.changeCount && $0.paths == files } ?? false
-        if moving {
-            consumedChangeCount = pasteboard.changeCount
-            cutState = nil
-            refreshCutRows()
+        let pasting = transfer(files, into: folder, copying: !moving, as: .paste)
+        guard moving else { return }
+        // A cut counts as pasted once something actually moved: a paste the
+        // user skipped, or that failed, leaves it cut.
+        let changeCount = pasteboard.changeCount
+        pendingTransfer = Task { @MainActor in
+            await pasting.value
+            guard files.contains(where: { ItemIdentity.of($0) == nil }) else { return }
+            self.consumedChangeCount = changeCount
+            if self.cutState?.changeCount == changeCount { self.cutState = nil }
+            self.refreshCutRows()
         }
-        transfer(files, into: folder, copying: !moving, as: .paste)
     }
 
     func duplicate(_ paths: [String]) {
@@ -99,6 +105,15 @@ extension ExplorerOutlineController {
     }
 
     // MARK: - Dimming
+
+    /// Undims cut rows once something else was copied: called whenever the
+    /// tree is about to be used (a menu, the Edit menu, the app coming
+    /// forward), since the pasteboard sends no notice of its own.
+    func dropStaleCut() {
+        guard let cutState, cutState.changeCount != pasteboard.changeCount else { return }
+        self.cutState = nil
+        refreshCutRows()
+    }
 
     func refreshCutRows() {
         outlineView?.enumerateAvailableRowViews { rowView, row in

@@ -63,6 +63,54 @@ final class ExplorerClipboardTests: ExplorerOperationTestCase {
         XCTAssertEqual(tree.names(), ["dest"], "a cut is pasted once only")
     }
 
+    func testACutPasteThatMovedNothingStaysCut() async throws {
+        let tree = try TempTree(); defer { tree.remove() }
+        try tree.file("a.txt"); try tree.file("dest/a.txt")
+        let viewModel = await opened(tree)
+        let (controller, _) = attach(viewModel)
+        controller.collisionPrompt = ScriptedPrompt([CollisionAnswer(.skip)])
+
+        controller.perform(.cut, on: [tree.path("a.txt")])
+        controller.perform(.paste, on: [tree.path("dest")])
+        await settle(controller, viewModel)
+
+        XCTAssertTrue(controller.isCut(tree.path("a.txt")), "skipped, so still cut")
+        XCTAssertEqual(controller.pasteableFiles, [tree.path("a.txt")])
+    }
+
+    func testTwoSourcesOfOneNameKeepBoth() async throws {
+        let tree = try TempTree(); defer { tree.remove() }
+        try tree.file("a/x.txt", "A"); try tree.file("b/x.txt", "B"); try tree.dir("dest")
+        let prompt = ScriptedPrompt([])
+        let viewModel = await opened(tree)
+        let (controller, _) = attach(viewModel)
+        controller.collisionPrompt = prompt
+
+        await controller.transfer([tree.path("a/x.txt"), tree.path("b/x.txt")], into: tree.path("dest"),
+                                  copying: true, as: .paste).value
+        await settle(controller, viewModel)
+
+        XCTAssertEqual(prompt.asked, [])
+        XCTAssertEqual(tree.contents("dest/x.txt"), "A")
+        XCTAssertEqual(tree.contents("dest/x copy.txt"), "B")
+    }
+
+    func testReplaceNeverTrashesWhatTheSamePastePutThere() async throws {
+        let tree = try TempTree(); defer { tree.remove() }
+        try tree.file("a/x.txt", "A"); try tree.file("b/x.txt", "B"); try tree.file("dest/x.txt", "old")
+        let viewModel = await opened(tree)
+        let (controller, _) = attach(viewModel)
+        controller.collisionPrompt = ScriptedPrompt([CollisionAnswer(.replace, appliesToAll: true)])
+
+        await controller.transfer([tree.path("a/x.txt"), tree.path("b/x.txt")], into: tree.path("dest"),
+                                  copying: true, as: .paste).value
+        await settle(controller, viewModel)
+
+        XCTAssertEqual(tree.contents("dest/x.txt"), "A")
+        XCTAssertEqual(tree.contents("dest/x copy.txt"), "B")
+        XCTAssertEqual(trash.contents, ["x.txt"], "only the old one")
+    }
+
     func testCopyingSomethingElseClearsTheCut() async throws {
         let tree = try TempTree(); defer { tree.remove() }
         try tree.file("a.txt")
@@ -74,6 +122,8 @@ final class ExplorerClipboardTests: ExplorerOperationTestCase {
         pasteboard.setString("elsewhere", forType: .string)
 
         XCTAssertFalse(controller.isCut(tree.path("a.txt")))
+        controller.menuNeedsUpdate(NSMenu())
+        XCTAssertNil(controller.cutState, "the dimming goes the next time the tree is used")
     }
 
     func testPastingACopyIntoItsOwnFolderKeepsBothWithoutAsking() async throws {

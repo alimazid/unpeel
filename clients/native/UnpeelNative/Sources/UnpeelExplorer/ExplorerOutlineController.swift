@@ -95,6 +95,12 @@ public final class ExplorerOutlineController: NSObject,
     public var collisionPrompt: (any CollisionPrompting)?
     /// A transfer still waiting on the Collision Prompt.
     var pendingTransfer: Task<Void, Never>?
+    /// Written once in `attach`, read only in `deinit`.
+    private nonisolated(unsafe) var appActivation: NSObjectProtocol?
+
+    deinit {
+        if let appActivation { NotificationCenter.default.removeObserver(appActivation) }
+    }
 
     public init(viewModel: ExplorerViewModel, palette: ExplorerPalette) {
         self.viewModel = viewModel
@@ -118,6 +124,11 @@ public final class ExplorerOutlineController: NSObject,
         outlineView.previewPaths = { [weak self] in self?.previewPaths() ?? [] }
         // Fork-only: explorer operations.
         outlineView.editTarget = self
+        appActivation = NotificationCenter.default.addObserver(
+            forName: NSApplication.didBecomeActiveNotification, object: nil, queue: .main
+        ) { [weak self] _ in
+            MainActor.assumeIsolated { self?.dropStaleCut() }
+        }
     }
 
     // MARK: - Applying model changes
@@ -575,6 +586,7 @@ public final class ExplorerOutlineController: NSObject,
     }
 
     public func menuNeedsUpdate(_ menu: NSMenu) {
+        dropStaleCut()
         rebuildMenuItems(menu, forTargets: menuTargetPaths())
     }
 

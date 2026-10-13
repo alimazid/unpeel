@@ -4,6 +4,7 @@ import AppKit
 /// undo and redo walk the Explorer Root's Operation History.
 extension ExplorerOutlineController: ExplorerEditTarget {
     public func title(for command: ExplorerEditCommand) -> String? {
+        dropStaleCut()
         switch command {
         case .undo: return viewModel.undoActionTitle
         case .redo: return viewModel.redoActionTitle

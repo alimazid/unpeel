@@ -84,11 +84,17 @@ extension FileOperations {
         let keep = Set(Self.outermost(prepared.map(\.item)))
         var steps: [FileOperationStep] = []
         var results: [String] = []
+        var placedItems: [ItemIdentity] = []
         for (key, item) in prepared where keep.contains(item) {
             do {
-                let placed = try place(item, into: folder, kind: kind, resolution: resolutions[key])
+                let placed = try place(
+                    item, into: folder, kind: kind, resolution: resolutions[key], placedEarlier: placedItems
+                )
                 steps += placed.steps
-                if let target = placed.target { results.append(target) }
+                if let target = placed.target {
+                    results.append(target)
+                    if let identity = ItemIdentity.of(target) { placedItems.append(identity) }
+                }
             } catch let partial as PartialTransfer {
                 steps += partial.steps
                 failures.append(partial.failure)
@@ -99,15 +105,21 @@ extension FileOperations {
         return .make(kind, steps: steps, results: results, failures: failures)
     }
 
-    /// Moves or copies one item into `folder`, resolving a collision.
+    /// Moves or copies one item into `folder`, resolving a collision. Two
+    /// sources of one name (`a/x.txt`, `b/x.txt`) keep both: the second
+    /// never replaces what this same operation just put there.
     private func place(
-        _ item: String, into folder: String, kind: FileOperationKind, resolution: CollisionResolution?
+        _ item: String, into folder: String, kind: FileOperationKind, resolution: CollisionResolution?,
+        placedEarlier: [ItemIdentity]
     ) throws -> (steps: [FileOperationStep], target: String?) {
         if folder == item || folder.hasPrefix(item + "/") { throw FileOperationFailure.intoOwnDescendant(item) }
         var target = Self.join(folder, (item as NSString).lastPathComponent)
+        let existing = ItemIdentity.of(target)
         if kind == .copy, Self.parent(of: item) == folder {
             target = Self.join(folder, freeName(for: item, in: folder))
-        } else if ItemIdentity.of(target) != nil {
+        } else if let existing, placedEarlier.contains(where: { $0.isSameObject(as: existing) }) {
+            target = Self.join(folder, freeName(for: item, in: folder))
+        } else if existing != nil {
             switch resolution {
             case nil: throw FileOperationFailure.nameCollision(target)
             case .skip?: return ([], nil)
