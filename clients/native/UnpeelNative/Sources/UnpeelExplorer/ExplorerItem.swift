@@ -12,6 +12,9 @@ public final class ExplorerItem: NSObject {
         /// (e.g. the truncated count growing) rather than losing identity
         /// each time the text does.
         case note
+        /// Fork-only: explorer operations. The Draft Row of a New File… or
+        /// New Folder… (`ExplorerDraft`).
+        case draft
     }
 
     public let path: String

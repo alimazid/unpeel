@@ -3,6 +3,11 @@ import AppKit
 /// Fork-only: explorer operations. The tree's File Operations: the menu
 /// items that start them and how each finds its targets.
 extension ExplorerOutlineController {
+    /// New File… / New Folder…, at the top of every menu as in VS Code.
+    var creationActions: [MenuAction?] {
+        [.newFile, .newFolder, nil]
+    }
+
     /// The context menu's operation group, shown for any entry target;
     /// Rename only for a single one.
     func operationActions(forTargetCount count: Int) -> [MenuAction?] {

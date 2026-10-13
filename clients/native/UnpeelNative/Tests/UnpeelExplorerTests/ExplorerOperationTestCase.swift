@@ -13,9 +13,52 @@ class ExplorerOperationTestCase: ExplorerViewModelTestCase {
         trash = try FolderTrash()
     }
 
+    private var window: NSWindow?
+
     override func tearDown() async throws {
+        window?.close()
+        window = nil
         trash.remove()
         try await super.tearDown()
+    }
+
+    /// The outline in a real window, so a name field can become first
+    /// responder.
+    func windowed(_ tree: TempTree) async -> (ExplorerOutlineController, ExplorerNSOutlineView, ExplorerViewModel) {
+        let viewModel = await opened(tree)
+        let (controller, outline) = attach(viewModel)
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 320, height: 400),
+                              styleMask: [.titled], backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        let scroll = ExplorerOutlineView.makeScrollView(documentView: outline)
+        scroll.frame = window.contentLayoutRect
+        window.contentView = scroll
+        outline.layoutSubtreeIfNeeded()
+        self.window = window
+        sync(controller, viewModel)
+        return (controller, outline, viewModel)
+    }
+
+    func type(_ text: String, into controller: ExplorerOutlineController) {
+        guard let editor = controller.nameEditor else { return XCTFail("no name field open") }
+        editor.field.currentEditor()?.string = text
+        editor.controlTextDidChange(Notification(name: NSControl.textDidChangeNotification))
+    }
+
+    func press(_ selector: Selector, in controller: ExplorerOutlineController) {
+        guard let editor = controller.nameEditor, let text = editor.field.currentEditor() as? NSTextView else {
+            return XCTFail("no name field open")
+        }
+        _ = editor.control(editor.field, textView: text, doCommandBy: selector)
+    }
+
+    let returnKey = #selector(NSResponder.insertNewline(_:))
+    let escapeKey = #selector(NSResponder.cancelOperation(_:))
+
+    /// Lets the main queue run what an update deferred (a Draft Row's field
+    /// takes focus after the pass that inserted the row).
+    func drainMainQueue() async {
+        await withCheckedContinuation { continuation in DispatchQueue.main.async { continuation.resume() } }
     }
 
     func operationServices(trasher: (any Trasher)? = nil, delay: [String: TimeInterval] = [:]) -> ExplorerServices {
@@ -52,7 +95,7 @@ class ExplorerOperationTestCase: ExplorerViewModelTestCase {
     func sync(_ controller: ExplorerOutlineController, _ viewModel: ExplorerViewModel) {
         controller.apply(
             model: viewModel.model, filter: viewModel.filter, selection: viewModel.selection,
-            decorations: viewModel.decorations
+            decorations: viewModel.decorations, draft: viewModel.draft
         )
     }
 

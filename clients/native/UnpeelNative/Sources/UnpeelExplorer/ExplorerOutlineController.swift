@@ -9,7 +9,7 @@ public final class ExplorerOutlineController: NSObject,
         case open, openInMarkdownEditor, openInEditor, revealInFinder, quickLook, sendToAgent
         case copyPath, copyRelativePath, refresh, collapse
         // Fork-only: explorer operations.
-        case rename, trash
+        case newFile, newFolder, rename, trash
 
         var title: String {
             switch self {
@@ -23,6 +23,8 @@ public final class ExplorerOutlineController: NSObject,
             case .copyRelativePath: return "Copy Relative Path"
             case .refresh: return "Refresh"
             case .collapse: return "Collapse"
+            case .newFile: return "New File…"
+            case .newFolder: return "New Folder…"
             case .rename: return "Rename…"
             case .trash: return "Move to Trash"
             }
@@ -79,6 +81,8 @@ public final class ExplorerOutlineController: NSObject,
     var nameEditor: ExplorerNameEditor?
     var nameEditingFolder: String?
     var deferredReloads: Set<String> = []
+    /// The Draft Row the outline shows.
+    var appliedDraft: ExplorerDraft?
 
     public init(viewModel: ExplorerViewModel, palette: ExplorerPalette) {
         self.viewModel = viewModel
@@ -107,7 +111,8 @@ public final class ExplorerOutlineController: NSObject,
     // MARK: - Applying model changes
 
     public func apply(
-        model: FileTreeModel?, filter: VisibilityFilter, selection: [String], decorations: GitDecorations = .none
+        model: FileTreeModel?, filter: VisibilityFilter, selection: [String], decorations: GitDecorations = .none,
+        draft: ExplorerDraft? = nil
     ) {
         isApplying = true
         defer { isApplying = false }
@@ -118,6 +123,8 @@ public final class ExplorerOutlineController: NSObject,
         appliedFilter = filter
         appliedDecorations = decorations
         guard let model else {
+            nameEditor?.cancel()
+            appliedDraft = nil
             items = [:]
             childCache = [:]
             expandedPaths = []
@@ -128,6 +135,8 @@ public final class ExplorerOutlineController: NSObject,
         syncExpansion(model)
         syncSelection(selection)
         if decorationsChanged { reconfigureLoadedRows() }
+        // Fork-only: explorer operations.
+        applyDraft(draft)
     }
 
     /// Reloads what changed between two models: everything for a new root
@@ -248,7 +257,7 @@ public final class ExplorerOutlineController: NSObject,
         guard let model = applied else { return [] }
         let entries = model.visibleChildren(of: directory, filter: appliedFilter)
             .map { item(for: $0.path, role: .entry) }
-        let built = entries + noteRows(for: directory)
+        let built = withDraftRow(entries, in: directory) + noteRows(for: directory)
         childCache[directory] = built
         return built
     }
@@ -272,7 +281,7 @@ public final class ExplorerOutlineController: NSObject,
         return "… \(hidden) more items not shown"
     }
 
-    private func item(for path: String, role: ExplorerItem.Role) -> ExplorerItem {
+    func item(for path: String, role: ExplorerItem.Role) -> ExplorerItem {
         if let existing = items[path], existing.role == role { return existing }
         let created = ExplorerItem(path: path, role: role)
         items[path] = created
@@ -333,6 +342,8 @@ public final class ExplorerOutlineController: NSObject,
         cell.alphaValue = 1
         cell.imageView?.image = nil
         switch item.role {
+        case .draft:
+            configureDraft(cell)
         case .note:
             let directory = String(item.path.dropLast(Self.noteSuffix.count))
             cell.textField?.stringValue = noteText(forDirectory: directory) ?? ""
@@ -511,7 +522,7 @@ public final class ExplorerOutlineController: NSObject,
     /// is first or was clicked.
     public func menuActions(forTargets paths: [String]) -> [MenuAction?] {
         let resolved = resolvedEntries(for: paths)
-        guard !resolved.isEmpty else { return [.refresh] }
+        guard !resolved.isEmpty else { return creationActions + [.refresh] }
         let hasFile = resolved.contains(where: { $0.entry.kind == .file })
         let hasExpandedDirectory = resolved.contains(where: {
             $0.entry.kind == .directory && applied?.expanded.contains($0.path) == true
@@ -528,7 +539,7 @@ public final class ExplorerOutlineController: NSObject,
                 ? [.open, .openInMarkdownEditor, .openInEditor, .revealInFinder, .quickLook, nil]
                 : [.open, .openInEditor, .revealInFinder, .quickLook, nil])
             : [.revealInFinder, nil]
-        actions += send + copy + operationActions(forTargetCount: resolved.count) + [.refresh]
+        actions += creationActions + send + copy + operationActions(forTargetCount: resolved.count) + [.refresh]
         if hasExpandedDirectory {
             actions.append(.collapse)
         }
@@ -599,6 +610,10 @@ public final class ExplorerOutlineController: NSObject,
             copyToPasteboard(paths.map { ExplorerPaths.relative($0, to: root) })
         case .refresh:
             viewModel.refresh()
+        case .newFile, .newFolder:
+            if let folder = viewModel.draftFolder(for: paths) {
+                viewModel.beginDraft(action == .newFile ? .file : .folder, in: folder)
+            }
         case .rename:
             if paths.count == 1 { beginRename(paths[0]) }
         case .trash:

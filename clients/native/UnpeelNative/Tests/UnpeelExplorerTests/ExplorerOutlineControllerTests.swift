@@ -135,16 +135,16 @@ final class ExplorerOutlineControllerTests: XCTestCase {
         controller.actionHandler = handler
         controller.apply(model: sampleModel(), filter: VisibilityFilter(), selection: [])
 
-        XCTAssertEqual(controller.menuActions(for: nil), [.refresh])
+        XCTAssertEqual(controller.menuActions(for: nil), [.newFile, .newFolder, nil, .refresh])
         XCTAssertEqual(
             controller.menuActions(for: "/r/a.txt"),
-            [.open, .openInEditor, .revealInFinder, .quickLook, nil, .sendToAgent, nil, .copyPath, .copyRelativePath, nil,
-             .rename, .trash, nil, .refresh]
+            [.open, .openInEditor, .revealInFinder, .quickLook, nil, .newFile, .newFolder, nil, .sendToAgent, nil,
+             .copyPath, .copyRelativePath, nil, .rename, .trash, nil, .refresh]
         )
         XCTAssertEqual(
             controller.menuActions(for: "/r/src"),
-            [.revealInFinder, nil, .sendToAgent, nil, .copyPath, .copyRelativePath, nil, .rename, .trash, nil, .refresh,
-             .collapse]
+            [.revealInFinder, nil, .newFile, .newFolder, nil, .sendToAgent, nil, .copyPath, .copyRelativePath, nil,
+             .rename, .trash, nil, .refresh, .collapse]
         )
 
         handler.canSendToAgent = false
@@ -387,6 +387,7 @@ final class ExplorerOutlineControllerTests: XCTestCase {
 
         let expected: [ExplorerOutlineController.MenuAction?] = [
             .open, .openInEditor, .revealInFinder, .quickLook, nil,
+            .newFile, .newFolder, nil,
             .sendToAgent, nil,
             .copyPath, .copyRelativePath, nil,
             .trash, nil,
@@ -394,7 +395,7 @@ final class ExplorerOutlineControllerTests: XCTestCase {
         ]
         XCTAssertEqual(controller.menuActions(forTargets: ["/r/a.txt", "/r/src"]), expected)
         XCTAssertEqual(controller.menuActions(forTargets: ["/r/src", "/r/a.txt"]), expected)
-        XCTAssertEqual(controller.menuActions(forTargets: []), [.refresh])
+        XCTAssertEqual(controller.menuActions(forTargets: []), [.newFile, .newFolder, nil, .refresh])
     }
 
     /// End-to-end: `menuNeedsUpdate` (via the internal `rebuildMenuItems`

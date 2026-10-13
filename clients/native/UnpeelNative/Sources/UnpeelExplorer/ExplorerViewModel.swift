@@ -64,6 +64,9 @@ public final class ExplorerViewModel: ObservableObject {
     /// shown in the EXPLORER's message strip until dismissed, the next
     /// operation succeeds, or the root changes.
     @Published public internal(set) var operationMessage: String?
+    /// Fork-only: explorer operations. The New File… / New Folder… waiting
+    /// for its name (see `ExplorerViewModel+Draft`).
+    @Published public internal(set) var draft: ExplorerDraft?
 
     static let logger = Logger(subsystem: "com.unpeel.explorer", category: "viewmodel")
 
@@ -153,6 +156,7 @@ public final class ExplorerViewModel: ObservableObject {
         selection = []
         scrollOffset = 0
         operationMessage = nil
+        draft = nil
     }
 
     /// Persistence is suppressed for the WHOLE window from the moment a

@@ -118,7 +118,11 @@ public struct ExplorerPanelMenu: View {
     @ObservedObject private var viewModel: ExplorerViewModel
     private let tint: NSColor
 
-    public static let itemTitles = ["Refresh", "Collapse All", "Show Hidden Files", "Show Git-Ignored Files"]
+    public static let itemTitles = [
+        "Refresh", "Collapse All", "Show Hidden Files", "Show Git-Ignored Files",
+        // Fork-only: explorer operations.
+        "New File…", "New Folder…",
+    ]
 
     public init(viewModel: ExplorerViewModel, tint: NSColor) {
         self.viewModel = viewModel
@@ -127,6 +131,11 @@ public struct ExplorerPanelMenu: View {
 
     public var body: some View {
         Menu {
+            // Fork-only: explorer operations. Into the selected folder (or a
+            // selected file's folder), else the root.
+            Button(Self.itemTitles[4]) { newItem(.file) }
+            Button(Self.itemTitles[5]) { newItem(.folder) }
+            Divider()
             Button(Self.itemTitles[0]) { viewModel.refresh() }
             Button(Self.itemTitles[1]) { viewModel.collapseAll() }
             Divider()
@@ -144,6 +153,11 @@ public struct ExplorerPanelMenu: View {
         .menuIndicator(.hidden)
         .fixedSize()
         .disabled(viewModel.model == nil)
+    }
+
+    private func newItem(_ kind: ExplorerDraft.Kind) {
+        guard let folder = viewModel.draftFolder(for: viewModel.selection) else { return }
+        viewModel.beginDraft(kind, in: folder)
     }
 
     private func filterBinding(

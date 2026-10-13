@@ -7,46 +7,6 @@ import XCTest
 /// Escape cancels.
 @MainActor
 final class ExplorerRenameTests: ExplorerOperationTestCase {
-    private var window: NSWindow?
-
-    override func tearDown() async throws {
-        window?.close()
-        window = nil
-        try await super.tearDown()
-    }
-
-    /// The outline in a real window, so a field can become first responder.
-    private func windowed(_ tree: TempTree) async -> (ExplorerOutlineController, ExplorerNSOutlineView, ExplorerViewModel) {
-        let viewModel = await opened(tree)
-        let (controller, outline) = attach(viewModel)
-        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 320, height: 400),
-                              styleMask: [.titled], backing: .buffered, defer: false)
-        window.isReleasedWhenClosed = false
-        let scroll = ExplorerOutlineView.makeScrollView(documentView: outline)
-        scroll.frame = window.contentLayoutRect
-        window.contentView = scroll
-        outline.layoutSubtreeIfNeeded()
-        self.window = window
-        sync(controller, viewModel)
-        return (controller, outline, viewModel)
-    }
-
-    private func type(_ text: String, into controller: ExplorerOutlineController) {
-        guard let editor = controller.nameEditor else { return XCTFail("no name field open") }
-        editor.field.currentEditor()?.string = text
-        editor.controlTextDidChange(Notification(name: NSControl.textDidChangeNotification))
-    }
-
-    private func press(_ selector: Selector, in controller: ExplorerOutlineController) {
-        guard let editor = controller.nameEditor, let text = editor.field.currentEditor() as? NSTextView else {
-            return XCTFail("no name field open")
-        }
-        _ = editor.control(editor.field, textView: text, doCommandBy: selector)
-    }
-
-    private let returnKey = #selector(NSResponder.insertNewline(_:))
-    private let escapeKey = #selector(NSResponder.cancelOperation(_:))
-
     func testReturnOpensTheFieldWithTheStemSelected() async throws {
         let tree = try TempTree(); defer { tree.remove() }
         try tree.file("archive.tar.gz")
