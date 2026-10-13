@@ -91,7 +91,7 @@ commits (`emptyrepo`), each with a Terminal Session. Screenshots are the
 | 17 | Changed file → Markdown | PASS — `README.md` selected in the EXPLORER and opened in the preview pane (`app-14-readme.png`) |
 | 18 | Changed file → source | PASS — `src` expanded, `main.swift` selected in the EXPLORER, opened through Open With in the preferred editor (VS Code) (`app-15-mainswift.png`) |
 | 19 | Changed file no longer on disk | PASS — `docs/notes.md` (since renamed): row selects, nothing opens, no error (`app-16…`) |
-| 20 | Changed file with EXPLORER collapsed | As decided — `guide.md` opens in the preview pane; EXPLORER stays collapsed and, re-expanded, shows its own last selection, not `guide.md` (`app-44…`, `app-45…`) |
+| 20 | Changed file with EXPLORER collapsed | As decided — `guide.md` opens in the preview pane; EXPLORER stays collapsed and, re-expanded, shows its own last selection, not `guide.md` (`app-44…`, `app-45…`). **Superseded:** the reveal is now kept and applied when the EXPLORER next opens (#9; `2026-10-12-git-decorations.md` §2 row 8) |
 | 21 | ⌃⇧G, Git History focused | PASS — collapses; focus goes to the terminal; View menu read "Hide Git History" before, "Show Git History" after (`app-17…`) |
 | 22 | ⌃⇧G, collapsed, terminal focused | PASS — expands and focuses the list; nothing typed into the terminal (`app-18…`) |
 | 23 | ⌃⇧G, expanded, EXPLORER focused | PASS — focuses the list, stays expanded; menu "Hide Explorer, Show Git History" → "Show Explorer, Hide Git History" |
@@ -103,7 +103,7 @@ commits (`emptyrepo`), each with a Terminal Session. Screenshots are the
 | 29 | Live: `git switch` in the Session | PASS — header and list follow `feature/history` and back (`app-29…`) |
 | 30 | Live: commit loop (6 commits, 0.4 s apart) | PASS after the §4 fix — counts track the loop; at the top the new commits come into view, scrolled down the rows stay put (`app-51…`, `app-56…`, `app-58…`). Before the fix: FAIL, see §4 |
 | 31 | Live: first commit in an empty repository | PASS — "No commits yet." becomes the commit, and the label becomes the filter menu (`app-35…`) |
-| 32 | Live: `git init` + commit in a plain folder | FAIL (open) — stays "This folder is not a git repository." until the Session is reselected (`app-33…`, `app-36…`); see §4 |
+| 32 | Live: `git init` + commit in a plain folder | FAIL at the time — stays "This folder is not a git repository." until the Session is reselected (`app-33…`, `app-36…`); see §4. **Fixed** in Phase A (#5; `2026-10-12-git-decorations.md` §2 row 5) |
 
 One false negative while testing: clicks that selected a commit without
 expanding it were traced to the test harness leaving Command latched after
@@ -141,7 +141,8 @@ removed. The History Branch Filter now lists local branches first, then
 remote-tracking ones, then "All branches".
 
 Kept by decision: a changed file is revealed in the EXPLORER only while its
-tree is showing (a collapsed EXPLORER is not expanded); GIT HISTORY also
+tree is showing (a collapsed EXPLORER is not expanded — **superseded**, see
+§2 row 20); GIT HISTORY also
 starts collapsed on a fresh install; Return toggles a commit and ⌘C copies
 its SHA.
 
@@ -155,7 +156,8 @@ Found in the running app (§2):
   (`GitHistoryOutlineController.atTopTolerance`), with a test that sets a
   0.3 pt offset and failed first; re-checked in the rebuilt app at an
   8.5e-5 offset (`app-56…`) and scrolled down (`app-58…`).
-- **Open — a folder that becomes a repository.** "Not a git repository"
+- **Open at the time, fixed in Phase A (#5)** — a folder that becomes a
+  repository. "Not a git repository"
   stops watching (there is no git directory to watch), so an agent's
   `git init` in the Session's folder is not noticed until the Session is
   reselected or the section re-expanded. Natural home: the shared
@@ -164,4 +166,6 @@ Found in the running app (§2):
 - **By design, noted** — collapsing or hiding GIT HISTORY stops its reads
   and watching; re-expanding reloads, so the expanded commit and scroll
   position are not kept. The EXPLORER, which persists its own state, keeps
-  them.
+  them. **Superseded** (#10): collapsing now keeps the expanded commit and
+  scroll position, still without reads while collapsed
+  (`2026-10-12-git-decorations.md` §2 row 7).
