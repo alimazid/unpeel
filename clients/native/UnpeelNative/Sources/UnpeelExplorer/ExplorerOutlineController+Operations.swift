@@ -21,6 +21,13 @@ extension ExplorerOutlineController {
     @discardableResult
     func beginRename(_ path: String) -> Bool {
         nameEditor?.cancel()
+        // A draft cancelled just now leaves the view model to drop it on a
+        // later pass; the outline stops showing it now, so that pass does
+        // not reload the folder under this new field.
+        if viewModel.draft == nil, let draft = appliedDraft {
+            appliedDraft = nil
+            reloadRows(of: draft.folder)
+        }
         guard let entry = applied?.entry(at: path), let outlineView, let item = items[path] else { return false }
         let row = outlineView.row(forItem: item)
         guard row >= 0 else { return false }
@@ -50,6 +57,14 @@ extension ExplorerOutlineController {
         endNameEditing()
         guard case .commit(let name) = outcome else { return }
         viewModel.rename(path, to: name)
+    }
+
+    /// Closes any open field from inside an update pass: nothing is
+    /// reported to the view model there.
+    func discardNameEditing() {
+        guard let editor = nameEditor else { return }
+        editor.discard()
+        endNameEditing()
     }
 
     /// Lets the edited folder's held-back reloads through.

@@ -166,6 +166,21 @@ final class ExplorerDraftTests: ExplorerOperationTestCase {
         XCTAssertEqual(viewModel.draft?.kind, .folder)
     }
 
+    func testAFilterChangeKeepsTheDraftAndReopensItsField() async throws {
+        let tree = try TempTree(); defer { tree.remove() }
+        try tree.file("a.txt")
+        let (controller, _, viewModel) = await windowed(tree)
+        await startDraft(.file, in: tree.root, controller, viewModel)
+
+        viewModel.setFilter(VisibilityFilter(showHidden: true, showIgnored: false))
+        sync(controller, viewModel)
+        XCTAssertNotNil(viewModel.draft, "the update pass never drops the draft itself")
+        await drainMainQueue()
+
+        XCTAssertEqual(controller.nameEditor?.purpose, .create)
+        XCTAssertEqual(controller.children(of: tree.root).map(\.role), [.draft, .entry])
+    }
+
     func testARootChangeDropsTheDraft() async throws {
         let tree = try TempTree(); defer { tree.remove() }
         let other = try TempTree(); defer { other.remove() }

@@ -9,11 +9,11 @@ extension ExplorerOutlineController {
         let previous = appliedDraft
         appliedDraft = draft
         if let previous {
-            if nameEditingFolder == previous.folder, nameEditor?.purpose == .create { nameEditor?.cancel() }
-            reloadRows(of: previous.folder)
+            if nameEditor?.purpose == .create { discardNameEditing() }
+            reloadRowsUnlessEditing(previous.folder)
         }
         guard let draft else { return }
-        nameEditor?.cancel()
+        discardNameEditing()
         reloadRows(of: draft.folder)
         // After this update pass: the row must exist before its field can
         // take focus.

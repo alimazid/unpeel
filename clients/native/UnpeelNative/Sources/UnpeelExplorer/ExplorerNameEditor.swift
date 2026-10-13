@@ -106,15 +106,29 @@ final class ExplorerNameEditor: NSObject, NSTextFieldDelegate {
 
     func controlTextDidEndEditing(_: Notification) {
         guard !isFinished else { return }
+        // A field taken off screen (its row reloaded or scrolled away) did
+        // not lose focus to the user: half-typed names are never committed.
+        guard field.window != nil, field.superview != nil else {
+            finish(.cancel)
+            return
+        }
         validate()
         finish(issue?.severity == .error ? .cancel : commitIfChanged())
     }
 
     // MARK: - Finishing
 
-    /// Ends editing without a commit, e.g. when the row is going away.
+    /// Ends editing without a commit, reporting `.cancel`.
     func cancel() {
         finish(.cancel)
+    }
+
+    /// Ends editing and reports nothing — for the outline's own update
+    /// pass, where reporting would reach the view model mid-update.
+    func discard() {
+        guard !isFinished else { return }
+        isFinished = true
+        restoreLabel()
     }
 
     private func commitIfChanged() -> Outcome {

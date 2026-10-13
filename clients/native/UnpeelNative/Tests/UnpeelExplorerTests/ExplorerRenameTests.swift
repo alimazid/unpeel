@@ -147,6 +147,47 @@ final class ExplorerRenameTests: ExplorerOperationTestCase {
         XCTAssertEqual(controller.children(of: tree.root).map(\.path), [tree.path("a.txt"), tree.path("agent.txt")])
     }
 
+    func testAReloadOfAFolderAboveTheFieldNeverCommitsAHalfTypedName() async throws {
+        let tree = try TempTree(); defer { tree.remove() }
+        try tree.file("p/f/a.txt")
+        let (controller, _, viewModel) = await windowed(tree)
+        await viewModel.expand(tree.path("p")).value
+        await viewModel.expand(tree.path("p/f")).value
+        sync(controller, viewModel)
+        XCTAssertTrue(controller.beginRename(tree.path("p/f/a.txt")))
+        type("typ", into: controller)
+
+        try tree.file("p/agent.txt")
+        try tree.file("root-agent.txt")
+        await viewModel.refresh().value
+        sync(controller, viewModel)
+
+        XCTAssertNotNil(controller.nameEditor, "the field is still open")
+        XCTAssertEqual(tree.names("p/f"), ["a.txt"])
+        press(escapeKey, in: controller)
+        XCTAssertEqual(controller.children(of: tree.path("p")).map(\.path), [tree.path("p/f"), tree.path("p/agent.txt")])
+    }
+
+    func testARenameStartedWhileADraftIsOpenSurvivesTheDraftGoing() async throws {
+        let tree = try TempTree(); defer { tree.remove() }
+        try tree.file("a.txt")
+        let (controller, _, viewModel) = await windowed(tree)
+        await viewModel.beginDraft(.file, in: tree.root).value
+        sync(controller, viewModel)
+        await drainMainQueue()
+        XCTAssertEqual(controller.nameEditor?.purpose, .create)
+
+        XCTAssertTrue(controller.beginRename(tree.path("a.txt")))
+        sync(controller, viewModel)
+
+        XCTAssertEqual(controller.nameEditor?.purpose, .rename(currentName: "a.txt"))
+        XCTAssertEqual(controller.children(of: tree.root).map(\.role), [.entry])
+        type("b.txt", into: controller)
+        press(returnKey, in: controller)
+        await settle(controller, viewModel)
+        XCTAssertEqual(tree.names(), ["b.txt"])
+    }
+
     func testAMultipleSelectionCannotBeRenamed() async throws {
         let tree = try TempTree(); defer { tree.remove() }
         try tree.file("a.txt"); try tree.file("b.txt")

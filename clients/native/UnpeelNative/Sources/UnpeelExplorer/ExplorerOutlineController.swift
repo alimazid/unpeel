@@ -135,8 +135,8 @@ public final class ExplorerOutlineController: NSObject,
         appliedFilter = filter
         appliedDecorations = decorations
         guard let model else {
-            nameEditor?.cancel()
             appliedDraft = nil
+            discardNameEditing()
             items = [:]
             childCache = [:]
             expandedPaths = []
@@ -167,9 +167,13 @@ public final class ExplorerOutlineController: NSObject,
             expandedPaths = []
         }
         if rootChanged || filterChanged {
-            nameEditor?.cancel()
+            // The rows are rebuilt; a Draft Row comes back with a new field.
+            discardNameEditing()
             childCache = [:]
             outlineView?.reloadData()
+            if let draft = appliedDraft {
+                DispatchQueue.main.async { [weak self] in self?.beginDraftEditing(draft) }
+            }
             return
         }
         guard let previous else { return }
@@ -177,10 +181,17 @@ public final class ExplorerOutlineController: NSObject,
             .filter { previous.directories[$0] != model.directories[$0] }
             .sorted { ExplorerPaths.depth($0) < ExplorerPaths.depth($1) }
         for directory in changed {
-            if directory == nameEditingFolder {
-                deferredReloads.insert(directory)
-                continue
-            }
+            reloadRowsUnlessEditing(directory)
+        }
+    }
+
+    /// Fork-only: explorer operations. Reloading the edited folder or any
+    /// folder above it rebuilds the edited row and ends the edit, so those
+    /// wait until the field closes.
+    func reloadRowsUnlessEditing(_ directory: String) {
+        if let editing = nameEditingFolder, editing == directory || editing.hasPrefix(directory + "/") {
+            deferredReloads.insert(directory)
+        } else {
             reloadRows(of: directory)
         }
     }
