@@ -41,9 +41,12 @@ extension ExplorerViewModel {
         record { $0.duplicate(paths) }
     }
 
+    /// Moves `paths` to the Trash at once — no confirmation; ⌘Z puts them
+    /// back. `next` is selected afterwards (VS Code selects the row after
+    /// the removed ones).
     @discardableResult
-    public func trash(_ paths: [String]) -> Task<Void, Never> {
-        record { $0.trash(paths) }
+    public func trash(_ paths: [String], thenSelect next: String? = nil) -> Task<Void, Never> {
+        record(selectingWhenEmpty: next.map { [$0] } ?? []) { $0.trash(paths) }
     }
 
     // MARK: - Undo and redo
@@ -87,11 +90,13 @@ extension ExplorerViewModel {
         model.flatMap { histories[$0.root] }
     }
 
-    /// A new operation: run, then pushed onto its root's history.
+    /// A new operation: run, then pushed onto its root's history. When it
+    /// leaves nothing to select (a trash), `fallback` is selected instead.
     private func record(
+        selectingWhenEmpty fallback: [String] = [],
         _ work: @escaping @Sendable (FileOperations) -> FileOperationOutcome
     ) -> Task<Void, Never> {
-        enqueue { root, operations in
+        enqueue(selectingWhenEmpty: fallback) { root, operations in
             let outcome = await Self.detached { work(operations) }
             if let record = outcome.record {
                 self.histories[root] = (self.histories[root] ?? OperationHistory()).recording(record)
@@ -105,6 +110,7 @@ extension ExplorerViewModel {
     /// root changed meanwhile — the files did change — but the result is
     /// only shown while that root still is.
     private func enqueue(
+        selectingWhenEmpty fallback: [String] = [],
         _ body: @escaping @MainActor (String, FileOperations) async -> FileOperationOutcome?
     ) -> Task<Void, Never> {
         guard let root = model?.root, let operations = services.makeOperations(root) else { return Task {} }
@@ -113,7 +119,7 @@ extension ExplorerViewModel {
         let task = Task { @MainActor in
             await previous?.value
             guard let outcome = await body(root, operations) else { return }
-            await self.show(outcome, root: root, generation: current)
+            await self.show(outcome, root: root, generation: current, fallback: fallback)
         }
         operationTail = task
         return task
@@ -127,14 +133,16 @@ extension ExplorerViewModel {
 
     // MARK: - Showing
 
-    private func show(_ outcome: FileOperationOutcome, root: String, generation current: Int) async {
+    private func show(
+        _ outcome: FileOperationOutcome, root: String, generation current: Int, fallback: [String]
+    ) async {
         guard current == generation, model?.root == root else { return }
         operationMessage = Self.message(for: outcome.failures)
         guard let record = outcome.record else { return }
         let effects = Self.effects(of: record.steps, root: root)
         await reloadAfterOperation(changedFolders: effects.folders, relocations: effects.relocations).value
         guard current == generation else { return }
-        await revealAll(record.resultPaths)
+        await revealAll(record.resultPaths.isEmpty ? fallback : record.resultPaths)
         persistState()
     }
 

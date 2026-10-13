@@ -8,6 +8,8 @@ public final class ExplorerOutlineController: NSObject,
     public enum MenuAction: String, Equatable {
         case open, openInMarkdownEditor, openInEditor, revealInFinder, quickLook, sendToAgent
         case copyPath, copyRelativePath, refresh, collapse
+        // Fork-only: explorer operations.
+        case trash
 
         var title: String {
             switch self {
@@ -21,6 +23,7 @@ public final class ExplorerOutlineController: NSObject,
             case .copyRelativePath: return "Copy Relative Path"
             case .refresh: return "Refresh"
             case .collapse: return "Collapse"
+            case .trash: return "Move to Trash"
             }
         }
     }
@@ -48,7 +51,7 @@ public final class ExplorerOutlineController: NSObject,
     private let icons = FileIconProvider()
     private var items: [String: ExplorerItem] = [:]
     private var childCache: [String: [ExplorerItem]] = [:]
-    private var applied: FileTreeModel?
+    private(set) var applied: FileTreeModel?
     /// What the OUTLINE VIEW currently has expanded, maintained from its
     /// expand/collapse notifications (which AppKit posts for programmatic
     /// changes as well as user ones). Paths whose rows a reload dropped are
@@ -507,7 +510,7 @@ public final class ExplorerOutlineController: NSObject,
                 ? [.open, .openInMarkdownEditor, .openInEditor, .revealInFinder, .quickLook, nil]
                 : [.open, .openInEditor, .revealInFinder, .quickLook, nil])
             : [.revealInFinder, nil]
-        actions += send + copy + [.refresh]
+        actions += send + copy + operationActions + [.refresh]
         if hasExpandedDirectory {
             actions.append(.collapse)
         }
@@ -578,6 +581,8 @@ public final class ExplorerOutlineController: NSObject,
             copyToPasteboard(paths.map { ExplorerPaths.relative($0, to: root) })
         case .refresh:
             viewModel.refresh()
+        case .trash:
+            trash(paths)
         case .collapse:
             for path in expandedDirectoriesOnly(paths) {
                 // If the outline already has this item expanded, collapsing
@@ -645,6 +650,8 @@ public final class ExplorerOutlineController: NSObject,
             perform(.copyRelativePath, on: selection)
         case .revealInFinder:
             perform(.revealInFinder, on: selection)
+        case .trash:
+            perform(.trash, on: selection)
         }
         return true
     }

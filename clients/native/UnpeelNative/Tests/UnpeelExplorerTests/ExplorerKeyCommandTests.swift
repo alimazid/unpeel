@@ -21,11 +21,13 @@ final class ExplorerKeyCommandTests: XCTestCase {
         XCTAssertEqual(ExplorerKeyCommand.from(keyCode: 8, modifiers: [.command, .option]), .copyPath)
         XCTAssertEqual(ExplorerKeyCommand.from(keyCode: 8, modifiers: [.command, .option, .shift]), .copyRelativePath)
         XCTAssertEqual(ExplorerKeyCommand.from(keyCode: 15, modifiers: [.command, .option]), .revealInFinder)
+        XCTAssertEqual(ExplorerKeyCommand.from(keyCode: 51, modifiers: [.command]), .trash)
     }
 
     func testUnmappedKeysFallThrough() {
         XCTAssertNil(ExplorerKeyCommand.from(keyCode: 125, modifiers: []))
         XCTAssertNil(ExplorerKeyCommand.from(keyCode: 49, modifiers: [.shift]))
         XCTAssertNil(ExplorerKeyCommand.from(keyCode: 8, modifiers: [.command]))
+        XCTAssertNil(ExplorerKeyCommand.from(keyCode: 51, modifiers: []), "a plain ⌫ never trashes")
     }
 }

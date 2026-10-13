@@ -10,6 +10,8 @@ public enum ExplorerKeyCommand: Equatable, Sendable {
     case copyPath
     case copyRelativePath
     case revealInFinder
+    /// Fork-only: explorer operations. ⌘⌫.
+    case trash
 
     public static func from(keyCode: UInt16, modifiers: NSEvent.ModifierFlags) -> ExplorerKeyCommand? {
         // Arrow keys always carry .numericPad/.function; only these four matter.
@@ -26,6 +28,7 @@ public enum ExplorerKeyCommand: Equatable, Sendable {
         if flags == [.command, .option], keyCode == 8 { return .copyPath }
         if flags == [.command, .option, .shift], keyCode == 8 { return .copyRelativePath }
         if flags == [.command, .option], keyCode == 15 { return .revealInFinder }
+        if flags == [.command], keyCode == 51 { return .trash }
         return nil
     }
 }

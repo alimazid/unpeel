@@ -6,32 +6,10 @@ import XCTest
 /// "Undo <operation>" while the tree has focus, the text's own undo while a
 /// name field is being edited.
 @MainActor
-final class ExplorerEditMenuTests: ExplorerViewModelTestCase {
-    private var trash: FolderTrash!
-
-    override func setUp() async throws {
-        trash = try FolderTrash()
-    }
-
-    override func tearDown() async throws {
-        trash.remove()
-        try await super.tearDown()
-    }
-
+final class ExplorerEditMenuTests: ExplorerOperationTestCase {
     private func attached(_ tree: TempTree) async -> (ExplorerNSOutlineView, ExplorerViewModel) {
-        let trasher = trash!
-        let viewModel = makeViewModel(ExplorerServices(
-            scan: { directory, root in try DirectoryScanner(ignore: NoIgnoreChecker()).scan(directory: directory, root: root) },
-            makeWatcher: { _, _ in nil },
-            makeOperations: { FileOperations(root: $0, trasher: trasher) }
-        ))
-        await viewModel.setContext(local(tree)).value
-        let controller = ExplorerOutlineController(viewModel: viewModel, palette: .system)
-        let outline = ExplorerOutlineView.makeOutlineView()
-        controller.attach(to: outline)
-        controller.apply(model: viewModel.model, filter: everything, selection: [])
-        objc_setAssociatedObject(outline, "controller", controller, .OBJC_ASSOCIATION_RETAIN)
-        return (outline, viewModel)
+        let viewModel = await opened(tree)
+        return (attach(viewModel).1, viewModel)
     }
 
     private func item(_ action: Selector) -> NSMenuItem {

@@ -5,42 +5,7 @@ import XCTest
 /// a watcher, expansion and selection following the result, failures in the
 /// message strip, and each Explorer Root's Operation History.
 @MainActor
-final class ExplorerOperationsTests: ExplorerViewModelTestCase {
-    private var trash: FolderTrash!
-
-    override func setUp() async throws {
-        trash = try FolderTrash()
-    }
-
-    override func tearDown() async throws {
-        trash.remove()
-        try await super.tearDown()
-    }
-
-    /// Real scans, no watcher (so anything on screen came from the view
-    /// model applying the operation itself), and a folder Trash.
-    private func operationServices(trasher: (any Trasher)? = nil, log: ScanLog? = nil) -> ExplorerServices {
-        let trasher = trasher ?? trash!
-        return ExplorerServices(
-            scan: { directory, root in
-                log?.record(directory)
-                return try DirectoryScanner(ignore: NoIgnoreChecker()).scan(directory: directory, root: root)
-            },
-            makeWatcher: { _, _ in nil },
-            makeOperations: { root in FileOperations(root: root, trasher: trasher) }
-        )
-    }
-
-    private func names(_ viewModel: ExplorerViewModel, _ directory: String) -> [String] {
-        viewModel.model?.visibleChildren(of: directory, filter: everything).map(\.name) ?? []
-    }
-
-    private func opened(_ tree: TempTree, trasher: (any Trasher)? = nil) async -> ExplorerViewModel {
-        let viewModel = makeViewModel(operationServices(trasher: trasher))
-        await viewModel.setContext(local(tree)).value
-        return viewModel
-    }
-
+final class ExplorerOperationsTests: ExplorerOperationTestCase {
     // MARK: - Showing results
 
     func testANewFileIsShownAndSelectedWithoutAWatcher() async throws {
