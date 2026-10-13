@@ -9,7 +9,7 @@ public final class ExplorerOutlineController: NSObject,
         case open, openInMarkdownEditor, openInEditor, revealInFinder, quickLook, sendToAgent
         case copyPath, copyRelativePath, refresh, collapse
         // Fork-only: explorer operations.
-        case newFile, newFolder, rename, trash
+        case newFile, newFolder, rename, trash, cut, copy, paste, duplicate
 
         var title: String {
             switch self {
@@ -27,6 +27,10 @@ public final class ExplorerOutlineController: NSObject,
             case .newFolder: return "New Folder…"
             case .rename: return "Rename…"
             case .trash: return "Move to Trash"
+            case .cut: return "Cut"
+            case .copy: return "Copy"
+            case .paste: return "Paste"
+            case .duplicate: return "Duplicate"
             }
         }
     }
@@ -83,6 +87,14 @@ public final class ExplorerOutlineController: NSObject,
     var deferredReloads: Set<String> = []
     /// The Draft Row the outline shows.
     var appliedDraft: ExplorerDraft?
+    /// Items cut and not yet pasted, and the pasteboard change whose cut
+    /// was pasted already (pasted once only).
+    var cutState: CutState?
+    var consumedChangeCount: Int?
+    /// Answers name collisions; nil asks with a sheet on the tree's window.
+    public var collisionPrompt: (any CollisionPrompting)?
+    /// A transfer still waiting on the Collision Prompt.
+    var pendingTransfer: Task<Void, Never>?
 
     public init(viewModel: ExplorerViewModel, palette: ExplorerPalette) {
         self.viewModel = viewModel
@@ -362,7 +374,7 @@ public final class ExplorerOutlineController: NSObject,
             cell.decorationField?.stringValue = decoration.map {
                 entry?.kind == .directory ? Self.folderDecoration : $0.letter
             } ?? ""
-            cell.alphaValue = (entry?.isIgnored == true || entry?.isHidden == true) ? 0.5 : 1
+            cell.alphaValue = (entry?.isIgnored == true || entry?.isHidden == true || isCut(item.path)) ? 0.5 : 1
             cell.toolTip = entry?.isSymlink == true && entry?.isExpandable == false && entry?.kind == .directory
                 ? "This link points outside the project folder."
                 : nil
@@ -522,7 +534,7 @@ public final class ExplorerOutlineController: NSObject,
     /// is first or was clicked.
     public func menuActions(forTargets paths: [String]) -> [MenuAction?] {
         let resolved = resolvedEntries(for: paths)
-        guard !resolved.isEmpty else { return creationActions + [.refresh] }
+        guard !resolved.isEmpty else { return creationActions + [.paste, nil, .refresh] }
         let hasFile = resolved.contains(where: { $0.entry.kind == .file })
         let hasExpandedDirectory = resolved.contains(where: {
             $0.entry.kind == .directory && applied?.expanded.contains($0.path) == true
@@ -539,7 +551,12 @@ public final class ExplorerOutlineController: NSObject,
                 ? [.open, .openInMarkdownEditor, .openInEditor, .revealInFinder, .quickLook, nil]
                 : [.open, .openInEditor, .revealInFinder, .quickLook, nil])
             : [.revealInFinder, nil]
-        actions += creationActions + send + copy + operationActions(forTargetCount: resolved.count) + [.refresh]
+        actions += creationActions
+        actions += send
+        actions += clipboardActions
+        actions += copy
+        actions += operationActions(forTargetCount: resolved.count)
+        actions.append(.refresh)
         if hasExpandedDirectory {
             actions.append(.collapse)
         }
@@ -571,7 +588,7 @@ public final class ExplorerOutlineController: NSObject,
 
     /// Captures a menu item's action and its target paths together, so the
     /// paths acted on are exactly the ones the menu was built for.
-    private final class MenuActionPayload: NSObject {
+    final class MenuActionPayload: NSObject {
         let action: MenuAction
         let paths: [String]
 
@@ -618,6 +635,12 @@ public final class ExplorerOutlineController: NSObject,
             if paths.count == 1 { beginRename(paths[0]) }
         case .trash:
             trash(paths)
+        case .cut, .copy:
+            copyItems(paths, cutting: action == .cut)
+        case .paste:
+            paste(into: paths)
+        case .duplicate:
+            duplicate(paths)
         case .collapse:
             for path in expandedDirectoriesOnly(paths) {
                 // If the outline already has this item expanded, collapsing

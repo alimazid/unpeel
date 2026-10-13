@@ -22,18 +22,28 @@ extension ExplorerViewModel {
         record { $0.rename(path, to: name) }
     }
 
+    /// `kind` names the history step when it is not a plain Move (a paste).
     @discardableResult
     public func move(
-        _ paths: [String], into folder: String, resolutions: [String: CollisionResolution] = [:]
+        _ paths: [String], into folder: String, resolutions: [String: CollisionResolution] = [:],
+        as kind: FileOperationKind? = nil
     ) -> Task<Void, Never> {
-        record { $0.move(paths, into: folder, resolutions: resolutions) }
+        record { $0.move(paths, into: folder, resolutions: resolutions).named(kind) }
     }
 
     @discardableResult
     public func copy(
-        _ paths: [String], into folder: String, resolutions: [String: CollisionResolution] = [:]
+        _ paths: [String], into folder: String, resolutions: [String: CollisionResolution] = [:],
+        as kind: FileOperationKind? = nil
     ) -> Task<Void, Never> {
-        record { $0.copy(paths, into: folder, resolutions: resolutions) }
+        record { $0.copy(paths, into: folder, resolutions: resolutions).named(kind) }
+    }
+
+    /// Which of `paths` already have a namesake in `folder` and so need the
+    /// Collision Prompt's answer.
+    public func collidingSources(_ paths: [String], into folder: String) -> [String] {
+        guard let root = model?.root, let operations = services.makeOperations(root) else { return [] }
+        return operations.collidingSources(paths, into: folder)
     }
 
     @discardableResult

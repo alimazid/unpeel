@@ -115,6 +115,19 @@ public struct FileOperationRecord: Equatable, Sendable {
         self.steps = steps
         self.resultPaths = resultPaths
     }
+
+    /// The same change under another name: a copy or move the user made by
+    /// pasting is "Undo Paste".
+    public func named(_ kind: FileOperationKind) -> FileOperationRecord {
+        FileOperationRecord(kind: kind, steps: steps, resultPaths: resultPaths)
+    }
+}
+
+extension FileOperationOutcome {
+    func named(_ kind: FileOperationKind?) -> FileOperationOutcome {
+        guard let kind else { return self }
+        return FileOperationOutcome(record: record?.named(kind), failures: failures)
+    }
 }
 
 public struct FileOperationOutcome: Equatable, Sendable {

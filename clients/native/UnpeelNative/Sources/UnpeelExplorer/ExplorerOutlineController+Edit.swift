@@ -7,7 +7,10 @@ extension ExplorerOutlineController: ExplorerEditTarget {
         switch command {
         case .undo: return viewModel.undoActionTitle
         case .redo: return viewModel.redoActionTitle
-        case .cut, .copy, .paste: return nil
+        case .cut, .copy:
+            return viewModel.selection.contains { applied?.entry(at: $0) != nil } ? command.defaultTitle : nil
+        case .paste:
+            return applied != nil && !pasteableFiles.isEmpty ? command.defaultTitle : nil
         }
     }
 
@@ -15,7 +18,18 @@ extension ExplorerOutlineController: ExplorerEditTarget {
         switch command {
         case .undo: viewModel.undo()
         case .redo: viewModel.redo()
-        case .cut, .copy, .paste: break
+        case .cut, .copy: copyItems(viewModel.selection, cutting: command == .cut)
+        case .paste: paste(into: viewModel.selection)
         }
+    }
+}
+
+/// The context menu's Paste is enabled only with files to paste.
+extension ExplorerOutlineController: NSMenuItemValidation {
+    public func validateMenuItem(_ menuItem: NSMenuItem) -> Bool {
+        guard let payload = menuItem.representedObject as? MenuActionPayload, payload.action == .paste else {
+            return true
+        }
+        return !pasteableFiles.isEmpty
     }
 }

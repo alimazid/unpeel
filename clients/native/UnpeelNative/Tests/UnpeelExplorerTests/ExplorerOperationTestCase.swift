@@ -14,8 +14,11 @@ class ExplorerOperationTestCase: ExplorerViewModelTestCase {
     }
 
     private var window: NSWindow?
+    /// Never the general pasteboard: what the user copied must not leak in.
+    let pasteboard = NSPasteboard.withUniqueName()
 
     override func tearDown() async throws {
+        pasteboard.releaseGlobally()
         window?.close()
         window = nil
         trash.remove()
@@ -86,6 +89,7 @@ class ExplorerOperationTestCase: ExplorerViewModelTestCase {
         let controller = ExplorerOutlineController(viewModel: viewModel, palette: .system)
         let outline = ExplorerOutlineView.makeOutlineView()
         controller.attach(to: outline)
+        controller.pasteboard = pasteboard
         objc_setAssociatedObject(outline, "controller", controller, .OBJC_ASSOCIATION_RETAIN)
         sync(controller, viewModel)
         return (controller, outline)
@@ -101,6 +105,7 @@ class ExplorerOperationTestCase: ExplorerViewModelTestCase {
 
     /// Waits for every operation asked for so far, then syncs the outline.
     func settle(_ controller: ExplorerOutlineController, _ viewModel: ExplorerViewModel) async {
+        await controller.pendingTransfer?.value
         await viewModel.operationTail?.value
         sync(controller, viewModel)
     }

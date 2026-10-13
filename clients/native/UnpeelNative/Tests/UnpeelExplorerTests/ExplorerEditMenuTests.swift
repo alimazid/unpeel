@@ -43,14 +43,23 @@ final class ExplorerEditMenuTests: ExplorerOperationTestCase {
         XCTAssertEqual(tree.names(), ["b.txt"])
     }
 
-    func testClipboardCommandsAreNotOfferedYet() async throws {
+    func testClipboardCommandsNeedASelectionOrFilesToPaste() async throws {
         let tree = try TempTree(); defer { tree.remove() }
-        let (outline, _) = await attached(tree)
+        try tree.file("a.txt")
+        let (outline, viewModel) = await attached(tree)
+        let cut = item(#selector(ExplorerNSOutlineView.cut(_:)))
+        let copy = item(#selector(ExplorerNSOutlineView.copy(_:)))
+        let paste = item(#selector(ExplorerNSOutlineView.paste(_:)))
 
-        for action in [#selector(ExplorerNSOutlineView.cut(_:)), #selector(ExplorerNSOutlineView.copy(_:)),
-                       #selector(ExplorerNSOutlineView.paste(_:))] {
-            XCTAssertFalse(outline.validateUserInterfaceItem(item(action)))
-        }
+        XCTAssertFalse(outline.validateUserInterfaceItem(cut))
+        XCTAssertFalse(outline.validateUserInterfaceItem(copy))
+        XCTAssertFalse(outline.validateUserInterfaceItem(paste))
+
+        viewModel.selection = [tree.path("a.txt")]
+        XCTAssertTrue(outline.validateUserInterfaceItem(copy))
+        XCTAssertEqual(copy.title, "Copy")
+        outline.copy(nil)
+        XCTAssertTrue(outline.validateUserInterfaceItem(paste))
     }
 
     func testOtherItemsKeepTheTablesOwnValidation() async throws {

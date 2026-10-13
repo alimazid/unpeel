@@ -28,7 +28,11 @@ final class ExplorerOutlineControllerTests: XCTestCase {
             services: ExplorerServices(scan: { _, _ in DirectoryListing(entries: []) }, makeWatcher: { _, _ in nil }),
             stateStore: ExplorerStateStore(defaults: UserDefaults(suiteName: suite)!)
         )
-        return (ExplorerOutlineController(viewModel: viewModel, palette: .system), viewModel, suite)
+        let controller = ExplorerOutlineController(viewModel: viewModel, palette: .system)
+        // Fork-only: explorer operations. Never the general pasteboard: the
+        // menu and Paste depend on what it holds.
+        controller.pasteboard = NSPasteboard.withUniqueName()
+        return (controller, viewModel, suite)
     }
 
     private func sampleModel(truncated: Int = 0) -> FileTreeModel {
@@ -135,16 +139,16 @@ final class ExplorerOutlineControllerTests: XCTestCase {
         controller.actionHandler = handler
         controller.apply(model: sampleModel(), filter: VisibilityFilter(), selection: [])
 
-        XCTAssertEqual(controller.menuActions(for: nil), [.newFile, .newFolder, nil, .refresh])
+        XCTAssertEqual(controller.menuActions(for: nil), [.newFile, .newFolder, nil, .paste, nil, .refresh])
         XCTAssertEqual(
             controller.menuActions(for: "/r/a.txt"),
             [.open, .openInEditor, .revealInFinder, .quickLook, nil, .newFile, .newFolder, nil, .sendToAgent, nil,
-             .copyPath, .copyRelativePath, nil, .rename, .trash, nil, .refresh]
+             .cut, .copy, .paste, .duplicate, nil, .copyPath, .copyRelativePath, nil, .rename, .trash, nil, .refresh]
         )
         XCTAssertEqual(
             controller.menuActions(for: "/r/src"),
-            [.revealInFinder, nil, .newFile, .newFolder, nil, .sendToAgent, nil, .copyPath, .copyRelativePath, nil,
-             .rename, .trash, nil, .refresh, .collapse]
+            [.revealInFinder, nil, .newFile, .newFolder, nil, .sendToAgent, nil, .cut, .copy, .paste, .duplicate, nil,
+             .copyPath, .copyRelativePath, nil, .rename, .trash, nil, .refresh, .collapse]
         )
 
         handler.canSendToAgent = false
@@ -389,13 +393,14 @@ final class ExplorerOutlineControllerTests: XCTestCase {
             .open, .openInEditor, .revealInFinder, .quickLook, nil,
             .newFile, .newFolder, nil,
             .sendToAgent, nil,
+            .cut, .copy, .paste, .duplicate, nil,
             .copyPath, .copyRelativePath, nil,
             .trash, nil,
             .refresh, .collapse,
         ]
         XCTAssertEqual(controller.menuActions(forTargets: ["/r/a.txt", "/r/src"]), expected)
         XCTAssertEqual(controller.menuActions(forTargets: ["/r/src", "/r/a.txt"]), expected)
-        XCTAssertEqual(controller.menuActions(forTargets: []), [.newFile, .newFolder, nil, .refresh])
+        XCTAssertEqual(controller.menuActions(forTargets: []), [.newFile, .newFolder, nil, .paste, nil, .refresh])
     }
 
     /// End-to-end: `menuNeedsUpdate` (via the internal `rebuildMenuItems`
