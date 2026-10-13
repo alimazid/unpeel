@@ -30,30 +30,52 @@ extension FileOperations {
     private func invert(_ step: FileOperationStep) throws -> FileOperationStep {
         switch step {
         case let .created(path, identity, onlyIfEmpty):
-            let item = try changeableItem(path)
-            guard ItemIdentity.of(item) == identity else { throw FileOperationFailure.changedSince(item) }
-            if onlyIfEmpty, !Self.isEmptyFolder(item) { throw FileOperationFailure.changedSince(item) }
+            let item = try recordedItem(path)
+            guard let current = ItemIdentity.of(item), current.isSameObject(as: identity) else {
+                throw FileOperationFailure.changedSince(item)
+            }
+            // A created folder that held only what this operation made is
+            // judged by being empty again; anything else must be exactly as
+            // the operation left it, so an agent's edit is never trashed.
+            if onlyIfEmpty ? !Self.isEmptyFolder(item) : current != identity {
+                throw FileOperationFailure.changedSince(item)
+            }
             return try trashStep(item, onlyIfEmpty: onlyIfEmpty)
         case let .moved(from, to, identity):
-            let item = try changeableItem(to)
-            guard ItemIdentity.of(item) == identity else { throw FileOperationFailure.changedSince(item) }
+            let item = try recordedItem(to)
+            guard ItemIdentity.of(item)?.isSameObject(as: identity) == true else {
+                throw FileOperationFailure.changedSince(item)
+            }
             let target = try placeFor(from)
             try renameExclusively(item, to: target)
             return .moved(from: item, to: target, identity: identity)
         case let .trashed(original, location, identity, onlyIfEmpty):
-            guard ItemIdentity.of(location) == identity else { throw FileOperationFailure.notInTrash(original) }
+            guard trasher.holds(location), !isInsideRoot(location),
+                  ItemIdentity.of(location)?.isSameObject(as: identity) == true
+            else { throw FileOperationFailure.notInTrash(original) }
             let target = try placeFor(original)
             try renameExclusively(location, to: target)
-            return .created(path: target, identity: identity, onlyIfEmpty: onlyIfEmpty)
+            return .created(path: target, identity: ItemIdentity.of(target) ?? identity, onlyIfEmpty: onlyIfEmpty)
         }
     }
 
-    /// Where an item goes back to: its folder must still be a writable
-    /// folder in the root, and the name a legal one there.
+    /// The recorded item, which must still be reached through the same
+    /// folders: a folder an agent swapped for a symlink would otherwise
+    /// silently redirect the undo elsewhere in the tree.
+    private func recordedItem(_ path: String) throws -> String {
+        let item = try changeableItem(path)
+        guard item == path else { throw FileOperationFailure.changedSince(path) }
+        return item
+    }
+
+    /// Where an item goes back to: its folder must still be the same
+    /// writable folder in the root, and the name a legal one there.
     private func placeFor(_ path: String) throws -> String {
         let name = (path as NSString).lastPathComponent
         guard FileNameValidation.isValidSegment(name) else { throw FileOperationFailure.outsideRoot(path) }
-        let target = Self.join(try writableFolder(Self.parent(of: path)), name)
+        let folder = try writableFolder(Self.parent(of: path))
+        guard folder == Self.parent(of: path) else { throw FileOperationFailure.changedSince(path) }
+        let target = Self.join(folder, name)
         if ExplorerPaths.isInsideDotGit(target, root: root) { throw FileOperationFailure.insideDotGit(target) }
         return target
     }

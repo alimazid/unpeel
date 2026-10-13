@@ -430,6 +430,8 @@ final class FileOperationsTests: XCTestCase {
         defer { try? FileManager.default.removeItem(atPath: location) }
         XCTAssertFalse(tree.exists(name))
         XCTAssertEqual(try String(contentsOfFile: location, encoding: .utf8), "T")
+        XCTAssertTrue(SystemTrasher().holds(location))
+        XCTAssertFalse(SystemTrasher().holds(tree.path("a.txt")))
     }
 
     // MARK: - Failures

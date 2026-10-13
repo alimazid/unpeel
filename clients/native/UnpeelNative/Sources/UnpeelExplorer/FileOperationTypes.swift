@@ -44,17 +44,33 @@ public enum FileOperationFailure: Error, Equatable, Sendable, LocalizedError {
     }
 }
 
-/// Which file-system object a step acted on, so an undo can tell the item
-/// it moved from one an agent put in its place since.
+/// Which file-system object a step acted on, and its state then, so an
+/// undo can tell the item it left from one an agent replaced or edited
+/// since.
 public struct ItemIdentity: Equatable, Hashable, Sendable {
     public let device: UInt64
     public let inode: UInt64
+    /// What an in-place edit changes: a file's size, and the modification
+    /// time of a file or of a folder (whose entries changed). A move keeps
+    /// both on APFS.
+    public let size: Int64
+    public let modifiedSeconds: Int
+    public let modifiedNanoseconds: Int
 
     /// The item itself, not a symlink's target.
     public static func of(_ path: String) -> ItemIdentity? {
         var info = stat()
         guard lstat(path, &info) == 0 else { return nil }
-        return ItemIdentity(device: UInt64(UInt32(bitPattern: info.st_dev)), inode: UInt64(info.st_ino))
+        return ItemIdentity(
+            device: UInt64(UInt32(bitPattern: info.st_dev)), inode: UInt64(info.st_ino),
+            size: Int64(info.st_size),
+            modifiedSeconds: info.st_mtimespec.tv_sec, modifiedNanoseconds: info.st_mtimespec.tv_nsec
+        )
+    }
+
+    /// The same file-system object, whatever happened to its contents.
+    public func isSameObject(as other: ItemIdentity) -> Bool {
+        device == other.device && inode == other.inode
     }
 }
 
@@ -138,6 +154,9 @@ public enum CollisionResolution: Equatable, Sendable {
 /// Moves an item to the Trash and says where it went.
 public protocol Trasher: Sendable {
     func trash(_ path: String) throws -> String
+    /// Whether `location` is in this Trash: the only place a redo of Move
+    /// to Trash, or an undo, takes an item back from.
+    func holds(_ location: String) -> Bool
 }
 
 public struct SystemTrasher: Trasher {
@@ -150,5 +169,16 @@ public struct SystemTrasher: Trasher {
             throw CocoaError(.fileNoSuchFile, userInfo: [NSFilePathErrorKey: path])
         }
         return trashed
+    }
+
+    /// The Trash of the volume `location` is on (`~/.Trash`, or a volume's
+    /// `.Trashes/<uid>`).
+    public func holds(_ location: String) -> Bool {
+        guard let trash = try? FileManager.default.url(
+            for: .trashDirectory, in: .userDomainMask,
+            appropriateFor: URL(fileURLWithPath: location), create: false
+        ) else { return false }
+        let folder = CanonicalPath.resolve(trash.path) ?? trash.path
+        return location.hasPrefix(folder + "/")
     }
 }

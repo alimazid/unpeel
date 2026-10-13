@@ -27,6 +27,10 @@ struct FolderTrash: Trasher {
         return target
     }
 
+    func holds(_ location: String) -> Bool {
+        location.hasPrefix(folder + "/")
+    }
+
     var contents: [String] {
         (try? FileManager.default.contentsOfDirectory(atPath: folder).sorted()) ?? []
     }
@@ -41,6 +45,8 @@ struct NoTrash: Trasher {
     func trash(_ path: String) throws -> String {
         throw CocoaError(.featureUnsupported, userInfo: [NSFilePathErrorKey: path])
     }
+
+    func holds(_: String) -> Bool { false }
 }
 
 extension TempTree {
@@ -97,4 +103,6 @@ struct HookTrash: Trasher {
         after(path)
         return location
     }
+
+    func holds(_ location: String) -> Bool { trash.holds(location) }
 }
