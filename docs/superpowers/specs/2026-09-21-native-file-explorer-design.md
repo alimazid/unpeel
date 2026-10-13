@@ -322,6 +322,11 @@ pastes its path.
 
 ### Phase 2 — File operations
 
+> Superseded in detail by alimazid/unpeel#12 (2026-10-13; tickets #13–#22)
+> and ADR 0002; where they differ, the issue wins. Settled then: no trash
+> confirmation, New File does not open the file, no Delete Permanently,
+> delivered in two cuts.
+
 `FileOperations` service (create file/folder, rename, duplicate, move, copy,
 trash via `FileManager.trashItem`) with every operation registered on an
 `UndoManager`; inline rename and inline "new file" rows with VS Code's

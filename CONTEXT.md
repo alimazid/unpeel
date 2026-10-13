@@ -14,6 +14,27 @@ The folder the EXPLORER and the Git views show: the selected Session's
 worktree if it has one, otherwise its Project's root. Local Hosts only.
 _Avoid_: workspace folder, repo root
 
+**File Operation**:
+A change the EXPLORER makes to the working tree on the user's behalf: new
+file or folder, rename, duplicate, move, copy, or Move to Trash. Acts as
+Finder does, never through git, and is always undoable.
+_Avoid_: file action, file command, edit
+
+**Operation History**:
+The undo and redo stacks of File Operations for one Explorer Root, kept for
+the life of the app. ⌘Z in the EXPLORER walks it.
+_Avoid_: undo stack, undo manager
+
+**Draft Row**:
+The temporary row with a name field that New File… or New Folder… inserts
+into the tree; committing it creates the item, Escape removes it.
+_Avoid_: placeholder row, new-item row
+
+**Collision Prompt**:
+The question a paste, drop or move asks when a name already exists in the
+destination: Replace, Keep Both, or Skip, optionally for all items.
+_Avoid_: overwrite dialog, conflict dialog
+
 ### Git
 
 **Git Status Decoration**:

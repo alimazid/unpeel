@@ -22,9 +22,9 @@ names). They keep these lines:
 - **Read-only.** The views never change the repository or the working
   tree: no staging, committing, checkout or fetch. Their git runs only
   through `GitRunner`'s read-command list with `GIT_OPTIONAL_LOCKS=0` and
-  `GIT_NO_LAZY_FETCH=1`. (The EXPLORER spec's Phase 2 file operations —
-  new, rename, move, trash — would act on files as Finder does, never
-  through git.)
+  `GIT_NO_LAZY_FETCH=1`. The one exception is the EXPLORER's File
+  Operations (new, rename, move, copy, trash), which act on files as Finder
+  does, never through git — see ADR 0002.
 - **No diffs and no editing.** A changed file is a name and a letter; opening
   it opens the working-tree file in the user's own editor or the Markdown
   preview. No diff viewer, source editor, or language tooling.
