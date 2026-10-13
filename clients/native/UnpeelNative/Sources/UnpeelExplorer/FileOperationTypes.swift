@@ -17,6 +17,8 @@ public enum FileOperationFailure: Error, Equatable, Sendable, LocalizedError {
     /// An undo or redo found the item changed since the operation (moved,
     /// replaced, or a created folder no longer empty).
     case changedSince(String)
+    /// An undo or redo could not find the item in the Trash any more.
+    case notInTrash(String)
     case underlying(path: String, message: String)
 
     public var errorDescription: String? {
@@ -32,6 +34,7 @@ public enum FileOperationFailure: Error, Equatable, Sendable, LocalizedError {
         case .invalidName(let message): return message
         case .noTrash(let path): return "“\(Self.name(path))” can’t be moved to the Trash on this disk."
         case .changedSince(let path): return "“\(Self.name(path))” changed since, so it was left as it is."
+        case .notInTrash(let path): return "“\(Self.name(path))” is no longer in the Trash."
         case let .underlying(path, message): return "Couldn’t change “\(Self.name(path))”: \(message)"
         }
     }
