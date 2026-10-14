@@ -14,7 +14,13 @@ extension ExplorerOutlineController {
         }
         guard let draft else { return }
         discardNameEditing()
-        reloadRows(of: draft.folder)
+        // Without animation: the first row of an expanded folder that had
+        // none slides in through a temporary clip view, and taking it out
+        // when the slide ends would end the field's edit with no name.
+        NSAnimationContext.runAnimationGroup { context in
+            context.duration = 0
+            reloadRows(of: draft.folder)
+        }
         // After this update pass: the row must exist before its field can
         // take focus.
         DispatchQueue.main.async { [weak self] in self?.beginDraftEditing(draft) }

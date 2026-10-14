@@ -138,6 +138,32 @@ final class ExplorerDraftTests: ExplorerOperationTestCase {
         XCTAssertEqual(field.currentEditor()?.string, "typed")
     }
 
+    /// On screen, the first row of an expanded folder that had none slides
+    /// in through a temporary clip view, and taking it out of that view
+    /// when the slide ends ends the field's edit — an empty name, so the
+    /// draft was gone at once. AppKit runs no row animation off screen,
+    /// so this records the duration the folder's re-expansion would get.
+    func testTheDraftRowOfAnEmptyFolderIsNotAnimatedIn() async throws {
+        let tree = try TempTree(); defer { tree.remove() }
+        try tree.dir("empty")
+        let (controller, outline, viewModel) = await windowed(tree)
+        await viewModel.expand(tree.path("empty")).value
+        sync(controller, viewModel)
+        let durations = DurationLog()
+        let observer = NotificationCenter.default.addObserver(
+            forName: NSOutlineView.itemDidExpandNotification, object: outline, queue: nil
+        ) { _ in
+            MainActor.assumeIsolated { durations.values.append(NSAnimationContext.current.duration) }
+        }
+        defer { NotificationCenter.default.removeObserver(observer) }
+
+        await startDraft(.file, in: tree.path("empty"), controller, viewModel)
+
+        XCTAssertFalse(durations.values.isEmpty)
+        XCTAssertEqual(Set(durations.values), [0])
+        XCTAssertEqual(controller.nameEditor?.purpose, .create)
+    }
+
     func testASecondRequestReplacesTheFirstDraft() async throws {
         let tree = try TempTree(); defer { tree.remove() }
         try tree.dir("src")
@@ -193,6 +219,10 @@ final class ExplorerDraftTests: ExplorerOperationTestCase {
         XCTAssertNil(viewModel.draft)
         XCTAssertNil(controller.nameEditor)
     }
+}
+
+private final class DurationLog: @unchecked Sendable {
+    var values: [TimeInterval] = []
 }
 
 @MainActor
