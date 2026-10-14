@@ -19,6 +19,12 @@ public enum FileOperationFailure: Error, Equatable, Sendable, LocalizedError {
     case changedSince(String)
     /// An undo or redo could not find the item in the Trash any more.
     case notInTrash(String)
+    /// A move to another disk whose copy did not match the original, so
+    /// the copy was removed and the original left alone.
+    case copyIncomplete(String)
+    /// A move to another disk copied the item, but its original could not
+    /// go to the Trash: both remain.
+    case originalKept(String)
     case underlying(path: String, message: String)
 
     public var errorDescription: String? {
@@ -35,6 +41,10 @@ public enum FileOperationFailure: Error, Equatable, Sendable, LocalizedError {
         case .noTrash(let path): return "“\(Self.name(path))” can’t be moved to the Trash on this disk."
         case .changedSince(let path): return "“\(Self.name(path))” changed since, so it was left as it is."
         case .notInTrash(let path): return "“\(Self.name(path))” is no longer in the Trash."
+        case .copyIncomplete(let path):
+            return "“\(Self.name(path))” couldn’t be copied completely, so it was left where it was."
+        case .originalKept(let path):
+            return "“\(Self.name(path))” was copied, but the original couldn’t be moved to the Trash, so it is still there too."
         case let .underlying(path, message): return "Couldn’t change “\(Self.name(path))”: \(message)"
         }
     }
@@ -109,17 +119,24 @@ public struct FileOperationRecord: Equatable, Sendable {
     public let kind: FileOperationKind
     public let steps: [FileOperationStep]
     public let resultPaths: [String]
+    /// The only places outside the root its undo and redo may touch: where
+    /// a move from Finder took items from. Empty for everything else, so a
+    /// record naming any other outside path is refused.
+    public let outsidePaths: Set<String>
 
-    public init(kind: FileOperationKind, steps: [FileOperationStep], resultPaths: [String]) {
+    public init(
+        kind: FileOperationKind, steps: [FileOperationStep], resultPaths: [String], outsidePaths: Set<String> = []
+    ) {
         self.kind = kind
         self.steps = steps
         self.resultPaths = resultPaths
+        self.outsidePaths = outsidePaths
     }
 
     /// The same change under another name: a copy or move the user made by
     /// pasting is "Undo Paste".
     public func named(_ kind: FileOperationKind) -> FileOperationRecord {
-        FileOperationRecord(kind: kind, steps: steps, resultPaths: resultPaths)
+        FileOperationRecord(kind: kind, steps: steps, resultPaths: resultPaths, outsidePaths: outsidePaths)
     }
 }
 
@@ -141,9 +158,11 @@ public struct FileOperationOutcome: Equatable, Sendable {
     }
 
     static func make(_ kind: FileOperationKind, steps: [FileOperationStep], results: [String],
-                     failures: [FileOperationFailure]) -> FileOperationOutcome {
+                     failures: [FileOperationFailure], outsidePaths: Set<String> = []) -> FileOperationOutcome {
         FileOperationOutcome(
-            record: steps.isEmpty ? nil : FileOperationRecord(kind: kind, steps: steps, resultPaths: results),
+            record: steps.isEmpty ? nil : FileOperationRecord(
+                kind: kind, steps: steps, resultPaths: results, outsidePaths: outsidePaths
+            ),
             failures: failures
         )
     }

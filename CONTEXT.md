@@ -35,6 +35,13 @@ The question a paste, drop or move asks when a name already exists in the
 destination: Replace, Keep Both, or Skip, optionally for all items.
 _Avoid_: overwrite dialog, conflict dialog
 
+**Transfer**:
+A paste or drop that copies more than about 50 MB or 200 items. It copies
+out of sight first, showing a progress row with Cancel in the EXPLORER,
+then puts everything in place as one undo step; cancelled or failed, it
+leaves nothing behind and records nothing.
+_Avoid_: copy job, background copy, progress task
+
 ### Git
 
 **Git Status Decoration**:

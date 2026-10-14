@@ -1,9 +1,11 @@
 import AppKit
 
 /// Fork-only: explorer operations. Dragging rows onto a folder moves them
-/// there; ⌥ copies. A file row stands for its folder, which is what
-/// highlights; the space below the rows is the root. Hovering a collapsed
-/// folder springs it open (AppKit's own outline behaviour).
+/// there; ⌥ copies. Items from Finder or another app copy; ⌘ moves. A
+/// file row stands for its folder, which is what highlights; the space
+/// below the rows is the root. Hovering a collapsed folder springs it open
+/// (AppKit's own outline behaviour). Rows dragged out to Finder are file
+/// URLs; Finder applies its own rules and nothing here deletes a source.
 extension ExplorerOutlineController {
     public func outlineView(
         _ outlineView: NSOutlineView, validateDrop info: any NSDraggingInfo,
@@ -65,6 +67,6 @@ extension ExplorerOutlineController {
         let urls = info.draggingPasteboard.readObjects(
             forClasses: [NSURL.self], options: [.urlReadingFileURLsOnly: true]
         )
-        return (urls as? [URL])?.map(\.path) ?? []
+        return (urls as? [URL])?.map { ExplorerDrop.canonical($0.path) } ?? []
     }
 }

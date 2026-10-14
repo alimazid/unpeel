@@ -26,7 +26,13 @@ in the ways Finder would:
   through the Operation History of its Explorer Root.
 - **Confined.** Writes stay inside the Explorer Root, never inside `.git`,
   never on the root itself, and never overwrite a destination that appeared
-  after the check (agents write concurrently).
+  after the check (agents write concurrently). One exception (cut 2,
+  2026-10-14): a ⌘-drop from Finder moves items in from outside the root,
+  so it takes them from where they were, and its undo puts them back to
+  exactly there — the record names those outside paths, and an undo or
+  redo touches no other path outside the root. A move from another volume
+  copies, checks the copy against the original, and only then moves the
+  original to the Trash; it is never deleted.
 - **No editing.** File contents are still never edited in Unpeel; New File
   creates an empty file and does not open it.
 

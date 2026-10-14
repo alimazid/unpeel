@@ -22,17 +22,22 @@ public struct ExplorerServices: Sendable {
     public let repositories: GitRepositoryHub?
     /// Fork-only: explorer operations. The File Operations for a root.
     public let makeOperations: MakeOperations
+    /// Fork-only: explorer operations. A paste or drop copying more than
+    /// this runs as a Transfer, with a progress row and Cancel.
+    public let largeTransfer: TransferSize
 
     public init(
         scan: @escaping Scan,
         makeWatcher: @escaping MakeWatcher,
         repositories: GitRepositoryHub? = nil,
-        makeOperations: @escaping MakeOperations = { FileOperations(root: $0) }
+        makeOperations: @escaping MakeOperations = { FileOperations(root: $0) },
+        largeTransfer: TransferSize = .largeTransfer
     ) {
         self.scan = scan
         self.makeWatcher = makeWatcher
         self.repositories = repositories
         self.makeOperations = makeOperations
+        self.largeTransfer = largeTransfer
     }
 
     @MainActor public static var live: ExplorerServices {
@@ -71,6 +76,9 @@ public final class ExplorerViewModel: ObservableObject {
     /// Fork-only: explorer operations. The New File… / New Folder… waiting
     /// for its name (see `ExplorerViewModel+Draft`).
     @Published public internal(set) var draft: ExplorerDraft?
+    /// Fork-only: explorer operations. Large pastes and drops still copying,
+    /// for every root (see `ExplorerViewModel+Transfers`).
+    @Published public internal(set) var transfers: [ExplorerTransfer] = []
 
     static let logger = Logger(subsystem: "com.unpeel.explorer", category: "viewmodel")
 

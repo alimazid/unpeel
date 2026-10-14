@@ -49,6 +49,9 @@ public struct ExplorerPanelView: View {
             if let failure = viewModel.operationMessage {
                 operationStrip(failure)
             }
+            ForEach(viewModel.visibleTransfers) { transfer in
+                ExplorerTransferRow(transfer: transfer, palette: palette)
+            }
             if let message = Self.message(for: viewModel.context, rootError: viewModel.rootError) {
                 emptyState(message)
             } else {

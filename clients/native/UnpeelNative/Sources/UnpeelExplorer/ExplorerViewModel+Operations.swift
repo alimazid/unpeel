@@ -23,20 +23,23 @@ extension ExplorerViewModel {
     }
 
     /// `kind` names the history step when it is not a plain Move (a paste).
+    /// A move to another volume that copies a lot runs as a Transfer.
     @discardableResult
     public func move(
         _ paths: [String], into folder: String, resolutions: [String: CollisionResolution] = [:],
         as kind: FileOperationKind? = nil
     ) -> Task<Void, Never> {
-        record { $0.move(paths, into: folder, resolutions: resolutions).named(kind) }
+        transfer(paths, into: folder, kind: .move, resolutions: resolutions, named: kind)
     }
 
+    /// A copy over `ExplorerServices.largeTransfer` runs as a Transfer: the
+    /// returned task ends when it has been put in place or given up.
     @discardableResult
     public func copy(
         _ paths: [String], into folder: String, resolutions: [String: CollisionResolution] = [:],
         as kind: FileOperationKind? = nil
     ) -> Task<Void, Never> {
-        record { $0.copy(paths, into: folder, resolutions: resolutions).named(kind) }
+        transfer(paths, into: folder, kind: .copy, resolutions: resolutions, named: kind)
     }
 
     /// Which of `paths` already have a namesake in `folder` and so need the
@@ -108,18 +111,19 @@ extension ExplorerViewModel {
     ) -> Task<Void, Never> {
         enqueue(selectingWhenEmpty: fallback) { root, operations in
             let outcome = await Self.detached { work(operations) }
-            if let record = outcome.record {
-                self.histories[root] = (self.histories[root] ?? OperationHistory()).recording(record)
-            }
+            self.push(outcome.record, root: root)
             return outcome
         }
     }
 
+    func push(_ record: FileOperationRecord?, root: String) {
+        guard let record else { return }
+        histories[root] = (histories[root] ?? OperationHistory()).recording(record)
+    }
+
     /// Runs `body` after every operation asked for before it, against the
-    /// root shown when it was asked for. The history is updated even if the
-    /// root changed meanwhile — the files did change — but the result is
-    /// only shown while that root still is.
-    private func enqueue(
+    /// root shown when it was asked for.
+    func enqueue(
         selectingWhenEmpty fallback: [String] = [],
         _ body: @escaping @MainActor (String, FileOperations) async -> FileOperationOutcome?
     ) -> Task<Void, Never> {
@@ -128,6 +132,17 @@ extension ExplorerViewModel {
             operationMessage = ExplorerError.rootUnavailable(root).localizedDescription
             return Task {}
         }
+        return enqueue(root: root, operations: operations, selectingWhenEmpty: fallback, body)
+    }
+
+    /// Runs `body` against `root` after every operation asked for before
+    /// it. The history is updated even if the root changed meanwhile — the
+    /// files did change — but the result is only shown while that root
+    /// still is.
+    func enqueue(
+        root: String, operations: FileOperations, selectingWhenEmpty fallback: [String] = [],
+        _ body: @escaping @MainActor (String, FileOperations) async -> FileOperationOutcome?
+    ) -> Task<Void, Never> {
         let current = generation
         let previous = operationTail
         let task = Task { @MainActor in
@@ -139,9 +154,7 @@ extension ExplorerViewModel {
         return task
     }
 
-    private static func detached(
-        _ work: @escaping @Sendable () -> FileOperationOutcome
-    ) async -> FileOperationOutcome {
+    static func detached<Value: Sendable>(_ work: @escaping @Sendable () -> Value) async -> Value {
         await Task.detached(priority: .userInitiated) { work() }.value
     }
 

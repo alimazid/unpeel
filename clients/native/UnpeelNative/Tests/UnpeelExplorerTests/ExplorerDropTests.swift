@@ -37,8 +37,32 @@ final class ExplorerDropRuleTests: XCTestCase {
         XCTAssertEqual(ExplorerDrop.operation(sources: ["/r/a"], into: "/r/dest", sourceMask: [], isInternal: true), [])
     }
 
-    func testDragsFromOutsideTheTreeAreNotAcceptedYet() {
-        XCTAssertEqual(ExplorerDrop.operation(sources: ["/x/a"], into: "/r", sourceMask: all, isInternal: false), [])
+    /// Finder offers every operation; ⌘ narrows it to generic, ⌥ to copy,
+    /// ⌃ to link.
+    func testItemsFromOutsideCopyAndCommandMoves() {
+        let every = NSDragOperation.every
+        XCTAssertEqual(ExplorerDrop.operation(sources: ["/x/a"], into: "/r", sourceMask: every, isInternal: false), .copy)
+        XCTAssertEqual(ExplorerDrop.operation(sources: ["/x/a"], into: "/r", sourceMask: .copy, isInternal: false), .copy)
+        XCTAssertEqual(ExplorerDrop.operation(sources: ["/x/a"], into: "/r", sourceMask: .generic, isInternal: false), .move)
+        XCTAssertEqual(ExplorerDrop.operation(sources: ["/x/a"], into: "/r", sourceMask: .link, isInternal: false), [])
+        XCTAssertEqual(ExplorerDrop.operation(sources: ["/x/a"], into: "/r", sourceMask: [], isInternal: false), [])
+    }
+
+    func testItemsFromOutsideFollowTheSameRefusals() {
+        XCTAssertEqual(ExplorerDrop.operation(sources: ["/r"], into: "/r/a", sourceMask: .every, isInternal: false), [])
+        XCTAssertEqual(ExplorerDrop.operation(sources: ["/"], into: "/r", sourceMask: .every, isInternal: false), [])
+        XCTAssertEqual(ExplorerDrop.operation(sources: ["/r/a"], into: "/r", sourceMask: .generic, isInternal: false), [])
+        XCTAssertEqual(ExplorerDrop.operation(sources: ["/r/a"], into: "/r", sourceMask: .every, isInternal: false), .copy)
+    }
+
+    func testDraggedPathsAreCanonical() throws {
+        let tree = try TempTree(); defer { tree.remove() }
+        try tree.file("a.txt")
+        let viaVar = tree.root.replacingOccurrences(of: "/private/var/", with: "/var/")
+        XCTAssertNotEqual(viaVar, tree.root)
+
+        XCTAssertEqual(ExplorerDrop.canonical(viaVar + "/a.txt"), tree.path("a.txt"))
+        XCTAssertEqual(ExplorerDrop.canonical(tree.root + "/./a.txt"), tree.path("a.txt"))
     }
 }
 
@@ -136,19 +160,6 @@ final class ExplorerDropTests: ExplorerOperationTestCase {
         XCTAssertTrue(tree.isDirectory("a/b"))
     }
 
-    func testDragsFromElsewhereAreRefusedInThisCut() async throws {
-        let tree = try TempTree(); defer { tree.remove() }
-        let finder = try TempTree(); defer { finder.remove() }
-        try finder.file("x.txt"); try tree.dir("dest")
-        let viewModel = await opened(tree)
-        let (controller, outline) = attach(viewModel)
-        let info = drag([finder.path("x.txt")], from: nil)
-
-        XCTAssertEqual(
-            controller.outlineView(outline, validateDrop: info, proposedItem: controller.items[tree.path("dest")], proposedChildIndex: -1),
-            []
-        )
-    }
 
     func testReloadsWaitWhileADragIsOverTheTree() async throws {
         let tree = try TempTree(); defer { tree.remove() }

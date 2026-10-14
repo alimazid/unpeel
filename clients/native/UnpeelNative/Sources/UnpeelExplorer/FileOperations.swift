@@ -1,5 +1,6 @@
 import Darwin
 import Foundation
+import os
 
 /// Every write the EXPLORER makes, confined to one Explorer Root (ADR
 /// 0002). Synchronous and free of shared state, so a caller can run it off
@@ -16,11 +17,15 @@ import Foundation
 public struct FileOperations: Sendable {
     public let root: String
     let trasher: any Trasher
+    let copier: any ItemCopier
 
-    public init?(root: String, trasher: any Trasher = SystemTrasher()) {
+    static let logger = Logger(subsystem: "com.unpeel.explorer", category: "operations")
+
+    public init?(root: String, trasher: any Trasher = SystemTrasher(), copier: any ItemCopier = SystemCopier()) {
         guard let resolved = CanonicalPath.resolve(root) else { return nil }
         self.root = resolved
         self.trasher = trasher
+        self.copier = copier
     }
 
     // MARK: - Create
@@ -246,6 +251,11 @@ public struct FileOperations: Sendable {
 
     static func parent(of path: String) -> String {
         (path as NSString).deletingLastPathComponent
+    }
+
+    /// Whether `path` is `folder` or inside it.
+    static func contains(_ folder: String, _ path: String) -> Bool {
+        path == folder || path.hasPrefix(folder == "/" ? "/" : folder + "/")
     }
 
     /// The paths not inside another one of `paths`, in their original order.

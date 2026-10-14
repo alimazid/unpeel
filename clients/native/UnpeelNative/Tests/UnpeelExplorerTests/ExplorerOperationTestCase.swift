@@ -64,7 +64,10 @@ class ExplorerOperationTestCase: ExplorerViewModelTestCase {
         await withCheckedContinuation { continuation in DispatchQueue.main.async { continuation.resume() } }
     }
 
-    func operationServices(trasher: (any Trasher)? = nil, delay: [String: TimeInterval] = [:]) -> ExplorerServices {
+    func operationServices(
+        trasher: (any Trasher)? = nil, delay: [String: TimeInterval] = [:],
+        copier: any ItemCopier = SystemCopier(), largeTransfer: TransferSize = .largeTransfer
+    ) -> ExplorerServices {
         let trasher = trasher ?? trash!
         return ExplorerServices(
             scan: { directory, root in
@@ -72,14 +75,17 @@ class ExplorerOperationTestCase: ExplorerViewModelTestCase {
                 return try DirectoryScanner(ignore: NoIgnoreChecker()).scan(directory: directory, root: root)
             },
             makeWatcher: { _, _ in nil },
-            makeOperations: { FileOperations(root: $0, trasher: trasher) }
+            makeOperations: { FileOperations(root: $0, trasher: trasher, copier: copier) },
+            largeTransfer: largeTransfer
         )
     }
 
     func opened(
-        _ tree: TempTree, trasher: (any Trasher)? = nil, delay: [String: TimeInterval] = [:]
+        _ tree: TempTree, trasher: (any Trasher)? = nil, delay: [String: TimeInterval] = [:],
+        copier: any ItemCopier = SystemCopier(), largeTransfer: TransferSize = .largeTransfer
     ) async -> ExplorerViewModel {
-        let viewModel = makeViewModel(operationServices(trasher: trasher, delay: delay))
+        let services = operationServices(trasher: trasher, delay: delay, copier: copier, largeTransfer: largeTransfer)
+        let viewModel = makeViewModel(services)
         await viewModel.setContext(local(tree)).value
         return viewModel
     }
