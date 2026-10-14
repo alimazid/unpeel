@@ -22,9 +22,16 @@ final class ExplorerRowCellView: NSTableCellView {
         didSet { applyTextColor() }
     }
 
+    /// Fork-only: explorer operations. While the label is a name field it
+    /// draws its own white background, so its text is the text colour
+    /// whatever fill the row has.
+    var isEditingName = false {
+        didSet { applyTextColor() }
+    }
+
     private func applyTextColor() {
         let color = backgroundStyle == .emphasized ? .alternateSelectedControlTextColor : restingTextColor
-        textField?.textColor = color
+        textField?.textColor = isEditingName ? .textColor : color
         decorationField?.textColor = color
     }
 }

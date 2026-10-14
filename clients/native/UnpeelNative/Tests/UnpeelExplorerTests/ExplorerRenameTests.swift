@@ -21,6 +21,22 @@ final class ExplorerRenameTests: ExplorerOperationTestCase {
         XCTAssertEqual(field.currentEditor()?.selectedRange, NSRange(location: 0, length: 11))
     }
 
+    func testTheFieldTextIsTheTextColourOnASelectedRow() async throws {
+        let tree = try TempTree(); defer { tree.remove() }
+        try tree.file("a.txt")
+        let (controller, _, _) = await windowed(tree)
+        XCTAssertTrue(controller.beginRename(tree.path("a.txt")))
+        let field = try XCTUnwrap(controller.nameEditor?.field)
+        let cell = try XCTUnwrap(field.superview as? ExplorerRowCellView)
+
+        // The row is drawn with the accent fill while the field is open.
+        cell.backgroundStyle = .emphasized
+        XCTAssertEqual(field.textColor, .textColor, "never the white meant for the accent fill, on a white field")
+
+        press(escapeKey, in: controller)
+        XCTAssertEqual(field.textColor, .alternateSelectedControlTextColor)
+    }
+
     func testTheDefaultSelectionFollowsVSCode() {
         XCTAssertEqual(ExplorerNameEditor.defaultSelection(for: "a.txt"), NSRange(location: 0, length: 1))
         XCTAssertEqual(ExplorerNameEditor.defaultSelection(for: ".env"), NSRange(location: 0, length: 4))

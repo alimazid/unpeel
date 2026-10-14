@@ -47,6 +47,7 @@ final class ExplorerNameEditor: NSObject, NSTextFieldDelegate {
         field.isBordered = true
         field.drawsBackground = true
         field.backgroundColor = .textBackgroundColor
+        (field.superview as? ExplorerRowCellView)?.isEditingName = true
         field.usesSingleLineMode = true
         field.cell?.isScrollable = true
         field.cell?.wraps = false
@@ -157,6 +158,7 @@ final class ExplorerNameEditor: NSObject, NSTextFieldDelegate {
         field.isSelectable = false
         field.isBordered = false
         field.drawsBackground = false
+        (field.superview as? ExplorerRowCellView)?.isEditingName = false
         field.cell?.isScrollable = false
         field.cell?.wraps = false
         field.lineBreakMode = .byTruncatingMiddle
