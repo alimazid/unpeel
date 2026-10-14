@@ -57,6 +57,10 @@ public final class ExplorerViewModel: ObservableObject {
     /// scroll in those states, and the next successful open bumps it anyway.
     @Published public private(set) var restoreToken = 0
     public var scrollOffset: Double = 0
+    /// Fork-only: explorer operations. Bumped with every selection that
+    /// reveals (an operation's result, a reveal from elsewhere), so the
+    /// outline scrolls that selection into view; a click never does.
+    @Published public internal(set) var revealToken = 0
     /// Fork-only: git support. The current root's Git Status Decorations
     /// (see `ExplorerViewModel+Decorations`).
     @Published public internal(set) var decorations: GitDecorations = .none
@@ -451,7 +455,10 @@ public final class ExplorerViewModel: ObservableObject {
         }
         return Task {
             for ancestor in ancestors { await self.expand(ancestor).value }
-            if self.model?.entry(at: resolved) != nil { self.selection = [resolved] }
+            if self.model?.entry(at: resolved) != nil {
+                self.revealToken += 1
+                self.selection = [resolved]
+            }
         }
     }
 

@@ -203,10 +203,21 @@ final class ExplorerNameMessageView: NSView {
         let anchor = field.convert(field.bounds, to: host)
         let width = max(anchor.width, 160)
         label.preferredMaxLayoutWidth = width - 12
-        let height = label.intrinsicContentSize.height + 8
-        let y = host.isFlipped ? anchor.maxY : anchor.minY - height
-        frame = NSRect(x: anchor.minX, y: y, width: width, height: height)
+        let size = NSSize(width: width, height: label.intrinsicContentSize.height + 8)
+        frame = Self.placement(of: size, around: anchor, within: host.visibleRect, flipped: host.isFlipped)
         if superview !== host { host.addSubview(self) }
+    }
+
+    /// Under the field, or over it when the visible part of the tree has
+    /// no room below — as VS Code's context view flips — so the last
+    /// visible row's message is not clipped.
+    static func placement(of size: NSSize, around anchor: NSRect, within visible: NSRect, flipped: Bool) -> NSRect {
+        let below = flipped ? anchor.maxY : anchor.minY - size.height
+        let above = flipped ? anchor.minY - size.height : anchor.maxY
+        let fitsBelow = flipped ? below + size.height <= visible.maxY : below >= visible.minY
+        let fitsAbove = flipped ? above >= visible.minY : above + size.height <= visible.maxY
+        let y = fitsBelow || !fitsAbove ? below : above
+        return NSRect(x: anchor.minX, y: y, width: size.width, height: size.height)
     }
 
     func hide() {

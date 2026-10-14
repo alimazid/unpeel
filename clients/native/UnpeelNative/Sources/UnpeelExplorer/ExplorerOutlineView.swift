@@ -106,6 +106,8 @@ struct ExplorerOutlineView: NSViewRepresentable {
             decorations: viewModel.decorations, draft: viewModel.draft
         )
         controller.applyRestoredScrollIfNeeded()
+        // Fork-only: explorer operations.
+        controller.applyRevealIfNeeded()
     }
 
     static func dismantleNSView(_: NSScrollView, coordinator: Coordinator) {

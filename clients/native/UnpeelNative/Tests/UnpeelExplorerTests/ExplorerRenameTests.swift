@@ -88,6 +88,42 @@ final class ExplorerRenameTests: ExplorerOperationTestCase {
         XCTAssertTrue(outline.subviews.allSatisfy { !($0 is ExplorerNameMessageView) }, "the bubble goes with the field")
     }
 
+    func testTheBubbleOfTheLastVisibleRowOpensAboveIt() async throws {
+        let tree = try TempTree(); defer { tree.remove() }
+        for index in 0..<40 { try tree.file(String(format: "f%02d.txt", index)) }
+        let (controller, outline, _) = await windowed(tree)
+        let visible = outline.visibleRect
+        let lastVisible = try XCTUnwrap((0..<outline.numberOfRows).last { outline.rect(ofRow: $0).maxY <= visible.maxY })
+        let path = try XCTUnwrap((outline.item(atRow: lastVisible) as? ExplorerItem)?.path)
+        XCTAssertTrue(controller.beginRename(path))
+
+        type("f00.txt", into: controller)
+
+        let bubble = try XCTUnwrap(outline.subviews.compactMap { $0 as? ExplorerNameMessageView }.first)
+        XCTAssertTrue(outline.visibleRect.contains(bubble.frame), "\(bubble.frame) is clipped by \(outline.visibleRect)")
+        let field = try XCTUnwrap(controller.nameEditor?.field)
+        XCTAssertEqual(bubble.frame.maxY, field.convert(field.bounds, to: outline).minY, "above the field")
+        press(escapeKey, in: controller)
+    }
+
+    func testTheBubbleOpensBelowTheRowWhenThereIsRoom() {
+        let anchor = NSRect(x: 20, y: 100, width: 200, height: 22)
+        let visible = NSRect(x: 0, y: 0, width: 300, height: 400)
+        let size = NSSize(width: 200, height: 40)
+
+        let below = ExplorerNameMessageView.placement(of: size, around: anchor, within: visible, flipped: true)
+        XCTAssertEqual(below, NSRect(x: 20, y: 122, width: 200, height: 40))
+        let above = ExplorerNameMessageView.placement(
+            of: size, around: anchor.offsetBy(dx: 0, dy: 260), within: visible, flipped: true
+        )
+        XCTAssertEqual(above, NSRect(x: 20, y: 320, width: 200, height: 40))
+        let tooShort = ExplorerNameMessageView.placement(
+            of: size, around: anchor.offsetBy(dx: 0, dy: -90), within: NSRect(x: 0, y: 0, width: 300, height: 50),
+            flipped: true
+        )
+        XCTAssertEqual(tooShort.minY, 32, "below when it fits neither way")
+    }
+
     func testAWhitespaceWarningDoesNotBlock() async throws {
         let tree = try TempTree(); defer { tree.remove() }
         try tree.file("a.txt")
@@ -166,6 +202,29 @@ final class ExplorerRenameTests: ExplorerOperationTestCase {
         XCTAssertEqual(tree.names("p/f"), ["a.txt"])
         press(escapeKey, in: controller)
         XCTAssertEqual(controller.children(of: tree.path("p")).map(\.path), [tree.path("p/f"), tree.path("p/agent.txt")])
+    }
+
+    func testAHeldBackReloadKeepsTheSelectionAndExpansion() async throws {
+        let tree = try TempTree(); defer { tree.remove() }
+        try tree.file("p/a.txt"); try tree.file("p/sub/x.txt")
+        let (controller, outline, viewModel) = await windowed(tree)
+        await viewModel.expand(tree.path("p")).value
+        await viewModel.expand(tree.path("p/sub")).value
+        sync(controller, viewModel)
+        XCTAssertTrue(controller.beginRename(tree.path("p/a.txt")))
+        type("typ", into: controller)
+
+        try tree.file("p/agent.txt")
+        await viewModel.refresh().value
+        sync(controller, viewModel)
+        press(escapeKey, in: controller)
+        await settle(controller, viewModel)
+
+        XCTAssertEqual(controller.children(of: tree.path("p")).map(\.path).last, tree.path("p/agent.txt"))
+        XCTAssertEqual(viewModel.selection, [tree.path("p/a.txt")])
+        XCTAssertEqual(outline.selectedRowIndexes.compactMap { (outline.item(atRow: $0) as? ExplorerItem)?.path }, [tree.path("p/a.txt")])
+        XCTAssertEqual(viewModel.model?.expanded, [tree.path("p"), tree.path("p/sub")])
+        XCTAssertTrue(outline.isItemExpanded(controller.items[tree.path("p/sub")]))
     }
 
     func testARenameStartedWhileADraftIsOpenSurvivesTheDraftGoing() async throws {

@@ -27,6 +27,24 @@ final class ExplorerClipboardTests: ExplorerOperationTestCase {
         XCTAssertEqual(viewModel.undoActionTitle, "Undo Paste")
     }
 
+    func testAPastedItemBelowTheVisibleRowsIsScrolledIntoView() async throws {
+        let tree = try TempTree(); defer { tree.remove() }
+        for index in 0..<40 { try tree.file(String(format: "f%02d.txt", index)) }
+        let other = try TempTree(); defer { other.remove() }
+        try other.file("zz.txt")
+        let (controller, outline, viewModel) = await windowed(tree)
+        XCTAssertEqual(outline.visibleRect.minY, 0)
+        pasteboard.clearContents()
+        pasteboard.writeObjects([NSURL(fileURLWithPath: other.path("zz.txt"))])
+
+        controller.perform(.paste, on: [])
+        await settle(controller, viewModel)
+
+        let row = try XCTUnwrap(controller.items[tree.path("zz.txt")].map { outline.row(forItem: $0) })
+        XCTAssertEqual(viewModel.selection, [tree.path("zz.txt")])
+        XCTAssertTrue(outline.visibleRect.contains(outline.rect(ofRow: row)), "the pasted row is scrolled into view")
+    }
+
     func testFilesCopiedElsewhereArePastedAsCopies() async throws {
         let tree = try TempTree(); defer { tree.remove() }
         let finder = try TempTree(); defer { finder.remove() }

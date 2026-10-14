@@ -101,6 +101,7 @@ class ExplorerOperationTestCase: ExplorerViewModelTestCase {
             model: viewModel.model, filter: viewModel.filter, selection: viewModel.selection,
             decorations: viewModel.decorations, draft: viewModel.draft
         )
+        controller.applyRevealIfNeeded()
     }
 
     /// Waits for every operation asked for so far, then syncs the outline.

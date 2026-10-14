@@ -199,6 +199,7 @@ extension ExplorerViewModel {
             await expand(folder).value
         }
         guard current == generation, let model else { return }
+        revealToken += 1
         selection = paths.filter { model.entry(at: $0) != nil }
     }
 

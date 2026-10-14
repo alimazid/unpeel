@@ -71,11 +71,15 @@ extension ExplorerOutlineController {
     func endNameEditing() {
         nameEditor = nil
         nameEditingFolder = nil
+        flushHeldReloads()
+    }
+
+    /// Lets every held-back reload through, shallowest first.
+    func flushHeldReloads() {
         let held = deferredReloads
         deferredReloads = []
-        for folder in held.sorted(by: { ExplorerPaths.depth($0) < ExplorerPaths.depth($1) }) {
-            reloadRows(of: folder)
-        }
+        guard !held.isEmpty else { return }
+        reloadHeldBack(held.sorted { ExplorerPaths.depth($0) < ExplorerPaths.depth($1) })
     }
 
     /// Whether `name` in `folder` is another item than `excluding` — the

@@ -94,6 +94,19 @@ final class ExplorerOperationsTests: ExplorerOperationTestCase {
         XCTAssertEqual(viewModel.selection, [tree.path("a.txt")])
     }
 
+    func testEveryRevealAsksForAScrollAndAClickDoesNot() async throws {
+        let tree = try TempTree(); defer { tree.remove() }
+        try tree.file("src/a.txt"); try tree.file("b.txt")
+        let viewModel = await opened(tree)
+
+        await viewModel.createFile("c.txt", in: tree.root).value
+        XCTAssertEqual(viewModel.revealToken, 1)
+        await viewModel.reveal(tree.path("src/a.txt")).value
+        XCTAssertEqual(viewModel.revealToken, 2)
+        viewModel.selection = [tree.path("b.txt")]
+        XCTAssertEqual(viewModel.revealToken, 2)
+    }
+
     func testTheWatchersOwnBatchAfterAnOperationChangesNothing() async throws {
         let tree = try TempTree(); defer { tree.remove() }
         try tree.file("src/a.txt")

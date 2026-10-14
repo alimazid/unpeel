@@ -75,6 +75,8 @@ public final class ExplorerOutlineController: NSObject,
     /// Fork-only: git support.
     private var appliedDecorations = GitDecorations.none
     private var appliedRestoreToken = 0
+    /// Fork-only: explorer operations.
+    private var appliedRevealToken: Int
     /// True while this controller changes the outline view itself, so its
     /// delegate callbacks are not echoed back into the view model.
     private var isApplying = false
@@ -105,6 +107,7 @@ public final class ExplorerOutlineController: NSObject,
     public init(viewModel: ExplorerViewModel, palette: ExplorerPalette) {
         self.viewModel = viewModel
         self.palette = palette
+        appliedRevealToken = viewModel.revealToken
         super.init()
         toggleQuickLookHook = { [weak self] in self?.outlineView?.toggleQuickLook() }
         showQuickLookHook = { [weak self] in self?.outlineView?.showQuickLook() }
@@ -207,6 +210,20 @@ public final class ExplorerOutlineController: NSObject,
         }
     }
 
+    /// Fork-only: explorer operations. The reloads held back while a field
+    /// was open, run once it closes — outside an update pass, so the
+    /// selection AppKit drops on the reload is not published as the user's
+    /// and the view model's selection and expansion are put back.
+    func reloadHeldBack(_ folders: [String]) {
+        let wasApplying = isApplying
+        isApplying = true
+        defer { isApplying = wasApplying }
+        for folder in folders { reloadRows(of: folder) }
+        guard !wasApplying, let applied else { return }
+        syncExpansion(applied)
+        syncSelection(viewModel.selection)
+    }
+
     func reloadRows(of directory: String) {
         childCache[directory] = nil
         if directory == applied?.root {
@@ -237,6 +254,16 @@ public final class ExplorerOutlineController: NSObject,
         appliedRestoreToken = viewModel.restoreToken
         clipView.scroll(to: NSPoint(x: 0, y: viewModel.scrollOffset))
         outlineView?.enclosingScrollView?.reflectScrolledClipView(clipView)
+    }
+
+    /// Fork-only: explorer operations. Scrolls the revealed selection's
+    /// first row into view, once per reveal.
+    public func applyRevealIfNeeded() {
+        guard viewModel.revealToken != appliedRevealToken, let outlineView else { return }
+        appliedRevealToken = viewModel.revealToken
+        let rows = viewModel.selection.compactMap { items[$0] }.map { outlineView.row(forItem: $0) }.filter { $0 >= 0 }
+        guard let first = rows.min() else { return }
+        outlineView.scrollRowToVisible(first)
     }
 
     public func noteScrolled(to offset: Double) {
