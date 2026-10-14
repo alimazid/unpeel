@@ -127,6 +127,7 @@ public final class ExplorerOutlineController: NSObject,
         outlineView.previewPaths = { [weak self] in self?.previewPaths() ?? [] }
         // Fork-only: explorer operations.
         outlineView.editTarget = self
+        outlineView.dropHoverEnded = { [weak self] in self?.endDropHover() }
         appActivation = NotificationCenter.default.addObserver(
             forName: NSApplication.didBecomeActiveNotification, object: nil, queue: .main
         ) { [weak self] _ in
@@ -201,9 +202,12 @@ public final class ExplorerOutlineController: NSObject,
 
     /// Fork-only: explorer operations. Reloading the edited folder or any
     /// folder above it rebuilds the edited row and ends the edit, so those
-    /// wait until the field closes.
+    /// wait until the field closes; while a drag is over the tree, every
+    /// reload waits for it to leave.
     func reloadRowsUnlessEditing(_ directory: String) {
-        if let editing = nameEditingFolder, editing == directory || editing.hasPrefix(directory + "/") {
+        if outlineView?.isDropTarget == true {
+            deferredReloads.insert(directory)
+        } else if let editing = nameEditingFolder, editing == directory || editing.hasPrefix(directory + "/") {
             deferredReloads.insert(directory)
         } else {
             reloadRows(of: directory)

@@ -150,6 +150,37 @@ final class ExplorerDropTests: ExplorerOperationTestCase {
         )
     }
 
+    func testReloadsWaitWhileADragIsOverTheTree() async throws {
+        let tree = try TempTree(); defer { tree.remove() }
+        try tree.file("p/sub/x.txt"); try tree.file("p/y.txt"); try tree.file("a.txt")
+        let (controller, outline, viewModel) = await windowed(tree)
+        let p = try XCTUnwrap(controller.items[tree.path("p")])
+        outline.isDropTarget = true
+
+        // AppKit springs a never-listed folder open under the drag; it
+        // finishes loading and an agent writes a file meanwhile.
+        outline.expandItem(p)
+        sync(controller, viewModel)
+        await waitUntil { self.names(viewModel, tree.path("p")) == ["sub", "y.txt"] }
+        sync(controller, viewModel)
+        try tree.file("b.txt")
+        await viewModel.refresh().value
+        sync(controller, viewModel)
+
+        XCTAssertEqual(rowPaths(outline), [tree.path("p"), tree.path("a.txt")], "no row changes under the drag")
+        outline.isDropTarget = false
+        await drainMainQueue()
+
+        XCTAssertTrue(outline.isItemExpanded(p))
+        XCTAssertEqual(rowPaths(outline), [
+            tree.path("p"), tree.path("p/sub"), tree.path("p/y.txt"), tree.path("a.txt"), tree.path("b.txt"),
+        ])
+    }
+
+    private func rowPaths(_ outline: NSOutlineView) -> [String] {
+        (0..<outline.numberOfRows).compactMap { (outline.item(atRow: $0) as? ExplorerItem)?.path }
+    }
+
     func testTheTreeAcceptsFileDrags() {
         XCTAssertTrue(ExplorerOutlineView.makeOutlineView().registeredDraggedTypes.contains(.fileURL))
     }

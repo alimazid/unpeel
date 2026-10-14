@@ -36,6 +36,15 @@ extension ExplorerOutlineController {
         return true
     }
 
+    /// The drag has left the tree, dropped or not: the reloads it held back
+    /// go through once AppKit has finished with it.
+    func endDropHover() {
+        DispatchQueue.main.async { [weak self] in
+            guard let self, self.outlineView?.isDropTarget != true, self.nameEditor == nil else { return }
+            self.flushHeldReloads()
+        }
+    }
+
     /// The folder under the pointer and the row standing for it (nil for
     /// the root).
     private func dropTarget(onItem item: Any?, root: String) -> (folder: String, item: ExplorerItem?) {

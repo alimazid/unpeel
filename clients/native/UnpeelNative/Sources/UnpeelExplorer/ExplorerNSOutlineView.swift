@@ -39,6 +39,39 @@ public final class ExplorerNSOutlineView: NSOutlineView {
         fittedColumnWidth = column.width
     }
 
+    // MARK: - Drag hover (Fork-only: explorer operations)
+
+    /// True while a drag is over the tree. Rows changing under it make
+    /// AppKit forget where it would drop, and it does not ask again until
+    /// the pointer moves: a folder sprung open that then finished loading
+    /// refused the drop. So reloads wait until the drag has left.
+    var isDropTarget = false {
+        didSet { if oldValue, !isDropTarget { dropHoverEnded?() } }
+    }
+
+    var dropHoverEnded: (() -> Void)?
+
+    override public func draggingEntered(_ sender: any NSDraggingInfo) -> NSDragOperation {
+        isDropTarget = true
+        return super.draggingEntered(sender)
+    }
+
+    override public func draggingExited(_ sender: (any NSDraggingInfo)?) {
+        isDropTarget = false
+        super.draggingExited(sender)
+    }
+
+    override public func concludeDragOperation(_ sender: (any NSDraggingInfo)?) {
+        isDropTarget = false
+        super.concludeDragOperation(sender)
+    }
+
+    /// NSOutlineView has no `draggingEnded:` of its own (a refused drop
+    /// gets neither an exit nor a conclusion).
+    override public func draggingEnded(_: any NSDraggingInfo) {
+        isDropTarget = false
+    }
+
     // MARK: - Edit menu (Fork-only: explorer operations)
 
     public weak var editTarget: (any ExplorerEditTarget)?

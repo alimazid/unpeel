@@ -71,6 +71,7 @@ extension ExplorerOutlineController {
     func endNameEditing() {
         nameEditor = nil
         nameEditingFolder = nil
+        guard outlineView?.isDropTarget != true else { return }
         flushHeldReloads()
     }
 
