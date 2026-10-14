@@ -54,8 +54,10 @@ struct ExplorerOutlineView: NSViewRepresentable {
         // as much as the external one for "drag a row onto a terminal".
         // Fork-only: explorer operations — `.move` for rows dragged within
         // the tree; a terminal pane still takes the drop as a pasted path.
+        // Out of the app, no `.link` (Finder made an alias of a plain drag)
+        // and no `.move`: Finder copies, and nothing leaves the tree.
         outline.setDraggingSourceOperationMask([.copy, .move, .generic], forLocal: true)
-        outline.setDraggingSourceOperationMask([.copy, .generic, .link], forLocal: false)
+        outline.setDraggingSourceOperationMask([.copy, .generic], forLocal: false)
         outline.registerForDraggedTypes([.fileURL])
         return outline
     }

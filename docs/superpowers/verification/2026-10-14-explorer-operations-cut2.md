@@ -32,13 +32,14 @@ Environment: macOS 26 (Darwin 25.6), Xcode 26.3 / Swift 6.2.4. The installed
 - **Copies are staged in the destination folder** under
   `.unpeel-copy-<uuid>` (cut 1's mechanism): hidden by default, visible
   with Show Hidden Files and to git as untracked while a Transfer runs.
-- Drags out to Finder are unchanged: rows are exported as file URLs with
-  copy, generic and link offered (no move); Finder applies its own rules
-  and the EXPLORER never deletes a source after a drag.
+- Drags out to Finder export file URLs offering copy and generic only (no
+  link: Finder made aliases; no move: Finder would take the file out of
+  the tree). Finder copies; the EXPLORER never deletes a source after a
+  drag.
 
 ## 1. Tests
 
-- `clients/native/test-native.sh`: `Executed 1292 tests, with 2 tests
+- `clients/native/test-native.sh`: `Executed 1293 tests, with 2 tests
   skipped and 0 failures` (XCTest). Before this cut (`b88afdb`): 1246.
 - New suites, against real temporary trees: `FileOperationsExternalTests`
   (copy and move from outside, undo/redo back out, forged outside paths
@@ -88,3 +89,46 @@ before a Transfer starts (it fails, cleans up and says why); two Transfers
 of one name into one folder — the second fails at the end.
 
 ## 3. In-app checks (dev build, dedicated `UNPEEL_HOME`)
+
+Run 2026-10-14 with the dev build against `UNPEEL_HOME=~/udgh`, on a
+Session in a scratch git repository, with a Finder window beside the dev
+window, driven by synthetic input (CGEvent, modifiers as key events) and
+checked through the file system, the Accessibility tree, a temporary log
+of `validateDrop` and screenshots. The installed app was not touched.
+
+- [x] What AppKit reports for a drag from Finder: no modifier → source
+  mask 55 (copy, link, generic, move, delete) → the tree shows copy; ⌘ →
+  exactly `.generic` (4) → move; ⌥ → `.copy` (1) → copy. As the rule
+  assumes.
+- [x] Finder → a folder row copies there, expands it and selects the
+  copy; → a file row lands in that file's folder; → the space below the
+  rows lands in the root. The sources stay in Finder.
+- [x] ⌘-drop from Finder moves the file into the tree; Edit ▸ Undo reads
+  "Undo Move" and ⌘Z puts it back in the Finder folder; ⇧⌘Z moves it in
+  again, ⌘Z back out.
+- [x] Live modifiers, pointer held still over a folder: none → ⌘ → ⌥ →
+  none → ⌘ re-validates on each change (copy, move, copy, copy, move);
+  released with ⌘ it moved. No override of `draggingUpdated` needed.
+- [x] Drag-out to Finder. **Found and fixed:** a plain drag of a row onto
+  a Finder window made an **alias** (a bookmark file), not a copy — the
+  external source mask offered `.link` since the EXPLORER's first version.
+  It now offers copy and generic only (`testRowsDraggedOutOfTheAppOfferOnlyACopy`):
+  a plain drag and an ⌥-drag copy the file, a ⌘-drag is refused by
+  Finder, and the row stays in the tree in every case.
+- [x] A 2 GB folder ⌘-dropped from an APFS disk image (another volume):
+  the row "Moving “bigfolder”" appears with a bar and "1 of 4 items —
+  455.1 MB of 2.15 GB"; Cancel leaves nothing in the tree (no
+  `.unpeel-copy-*`) and the original untouched on the image. Dropped
+  again and left to finish: it lands in about 5 s, selected, the original
+  in the image's own Trash, Edit ▸ Undo "Undo Move"; ⌘Z puts the original
+  back on the image and the copy in the Trash; ⇧⌘Z redoes it.
+- [x] A 120 MB folder on the clipboard (Finder's file URL) pasted with ⌘V
+  is a Transfer and one "Undo Paste".
+- [x] A row dragged onto the terminal pane still types its relative path
+  (`bigfolder/readme.txt`); the file stays put.
+
+Not run in the app (covered by `ExplorerTransferTests`): two Transfers at
+once, a failure mid-copy. A synthetic ⌘Z once left ⌘ held in the event
+system (a driving-tool artefact, released at once); the next click
+extended the selection, which is why that paste landed in the selected
+folder rather than the clicked one.

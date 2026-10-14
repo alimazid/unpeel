@@ -192,6 +192,26 @@ final class ExplorerDropTests: ExplorerOperationTestCase {
         (0..<outline.numberOfRows).compactMap { (outline.item(atRow: $0) as? ExplorerItem)?.path }
     }
 
+    /// Finder answers a drag that offers a link, with no modifier, by making
+    /// an alias; one that offers a move, by moving the file out of the tree.
+    /// Rows dragged out offer copy (and generic, for apps that only take
+    /// that) — Finder copies, and nothing leaves the tree.
+    func testRowsDraggedOutOfTheAppOfferOnlyACopy() {
+        let outline = ExplorerOutlineView.makeOutlineView()
+
+        XCTAssertEqual(sourceMask(of: outline, local: false), [.copy, .generic])
+        XCTAssertEqual(sourceMask(of: outline, local: true), [.copy, .move, .generic])
+    }
+
+    /// NSTableView's own answer, through the selector Swift marks
+    /// unavailable (a dragging session cannot be made in a test).
+    private func sourceMask(of outline: NSOutlineView, local: Bool) -> NSDragOperation {
+        let selector = NSSelectorFromString("draggingSourceOperationMaskForLocal:")
+        XCTAssertTrue(outline.responds(to: selector))
+        typealias Mask = @convention(c) (AnyObject, Selector, Bool) -> UInt
+        return NSDragOperation(rawValue: unsafeBitCast(outline.method(for: selector), to: Mask.self)(outline, selector, local))
+    }
+
     func testTheTreeAcceptsFileDrags() {
         XCTAssertTrue(ExplorerOutlineView.makeOutlineView().registeredDraggedTypes.contains(.fileURL))
     }
