@@ -24,7 +24,8 @@ Environment: macOS 26 (Darwin 25.6), Xcode 26.3 / Swift 6.2.4. The installed
 ## 1. Tests
 
 - `clients/native/test-native.sh` at `d4e6813`: `Executed 1237 tests, with 0
-  failures` (XCTest). Before this work (`1f689ba`): 1057.
+  failures` (XCTest). Before this work (`1f689ba`): 1057. After the in-app
+  fixes (`72cab0a`): 1245, 0 failures.
 - New suites (all against real temporary trees, no mocked file system):
   `FileOperationsTests`, `FileOperationsRaceTests`,
   `FileOperationsReverseTests`, `FileNameValidationTests`,
@@ -61,36 +62,58 @@ regression test before moving on:
   name failed the second; stale cut dimming.
 - #20 (`f8bc025`): a link-only drag fell through to a move.
 
-## 3. In-app checks (dev build, dedicated `UNPEEL_HOME`) — PENDING
+## 3. In-app checks (dev build, dedicated `UNPEEL_HOME`)
 
-Not run yet: the screen was locked for the whole build. Each item below needs
-the dev app (`clients/native/dev-blank.sh` with a dedicated `UNPEEL_HOME`), a
-Session on a scratch git repository, and the EXPLORER expanded.
+Run 2026-10-13 evening with the dev build (`UNPEEL_DEV_BUILD=1`, stable
+signing identity) against `UNPEEL_HOME=~/udgh`, on a Session in a scratch
+git repository, driven by synthetic input (CGEvent) and checked through
+the file system, the Accessibility tree, the pasteboard and screenshots.
+The installed app was not touched.
 
-- [ ] Move to Trash (⌘⌫ and menu) → the items are in Finder's Trash; ⌘Z puts
-  them back **from the app process** (the one check that could change the
-  design: if the app may not rename out of `~/.Trash`, restore needs another
-  path).
-- [ ] Clicking a row (and ⇧⌘E) makes the tree first responder: Edit ▸ Undo
-  reads "Undo Rename" etc.; Cut/Copy/Paste enabled only then.
-- [ ] With a terminal focused, ⌘Z, ⌘C, ⌘V behave exactly as before.
-- [ ] Return renames inline: field look in light and dark, stem selected,
-  bubble under the row (also at the last row, not clipped), no flash on
-  commit; Escape cancels.
-- [ ] While a rename field is open in a git repository, an agent's write
-  (decorations refresh) does not end the edit.
-- [ ] New File… / New Folder… from the ⋯ header menu and the context menu:
-  the Draft Row takes focus; a nested name creates folders and reveals the
-  file; nothing opens.
-- [ ] Copy in the tree → paste in Finder, and Finder → paste in the tree; cut
-  rows dimmed; the Collision Prompt sheet attaches to the main window.
-- [ ] Drag: rows onto a folder move; ⌥ copies (confirm ⌥, ⌘, ⌥⌘ masks);
-  hovering a collapsed folder springs it open; a drop between rows lands in
-  the expanded folder; a row dropped on a terminal pastes its path and the
-  file stays put.
-- [ ] A root switch while an operation's history exists (exercises the
-  controller's activation observer teardown and per-root history).
+- [x] Move to Trash (⌘⌫) → the file is in `~/.Trash`, the row below is
+  selected; ⌘Z puts it back **from the app process** and selects it; ⇧⌘Z
+  trashes it again. Edit ▸ Undo reads "Undo Move to Trash". Replace in the
+  Collision Prompt trashes the old item and ⌘Z brings it back.
+- [x] Clicking a row and ⇧⌘E make the tree first responder: Edit ▸ Undo
+  reads "Undo Rename" / "Undo Paste" / "Undo Move" / "Undo Duplicate";
+  Cut/Copy are enabled and Paste only with files on the pasteboard.
+- [x] With a terminal focused, Edit shows the terminal's own items (Undo and
+  Redo disabled, Paste enabled); ⌘V pastes text into the shell and ⇧⌘Z
+  does not redo the tree's operation.
+- [x] Return renames inline with the stem selected (`beta` of `beta.md`);
+  Return commits and the tree keeps the keyboard; Escape cancels. **Found
+  and fixed:** the bubble of the last visible row was clipped (it now
+  opens above the field, `99346dc`); in light appearance the typed name was
+  invisible on a selected row (`72cab0a`). Not checked: a flash on commit
+  (too short for screenshots).
+- [x] An agent writing into the folder (and the repository root) while a
+  rename field is open does not end the edit; the listing lands when the
+  field closes. **Found and fixed:** the selection was lost when it did
+  (`99346dc`).
+- [x] New File… from the ⋯ header menu: the Draft Row takes focus; with
+  nothing selected it sits in the root; `notes/todo.md` creates `notes/`,
+  expands it, selects the file, opens nothing. Duplicate from the context
+  menu gives `agent-two copy.txt`.
+- [x] Copy in the tree → ⌘V in a Finder window copies the file; ⌘C in
+  Finder → ⌘V on a folder in the tree copies it there (Finder's file
+  reference URL resolves). Cut rows are dimmed until pasted; a pasted cut
+  moves once and Paste is then disabled. The Collision Prompt is a sheet
+  on the main window; Keep Both gives `alpha copy.txt`; with two
+  collisions it shows "Apply to all", and Skip with it ticked changes
+  nothing. **Found and fixed:** a result outside the visible rows was
+  selected but not scrolled to (`99346dc`).
+- [x] Drag: a row onto a folder moves it; ⌥ copies; ⌘ moves; ⌥⌘ also moves
+  (the source offers no link, so AppKit drops that modifier); hovering a
+  collapsed folder springs it open; a drop between two rows of an
+  expanded folder lands in it; a row dropped on a terminal pastes its
+  relative path and the file stays put. No modifier stays latched.
+  **Found and fixed:** releasing on a never-listed folder right after it
+  sprang open was refused (`962defe`).
+- [x] Switching the Session to another repository and back: each root
+  keeps its own history ("Undo Move" back on return, nothing in the other).
 
 Known and accepted: Git Status Decorations after an operation refresh with
 the watcher's batch (about 150 ms), like any other change, rather than at
-once.
+once. A folder that was never listed shows its contents only once a drag
+that sprang it open has left the tree (the price of `962defe`); folders
+listed before spring open with their rows.
