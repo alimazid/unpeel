@@ -531,39 +531,6 @@
       }
     },
     {
-      "id": "archive.missing-project",
-      "method": "GET",
-      "path": "/mobile/archive",
-      "expected": {
-        "native": 400,
-        "tui": 400
-      }
-    },
-    {
-      "id": "archive.unknown-project",
-      "method": "GET",
-      "path": "/mobile/archive",
-      "query": {
-        "project_id": "conformance-unknown"
-      },
-      "expected": {
-        "native": 404,
-        "tui": 404
-      }
-    },
-    {
-      "id": "archive.known-empty",
-      "method": "GET",
-      "path": "/mobile/archive",
-      "query": {
-        "project_id": "conformance-project"
-      },
-      "expected": {
-        "native": 200,
-        "tui": 200
-      }
-    },
-    {
       "id": "transcript.missing-session",
       "method": "GET",
       "path": "/mobile/transcript-markdown",
@@ -1160,6 +1127,58 @@
       "expected": {
         "native": 403,
         "tui": 403
+      }
+    },
+    {
+      "id": "git-settings.missing-action",
+      "method": "POST",
+      "path": "/mobile/git-settings",
+      "body": {},
+      "expected": {
+        "native": 400,
+        "tui": 400
+      }
+    },
+    {
+      "id": "git-settings.invalid-request-id",
+      "method": "POST",
+      "path": "/mobile/git-settings",
+      "body": {
+        "action": "connectGithub",
+        "requestID": "invalid"
+      },
+      "expected": {
+        "native": 400,
+        "tui": 400
+      }
+    },
+    {
+      "id": "git-settings.invalid-identity",
+      "method": "POST",
+      "path": "/mobile/git-settings",
+      "body": {
+        "action": "setIdentity",
+        "requestID": "23f1c575-b187-4350-8a46-773eb49028b7",
+        "name": "bad\nname",
+        "email": "mail@example.com"
+      },
+      "expected": {
+        "native": 400,
+        "tui": 400
+      }
+    },
+    {
+      "id": "git-settings.invalid-disconnect",
+      "method": "POST",
+      "path": "/mobile/git-settings",
+      "body": {
+        "action": "disconnectGithub",
+        "requestID": "23f1c575-b187-4350-8a46-773eb49028b7",
+        "login": "--all"
+      },
+      "expected": {
+        "native": 400,
+        "tui": 400
       }
     }
   ],

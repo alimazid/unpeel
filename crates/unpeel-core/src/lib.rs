@@ -51,9 +51,14 @@ pub mod first_run;
 #[cfg(feature = "native-host")]
 mod ghostty_vt;
 #[cfg(feature = "native-host")]
+#[path = "../../../runtimes/github/adapter/git_settings.rs"]
+pub mod git_settings;
+#[cfg(feature = "native-host")]
 pub mod hook_assets;
 #[cfg(feature = "native-host")]
 pub mod hook_cancellation;
+#[cfg(feature = "native-host")]
+mod host_command;
 #[cfg(feature = "controller-core")]
 pub mod host_connection;
 #[cfg(feature = "native-host")]
@@ -89,6 +94,8 @@ pub mod plugins;
 /// exercised by `scripts/ci/check-portable-core.sh`).
 #[cfg(all(test, feature = "controller-core"))]
 mod portable_gating_tests;
+#[cfg(feature = "native-host")]
+pub mod program_status;
 #[cfg(feature = "controller-core")]
 #[cfg(feature = "native-host")]
 pub mod pty_core;

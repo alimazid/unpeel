@@ -183,8 +183,6 @@ protocol NativeRemoteBackendProtocol: Sendable {
     /// File the Session under another project/group (`session.project.set`).
     func setSessionProject(sessionID: String, projectID: String) async throws
         -> NativeRemoteEffectReceipt
-    func archiveSession(sessionID: String) async throws -> NativeRemoteEffectReceipt
-    func restoreSession(sessionID: String) async throws -> NativeRemoteEffectReceipt
     func stopSession(sessionID: String) async throws -> NativeRemoteEffectReceipt
     func removeSession(sessionID: String) async throws -> NativeRemoteEffectReceipt
     func restartSession(sessionID: String) async throws -> NativeRemoteEffectReceipt
@@ -201,6 +199,8 @@ protocol NativeRemoteBackendProtocol: Sendable {
     func setPreset(patch: RemotePresetPatch) async throws -> NativeRemoteEffectReceipt
     func setWorkspaceSettings(patch: RemoteWorkspaceSettingsPatch) async throws -> NativeRemoteEffectReceipt
     func pluginUpdates() async throws -> RemotePluginUpdates
+    func gitSettings() async throws -> RemoteGitSettings
+    func setGitSettings(_ action: RemoteGitSettingsAction) async throws -> NativeRemoteEffectReceipt
     func setOpener(selector: String, opener: String) async throws -> NativeRemoteEffectReceipt
     func installApp(appID: String) async throws -> NativeRemoteEffectReceipt
     func installIntegration(runtimeID: String) async throws -> NativeRemoteEffectReceipt
@@ -223,7 +223,6 @@ protocol NativeRemoteBackendProtocol: Sendable {
         contentType: String,
         bytes: Data
     ) async throws -> String
-    func listArchivedSessions(projectID: String) async throws -> [RemoteSessionSummary]
     func transcriptMarkdown(
         sessionID: String,
         entries: Int?
@@ -233,6 +232,16 @@ protocol NativeRemoteBackendProtocol: Sendable {
 }
 
 extension NativeRemoteBackendProtocol {
+    func gitSettings() async throws -> RemoteGitSettings {
+        throw NativeRemoteBackendError(result: Int32(UNPEEL_NATIVE_BRIDGE_ERROR_REMOTE),
+            code: "git_settings_unavailable", message: "Update Unpeel on this Host to use Git settings.")
+    }
+
+    func setGitSettings(_ action: RemoteGitSettingsAction) async throws -> NativeRemoteEffectReceipt {
+        throw NativeRemoteBackendError(result: Int32(UNPEEL_NATIVE_BRIDGE_ERROR_REMOTE),
+            code: "git_settings_unavailable", message: "Update Unpeel on this Host to use Git settings.",
+            kind: "notApplied", operation: "Git settings")
+    }
     func setOpener(
         selector: String,
         opener: String
@@ -1237,22 +1246,6 @@ final class NativeRemoteBackend: @unchecked Sendable {
         }
     }
 
-    func archiveSession(sessionID: String) async throws -> NativeRemoteEffectReceipt {
-        try await performSessionEffect(
-            sessionID: sessionID,
-            operation: "session archive",
-            call: unpeel_native_bridge_remote_session_archive
-        )
-    }
-
-    func restoreSession(sessionID: String) async throws -> NativeRemoteEffectReceipt {
-        try await performSessionEffect(
-            sessionID: sessionID,
-            operation: "session restore",
-            call: unpeel_native_bridge_remote_session_restore
-        )
-    }
-
     func stopSession(sessionID: String) async throws -> NativeRemoteEffectReceipt {
         try await performSessionEffect(
             sessionID: sessionID,
@@ -1776,56 +1769,6 @@ final class NativeRemoteBackend: @unchecked Sendable {
         }
     }
 
-    func listArchivedSessions(projectID: String) async throws -> [RemoteSessionSummary] {
-        let handle = try currentIdentityValidatedHandle()
-        let project = Data(projectID.utf8)
-        return try await Self.runBlocking(priority: .userInitiated) {
-            try Task.checkCancellation()
-            var outputPointer: UnsafeMutablePointer<UInt8>?
-            var outputLength = 0
-            let result = project.withUnsafeBytes { bytes in
-                unpeel_native_bridge_remote_archived_sessions(
-                    handle,
-                    bytes.bindMemory(to: UInt8.self).baseAddress,
-                    bytes.count,
-                    &outputPointer,
-                    &outputLength
-                )
-            }
-            let output = Self.takeOutput(outputPointer, length: outputLength)
-            guard result == UNPEEL_NATIVE_BRIDGE_OK else {
-                throw Self.bridgeError(
-                    result: result,
-                    output: output,
-                    fallbackCode: "remote_archive_read_failed",
-                    fallbackMessage: "Could not load this project's archived Sessions."
-                )
-            }
-            do {
-                let response = try JSONDecoder().decode(
-                    RemoteArchivedSessionsResponse.self,
-                    from: output
-                )
-                guard response.projectID == projectID else {
-                    throw NativeRemoteBackendError(
-                        result: Int32(UNPEEL_NATIVE_BRIDGE_ERROR_SERIALIZATION),
-                        code: "remote_archive_project_mismatch",
-                        message: "The Host returned archived Sessions for the wrong project."
-                    )
-                }
-                return response.sessions
-            } catch let error as NativeRemoteBackendError {
-                throw error
-            } catch {
-                throw NativeRemoteBackendError(
-                    result: Int32(UNPEEL_NATIVE_BRIDGE_ERROR_SERIALIZATION),
-                    code: "invalid_remote_archive_response",
-                    message: "The Host returned an invalid archived-Sessions response."
-                )
-            }
-        }
-    }
-
     func transcriptMarkdown(
         sessionID: String,
         entries: Int?
@@ -1878,6 +1821,37 @@ final class NativeRemoteBackend: @unchecked Sendable {
                     message: "The Host returned an invalid transcript response."
                 )
             }
+        }
+    }
+
+    func gitSettings() async throws -> RemoteGitSettings {
+        let handle = try currentIdentityValidatedHandle()
+        return try await Self.runBlocking(priority: .utility) {
+            try Task.checkCancellation()
+            var pointer: UnsafeMutablePointer<UInt8>?
+            var length = 0
+            let result = unpeel_native_bridge_remote_git_settings(handle, &pointer, &length)
+            let output = Self.takeOutput(pointer, length: length)
+            guard result == UNPEEL_NATIVE_BRIDGE_OK else {
+                throw Self.bridgeError(result: result, output: output,
+                    fallbackCode: "git_settings_failed", fallbackMessage: "Could not read Git settings.")
+            }
+            return try JSONDecoder().decode(RemoteGitSettings.self, from: output)
+        }
+    }
+
+    func setGitSettings(_ action: RemoteGitSettingsAction) async throws -> NativeRemoteEffectReceipt {
+        let handle = try currentIdentityValidatedHandle()
+        let body = try JSONEncoder().encode(action)
+        return try await Self.runBlocking(priority: .userInitiated) {
+            try Task.checkCancellation()
+            var pointer: UnsafeMutablePointer<UInt8>?
+            var length = 0
+            let result = body.withUnsafeBytes { bytes in
+                unpeel_native_bridge_remote_git_settings_set(handle,
+                    bytes.bindMemory(to: UInt8.self).baseAddress, bytes.count, &pointer, &length)
+            }
+            return try Self.decodeEffect(result: result, pointer: pointer, length: length, operation: "Git settings")
         }
     }
 

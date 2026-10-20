@@ -196,18 +196,46 @@ enum OrchestratorReach: String, CaseIterable, Identifiable {
     }
 }
 
-/// The capability half of a session's Unpeel Sessions MCP grant. Mirrors
-/// `McpRole` in `crates/.../state.rs`.
+/// A session's Agent access role — the capability half of its Unpeel
+/// Sessions MCP grant, set from the sidebar's right-click menu. Mirrors
+/// `McpRole` in `crates/unpeel-core/src/state.rs`: raw values are the
+/// persisted spellings, and the retired lineage-model spellings (`write`,
+/// `orchestrator`, bare-string grants) stay inert as `.read`.
 enum McpRole: String, CaseIterable, Identifiable {
     case read
-    case write
+    case write = "send"
+    case manage
 
     var id: String { rawValue }
 
     static func fromStateString(_ value: String?) -> McpRole {
         switch value?.trimmingCharacters(in: .whitespaces).lowercased() {
-        case "write", "writer", "orchestrator": return .write
+        case "send": return .write
+        case "manage": return .manage
         default: return .read
+        }
+    }
+
+    /// Menu label.
+    var label: String {
+        switch self {
+        case .read: return "Read"
+        case .write: return "Write"
+        case .manage: return "Create & remove"
+        }
+    }
+
+    /// One-line explanation shown under the sidebar Agent access picker.
+    /// Keep it short: an NSMenu item never wraps, so this line sets the
+    /// submenu's width.
+    var detail: String {
+        switch self {
+        case .read:
+            return "Reads any session; writes follow Settings."
+        case .write:
+            return "Also writes to other sessions."
+        case .manage:
+            return "Also starts and removes its own sessions."
         }
     }
 }
@@ -222,14 +250,6 @@ struct McpGrant: Equatable {
 
     /// The default grant for a session with no explicit override.
     static let `default` = McpGrant(role: .read, reach: .project)
-
-    /// The two user-facing access levels collapse role+reach into one choice.
-    var accessLevel: SessionAccessLevel {
-        switch role {
-        case .read: return .read
-        case .write: return .readWrite
-        }
-    }
 }
 
 /// App-wide policy for Sessions MCP writes to any other session. The
@@ -280,53 +300,10 @@ enum McpNonChildWriteAccess: String, CaseIterable, Identifiable {
     }
 }
 
-/// Legacy two-level projection retained while older `McpGrant` state remains
-/// readable. Current Sessions use is open for reads, uses the separate write
-/// approval policy, and leaves session lifecycle with the user.
-enum SessionAccessLevel: String, CaseIterable, Identifiable {
-    case read
-    case readWrite
-
-    var id: String { rawValue }
-
-    var grant: McpGrant {
-        switch self {
-        case .read: return McpGrant(role: .read, reach: .project)
-        case .readWrite: return McpGrant(role: .write, reach: .project)
-        }
-    }
-
-    /// Menu/picker label.
-    var label: String {
-        switch self {
-        case .read: return "Read"
-        case .readWrite: return "Legacy write access"
-        }
-    }
-
-    /// One-line description shown under the label in Settings.
-    var detail: String {
-        switch self {
-        case .read:
-            return "Legacy saved grant. Session reads are now open across the workspace."
-        case .readWrite:
-            return "Legacy saved grant. Writes now use the separate approval policy; agents cannot create or close sessions."
-        }
-    }
-
-    /// Whether this level grants the elevated write capability.
-    var canWriteSessions: Bool {
-        switch self {
-        case .readWrite: return true
-        case .read: return false
-        }
-    }
-}
-
 /// Read-tolerant decoder for one `mcp_orchestrators` value. Accepts the new
 /// object form `{ "role": ..., "reach": ... }` and the legacy bare-string form
-/// (`"project"`/`"global"`), which decodes to the write role at project reach
-/// — matching the Rust `McpGrant` deserializer.
+/// (`"project"`/`"global"`) from the retired lineage model, which stays an
+/// inert Read grant — matching the Rust `McpGrant` deserializer.
 private struct McpGrantFile: Decodable {
     let grant: McpGrant
 
@@ -339,7 +316,7 @@ private struct McpGrantFile: Decodable {
         if let single = try? decoder.singleValueContainer(),
            let legacy = try? single.decode(String.self) {
             let _ = legacy
-            grant = McpGrant(role: .write, reach: .project)
+            grant = .default
             return
         }
         let container = try decoder.container(keyedBy: CodingKeys.self)
@@ -450,12 +427,13 @@ struct AppStateFile: Decodable {
     /// project/group/worktree id → "date" (recently updated first). Absent
     /// id ⇒ custom (the manual drag order). Absent ⇒ empty.
     let sessionSortModes: [String: String]
-    /// `auto_stop_archive_minutes` (state.rs) — stop-and-archive sessions
-    /// continuously idle this long. Shared with the TUI. nil = key absent
-    /// (⇒ the opt-out default applies); explicit 0 = off.
-    let autoStopArchiveMinutes: Int?
+    /// `auto_stop_archive_minutes` (state.rs; the key keeps its legacy name)
+    /// — auto-stop terminals continuously inactive this long. Shared with
+    /// the TUI. nil = key absent (⇒ the opt-out default applies); explicit
+    /// 0 = off.
+    let autoStopMinutes: Int?
     /// `sidebar_stopped_limit` (state.rs) — compatibility key for how many
-    /// naturally stopped and archived rows combined each sidebar group
+    /// stopped rows each sidebar group
     /// previews. Shared with the TUI. nil = key absent (⇒ the default of five
     /// applies); explicit 0 = no inactive preview.
     let sidebarStoppedLimit: Int?
@@ -496,7 +474,7 @@ struct AppStateFile: Decodable {
         case mcpAutoAddBrowserScreenshots = "mcp_auto_add_browser_screenshots"
         case nativePresetOverlayMigrated = "native_preset_overlay_migrated"
         case sessionSortModes = "session_sort_modes"
-        case autoStopArchiveMinutes = "auto_stop_archive_minutes"
+        case autoStopMinutes = "auto_stop_archive_minutes"
         case sidebarStoppedLimit = "sidebar_stopped_limit"
         case sessionTitleMode = "session_title_mode"
         case profileDisplayName = "profile_display_name"
@@ -581,8 +559,8 @@ struct AppStateFile: Decodable {
         sessionSortModes = ((try? container.decodeIfPresent(
             [String: String].self, forKey: .sessionSortModes
         )) ?? nil) ?? [:]
-        autoStopArchiveMinutes = (try? container.decodeIfPresent(
-            Int.self, forKey: .autoStopArchiveMinutes
+        autoStopMinutes = (try? container.decodeIfPresent(
+            Int.self, forKey: .autoStopMinutes
         )) ?? nil
         sidebarStoppedLimit = (try? container.decodeIfPresent(
             Int.self, forKey: .sidebarStoppedLimit
@@ -1143,7 +1121,7 @@ struct SessionEntry: Codable, Identifiable, Hashable, Sendable {
     var providerTranscriptPath: String? = nil
     /// Host-owned proof that this exact managed launch produced a provider
     /// conversation (or provider-owned per-Session storage). Runtime support
-    /// alone is deliberately insufficient for Archive/Resume.
+    /// alone is deliberately insufficient for Stop/Resume.
     var hasResumableState: Bool = false
     /// `project-override.json` marker: the user filed this session under a
     /// plain organizational group. Display + ordering only — the manifest's
@@ -1181,6 +1159,12 @@ struct SessionEntry: Codable, Identifiable, Hashable, Sendable {
     /// runtime observed inside a blank shell may borrow the agent's logo, but
     /// it does not gain that runtime's transcript adapter or conversation
     /// binding.
+    /// Whether the launch command is a recognized agent runtime — the
+    /// sessions the sidebar offers Agent access roles for.
+    var isAgentSession: Bool {
+        UnpeelRuntimeCatalog.runtime(command: command)?.kind == .agent
+    }
+
     var supportsTranscriptCopy: Bool {
         guard let runtime = UnpeelRuntimeCatalog.runtime(command: command),
               runtime.kind == .agent

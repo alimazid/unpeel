@@ -20,6 +20,57 @@ final class RemoteHostRuntimeTests: XCTestCase {
         XCTAssertTrue(directOnly?.contains("Tailscale") == true)
     }
 
+    func testGitReadsDiscardPreviousWorkspaceAndOldHostsAreNotProbed() async throws {
+        let backend = ControlledRemoteBackend()
+        let runtime = makeRuntime(backend: backend)
+        runtime.connectSSH(target: "ssh://host", expectedHostID: "host")
+        await waitUntil { await backend.bootstrapCount == 1 }
+        await backend.resolveBootstrap(.success(makeSnapshot(capabilities: [
+            "host.bootstrap", "session.input.write", "session.output.read",
+            RemoteControlProtocol.gitSettingsReadCapability,
+        ])))
+        await waitUntil { runtime.connectionState == .connected(name: "Host") }
+        let read = Task { try await runtime.gitSettings() }
+        await waitUntil { await backend.gitSettingsReads == 1 }
+        runtime.disconnect()
+        let fixture = try JSONDecoder().decode(RemoteGitSettings.self, from: Data(#"{"checking":false,"gitInstalled":true,"githubCliInstalled":true,"setupDirectory":"/tmp","name":"Remote","email":"remote@example.com","github":{"state":"connected","login":"remote-user","environmentToken":false,"gitConfigured":true}}"#.utf8))
+        await backend.resolveGitSettings(fixture)
+        do { _ = try await read.value; XCTFail("An old Host's credentials must not appear in the new workspace") }
+        catch is CancellationError {}
+
+        let oldBackend = ControlledRemoteBackend()
+        let oldRuntime = makeRuntime(backend: oldBackend)
+        oldRuntime.connectSSH(target: "ssh://old", expectedHostID: "host")
+        await waitUntil { await oldBackend.bootstrapCount == 1 }
+        await oldBackend.resolveBootstrap(.success(makeSnapshot()))
+        await waitUntil { oldRuntime.connectionState == .connected(name: "Host") }
+        do { _ = try await oldRuntime.gitSettings(); XCTFail("Read requires the advertised Git capability") } catch {}
+        do { try await oldRuntime.setGitSettings(.init(action: "connectGithub")); XCTFail("Sign-in requires the write capability") } catch {}
+        let reads = await oldBackend.gitSettingsReads
+        let writes = await oldBackend.gitSettingsWrites
+        XCTAssertEqual(reads, 0)
+        XCTAssertEqual(writes.count, 0)
+        oldRuntime.disconnect()
+    }
+
+    func testGitSignInIsSentToTheSelectedHost() async throws {
+        let backend = ControlledRemoteBackend()
+        let runtime = makeRuntime(backend: backend)
+        runtime.connectSSH(target: "ssh://remote", expectedHostID: "host")
+        await waitUntil { await backend.bootstrapCount == 1 }
+        await backend.resolveBootstrap(.success(makeSnapshot(capabilities: [
+            "host.bootstrap", "session.input.write", "session.output.read", RemoteControlProtocol.gitSettingsSetCapability,
+        ])))
+        await waitUntil { runtime.connectionState == .connected(name: "Host") }
+        let request = RemoteGitSettingsAction(action: "connectGithub")
+        try await runtime.setGitSettings(request)
+        let writes = await backend.gitSettingsWrites
+        XCTAssertEqual(writes.count, 1)
+        XCTAssertEqual(writes.first?.requestID, request.requestID)
+        XCTAssertEqual(writes.first?.action, "connectGithub")
+        runtime.disconnect()
+    }
+
     func testUpdateReadsRequireCapabilityAndRejectResultsAfterDisconnect() async throws {
         let backend = ControlledRemoteBackend()
         let runtime = makeRuntime(backend: backend)
@@ -295,123 +346,6 @@ final class RemoteHostRuntimeTests: XCTestCase {
         runtime.disconnect()
     }
 
-    func testRestoreAndRestartSelectsOnlyTheExactPublishedReplacement() async throws {
-        let backend = ControlledRemoteBackend()
-        let runtime = makeRuntime(
-            backend: backend,
-            refreshIntervalNanoseconds: 1_000_000
-        )
-        let current = makeSession(
-            id: "current", activity: .blocked, providerID: "claude"
-        )
-        let preexistingCollision = makeSession(
-            id: "preexisting-collision", createdAt: 42, providerID: "claude"
-        )
-        let source = makeSession(
-            id: "archived-source", createdAt: 42, status: .exited,
-            providerID: "claude", archived: true
-        )
-        let capabilities = [
-            "host.bootstrap",
-            "session.input.write",
-            "session.output.read",
-            RemoteHostRuntime.HostOperation.restore,
-            RemoteHostRuntime.HostOperation.restart,
-        ]
-
-        runtime.connectSSH(target: "ssh://host", expectedHostID: "host")
-        await waitUntil { await backend.bootstrapCount == 1 }
-        await backend.resolveBootstrap(.success(makeSnapshot(
-            capabilities: capabilities,
-            sessions: [current, preexistingCollision]
-        )))
-        await waitUntil { runtime.selectedSessionID == current.id }
-
-        try await runtime.restoreAndRestartSession(
-            source,
-            knownSessionIDs: [current.id, preexistingCollision.id, source.id]
-        )
-        let organizationCalls = await backend.organizationCalls
-        XCTAssertEqual(
-            organizationCalls,
-            ["restore:\(source.id)", "restart:\(source.id)"]
-        )
-
-        // Restore can publish the old id before Restart publishes its new
-        // one. Keep the user's prior selection during that intermediate row.
-        await waitUntil { await backend.bootstrapCount >= 2 }
-        await backend.resolveBootstrap(.success(makeSnapshot(
-            capabilities: capabilities,
-            sessions: [current, preexistingCollision, makeSession(
-                id: source.id, createdAt: 42, status: .exited,
-                providerID: "claude"
-            )]
-        )))
-        XCTAssertEqual(runtime.selectedSessionID, current.id)
-
-        let replacement = makeSession(
-            id: "exact-replacement", command: "claude --resume thread-1",
-            createdAt: 42, providerID: "claude"
-        )
-        await waitUntil { await backend.bootstrapCount >= 3 }
-        await backend.resolveBootstrap(.success(makeSnapshot(
-            capabilities: capabilities,
-            sessions: [current, preexistingCollision, replacement]
-        )))
-        await waitUntil { runtime.selectedSessionID == replacement.id }
-        runtime.disconnect()
-    }
-
-    func testArchivedFetchSurvivesLiveBootstrapAndStillSubmitsRestoreAndRestart() async throws {
-        let backend = ControlledRemoteBackend()
-        let runtime = makeRuntime(backend: backend)
-        let current = makeSession(
-            id: "current", activity: .blocked, providerID: "codex"
-        )
-        let source = makeSession(
-            id: "archived-source", createdAt: 42, status: .exited,
-            providerID: "claude", archived: true
-        )
-        let capabilities = [
-            "host.bootstrap",
-            "session.input.write",
-            "session.output.read",
-            RemoteHostRuntime.HostOperation.restore,
-            RemoteHostRuntime.HostOperation.restart,
-        ]
-
-        // Archive fetches are page-scoped and intentionally separate from
-        // the live bootstrap dictionary. A subsequent normal bootstrap only
-        // prunes vanished projects; it must not erase the archived source.
-        var archivedCache = RemoteArchivedSessionSummaryCache()
-        archivedCache.replaceProject("project", summaries: [source])
-        let liveSummaries = [current.id: current]
-        archivedCache.retainProjects(["project"])
-        XCTAssertNil(liveSummaries[source.id])
-        let cachedSource = try XCTUnwrap(archivedCache[source.id])
-        let knownSessionIDs = Set(liveSummaries.keys)
-            .union(archivedCache.sessionIDs)
-
-        runtime.connectSSH(target: "ssh://host", expectedHostID: "host")
-        await waitUntil { await backend.bootstrapCount == 1 }
-        await backend.resolveBootstrap(.success(makeSnapshot(
-            capabilities: capabilities,
-            sessions: Array(liveSummaries.values)
-        )))
-        await waitUntil { runtime.connectionState == .connected(name: "Host") }
-
-        try await runtime.restoreAndRestartSession(
-            cachedSource,
-            knownSessionIDs: knownSessionIDs
-        )
-        let calls = await backend.organizationCalls
-        XCTAssertEqual(calls, [
-            "restore:\(source.id)",
-            "restart:\(source.id)",
-        ])
-        runtime.disconnect()
-    }
-
     func testOrdinaryRestartSelectsOnlyItsExactReplacement() async throws {
         let backend = ControlledRemoteBackend()
         let runtime = makeRuntime(
@@ -470,7 +404,7 @@ final class RemoteHostRuntimeTests: XCTestCase {
         let source = makeSession(
             id: "source", projectID: "project", command: "claude",
             createdAt: 42, status: .exited, providerID: "claude",
-            worktreePath: "/worktree", worktreeBranch: "topic", archived: true
+            worktreePath: "/worktree", worktreeBranch: "topic"
         )
         let intent = RemoteHostRuntime.ReplacementSelectionIntent(
             source: source,
@@ -684,8 +618,6 @@ final class RemoteHostRuntimeTests: XCTestCase {
                 "session.output.read",
                 RemoteHostRuntime.HostOperation.titleSet,
                 RemoteHostRuntime.HostOperation.pinSet,
-                RemoteHostRuntime.HostOperation.archive,
-                RemoteHostRuntime.HostOperation.restore,
                 RemoteHostRuntime.HostOperation.stop,
                 RemoteHostRuntime.HostOperation.remove,
                 RemoteHostRuntime.HostOperation.restart,
@@ -704,8 +636,6 @@ final class RemoteHostRuntimeTests: XCTestCase {
         XCTAssertEqual(runtime.selectedSessionID, "session")
         try await runtime.renameSession("session", to: "Renamed")
         try await runtime.setSessionPinned("session", pinned: true)
-        try await runtime.archiveSession("session")
-        try await runtime.restoreSession("session")
         try await runtime.stopSession("session")
         try await runtime.removeSession("session")
         try await runtime.resumeAgent("session")
@@ -728,8 +658,6 @@ final class RemoteHostRuntimeTests: XCTestCase {
         XCTAssertEqual(organizationCalls, [
             "title:session:Renamed",
             "pin:session:true",
-            "archive:session",
-            "restore:session",
             "stop:session",
             "remove:session",
             "resume-agent:session",
@@ -819,6 +747,112 @@ final class RemoteHostRuntimeTests: XCTestCase {
         XCTAssertEqual(pollCount, 0)
         let terminalEffects = await backend.effectCalls
         XCTAssertEqual(terminalEffects, [])
+        runtime.disconnect()
+    }
+
+    /// A workspace with no running PTY core boots a per-process Session Host,
+    /// whose first manifest can trail many state-bus-triggered bootstraps. The
+    /// starting row must stay listed and selected for the whole boot instead
+    /// of vanishing after a fixed number of refreshes.
+    func testExplicitCreateKeepsStartingRowAcrossManyRacingBootstraps() async throws {
+        let optimistic = makeSession(id: "created-session")
+        let backend = ControlledRemoteBackend(createdSessionSummary: optimistic)
+        let runtime = makeRuntime(
+            backend: backend,
+            refreshIntervalNanoseconds: 1_000_000
+        )
+        let capabilities = [
+            "host.bootstrap",
+            "session.input.write",
+            "session.mark_read",
+            "session.output.read",
+            RemoteHostRuntime.HostOperation.create,
+        ]
+        runtime.connectLocalService(
+            home: "/Users/me/.unpeel/workspaces/side",
+            name: "Side",
+            expectedHostID: "local-host"
+        )
+        await waitUntil { await backend.bootstrapCount == 1 }
+        await backend.resolveBootstrap(.success(makeSnapshot(
+            hostID: "local-host",
+            capabilities: capabilities,
+            sessions: [makeSession(id: "current")]
+        )))
+        await waitUntil { runtime.connectionState == .connected(name: "Host") }
+
+        _ = try await runtime.createSession(projectID: "project", presetID: "preset")
+        XCTAssertEqual(runtime.selectedSessionID, "created-session")
+
+        for round in 2...13 {
+            await waitUntil { await backend.bootstrapCount >= round }
+            await backend.resolveBootstrap(.success(makeSnapshot(
+                hostID: "local-host",
+                capabilities: capabilities,
+                sessions: [makeSession(id: "current")]
+            )))
+        }
+        await waitUntil { await backend.bootstrapCount >= 14 }
+        XCTAssertEqual(runtime.selectedSessionID, "created-session")
+        XCTAssertEqual(runtime.snapshot?.sessions.first?.id, "created-session")
+
+        await backend.resolveBootstrap(.success(makeSnapshot(
+            hostID: "local-host",
+            capabilities: capabilities,
+            sessions: [
+                makeSession(id: "created-session"),
+                makeSession(id: "current"),
+            ]
+        )))
+        await waitUntil { await backend.bootstrapCount >= 15 }
+        XCTAssertEqual(runtime.selectedSessionID, "created-session")
+        XCTAssertEqual(
+            runtime.snapshot?.sessions.filter { $0.id == "created-session" }.count,
+            1
+        )
+        runtime.disconnect()
+    }
+
+    /// The synthetic row is still bounded: a Host that never corroborates the
+    /// create must not keep a phantom Session in the sidebar forever.
+    func testUncorroboratedStartingRowExpires() async throws {
+        let optimistic = makeSession(id: "created-session")
+        let backend = ControlledRemoteBackend(createdSessionSummary: optimistic)
+        let runtime = makeRuntime(
+            backend: backend,
+            refreshIntervalNanoseconds: 1_000_000,
+            optimisticCreatedSessionLifetime: .zero
+        )
+        let capabilities = [
+            "host.bootstrap",
+            "session.input.write",
+            "session.mark_read",
+            "session.output.read",
+            RemoteHostRuntime.HostOperation.create,
+        ]
+        runtime.connectLocalService(
+            home: "/Users/me/.unpeel/workspaces/side",
+            name: "Side",
+            expectedHostID: "local-host"
+        )
+        await waitUntil { await backend.bootstrapCount == 1 }
+        await backend.resolveBootstrap(.success(makeSnapshot(
+            hostID: "local-host",
+            capabilities: capabilities,
+            sessions: [makeSession(id: "current")]
+        )))
+        await waitUntil { runtime.connectionState == .connected(name: "Host") }
+
+        _ = try await runtime.createSession(projectID: "project", presetID: "preset")
+        await waitUntil { await backend.bootstrapCount >= 2 }
+        await backend.resolveBootstrap(.success(makeSnapshot(
+            hostID: "local-host",
+            capabilities: capabilities,
+            sessions: [makeSession(id: "current")]
+        )))
+        await waitUntil {
+            runtime.snapshot?.sessions.contains(where: { $0.id == "created-session" }) == false
+        }
         runtime.disconnect()
     }
 
@@ -2891,6 +2925,7 @@ final class RemoteHostRuntimeTests: XCTestCase {
         refreshIntervalNanoseconds: UInt64 = 60_000_000_000,
         initialBootstrapRetryIntervalNanoseconds: UInt64 = 1_000_000,
         initialBootstrapFastRetryCount: Int = 3,
+        optimisticCreatedSessionLifetime: Duration = .seconds(30),
         paneCache: RemoteGhosttyPaneCache = RemoteGhosttyPaneCache(),
         paneAttachmentProbe: @escaping RemoteHostRuntime.PaneAttachmentProbe = { _ in true },
         paneOutputFeeder: @escaping RemoteHostRuntime.PaneOutputFeeder = {
@@ -2902,6 +2937,7 @@ final class RemoteHostRuntimeTests: XCTestCase {
             initialBootstrapRetryIntervalNanoseconds:
                 initialBootstrapRetryIntervalNanoseconds,
             initialBootstrapFastRetryCount: initialBootstrapFastRetryCount,
+            optimisticCreatedSessionLifetime: optimisticCreatedSessionLifetime,
             backendFactory: { _ in backend },
             paneCache: paneCache,
             paneAttachmentProbe: paneAttachmentProbe,
@@ -2916,6 +2952,7 @@ final class RemoteHostRuntimeTests: XCTestCase {
         initialDirectLinkGraceNanoseconds: UInt64 = 60_000_000_000,
         directProbeSuccessfulLinkRefreshes: Int = 8,
         forceLinkForDevelopment: Bool = false,
+        optimisticCreatedSessionLifetime: Duration = .seconds(30),
         backendFactory: @escaping RemoteHostRuntime.BackendFactory,
         paneCache: RemoteGhosttyPaneCache = RemoteGhosttyPaneCache(),
         paneAttachmentProbe: @escaping RemoteHostRuntime.PaneAttachmentProbe = { _ in true },
@@ -2935,6 +2972,7 @@ final class RemoteHostRuntimeTests: XCTestCase {
             resizeDebounceNanoseconds: 1_000_000,
             fitSettleNanoseconds: 0,
             fitClearDelayNanoseconds: 0,
+            optimisticCreatedSessionLifetime: optimisticCreatedSessionLifetime,
             backendFactory: backendFactory,
             paneCache: paneCache,
             paneAttachmentProbe: paneAttachmentProbe,
@@ -3060,7 +3098,6 @@ final class RemoteHostRuntimeTests: XCTestCase {
         providerID: String? = nil,
         worktreePath: String? = nil,
         worktreeBranch: String? = nil,
-        archived: Bool = false,
         latestAlertBody: String? = nil,
         latestAlertAt: Int64? = nil
     ) -> RemoteSessionSummary {
@@ -3080,7 +3117,6 @@ final class RemoteHostRuntimeTests: XCTestCase {
             worktreePath: worktreePath,
             worktreeBranch: worktreeBranch,
             lastOutputPreview: preview,
-            archived: archived,
             latestAlertBody: latestAlertBody,
             latestAlertAtUnixMs: latestAlertAt
         )
@@ -3135,6 +3171,22 @@ private final class FeedRecorder {
 }
 
 private actor ControlledRemoteBackend: NativeRemoteBackendProtocol {
+    private(set) var gitSettingsReads = 0
+    private(set) var gitSettingsWrites: [RemoteGitSettingsAction] = []
+    private var gitSettingsContinuation: CheckedContinuation<RemoteGitSettings, Error>?
+    func gitSettings() async throws -> RemoteGitSettings {
+        gitSettingsReads += 1
+        return try await withCheckedThrowingContinuation { gitSettingsContinuation = $0 }
+    }
+    func resolveGitSettings(_ value: RemoteGitSettings) {
+        gitSettingsContinuation?.resume(returning: value)
+        gitSettingsContinuation = nil
+    }
+    func setGitSettings(_ action: RemoteGitSettingsAction) async throws -> NativeRemoteEffectReceipt {
+        gitSettingsWrites.append(action)
+        return NativeRemoteEffectReceipt(requestID: 915)
+    }
+
     private(set) var pluginUpdateReads = 0
     private var pluginUpdateContinuation: CheckedContinuation<RemotePluginUpdates, Error>?
     func pluginUpdates() async throws -> RemotePluginUpdates {
@@ -3381,16 +3433,6 @@ private actor ControlledRemoteBackend: NativeRemoteBackendProtocol {
         return NativeRemoteEffectReceipt(requestID: 901)
     }
 
-    func archiveSession(sessionID: String) async throws -> NativeRemoteEffectReceipt {
-        organizationCalls.append("archive:\(sessionID)")
-        return NativeRemoteEffectReceipt(requestID: 902)
-    }
-
-    func restoreSession(sessionID: String) async throws -> NativeRemoteEffectReceipt {
-        organizationCalls.append("restore:\(sessionID)")
-        return NativeRemoteEffectReceipt(requestID: 903)
-    }
-
     func stopSession(sessionID: String) async throws -> NativeRemoteEffectReceipt {
         organizationCalls.append("stop:\(sessionID)")
         return NativeRemoteEffectReceipt(requestID: 904)
@@ -3481,11 +3523,6 @@ private actor ControlledRemoteBackend: NativeRemoteBackendProtocol {
             code: "invalid_pairing_invitation",
             message: "invalid test pairing invitation"
         )
-    }
-
-    func listArchivedSessions(projectID: String) async throws -> [RemoteSessionSummary] {
-        organizationCalls.append("archived:\(projectID)")
-        return []
     }
 
     func transcriptMarkdown(

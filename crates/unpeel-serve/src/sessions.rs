@@ -12,6 +12,7 @@ use std::time::SystemTime;
 
 use unpeel_core::app_paths;
 use unpeel_core::controller_api::HostCreatePreset;
+use unpeel_core::program_status::{ProgramState, ProgramStatusSummary};
 use unpeel_core::session_host::{HostedSessionManifest, HostedSessionState};
 use unpeel_core::state::AppState;
 
@@ -40,13 +41,15 @@ pub enum Status {
     Exited,
 }
 
-/// Where a running Session's busy/idle came from. Hooks are exact; the
-/// screen tier is a lower-confidence fallback for a recognized agent with
-/// no hook latch (its Unpeel integration is not installed, or has not
-/// spoken yet). Controllers may hint at the upgrade; the worker never sends
-/// completion notifications from a screen-derived edge.
+/// Where a running Session's busy/idle came from. A program's own
+/// `OSC 7501` report outranks everything while it holds a record; hooks are
+/// exact; the screen tier is a lower-confidence fallback for a recognized
+/// agent with no hook latch (its Unpeel integration is not installed, or
+/// has not spoken yet). Controllers may hint at the upgrade; the worker
+/// never sends completion notifications from a screen-derived edge.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum StatusSource {
+    Program,
     Hooks,
     Screen,
     None,
@@ -55,6 +58,7 @@ pub enum StatusSource {
 impl StatusSource {
     pub fn word(self) -> &'static str {
         match self {
+            StatusSource::Program => "program",
             StatusSource::Hooks => "hooks",
             StatusSource::Screen => "screen",
             StatusSource::None => "none",
@@ -89,10 +93,10 @@ fn manifest_resume_agent_available(
     running: bool,
     status: Status,
     active_runtime_id: Option<&str>,
-    archive_available: bool,
+    resumable: bool,
 ) -> bool {
     running
-        && archive_available
+        && resumable
         && !manifest.runtime_launch_pending
         && status != Status::Starting
         && session_host_supports_resume_agent(manifest.host_protocol_version.map(u64::from))
@@ -123,8 +127,9 @@ pub struct SessionRow {
     pub resume_available: bool,
     /// Whether this particular Session has a provider conversation or
     /// provider-owned storage that can actually be resumed. Unlike
-    /// `resume_available`, this remains meaningful while the PTY is live.
-    pub archive_available: bool,
+    /// `resume_available`, this remains meaningful while the PTY is live:
+    /// Stop leaves such a Session as a resumable stopped row.
+    pub resumable: bool,
     /// Resume a managed agent that has returned to the shell inside the
     /// existing hosted PTY. This comes from the stable launch binding, never
     /// passive runtime observation, and is absent while the runtime is active.
@@ -133,9 +138,11 @@ pub struct SessionRow {
     pub status: Status,
     /// Provenance of `status` while running; `None` otherwise.
     pub status_source: StatusSource,
+    /// The program's own `OSC 7501` report while running (the source of
+    /// `status` whenever present).
+    pub program_status: Option<ProgramStatusSummary>,
     pub created_at: u64,
     pub pinned: bool,
-    pub archived: bool,
     pub unread: bool,
     /// Remote Host-projected App alert copy. Local rows read the canonical
     /// activity log directly instead.
@@ -238,19 +245,17 @@ pub enum SidebarItem {
 pub struct SidebarModel {
     pub rows: Vec<SessionRow>,
     pub items: Vec<SidebarItem>,
-    /// Archived sessions per group — what the project menu's "Archived (N)"
-    /// shows now that there is no sidebar footer row to carry the count.
-    pub archived_counts: std::collections::HashMap<String, usize>,
+    /// Stopped Sessions past their group's keep limit (`sidebar_stopped_limit`):
+    /// the Host's retention sweep removes them. Pinned and unread rows never
+    /// land here.
+    pub expired: Vec<String>,
 }
 
-/// Everything the TUI publishes to authenticated Controller transports on a
-/// rescan. Archive buckets deliberately live beside (rather than inside) the
-/// bootstrap snapshot: `/mobile/archive` is a pageless project-scoped read,
-/// and an empty bucket must remain distinguishable from an unknown project.
+/// Everything the Host publishes to authenticated Controller transports on a
+/// rescan.
 #[derive(Clone, Debug, Default)]
 pub struct MobileSnapshot {
     pub bootstrap: serde_json::Value,
-    pub archived_sessions_by_project: HashMap<String, Vec<serde_json::Value>>,
     /// Ordered Host-owned create catalog. The public bootstrap preset DTO
     /// intentionally omits project scope, so carrying the typed rows beside
     /// it avoids reconstructing scope through a lossy id-keyed join.
@@ -297,6 +302,39 @@ fn screen_fallback_status(manifest: &HostedSessionManifest) -> Option<Status> {
 }
 
 fn derive_status_with_source(
+    engine: &mut ActivityEngine,
+    manifest: &HostedSessionManifest,
+    running: bool,
+    dir: &std::path::Path,
+    now: SystemTime,
+    menu_attention_detection: bool,
+) -> (Status, StatusSource) {
+    // The hook engine keeps observing even while a program report wins, so
+    // it holds current state the moment the program clears its records.
+    let derived = derive_hook_or_screen_status(
+        engine,
+        manifest,
+        running,
+        dir,
+        now,
+        menu_attention_detection,
+    );
+    match manifest.program_status.as_ref().filter(|_| running) {
+        Some(program) => (program_status(program), StatusSource::Program),
+        None => derived,
+    }
+}
+
+/// A program's own report is the status: it said what it is doing.
+fn program_status(program: &ProgramStatusSummary) -> Status {
+    match program.state {
+        ProgramState::Working => Status::Busy,
+        ProgramState::Blocked => Status::Attention,
+        ProgramState::Idle | ProgramState::Done | ProgramState::Error => Status::Idle,
+    }
+}
+
+fn derive_hook_or_screen_status(
     engine: &mut ActivityEngine,
     manifest: &HostedSessionManifest,
     running: bool,
@@ -575,16 +613,14 @@ fn local_manifest_urls(session_id: &str) -> Vec<String> {
 }
 
 /// Decode caches for the 1s rescan, keyed by session dir name. manifest.json
-/// and the title/archived markers are re-parsed only when their stamp
-/// changes; a cached `None` records a decode failure (torn write) — the
-/// finishing write re-stamps the file. The desktop keeps the same caches
-/// (UnpeelStore.manifestCache): with hundreds of archived session dirs the
-/// per-tick re-parses, not the stats, dominate the scan.
+/// and the title markers are re-parsed only when their stamp changes; a
+/// cached `None` records a decode failure (torn write) — the finishing write
+/// re-stamps the file. With hundreds of session dirs the per-tick re-parses,
+/// not the stats, dominate the scan.
 #[derive(Default)]
 pub struct ScanCache {
     manifests: HashMap<String, (FileStamp, Option<HostedSessionManifest>)>,
     titles: HashMap<String, (FileStamp, Option<String>)>,
-    archived: HashMap<String, (FileStamp, Option<u64>)>,
     overrides: HashMap<String, (FileStamp, Option<String>)>,
 }
 
@@ -612,7 +648,6 @@ impl ScanCache {
     fn retain_dirs(&mut self, dirs: &std::collections::HashSet<String>) {
         self.manifests.retain(|k, _| dirs.contains(k));
         self.titles.retain(|k, _| dirs.contains(k));
-        self.archived.retain(|k, _| dirs.contains(k));
         self.overrides.retain(|k, _| dirs.contains(k));
     }
 }
@@ -688,12 +723,6 @@ pub fn scan_sidebar(
                     }
                     None => unpeel_core::session_host::manifest_launching_host_is_alive(manifest),
                 };
-            let marker_at = ScanCache::marker(
-                &mut cache.archived,
-                &manifest.session.id,
-                &dir.join(unpeel_core::session_ops::ARCHIVE_MARKER),
-                || unpeel_core::session_ops::archived_marker(&manifest.session.id),
-            );
             let (status, status_source) = derive_status_with_source(
                 engine,
                 manifest,
@@ -720,25 +749,30 @@ pub fn scan_sidebar(
             }
             let exited_at =
                 (manifest.state == HostedSessionState::Exited).then_some(manifest.updated_at);
+            let program_status = running.then(|| manifest.program_status.clone()).flatten();
             let activity_at = unpeel_core::session_ops::latest_lifecycle_ms(
                 &manifest.session.id,
                 &manifest.session.command,
                 manifest.session.created_at,
                 exited_at,
+            )
+            .max(
+                program_status
+                    .as_ref()
+                    .map_or(0, |program| program.changed_at),
             );
             let active_runtime_id = running
                 .then(|| unpeel_core::session_host::active_runtime_id(manifest).map(str::to_owned))
                 .flatten();
-            // Evidence-based surfaces: `can_archive_manifest` proves a real
+            // Evidence-based surfaces: `has_resume_evidence` proves a real
             // resumable conversation (managed storage or provider markers).
-            // It gates what the UI OFFERS — Resume, Resume Agent, and the
-            // archive affordances (including the auto-stop sweep, which must
-            // never file a session with nothing to resume) — while the
-            // archive/resume execution layer stays compatible for explicit
-            // requests. A stopped blank terminal keeps terminal-replacing
-            // Resume: there is no conversation to demand evidence for.
-            let resume_evidence = unpeel_core::session_ops::can_archive_manifest(manifest);
-            let archive_available = resume_evidence;
+            // It gates what the UI OFFERS — Resume, Resume Agent, Stop vs
+            // Remove, and the auto-stop sweep (which must never stop a
+            // session with nothing to resume) — while the resume execution
+            // layer stays compatible for explicit requests. A stopped blank
+            // terminal keeps terminal-replacing Resume: there is no
+            // conversation to demand evidence for.
+            let resume_evidence = unpeel_core::session_ops::has_resume_evidence(manifest);
             let resume_available =
                 !running && (manifest.session.command.trim().is_empty() || resume_evidence);
             let resume_agent_available = manifest_resume_agent_available(
@@ -757,15 +791,14 @@ pub fn scan_sidebar(
                 active_runtime_id,
                 active_app: running.then(|| manifest.active_app.clone()).flatten(),
                 resume_available,
-                archive_available,
+                resumable: resume_evidence,
                 resume_agent_available,
                 running,
                 status,
                 status_source,
+                program_status,
                 created_at: manifest.session.created_at,
                 pinned: pinned_ids.contains(&manifest.session.id),
-                archived: marker_at.is_some()
-                    || overlay.is_some_and(|o| o.archived.contains(&manifest.session.id)),
                 activity_at,
                 group_id: String::new(), // assigned once grouping is known
                 unread: false,
@@ -785,14 +818,13 @@ pub fn scan_sidebar(
     let live_ids: std::collections::HashSet<String> = rows.iter().map(|r| r.id.clone()).collect();
     engine.retain_sessions(&live_ids);
 
-    // Sidebar order mirrors the desktop model: per project, non-archived pins
-    // come first, then every live row, then naturally stopped rows and the
-    // fixed newest-first archive section. The two inactive sections share the
-    // desktop's preview window (Settings ▸ Cleanup, default five). Hidden rows
-    // remain in the model for palette/history access; archives additionally
-    // remain reachable via `a` or the project context menu.
+    // Sidebar order mirrors the desktop model: per project, pins come first,
+    // then every live row, then stopped rows capped by the desktop's preview
+    // window (Settings ▸ Cleanup, default five), which is also the keep
+    // limit: rows past it are `expired` and the Host's retention sweep
+    // removes them.
     let mut items = Vec::new();
-    let mut archived_counts = std::collections::HashMap::new();
+    let mut expired = Vec::new();
     let mut indices: Vec<usize> = (0..rows.len()).collect();
     indices.sort_by(|&a, &b| rows[b].created_at.cmp(&rows[a].created_at));
 
@@ -959,8 +991,7 @@ pub fn scan_sidebar(
         // cwd-derived buckets only exist because sessions exist, so an
         // empty one is just noise.
         let is_real_project = known.contains(&project_id);
-        if listing.is_empty() && listing.archived_count == 0 && kids.is_empty() && !is_real_project
-        {
+        if listing.is_empty() && kids.is_empty() && !is_real_project {
             continue;
         }
         items.push(SidebarItem::Header(name.clone()));
@@ -1010,39 +1041,31 @@ pub fn scan_sidebar(
                     name: kid_name,
                 });
             }
-            let filed = kid.filed_count();
+            expired.extend(kid.hidden.iter().map(|&i| rows[i].id.clone()));
             items.extend(kid.pinned.into_iter().map(SidebarItem::Session));
             items.extend(kid.sessions.into_iter().map(SidebarItem::Session));
-            if filed > 0 {
-                archived_counts.insert(kid_id, filed);
-            }
         }
-        let filed = listing.filed_count();
+        expired.extend(listing.hidden.iter().map(|&i| rows[i].id.clone()));
         items.extend(listing.pinned.into_iter().map(SidebarItem::Session));
         items.extend(listing.sessions.into_iter().map(SidebarItem::Session));
-        if filed > 0 {
-            archived_counts.insert(project_id.clone(), filed);
-        }
     }
 
     items.push(SidebarItem::AddProject);
     SidebarModel {
         rows,
         items,
-        archived_counts,
+        expired,
     }
 }
 
 /// One group's sidebar rows (a top-level project or a worktree child),
-/// bucketed and ordered exactly like the desktop: non-archived pins first,
-/// then live rows, then the capped inactive tail — natural stops followed by
-/// newest-first archives. Archive status overrides pin/manual order, so filing
-/// a Session always moves it into the fixed bottom archive section.
+/// bucketed and ordered exactly like the desktop: pins first, then live
+/// rows, then the capped tail of stopped rows.
 struct GroupListing {
     pinned: Vec<usize>,
     sessions: Vec<usize>,
-    archived_count: usize,
-    hidden_inactive: usize,
+    /// Stopped rows past the keep limit, bound for removal.
+    hidden: Vec<usize>,
 }
 
 impl GroupListing {
@@ -1051,13 +1074,7 @@ impl GroupListing {
     }
     /// Sessions the group lists or files: what a folder row's count shows.
     fn session_count(&self) -> usize {
-        self.pinned.len() + self.sessions.len() + self.hidden_inactive
-    }
-
-    /// Archive-library rows are exactly the Sessions with an archive marker.
-    /// A Host dying or a Session stopping never files it implicitly.
-    fn filed_count(&self) -> usize {
-        self.archived_count
+        self.pinned.len() + self.sessions.len() + self.hidden.len()
     }
 }
 
@@ -1100,7 +1117,7 @@ fn group_listing(
     let mut pinned: Vec<usize> = indices
         .iter()
         .copied()
-        .filter(|i| member(i) && rows[*i].pinned && !rows[*i].archived)
+        .filter(|i| member(i) && rows[*i].pinned)
         .collect();
     if let Some(overlay) = overlay {
         pinned.sort_by_key(|&i| overlay.pins.get(&rows[i].id).copied().unwrap_or(u64::MAX));
@@ -1139,7 +1156,7 @@ fn group_listing(
     let mut active: Vec<usize> = indices
         .iter()
         .copied()
-        .filter(|i| member(i) && rows[*i].running && !rows[*i].pinned && !rows[*i].archived)
+        .filter(|i| member(i) && rows[*i].running && !rows[*i].pinned)
         .collect();
     if date_sorted {
         active.sort_by(|&left, &right| compare_recent(&rows[left], &rows[right]));
@@ -1149,16 +1166,10 @@ fn group_listing(
     let mut stopped: Vec<usize> = indices
         .iter()
         .copied()
-        .filter(|i| member(i) && !rows[*i].running && !rows[*i].pinned && !rows[*i].archived)
-        .collect();
-    let mut archived: Vec<usize> = indices
-        .iter()
-        .copied()
-        .filter(|i| member(i) && rows[*i].archived)
+        .filter(|i| member(i) && !rows[*i].running && !rows[*i].pinned)
         .collect();
 
-    // Natural stops keep their lifecycle order. They are a separate section
-    // from archives, so a newly filed row can never jump above one of them.
+    // Stopped rows keep their lifecycle order, newest first.
     stopped.sort_by(|&left, &right| {
         let stamp = |index: usize| rows[index].created_at.max(rows[index].activity_at);
         stamp(right)
@@ -1169,54 +1180,26 @@ fn group_listing(
         stopped.sort_by_key(|&i| order_key(i));
     }
 
-    // Archive order is never draggable/manual. A fresh explicit archive
-    // stamp puts that row first inside the archive section; legacy/overlay
-    // rows fall back to their last lifecycle event.
-    let stamped_at = |id: &str| -> Option<u64> {
-        unpeel_core::session_ops::archive_stamp(id)
-            .or_else(|| overlay.and_then(|o| o.archived_at.get(id).copied()))
-    };
-    archived.sort_by(|&left, &right| {
-        let stamp = |index: usize| {
-            rows[index]
-                .created_at
-                .max(rows[index].activity_at)
-                .max(stamped_at(&rows[index].id).unwrap_or(0))
-        };
-        stamp(right)
-            .cmp(&stamp(left))
-            .then_with(|| rows[left].id.cmp(&rows[right].id))
-    });
-    let archived_count = indices
-        .iter()
-        .filter(|i| member(i) && rows[**i].archived)
-        .count();
-    // Natural stops and archives share one preview window, while preserving
-    // any inactive row the user is looking at or has not read — desktop parity.
-    let mut inactive = stopped;
-    inactive.extend(archived);
+    // The keep limit also keeps any stopped row the user has not read.
     let mut kept: Vec<usize> = Vec::new();
-    let mut hidden_inactive = 0usize;
-    for (inactive_rank, index) in inactive.iter().copied().enumerate() {
+    let mut hidden: Vec<usize> = Vec::new();
+    for (inactive_rank, index) in stopped.iter().copied().enumerate() {
         let keep = inactive_rank < stopped_window || keep_visible.contains(&rows[index].id);
         if keep {
             kept.push(index);
         } else {
-            hidden_inactive += 1;
+            hidden.push(index);
         }
     }
 
-    // Non-archived pins first, every live row next, then the windowed inactive
-    // tail. A pin is retained on disk for restoration, but never pulls an
-    // archived row out of this bottom section.
+    // Pins first, every live row next, then the windowed stopped tail.
     let mut sessions = active;
     sessions.extend(kept);
 
     GroupListing {
         pinned,
         sessions,
-        archived_count,
-        hidden_inactive,
+        hidden,
     }
 }
 
@@ -1239,8 +1222,7 @@ fn in_group(row: &SessionRow, project_id: &str, known: &std::collections::HashSe
 }
 
 /// Build the sidebar from the app-computed `/mcp/sidebar` payload — the SAME
-/// rows the desktop renders (title overlays, pins, archived window, per-
-/// project archive counts). Returns None if the payload doesn't parse, so
+/// rows the desktop renders (title overlays, pins, stopped window). Returns None if the payload doesn't parse, so
 /// callers fall back to the disk-derived model.
 pub fn model_from_bridge(
     value: &serde_json::Value,
@@ -1301,13 +1283,6 @@ pub fn model_from_bridge(
                 .or_else(|| session.get("runtimeLaunchPending"))
                 .and_then(|value| value.as_bool())
                 .unwrap_or(false);
-            let archive_available = session
-                .get("archive_available")
-                .or_else(|| session.get("archiveAvailable"))
-                .and_then(|value| value.as_bool())
-                // Apps that predate the capability key archived anything;
-                // version skew must not hide the verb (compat_bridge's rule).
-                .unwrap_or(true);
             let resume_available = session
                 .get("resume_available")
                 .or_else(|| session.get("resumeAvailable"))
@@ -1316,8 +1291,10 @@ pub fn model_from_bridge(
                 // evidence the app-less path uses, so bridge rows offer
                 // exactly what local rows would.
                 .unwrap_or_else(|| {
-                    command.trim().is_empty() || unpeel_core::session_ops::can_archive_session(&id)
+                    command.trim().is_empty()
+                        || unpeel_core::session_ops::session_has_resume_evidence(&id)
                 });
+            let resumable = unpeel_core::session_ops::session_has_resume_evidence(&id);
             rows.push(SessionRow {
                 host_started_at: None,
                 id: id.clone(),
@@ -1325,7 +1302,7 @@ pub fn model_from_bridge(
                 label: session.get("label")?.as_str()?.to_string(),
                 command: command.clone(),
                 resume_available: !running && resume_available,
-                archive_available,
+                resumable,
                 resume_agent_available: running
                     && !runtime_launch_pending
                     && status != Status::Starting
@@ -1347,13 +1324,10 @@ pub fn model_from_bridge(
                 running,
                 status,
                 status_source: StatusSource::None,
+                program_status: None,
                 created_at,
                 pinned: session
                     .get("pinned")
-                    .and_then(|v| v.as_bool())
-                    .unwrap_or(false),
-                archived: session
-                    .get("archived")
                     .and_then(|v| v.as_bool())
                     .unwrap_or(false),
                 unread: session
@@ -1386,16 +1360,11 @@ pub fn model_from_bridge(
         node: &serde_json::Value,
         rows: &mut Vec<SessionRow>,
         items: &mut Vec<SidebarItem>,
-        archived_counts: &mut std::collections::HashMap<String, usize>,
         children: &std::collections::HashMap<String, (String, Option<String>)>,
     ) -> Option<()> {
         let project_id = node.get("id")?.as_str()?.to_string();
         let name = node.get("name")?.as_str()?.to_string();
         let sessions = node.get("sessions")?.as_array()?;
-        let archived_count = node
-            .get("archived_count")
-            .and_then(|v| v.as_u64())
-            .unwrap_or(0) as usize;
         items.push(SidebarItem::Header(name.clone()));
         // Same rule as the scan path: only an empty project gets the
         // row; with sessions the header's hover "+" stands in.
@@ -1414,10 +1383,6 @@ pub fn model_from_bridge(
                 let kid_id = worktree.get("id")?.as_str()?.to_string();
                 let kid_name = worktree.get("name")?.as_str()?.to_string();
                 let kid_sessions = worktree.get("sessions")?.as_array()?;
-                let kid_archived = worktree
-                    .get("archived_count")
-                    .and_then(|v| v.as_u64())
-                    .unwrap_or(0) as usize;
                 items.push(SidebarItem::WorktreeHeader {
                     project_id: kid_id.clone(),
                     parent: project_id.clone(),
@@ -1443,36 +1408,23 @@ pub fn model_from_bridge(
                     });
                 }
                 push_sessions(&kid_id, kid_sessions, rows, items)?;
-                if kid_archived > 0 {
-                    archived_counts.insert(kid_id, kid_archived);
-                }
             }
         }
         push_sessions(&project_id, sessions, rows, items)?;
-        if archived_count > 0 {
-            archived_counts.insert(project_id.clone(), archived_count);
-        }
         Some(())
     }
 
     let projects = value.get("projects")?.as_array()?;
     let mut rows = Vec::new();
     let mut items = Vec::new();
-    let mut archived_counts = std::collections::HashMap::new();
     for project in projects {
-        add_node(
-            project,
-            &mut rows,
-            &mut items,
-            &mut archived_counts,
-            &children,
-        )?;
+        add_node(project, &mut rows, &mut items, &children)?;
     }
     items.push(SidebarItem::AddProject);
     let mut model = SidebarModel {
         rows,
         items,
-        archived_counts,
+        expired: Vec::new(),
     };
     apply_shared_order(&mut model);
     Some(model)
@@ -1650,9 +1602,7 @@ fn apply_shared_order(model: &mut SidebarModel) {
 
 /// Reapply per-group session ranks to a bridged sidebar. The app renders pins,
 /// running rows, and stopped rows in separate sections, so each bucket keeps
-/// its own slots while consuming the same combined shared order list. Archive
-/// rows deliberately ignore this file: their newest-first bottom section has
-/// no drag slots.
+/// its own slots while consuming the same combined shared order list.
 fn apply_session_orders(
     model: &mut SidebarModel,
     orders: &std::collections::HashMap<String, Vec<String>>,
@@ -1667,7 +1617,7 @@ fn apply_session_orders(
         let Some(order) = orders.get(&row.group_id) else {
             continue;
         };
-        if !row.archived && order.contains(&row.id) {
+        if order.contains(&row.id) {
             buckets
                 .entry((row.group_id.clone(), row.pinned, row.running))
                 .or_default()
@@ -1854,7 +1804,6 @@ pub fn mobile_snapshot(
     fn session_summary(
         row: &SessionRow,
         unread: bool,
-        archived_at: u64,
         latest_alert: Option<&unpeel_core::activity_log::ActivityLogEntry>,
     ) -> serde_json::Value {
         let (status, activity) = match (row.status, unread) {
@@ -1877,14 +1826,17 @@ pub fn mobile_snapshot(
             // to reconstruct this from their own filesystem.
             "updatedAtUnixMs": row.activity_at
                 .max(row.created_at)
-                .max(archived_at)
                 .max(latest_alert.map(|entry| entry.at).unwrap_or(0)),
             "status": status,
             "activity": activity,
-            // Provenance of `activity` while running: "hooks" (exact) or
-            // "screen" (fallback tier: integration not installed / no
-            // hook latch yet). Additive; older Controllers ignore it.
+            // Provenance of `activity` while running: "program" (the
+            // program's own OSC 7501 report), "hooks" (exact), or "screen"
+            // (fallback tier: integration not installed / no hook latch
+            // yet). Additive; older Controllers ignore it.
             "activitySource": row.running.then(|| row.status_source.word()),
+            // What the program says it is doing (OSC 7501), while running.
+            // Untrusted, display-only text: one line, no control characters.
+            "programStatus": row.program_status.as_ref().filter(|_| row.running).map(ProgramStatusSummary::controller_json),
             "unread": unread,
             "pinned": row.pinned,
             "notifyWhenDone": false,
@@ -1898,9 +1850,13 @@ pub fn mobile_snapshot(
                 // A headless Host can observe completion, but cannot deliver
                 // push yet. Do not offer a toggle whose patch would be 501.
                 "notifyWhenDone": false,
-                "archive": row.archive_available,
+                // Host resume evidence: Stop leaves a resumable stopped row.
+                "resumable": row.resumable,
+                // Archive is gone; older Controllers read `false` and offer
+                // plain Stop.
+                "archive": false,
             },
-            "archived": row.archived,
+            "archived": false,
         });
         if let Some(obj) = session.as_object_mut() {
             if row.running {
@@ -1959,14 +1915,6 @@ pub fn mobile_snapshot(
         session
     }
 
-    let archive_stamp = |row: &SessionRow| -> u64 {
-        if !row.archived {
-            return 0;
-        }
-        unpeel_core::session_ops::archive_stamp(&row.id)
-            .or_else(|| overlay.and_then(|value| value.archived_at.get(&row.id).copied()))
-            .unwrap_or(0)
-    };
     let mut sessions = Vec::new();
     for item in &model.items {
         let SidebarItem::Session(i) = item else {
@@ -1983,12 +1931,7 @@ pub fn mobile_snapshot(
                     .find(|entry| entry.session_id == row.id)
             })
             .filter(|entry| entry.kind == unpeel_core::activity_log::ActivityLogKind::Alert);
-        sessions.push(session_summary(
-            row,
-            unread,
-            archive_stamp(row),
-            latest_alert,
-        ));
+        sessions.push(session_summary(row, unread, latest_alert));
     }
 
     let app_state = load_app_state();
@@ -2029,24 +1972,11 @@ pub fn mobile_snapshot(
         if !seen_projects.insert(id.to_string()) {
             return;
         }
-        let archived_count = model
-            .rows
-            .iter()
-            .filter(|r| {
-                let effective = if r.group_id.is_empty() {
-                    &r.project_id
-                } else {
-                    &r.group_id
-                };
-                effective == id && r.archived
-            })
-            .count();
         let mut project = serde_json::json!({
             "id": id,
             "name": name,
             "path": path,
             "mcpBlocked": false,
-            "archivedSessionCount": archived_count,
         });
         if let Some(obj) = project.as_object_mut() {
             if let Some(order) = sort_order {
@@ -2164,54 +2094,6 @@ pub fn mobile_snapshot(
 
     let (mut presets, mut create_presets) = mobile_presets(app_state.as_ref(), overlay);
 
-    // Seed every published project, including projects with no archived
-    // sessions. The shared router uses key presence to tell known-empty from
-    // unknown. Then add every archived SidebarModel row under its effective
-    // project/group id. Archive status overrides a retained pin, so these
-    // rows remain in the newest-filed archive section.
-    let mut archived_sessions_by_project: HashMap<String, Vec<serde_json::Value>> = projects
-        .iter()
-        .filter_map(|project| project.get("id").and_then(serde_json::Value::as_str))
-        .map(|id| (id.to_owned(), Vec::new()))
-        .collect();
-    let mut archived_rows: Vec<&SessionRow> =
-        model.rows.iter().filter(|row| row.archived).collect();
-    archived_rows.sort_by(|left, right| {
-        archive_stamp(right)
-            .max(right.activity_at)
-            .max(right.created_at)
-            .cmp(
-                &archive_stamp(left)
-                    .max(left.activity_at)
-                    .max(left.created_at),
-            )
-            .then_with(|| left.id.cmp(&right.id))
-    });
-    for row in archived_rows {
-        let project_id = effective_project_id(row);
-        if project_id.is_empty() {
-            continue;
-        }
-        archived_sessions_by_project
-            .entry(project_id.to_owned())
-            .or_default()
-            .push(session_summary(
-                row,
-                extra_unread.contains(&row.id),
-                archive_stamp(row),
-                activity_log
-                    .and_then(|log| {
-                        log.entries()
-                            .iter()
-                            .rev()
-                            .find(|entry| entry.session_id == row.id)
-                    })
-                    .filter(|entry| {
-                        entry.kind == unpeel_core::activity_log::ActivityLogKind::Alert
-                    }),
-            ));
-    }
-
     let workspace_state = unpeel_core::app_state::load().unwrap_or_else(|_| serde_json::json!({}));
     let mut workspace_settings =
         unpeel_core::controller_host::wire_workspace_settings(&workspace_state);
@@ -2275,7 +2157,6 @@ pub fn mobile_snapshot(
             "hostTintHue": host_tint_hue,
             "hostDeviceKind": if cfg!(target_os = "linux") { "linux" } else { "unknown" },
         }),
-        archived_sessions_by_project,
         create_presets,
     }
 }
@@ -2357,14 +2238,14 @@ mod tests {
             active_runtime_id: None,
             active_app: None,
             resume_available: !running,
-            archive_available: true,
+            resumable: true,
             resume_agent_available: running,
             running,
             status,
             status_source: StatusSource::None,
+            program_status: None,
             created_at: 1,
             pinned,
-            archived: false,
             unread: false,
             latest_alert_body: None,
             cwd: "/tmp".into(),
@@ -2416,59 +2297,12 @@ mod tests {
                 "exited-a",
                 "exited-z",
             ],
-            "all live rows stay above the stopped/archive section"
+            "all live rows stay above the stopped section"
         );
     }
 
     #[test]
-    fn archived_rows_remain_in_the_five_row_archive_preview() {
-        let mut rows = vec![recent_test_row("live", Status::Idle, true, 1, false)];
-        for lifecycle in 10..17 {
-            let mut row = recent_test_row(
-                &format!("archived-{lifecycle}"),
-                Status::Exited,
-                false,
-                lifecycle,
-                false,
-            );
-            row.archived = true;
-            rows.push(row);
-        }
-        let indices = (0..rows.len()).rev().collect::<Vec<_>>();
-        let listing = group_listing(
-            "__recent_test_project",
-            &rows,
-            &indices,
-            None,
-            &std::collections::HashSet::new(),
-            &std::collections::HashSet::new(),
-            true,
-            5,
-        );
-        let ids = listing
-            .sessions
-            .iter()
-            .map(|index| rows[*index].label.as_str())
-            .collect::<Vec<_>>();
-
-        assert_eq!(
-            ids,
-            [
-                "live",
-                "archived-16",
-                "archived-15",
-                "archived-14",
-                "archived-13",
-                "archived-12",
-            ]
-        );
-        assert_eq!(listing.archived_count, 7);
-        assert_eq!(listing.hidden_inactive, 2);
-        assert_eq!(listing.filed_count(), 7);
-    }
-
-    #[test]
-    fn inactive_preview_window_caps_stopped_and_archived_without_filing_them() {
+    fn inactive_preview_window_caps_stopped_rows() {
         assert_eq!(sidebar_stopped_window(None), 5);
         assert_eq!(sidebar_stopped_window(Some(0)), 0);
         assert_eq!(sidebar_stopped_window(Some(10)), 10);
@@ -2484,19 +2318,8 @@ mod tests {
                 lifecycle,
                 false,
             );
-            row.archive_available = false;
-            row.resume_available = false;
-            rows.push(row);
-        }
-        for lifecycle in 20..23 {
-            let mut row = recent_test_row(
-                &format!("archived-{lifecycle}"),
-                Status::Exited,
-                false,
-                lifecycle,
-                false,
-            );
-            row.archived = true;
+            row.resumable = lifecycle % 2 == 0;
+            row.resume_available = row.resumable;
             rows.push(row);
         }
         let indices = (0..rows.len()).collect::<Vec<_>>();
@@ -2517,9 +2340,30 @@ mod tests {
             .collect::<Vec<_>>();
 
         assert_eq!(ids, ["live", "stopped-16", "stopped-15"]);
-        assert_eq!(listing.archived_count, 3);
-        assert_eq!(listing.hidden_inactive, 8);
-        assert_eq!(listing.filed_count(), 3);
+        assert_eq!(listing.hidden.len(), 5);
+        assert_eq!(listing.session_count(), 8);
+
+        // Rows past the keep limit are bound for removal, except unread ones.
+        let unread = std::collections::HashSet::from([rows[1].id.clone()]);
+        let listing = group_listing(
+            "__recent_test_project",
+            &rows,
+            &indices,
+            None,
+            &unread,
+            &std::collections::HashSet::new(),
+            true,
+            2,
+        );
+        let expired = listing
+            .hidden
+            .iter()
+            .map(|index| rows[*index].label.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            expired,
+            ["stopped-14", "stopped-13", "stopped-12", "stopped-11"]
+        );
     }
 
     #[test]
@@ -2618,19 +2462,17 @@ mod tests {
             "projects": [{
                 "id": "proj-1",
                 "name": "unpeel",
-                "archived_count": 0,
                 "sessions": [{
                     "id": "s1", "label": "main work", "command": "claude",
-                    "status": "idle", "pinned": false, "archived": false,
+                    "status": "idle", "pinned": false,
                     "unread": false, "created_at": 1_000u64,
                 }],
                 "worktrees": [{
                     "id": "wt-1",
                     "name": "unpeel — fix-branch",
-                    "archived_count": 0,
                     "sessions": [{
                         "id": "s2", "label": "worktree agent", "command": "claude",
-                        "status": "busy", "pinned": false, "archived": false,
+                        "status": "busy", "pinned": false,
                         "unread": false, "created_at": 2_000u64,
                     }],
                     "worktrees": [],
@@ -2728,7 +2570,6 @@ mod tests {
             "projects": [{
                 "id": "project",
                 "name": "Project",
-                "archived_count": 0,
                 "sessions": [
                     session("unknown-host", None),
                     session("old-host", Some(1)),
@@ -2764,26 +2605,24 @@ mod tests {
             "projects": [{
                 "id": "parent",
                 "name": "Parent",
-                "archived_count": 0,
                 "sessions": [
                     {"id": "p-a", "label": "parent a", "command": "claude",
-                     "status": "idle", "pinned": false, "archived": false,
+                     "status": "idle", "pinned": false,
                      "unread": false, "created_at": 2u64},
                     {"id": "p-b", "label": "parent b", "command": "claude",
-                     "status": "idle", "pinned": false, "archived": false,
+                     "status": "idle", "pinned": false,
                      "unread": false, "created_at": 1u64}
                 ],
                 "worktrees": [{
                     "id": "child",
                     "name": "Child",
                     "is_group": true,
-                    "archived_count": 0,
                     "sessions": [
                         {"id": "c-a", "label": "child a", "command": "claude",
-                         "status": "idle", "pinned": false, "archived": false,
+                         "status": "idle", "pinned": false,
                          "unread": false, "created_at": 2u64},
                         {"id": "c-b", "label": "child b", "command": "claude",
-                         "status": "idle", "pinned": false, "archived": false,
+                         "status": "idle", "pinned": false,
                          "unread": false, "created_at": 1u64}
                     ],
                     "worktrees": []
@@ -2821,13 +2660,11 @@ mod tests {
             "projects": [{
                 "id": "proj-1",
                 "name": "unpeel",
-                "archived_count": 0,
                 "sessions": [],
                 "worktrees": [{
                     "id": "group-1",
                     "name": "Research",
                     "is_group": true,
-                    "archived_count": 0,
                     "sessions": [],
                     "worktrees": [],
                 }],
@@ -2848,12 +2685,10 @@ mod tests {
             "projects": [{
                 "id": "proj-1",
                 "name": "unpeel",
-                "archived_count": 0,
                 "sessions": [],
                 "worktrees": [{
                     "id": "group-1",
                     "name": "Research",
-                    "archived_count": 0,
                     "sessions": [],
                     "worktrees": [],
                 }],
@@ -2891,14 +2726,14 @@ mod tests {
             active_runtime_id: None,
             active_app: None,
             resume_available: false,
-            archive_available: true,
+            resumable: true,
             resume_agent_available: true,
             running: true,
             status: Status::Idle,
             status_source: StatusSource::None,
+            program_status: None,
             created_at: 1,
             pinned: false,
-            archived: false,
             unread: false,
             latest_alert_body: None,
             cwd: "/tmp".into(),
@@ -2931,7 +2766,7 @@ mod tests {
         let model = SidebarModel {
             rows,
             items,
-            archived_counts: std::collections::HashMap::new(),
+            expired: Vec::new(),
         };
         assert_eq!(display_project_order(&model), vec!["p2", "p2-group", "p1"]);
     }
@@ -2947,14 +2782,14 @@ mod tests {
             active_runtime_id: Some("claude".into()),
             active_app: None,
             resume_available: false,
-            archive_available: false,
+            resumable: false,
             resume_agent_available: false,
             running: true,
             status: Status::Busy,
             status_source: StatusSource::None,
+            program_status: None,
             created_at: 1,
             pinned: false,
-            archived: false,
             unread: false,
             latest_alert_body: None,
             cwd: "/tmp".into(),
@@ -2968,7 +2803,7 @@ mod tests {
         let model = SidebarModel {
             rows: vec![row.clone()],
             items: vec![SidebarItem::Session(0)],
-            archived_counts: HashMap::new(),
+            expired: Vec::new(),
         };
         let snapshot = mobile_snapshot(&model, None, &std::collections::HashSet::new(), None);
         let summary = &snapshot.bootstrap["sessions"][0];
@@ -3002,14 +2837,14 @@ mod tests {
                 spinner_tint: None,
             }),
             resume_available: false,
-            archive_available: false,
+            resumable: false,
             resume_agent_available: false,
             running: true,
             status: Status::Busy,
             status_source: StatusSource::None,
+            program_status: None,
             created_at: 1,
             pinned: false,
-            archived: false,
             unread: false,
             latest_alert_body: None,
             cwd: "/tmp".into(),
@@ -3020,7 +2855,7 @@ mod tests {
         let model = SidebarModel {
             rows: vec![row],
             items: vec![SidebarItem::Session(0)],
-            archived_counts: HashMap::new(),
+            expired: Vec::new(),
         };
         let snapshot = mobile_snapshot(&model, None, &std::collections::HashSet::new(), None);
         let summary = &snapshot.bootstrap["sessions"][0];
@@ -3049,7 +2884,7 @@ mod tests {
         let model = SidebarModel {
             rows: vec![row],
             items: vec![SidebarItem::Session(0)],
-            archived_counts: HashMap::new(),
+            expired: Vec::new(),
         };
         let directory =
             std::env::temp_dir().join(format!("unpeel-mobile-alert-{}", uuid::Uuid::new_v4()));
@@ -3114,7 +2949,7 @@ mod tests {
                 SidebarItem::Session(2),
                 SidebarItem::Session(3),
             ],
-            archived_counts: HashMap::new(),
+            expired: Vec::new(),
         };
         let snapshot = mobile_snapshot(&model, None, &std::collections::HashSet::new(), None);
         let sessions = snapshot.bootstrap["sessions"].as_array().unwrap();
@@ -3147,7 +2982,7 @@ mod tests {
                 SidebarItem::Session(1),
                 SidebarItem::Session(2),
             ],
-            archived_counts: HashMap::new(),
+            expired: Vec::new(),
         };
         let snapshot = mobile_snapshot(&model, None, &std::collections::HashSet::new(), None);
         let sessions = snapshot.bootstrap["sessions"].as_array().unwrap();
@@ -3209,6 +3044,74 @@ mod tests {
         assert_eq!(
             derive_status_with_source(&mut engine, &working, true, &directory, now, true),
             (Status::Idle, StatusSource::Hooks)
+        );
+    }
+
+    /// A program's own `OSC 7501` report outranks hooks, the screen tier,
+    /// and the menu heuristic while it holds a record; the hook engine keeps
+    /// observing underneath and owns the state again once records clear.
+    #[test]
+    fn program_status_outranks_hooks_and_screen_until_cleared() {
+        let manifest_for = |program: serde_json::Value| -> HostedSessionManifest {
+            serde_json::from_value(serde_json::json!({
+                "session": {
+                    "id": "program-status",
+                    "project_id": "project",
+                    "label": "Terminal",
+                    "command": ""
+                },
+                "cwd": "/tmp",
+                "state": "running",
+                "pid": 123,
+                "exit_code": null,
+                "runtime": { "currentObservation": { "id": "claude", "pid": 124, "pid_started_at": 5, "processGroupID": 124 } },
+                "screen_activity": "working",
+                "menu_prompt_active": true,
+                "program_status": program
+            }))
+            .expect("manifest decodes")
+        };
+        let directory = std::env::temp_dir().join("unpeel-program-status-no-seed");
+        let now = SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(100);
+        let mut engine = ActivityEngine::default();
+
+        for (program, status) in [
+            (
+                serde_json::json!({ "state": "working", "app": "claude-code" }),
+                Status::Busy,
+            ),
+            (
+                serde_json::json!({ "state": "blocked", "kind": "permission" }),
+                Status::Attention,
+            ),
+            (serde_json::json!({ "state": "done" }), Status::Idle),
+            (serde_json::json!({ "state": "error" }), Status::Idle),
+            (serde_json::json!({ "state": "idle" }), Status::Idle),
+        ] {
+            let manifest = manifest_for(program.clone());
+            assert_eq!(
+                derive_status_with_source(&mut engine, &manifest, true, &directory, now, true),
+                (status, StatusSource::Program),
+                "{program}"
+            );
+            // An exited Session is exited whatever its last report said.
+            assert_eq!(
+                derive_status_with_source(&mut engine, &manifest, false, &directory, now, true),
+                (Status::Exited, StatusSource::None)
+            );
+        }
+        // A latched hook does not override a live record...
+        engine.apply_hook_event("program-status", "UserPromptSubmit", None, now);
+        let done = manifest_for(serde_json::json!({ "state": "done" }));
+        assert_eq!(
+            derive_status_with_source(&mut engine, &done, true, &directory, now, true).1,
+            StatusSource::Program
+        );
+        // ...and owns the state again once the program clears its records.
+        let cleared = manifest_for(serde_json::Value::Null);
+        assert_eq!(
+            derive_status_with_source(&mut engine, &cleared, true, &directory, now, true).1,
+            StatusSource::Hooks
         );
     }
 
@@ -3552,7 +3455,6 @@ mod tests {
             "projects": [{
                 "id": "proj-empty",
                 "name": "fresh",
-                "archived_count": 0,
                 "sessions": [],
                 "worktrees": [],
             }],

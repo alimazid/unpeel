@@ -39,7 +39,7 @@ struct ActivityStateFile<'a> {
 struct ActivityStateEntry {
     activity_status: &'static str,
     raw_status: &'static str,
-    /// "hooks" | "screen" | "none": where `raw_status` came from.
+    /// "program" | "hooks" | "screen" | "none": where `raw_status` came from.
     activity_source: &'static str,
     unread: bool,
     completed: bool,
@@ -129,7 +129,13 @@ fn signature(
                 raw_status,
                 activity_source: row.status_source.word(),
                 unread,
-                completed: engine.is_completed(&row.id),
+                completed: match row.status_source {
+                    crate::sessions::StatusSource::Program => row
+                        .program_status
+                        .as_ref()
+                        .is_some_and(|program| program.state.is_finished()),
+                    _ => engine.is_completed(&row.id),
+                },
             }
         })
         .collect::<Vec<_>>();
@@ -191,14 +197,14 @@ mod tests {
             active_runtime_id: None,
             active_app: None,
             resume_available: false,
-            archive_available: false,
+            resumable: false,
             resume_agent_available: false,
             running: status != Status::Exited,
             status,
             status_source: crate::sessions::StatusSource::None,
+            program_status: None,
             created_at: 1,
             pinned: false,
-            archived: false,
             unread: false,
             latest_alert_body: None,
             cwd: "/tmp".into(),
