@@ -27,8 +27,8 @@ public struct DirectoryLoader: Sendable {
         let path = (directory as NSString).appendingPathComponent(name)
         // Best effort by design: an entry whose attributes cannot be read
         // (a race with a delete, a permission quirk) is treated as
-        // not-a-symlink, which only costs the symlink badge and the
-        // outside-root expandability check below.
+        // not-a-symlink, which only costs the symlink badge, the
+        // outside-root expandability check below, and its date.
         let attributes = try? manager.attributesOfItem(atPath: path)
         let isSymlink = (attributes?[.type] as? FileAttributeType) == .typeSymbolicLink
         var isDirectory: ObjCBool = false
@@ -43,7 +43,8 @@ public struct DirectoryLoader: Sendable {
             isSymlink: isSymlink,
             isHidden: name.hasPrefix("."),
             isIgnored: false,
-            isExpandable: expandable
+            isExpandable: expandable,
+            modifiedAt: attributes?[.modificationDate] as? Date
         )
     }
 

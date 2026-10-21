@@ -123,14 +123,18 @@ public struct FileTreeModel: Sendable, Equatable {
     }
 
     /// `.git` is never listed, regardless of filter settings.
-    public func visibleChildren(of directory: String, filter: VisibilityFilter) -> [FileEntry] {
+    /// Fork-only: date modified column. `sort` orders what the filter keeps;
+    /// it never rescans, so a capped folder sorts the entries it listed.
+    public func visibleChildren(
+        of directory: String, filter: VisibilityFilter, sort: ExplorerSortOrder = .name
+    ) -> [FileEntry] {
         guard case .loaded(let listing)? = directories[directory] else { return [] }
-        return listing.entries.filter { entry in
+        return sort.sorted(listing.entries.filter { entry in
             if entry.name == ".git" { return false }
             if entry.isHidden && !filter.showHidden { return false }
             if entry.isIgnored && !filter.showIgnored { return false }
             return true
-        }
+        })
     }
 
     public func truncatedCount(of directory: String) -> Int {

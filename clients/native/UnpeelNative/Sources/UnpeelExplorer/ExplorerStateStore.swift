@@ -21,6 +21,8 @@ public final class ExplorerStateStore {
     private static let rootsKey = "unpeel.explorer.roots"
     private static let showHiddenKey = "unpeel.explorer.showHidden"
     private static let showIgnoredKey = "unpeel.explorer.showIgnored"
+    /// Fork-only: date modified column.
+    private static let sortOrderKey = "unpeel.explorer.sortOrder"
 
     private struct StoredRoot: Codable {
         let state: RootViewState
@@ -44,6 +46,13 @@ public final class ExplorerStateStore {
             defaults.set(newValue.showHidden, forKey: Self.showHiddenKey)
             defaults.set(newValue.showIgnored, forKey: Self.showIgnoredKey)
         }
+    }
+
+    /// Fork-only: date modified column. One order for every root, like the
+    /// filter; an unknown stored value reads as `.name`.
+    public var sortOrder: ExplorerSortOrder {
+        get { defaults.string(forKey: Self.sortOrderKey).flatMap(ExplorerSortOrder.init(rawValue:)) ?? .name }
+        set { defaults.set(newValue.rawValue, forKey: Self.sortOrderKey) }
     }
 
     public func state(forRoot root: String) -> RootViewState? {

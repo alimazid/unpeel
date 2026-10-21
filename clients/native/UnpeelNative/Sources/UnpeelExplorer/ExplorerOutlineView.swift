@@ -105,7 +105,7 @@ struct ExplorerOutlineView: NSViewRepresentable {
         controller.palette = palette
         controller.apply(
             model: viewModel.model, filter: viewModel.filter, selection: viewModel.selection,
-            decorations: viewModel.decorations, draft: viewModel.draft
+            decorations: viewModel.decorations, draft: viewModel.draft, sortOrder: viewModel.sortOrder
         )
         controller.applyRestoredScrollIfNeeded()
         // Fork-only: explorer operations.

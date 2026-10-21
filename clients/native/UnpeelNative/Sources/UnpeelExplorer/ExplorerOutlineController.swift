@@ -35,7 +35,6 @@ public final class ExplorerOutlineController: NSObject,
         }
     }
 
-    private static let cellIdentifier = NSUserInterfaceItemIdentifier("unpeel.explorer.cell")
     private static let noteSuffix = "/\u{0}note"
     /// Fork-only: git support. A folder's decoration: VS Code marks a
     /// folder holding changes with a dot in their colour, not a letter.
@@ -97,11 +96,20 @@ public final class ExplorerOutlineController: NSObject,
     public var collisionPrompt: (any CollisionPrompting)?
     /// A transfer still waiting on the Collision Prompt.
     var pendingTransfer: Task<Void, Never>?
+    /// Fork-only: date modified column. The order rows are listed in, how
+    /// a date reads, and the clock it is read against (both replaceable by
+    /// tests); the date column's width for the font it was measured in.
+    private var appliedSort = ExplorerSortOrder.name
+    var dateText = ExplorerDateText()
+    var now: () -> Date = Date.init
+    var measuredDateColumn: (font: NSFont, width: CGFloat)?
     /// Written once in `attach`, read only in `deinit`.
     private nonisolated(unsafe) var appActivation: NSObjectProtocol?
+    private nonisolated(unsafe) var dayChange: NSObjectProtocol?
 
     deinit {
         if let appActivation { NotificationCenter.default.removeObserver(appActivation) }
+        if let dayChange { NotificationCenter.default.removeObserver(dayChange) }
     }
 
     public init(viewModel: ExplorerViewModel, palette: ExplorerPalette) {
@@ -133,21 +141,31 @@ public final class ExplorerOutlineController: NSObject,
         ) { [weak self] _ in
             MainActor.assumeIsolated { self?.dropStaleCut() }
         }
+        // Fork-only: date modified column. "Today" text must not outlive
+        // the day.
+        dayChange = NotificationCenter.default.addObserver(
+            forName: .NSCalendarDayChanged, object: nil, queue: .main
+        ) { [weak self] _ in
+            MainActor.assumeIsolated { self?.reconfigureLoadedRows() }
+        }
     }
 
     // MARK: - Applying model changes
 
     public func apply(
         model: FileTreeModel?, filter: VisibilityFilter, selection: [String], decorations: GitDecorations = .none,
-        draft: ExplorerDraft? = nil
+        draft: ExplorerDraft? = nil, sortOrder: ExplorerSortOrder = .name
     ) {
         isApplying = true
         defer { isApplying = false }
         let previous = applied
-        let previousFilter = appliedFilter
+        // Fork-only: date modified column. A new order rebuilds the rows
+        // the way a new filter does.
+        let rebuildsRows = appliedFilter != filter || appliedSort != sortOrder
         let decorationsChanged = decorations != appliedDecorations
         applied = model
         appliedFilter = filter
+        appliedSort = sortOrder
         appliedDecorations = decorations
         guard let model else {
             appliedDraft = nil
@@ -158,7 +176,7 @@ public final class ExplorerOutlineController: NSObject,
             outlineView?.reloadData()
             return
         }
-        reloadRows(from: previous, to: model, filterChanged: previousFilter != filter)
+        reloadRows(from: previous, to: model, filterChanged: rebuildsRows)
         syncExpansion(model)
         syncSelection(selection)
         if decorationsChanged { reconfigureLoadedRows() }
@@ -240,7 +258,7 @@ public final class ExplorerOutlineController: NSObject,
     /// Fork-only: git support. Rows AppKit already holds views for — on
     /// screen or prepared just off it — are not asked for again, so new
     /// decorations are applied to them in place.
-    private func reconfigureLoadedRows() {
+    func reconfigureLoadedRows() {
         outlineView?.enumerateAvailableRowViews { rowView, row in
             guard let item = self.outlineView?.item(atRow: row) as? ExplorerItem,
                   let cell = rowView.view(atColumn: 0) as? ExplorerRowCellView,
@@ -320,7 +338,7 @@ public final class ExplorerOutlineController: NSObject,
     public func children(of directory: String) -> [ExplorerItem] {
         if let cached = childCache[directory] { return cached }
         guard let model = applied else { return [] }
-        let entries = model.visibleChildren(of: directory, filter: appliedFilter)
+        let entries = model.visibleChildren(of: directory, filter: appliedFilter, sort: appliedSort)
             .map { item(for: $0.path, role: .entry) }
         let built = withDraftRow(entries, in: directory) + noteRows(for: directory)
         childCache[directory] = built
@@ -385,8 +403,8 @@ public final class ExplorerOutlineController: NSObject,
 
     public func outlineView(_ outlineView: NSOutlineView, viewFor _: NSTableColumn?, item: Any) -> NSView? {
         guard let item = item as? ExplorerItem else { return nil }
-        let cell = (outlineView.makeView(withIdentifier: Self.cellIdentifier, owner: self) as? ExplorerRowCellView)
-            ?? Self.makeCell()
+        let cell = (outlineView.makeView(withIdentifier: ExplorerRowCellView.reuseIdentifier, owner: self)
+            as? ExplorerRowCellView) ?? ExplorerRowCellView.make()
         configure(cell, for: item)
         return cell
     }
@@ -406,6 +424,8 @@ public final class ExplorerOutlineController: NSObject,
         cell.toolTip = nil
         cell.alphaValue = 1
         cell.imageView?.image = nil
+        // Fork-only: date modified column.
+        resetDate(of: cell)
         switch item.role {
         case .draft:
             configureDraft(cell)
@@ -431,6 +451,7 @@ public final class ExplorerOutlineController: NSObject,
             cell.toolTip = entry?.isSymlink == true && entry?.isExpandable == false && entry?.kind == .directory
                 ? "This link points outside the project folder."
                 : nil
+            showDate(entry?.modifiedAt, in: cell)
         }
     }
 
@@ -463,42 +484,6 @@ public final class ExplorerOutlineController: NSObject,
         guard !isApplying else { return }
         viewModel.selection = selectedPaths()
         outlineView?.reloadQuickLookIfVisible()
-    }
-
-    private static func makeCell() -> ExplorerRowCellView {
-        let cell = ExplorerRowCellView()
-        cell.identifier = cellIdentifier
-        let image = NSImageView()
-        let label = NSTextField(labelWithString: "")
-        label.lineBreakMode = .byTruncatingMiddle
-        // Fork-only: git support. The decoration keeps its width; a long
-        // name truncates instead.
-        let decoration = NSTextField(labelWithString: "")
-        decoration.alignment = .right
-        decoration.setContentHuggingPriority(.required, for: .horizontal)
-        decoration.setContentCompressionResistancePriority(.required, for: .horizontal)
-        label.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
-        image.translatesAutoresizingMaskIntoConstraints = false
-        label.translatesAutoresizingMaskIntoConstraints = false
-        decoration.translatesAutoresizingMaskIntoConstraints = false
-        cell.addSubview(image)
-        cell.addSubview(label)
-        cell.addSubview(decoration)
-        cell.imageView = image
-        cell.textField = label
-        cell.decorationField = decoration
-        NSLayoutConstraint.activate([
-            image.leadingAnchor.constraint(equalTo: cell.leadingAnchor, constant: 2),
-            image.centerYAnchor.constraint(equalTo: cell.centerYAnchor),
-            image.widthAnchor.constraint(equalToConstant: 16),
-            image.heightAnchor.constraint(equalToConstant: 16),
-            label.leadingAnchor.constraint(equalTo: image.trailingAnchor, constant: 6),
-            label.trailingAnchor.constraint(equalTo: decoration.leadingAnchor, constant: -2),
-            label.centerYAnchor.constraint(equalTo: cell.centerYAnchor),
-            decoration.trailingAnchor.constraint(equalTo: cell.trailingAnchor, constant: -6),
-            decoration.centerYAnchor.constraint(equalTo: cell.centerYAnchor),
-        ])
-        return cell
     }
 
     // MARK: - Selection helpers

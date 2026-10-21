@@ -56,6 +56,8 @@ public final class ExplorerViewModel: ObservableObject {
     @Published public private(set) var rootError: String?
     @Published public var selection: [String] = []
     @Published public private(set) var filter: VisibilityFilter
+    /// Fork-only: date modified column.
+    @Published public private(set) var sortOrder: ExplorerSortOrder
     /// Bumped when a root's saved view state has been re-applied, so the
     /// outline knows `scrollOffset` is now meaningful. `.remote`, `.none`
     /// and failed opens deliberately do NOT bump it: there is no outline to
@@ -132,6 +134,7 @@ public final class ExplorerViewModel: ObservableObject {
         self.stateStore = stateStore
         self.decorationDebounce = max(0, decorationDebounce)
         filter = stateStore.filter
+        sortOrder = stateStore.sortOrder
     }
 
     // MARK: - Context
@@ -475,6 +478,12 @@ public final class ExplorerViewModel: ObservableObject {
     public func setFilter(_ next: VisibilityFilter) {
         filter = next
         stateStore.filter = next
+    }
+
+    /// Fork-only: date modified column.
+    public func setSortOrder(_ next: ExplorerSortOrder) {
+        sortOrder = next
+        stateStore.sortOrder = next
     }
 
     public func persistState() {

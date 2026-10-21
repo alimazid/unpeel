@@ -125,6 +125,8 @@ public struct ExplorerPanelMenu: View {
         "Refresh", "Collapse All", "Show Hidden Files", "Show Git-Ignored Files",
         // Fork-only: explorer operations.
         "New File…", "New Folder…",
+        // Fork-only: date modified column.
+        "Sort by Name", "Sort by Date Modified",
     ]
 
     public init(viewModel: ExplorerViewModel, tint: NSColor) {
@@ -141,6 +143,10 @@ public struct ExplorerPanelMenu: View {
             Divider()
             Button(Self.itemTitles[0]) { viewModel.refresh() }
             Button(Self.itemTitles[1]) { viewModel.collapseAll() }
+            Divider()
+            // Fork-only: date modified column.
+            Toggle(Self.itemTitles[6], isOn: sortBinding(.name))
+            Toggle(Self.itemTitles[7], isOn: sortBinding(.dateModified))
             Divider()
             Toggle(Self.itemTitles[2], isOn: filterBinding(\.showHidden) {
                 VisibilityFilter(showHidden: $0, showIgnored: viewModel.filter.showIgnored)
@@ -161,6 +167,15 @@ public struct ExplorerPanelMenu: View {
     private func newItem(_ kind: ExplorerDraft.Kind) {
         guard let folder = viewModel.draftFolder(for: viewModel.selection) else { return }
         viewModel.beginDraft(kind, in: folder)
+    }
+
+    /// Fork-only: date modified column. Checked for the current order;
+    /// choosing the checked one again keeps it.
+    private func sortBinding(_ order: ExplorerSortOrder) -> Binding<Bool> {
+        Binding(
+            get: { viewModel.sortOrder == order },
+            set: { if $0 { viewModel.setSortOrder(order) } }
+        )
     }
 
     private func filterBinding(

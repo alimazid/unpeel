@@ -16,6 +16,9 @@ public struct FileEntry: Sendable, Equatable, Identifiable {
     public let isHidden: Bool
     public let isIgnored: Bool
     public let isExpandable: Bool
+    /// Fork-only: date modified column. The entry's own modification date
+    /// (a symlink's, not its target's); nil when it could not be read.
+    public let modifiedAt: Date?
 
     public var id: String { path }
 
@@ -26,7 +29,8 @@ public struct FileEntry: Sendable, Equatable, Identifiable {
         isSymlink: Bool = false,
         isHidden: Bool = false,
         isIgnored: Bool = false,
-        isExpandable: Bool? = nil
+        isExpandable: Bool? = nil,
+        modifiedAt: Date? = nil
     ) {
         self.path = path
         self.name = name
@@ -35,12 +39,13 @@ public struct FileEntry: Sendable, Equatable, Identifiable {
         self.isHidden = isHidden
         self.isIgnored = isIgnored
         self.isExpandable = isExpandable ?? (kind == .directory)
+        self.modifiedAt = modifiedAt
     }
 
     public func with(isIgnored: Bool) -> FileEntry {
         FileEntry(
             path: path, name: name, kind: kind, isSymlink: isSymlink,
-            isHidden: isHidden, isIgnored: isIgnored, isExpandable: isExpandable
+            isHidden: isHidden, isIgnored: isIgnored, isExpandable: isExpandable, modifiedAt: modifiedAt
         )
     }
 }

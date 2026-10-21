@@ -225,6 +225,43 @@ final class ExplorerRowRenderingTests: XCTestCase {
         check(harness, "root reload after a zero-width mount")
     }
 
+    /// Fork-only: date modified column. At the minimum width and four
+    /// levels deep, every row still shows its name, and the dates share one
+    /// right edge whatever the row's depth.
+    func testDatesLineUpAndNamesStayVisibleAtTheMinimumWidth() {
+        let harness = Harness(width: 180, appearance: .darkAqua)
+        defer { harness.teardown() }
+        let stamp = Date(timeIntervalSince1970: 1_700_000_000)
+        let folders = ["/r/a", "/r/a/b", "/r/a/b/c"]
+        var model = FileTreeModel(root: root)
+        for (index, folder) in ([root] + folders).enumerated() {
+            let child = index < folders.count
+                ? FileEntry(path: folders[index], name: (folders[index] as NSString).lastPathComponent, kind: .directory, modifiedAt: stamp)
+                : nil
+            let file = FileEntry(path: folder + "/notes-\(index).md", name: "notes-\(index).md", kind: .file, modifiedAt: stamp)
+            model = model.settingContents(.loaded(DirectoryListing(entries: [child, file].compactMap { $0 })), for: folder)
+        }
+        for folder in folders { model = model.expanding(folder) }
+
+        harness.controller.apply(model: model, filter: VisibilityFilter(), selection: [])
+        harness.layout()
+
+        let cells = harness.cells.compactMap { $0.cell as? ExplorerRowCellView }
+        XCTAssertEqual(cells.count, 7)
+        let edges = cells.compactMap { cell in cell.dateField.map { cell.convert($0.frame, to: harness.outline).maxX } }
+        XCTAssertEqual(edges.count, cells.count, "every row has a date field")
+        for (cell, edge) in zip(cells, edges) {
+            let name = cell.textField?.stringValue ?? "?"
+            let label = cell.textField?.frame ?? .zero
+            let date = cell.dateField?.frame ?? .zero
+            XCTAssertEqual(edge, edges[0], accuracy: 0.5, "\(name): date not aligned")
+            XCTAssertGreaterThan(date.width, 0, "\(name): date field collapsed")
+            XCTAssertFalse(cell.dateField?.stringValue.isEmpty ?? true, "\(name): no date")
+            XCTAssertGreaterThan(label.width, 10, "\(name): label width \(label.width)")
+            XCTAssertLessThanOrEqual(label.maxX, date.minX, "\(name): label runs into the date")
+        }
+    }
+
     /// The end-to-end path, through SwiftUI and a real scanned tree: this is
     /// the configuration that produced the reported screenshots (labels
     /// 4 pt wide at x = -3, behind the icon; root icons 3 pt after a reload).
@@ -270,6 +307,30 @@ final class ExplorerRowRenderingTests: XCTestCase {
         viewModel.setFilter(VisibilityFilter(showHidden: true))
         await pump()
         assertHostedRowsRenderable(hosting, "hosted after filter change")
+
+        // Fork-only: date modified column. The ⋯ menu's live switch: the
+        // published order reaches the outline through the SwiftUI update.
+        try FileManager.default.setAttributes(
+            [.modificationDate: Date(timeIntervalSince1970: 1_000_000_000)], ofItemAtPath: tree.path("new.txt")
+        )
+        await viewModel.refresh().value
+        await pump()
+        XCTAssertEqual(hostedRootFiles(hosting), ["new.txt", "README.md"])
+        viewModel.setSortOrder(.dateModified)
+        await pump()
+        XCTAssertEqual(hostedRootFiles(hosting), ["README.md", "new.txt"])
+        assertHostedRowsRenderable(hosting, "hosted after sort change")
+    }
+
+    private func hostedRootFiles(_ host: NSView) -> [String] {
+        host.layoutSubtreeIfNeeded()
+        guard let outline = firstOutline(in: host) else { return [] }
+        return (0..<outline.numberOfRows).compactMap { row in
+            guard let item = outline.item(atRow: row) as? ExplorerItem, outline.level(forRow: row) == 0,
+                  !outline.isExpandable(item)
+            else { return nil }
+            return (item.path as NSString).lastPathComponent
+        }
     }
 
     private func assertHostedRowsRenderable(_ host: NSView, _ stage: String, file: StaticString = #filePath, line: UInt = #line) {

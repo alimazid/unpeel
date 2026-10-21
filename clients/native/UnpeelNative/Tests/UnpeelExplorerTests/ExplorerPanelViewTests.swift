@@ -37,7 +37,10 @@ final class ExplorerPanelViewTests: XCTestCase {
     func testPanelMenuItemsInOrder() {
         XCTAssertEqual(
             ExplorerPanelMenu.itemTitles,
-            ["Refresh", "Collapse All", "Show Hidden Files", "Show Git-Ignored Files", "New File…", "New Folder…"]
+            [
+                "Refresh", "Collapse All", "Show Hidden Files", "Show Git-Ignored Files", "New File…", "New Folder…",
+                "Sort by Name", "Sort by Date Modified",
+            ]
         )
     }
 }

@@ -381,6 +381,18 @@ VS Code's default patterns; a filter field (⌥⌘F, fuzzy, highlights matches);
 "reveal the file the agent just touched" using the existing clickable-path
 detection; sort-order option (default / modified / type).
 
+*Built 2026-10-21 (branch `feat/explorer-date-modified`):* a date modified
+field at the trailing edge of every row (one shared width, so the dates of
+every depth line up; time today, "Yesterday", month and day this year, a
+numeric date before that; full date in the tooltip) and **Sort by Name /
+Sort by Date Modified** in the EXPLORER's `…` menu, persisted globally
+(`unpeel.explorer.sortOrder`). Folders stay first in both orders; date order
+is newest first with ties by name. The sort is applied at display time
+(`FileTreeModel.visibleChildren(…, sort:)`), so changing it never rescans.
+`FileEntry.modifiedAt` takes part in listing equality, so a write to a file
+in an expanded folder now reloads that folder's rows. Type order was not
+built.
+
 ## 5. Testing
 
 - **Unit (XCTest, `UnpeelExplorerTests`)** against real temporary
