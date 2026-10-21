@@ -6818,7 +6818,11 @@ final class UnpeelStore: ObservableObject {
         guard selectedHostScope == .local else { return }
         let navigationID = validatedPaneGroup(containingSession: sessionID)?
             .representativeSessionID ?? sessionID
-        guard let session = sessionsByID[navigationID] else { return }
+        // Fork-only fix: once Local is a Host client, `sessionsByID` is the
+        // frozen startup seed, so a Session created after launch was never
+        // found and notification/activity-menu clicks silently did nothing.
+        // Reveal against the projection the sidebar actually renders.
+        guard let session = displaySessionsByID[navigationID] else { return }
 
         closeSettings()
         prepareSidebarToRenderSession(session)
@@ -6845,7 +6849,7 @@ final class UnpeelStore: ObservableObject {
             centered: centered
         )
         DispatchQueue.main.async { [weak self] in
-            guard let self, self.sessionsByID[sessionID] != nil else { return }
+            guard let self, self.displaySessionsByID[sessionID] != nil else { return }
             self.sidebarSessionRevealRequest = request
         }
         DispatchQueue.main.asyncAfter(deadline: .now() + 1) { [weak self] in
@@ -6859,18 +6863,19 @@ final class UnpeelStore: ObservableObject {
         // expansion and the window check must target that node, not the
         // manifest's launch project.
         let projectID = effectiveProjectID(for: session)
-        guard let project = projectsByID[projectID] else { return }
+        let projects = displayProjectsByID
+        guard let project = projects[projectID] else { return }
 
         // Worktree children render inline under their parent: expand every
         // ancestor so the session's project row is actually visible.
         var ancestorID = project.parentProjectID
         while let id = ancestorID {
             expandedProjectIDs.insert(id)
-            ancestorID = projectsByID[id]?.parentProjectID
+            ancestorID = projects[id]?.parentProjectID
         }
         expandedProjectIDs.insert(projectID)
 
-        guard let node = findNode(projectID) else { return }
+        guard let node = findDisplayNode(projectID) else { return }
         let pinnedIDs = Set(pinnedSessions(in: node).map(\.id))
         guard !pinnedIDs.contains(session.id) else { return }
         let displayedIDs = Set(displayedSessions(in: node).map(\.id))
