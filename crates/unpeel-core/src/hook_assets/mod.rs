@@ -585,6 +585,7 @@ pub(crate) use crate::integrations::{
         prune_stale_unpeel_claude_hooks, CLAUDE_HOOK_SCRIPT, HOOK_EVENTS,
     },
     cline::setup::{write_cline_event_hook, CLINE_HOOK_SCRIPT},
+    codewhale::setup::CODEWHALE_HOOK_SCRIPT,
     codex::setup::{
         build_codex_hook_command, build_codex_hook_entry, codex_hooks_feature_is_enabled,
         enable_codex_hooks_feature_in_toml, parse_managed_codex_hook_command,

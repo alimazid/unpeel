@@ -328,6 +328,7 @@ fn all_hook_scripts_record_last_hook_event() {
         ("cursor", super::CURSOR_HOOK_SCRIPT),
         ("grok", super::GROK_HOOK_SCRIPT),
         ("muse", super::MUSE_HOOK_SCRIPT),
+        ("codewhale", super::CODEWHALE_HOOK_SCRIPT),
     ] {
         assert!(
             script.contains("record_last_hook_event() {"),
@@ -361,6 +362,7 @@ fn hook_reporters_are_inert_outside_unpeel() {
         ("kimi", KIMI_HOOK_SCRIPT),
         ("kiro", KIRO_HOOK_SCRIPT),
         ("cline", CLINE_HOOK_SCRIPT),
+        ("codewhale", super::CODEWHALE_HOOK_SCRIPT),
     ] {
         let home = temp_path(&format!("inert-{label}-home"));
         let script = write_temp_hook_script(&format!("inert-{label}"), script);

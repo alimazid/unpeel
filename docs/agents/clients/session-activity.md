@@ -117,7 +117,7 @@ Hook-driven sessions:
   `/notify/<session_id>`. This appends shared Recent/unread activity and may
   deliver macOS/phone notifications, but it never enters this lifecycle
   reducer, changes busy/idle/attention, or updates `last-hook-event.json`.
-- Known hook-capable tools (Claude, Codex, Cline, Cursor Agent, Grok, Kimi,
+- Known hook-capable tools (Claude, Codex, Cline, Codewhale, Cursor Agent, Grok, Kimi,
   Kiro, OpenCode, Amp, Gemini, Copilot) do not use raw output growth to enter busy while waiting for
   the first hook event. This avoids false spinners when a full-screen TUI
   repaints during user scroll or window resize after an app restart.
@@ -330,7 +330,7 @@ new hooks were loaded cannot be reconstructed from a terminal counter.
 
 ### Runtime cancellation coverage
 
-Audited 2026-09-06 against all 14 shipped runtime packages. Native event
+Audited 2026-09-06 against all 14 shipped runtime packages (Codewhale added 2026-10-26). Native event
 normalization belongs in each package; the Host only consumes the common
 `Stop`, `StopFailure`, `StopCancelled`, and `Idle` outcomes. An `Idle` backstop
 settles missing stops without changing an already-known outcome or creating
@@ -343,6 +343,7 @@ replace a durable cancellation seed or reopen the cancelled turn.
 | Amp | `agent.end.status`: `done`, `cancelled`, `error` become success, cancellation, failure. | [Plugin API](https://ampcode.com/docs/plugin-api); executable plugin tests. |
 | Claude Code | Managed-launch ESC fallback because user interrupts skip Stop. | Hook reference; real Host/PTY regression. |
 | Cline | `TaskCancel` becomes cancellation; `TaskError` failure; task completion stays success. Tool callbacks only carry metadata. | Installed hook contract; real reporter HTTP/seed tests. |
+| Codewhale | `turn_end.status`: `completed`, `interrupted` (Esc), `failed` become success, cancellation, failure; shell-only turns and `session_idle` settle as Idle. Hooks run on two workers, so Idle repairs an opener delivered after its closer. | Real 0.10.2 TUI against an OpenAI-compatible stub (`codewhale_lifecycle` with `UNPEEL_CODEWHALE_TEST_BINARY`); fake-Codewhale PTY case and reporter tests. |
 | Codex | Registers native `Interrupt` with a three-second timeout; legacy `turn_aborted` also becomes cancellation. | [Hooks reference](https://learn.chatgpt.com/docs/hooks); installed binary contract; real normalizer/transport tests. |
 | Cursor Agent | `stop.status=aborted` becomes cancellation; `error` failure; `completed` success. | [Hooks reference](https://prod.cursor.com/docs/hooks); real reporter tests. |
 | fx | No lifecycle authority; no animated busy state. | Shipped catalog and Host authority guards. |

@@ -154,4 +154,28 @@ mod tests {
         assert!(rules_for_runtime("pi").is_none());
         assert!(rules_for_runtime("not-a-runtime").is_none());
     }
+
+    /// Bottoms of real Codewhale 0.10.2 screens.
+    #[test]
+    fn codewhale_composer_footer_and_approval_shapes() {
+        let rules = rules_for_runtime("codewhale").expect("codewhale screen rules");
+        let idle =
+            "● stub reply\n╭────╮\n│❯ Type a message…      │\n│                  [·] │\n╰────╯\n \
+                    ● ask  Shift+Tab to change   work (Tab)   Work bar (Ctrl+])\n \
+                    DeepSeek · deepseek-flash · thinking: max   context 1%";
+        assert_eq!(classify(idle, rules), Some(ScreenActivity::Idle));
+        let working =
+            "▎ say hello\n╭────╮\n│❯ Type a follow-up…    │\n│                  [·] │\n╰────╯\n \
+                       ● ask  Shift+Tab to change   work (Tab)   working 11s   Esc to interrupt\n \
+                       DeepSeek · deepseek-flash · thinking: max";
+        assert_eq!(classify(working, rules), Some(ScreenActivity::Working));
+        // The approval panel replaces the composer and its cursor row is a
+        // bare `❯`: no verdict, so the previous one stands.
+        let approval =
+            "● $ touch made-by-fake · waiting for approval\n  Do you want to proceed?\n  \
+                        [1 / y] Allow once\n  [2 / a] Allow for this conversation\n\
+                        ❯ [3 / d / n] Don't allow (Enter)\n  [Esc] Stop this turn\n  \
+                        Pg↑/↓ review  ·  ⌥V details  ·  Esc stop";
+        assert_eq!(classify(approval, rules), None);
+    }
 }

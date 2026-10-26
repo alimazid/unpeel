@@ -29,7 +29,7 @@ built from one tree at one version.
   another session asks you, and approved pairs are remembered. Sessions are
   created and closed by people, never by agents.
 - 🧑‍💻 **Any agent, any task.** Claude Code, Codex, Gemini, Cursor Agent, Grok,
-  Kimi, Kiro, Cline, Amp, OpenCode, Muse Code, Antigravity, Pi, or anything that runs in a
+  Kimi, Kiro, Cline, Amp, OpenCode, Muse Code, Antigravity, Codewhale (DeepSeek), Pi, or anything that runs in a
   terminal, for coding, research, writing, ops, or design. It is a terminal,
   not a code editor: you follow an agent through its terminal, its transcript,
   and the screenshots it takes, the same way whether it is fixing a bug or

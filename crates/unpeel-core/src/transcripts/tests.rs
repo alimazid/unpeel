@@ -653,6 +653,46 @@ fn omp_transcript_titles_come_from_the_title_entry() {
 }
 
 #[test]
+fn codewhale_saved_session_parses_messages_and_tools() {
+    let raw = include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../runtimes/codewhale/fixtures/session.json"
+    ));
+    let entries = collect_transcript_entries(provider("codewhale"), raw, true);
+    let users: Vec<&str> = entries
+        .iter()
+        .filter(|entry| entry.role == "User")
+        .map(|entry| entry.text.as_str())
+        .collect();
+    // The `<turn_meta>` block Codewhale appends for the model is not user text.
+    assert_eq!(users, ["say hello", "make a file again"]);
+    let tool_call = entries
+        .iter()
+        .find(|entry| entry.role == "Tool" && entry.text.contains("touch made-by-fake"))
+        .expect("Codewhale tool call");
+    assert_eq!(tool_call.blocks[0].tool_name.as_deref(), Some("bash"));
+    assert!(entries
+        .iter()
+        .any(|entry| entry.text.starts_with("bash result: ")));
+    assert_eq!(entries.last().unwrap().text, "pong from the fake model");
+
+    let hidden = collect_transcript_entries(provider("codewhale"), raw, false);
+    assert!(!hidden.iter().any(|entry| entry.role == "Tool"));
+    assert_eq!(
+        hidden
+            .iter()
+            .filter(|entry| entry.role == "Assistant")
+            .count(),
+        2
+    );
+    let value: Value = serde_json::from_str(raw).unwrap();
+    assert_eq!(
+        find_model_string(provider("codewhale"), &value).as_deref(),
+        Some("deepseek-flash")
+    );
+}
+
+#[test]
 fn kiro_v3_transcript_entries_parse_messages_and_tools() {
     let raw = r#"
 {"id":"u","payload":{"type":"user","content":"Run pwd"}}

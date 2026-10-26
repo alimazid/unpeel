@@ -1473,11 +1473,13 @@ class Case:
             "CLINE_DIR": self.home.path(".cline"),
             "CLINE_DATA_DIR": self.home.path(".cline", "data"),
             "CLINE_SESSION_DATA_DIR": self.home.path(".cline", "data", "sessions"),
+            "CODEWHALE_HOME": self.home.path(".codewhale"),
         })
         for key in (
             "UNPEEL_SESSION_ID", "UNPEEL_SESSION_DIR", "UNPEEL_APP_PORT",
             "UNPEEL_APP_PORT_REGISTRY_FILE", "UNPEEL_RUNTIME_GENERATION",
-            "UNPEEL_HOOK_TRACE_FILE",
+            "UNPEEL_HOOK_TRACE_FILE", "CODEWHALE_CONFIG_PATH", "DEEPSEEK_CONFIG_PATH",
+            "DEEPSEEK_MCP_CONFIG",
         ):
             os.environ.pop(key, None)
         self._closables = []

@@ -342,6 +342,85 @@ Muse Code (Meta `muse` CLI):
   recovers the Session from process ancestry and serves no tools outside
   Unpeel.
 
+Codewhale (formerly DeepSeek-TUI; `codewhale`/`codew`, codewhale.net; DeepSeek
+is its default provider):
+
+- Detection is the `codewhale` and `codew` commands (two copies of one
+  binary) plus the pre-0.9.5 `codewhale-tui` process name. The npm package's
+  `bin/codewhale.js` only execs the native binary, so no script signature is
+  needed.
+- The integration appends Unpeel-managed `[[hooks.hooks]]` entries, between
+  `# BEGIN/END UNPEEL MANAGED CODEWHALE HOOKS` markers, to the config.toml
+  Codewhale actually reads: `$CODEWHALE_HOME/config.toml` when that is set,
+  else `~/.codewhale/config.toml`, else an existing pre-rename
+  `~/.deepseek/config.toml` (creating a new `~/.codewhale` file there would hide
+  the user's legacy configuration, provider keys included).
+  `CODEWHALE_CONFIG_PATH`/`DEEPSEEK_CONFIG_PATH` win when the Host sees them.
+  A malformed config, or one whose own `hooks` shape cannot take appended
+  tables, fails the install instead of being rewritten. `[hooks] enabled` is
+  never written: it defaults to on, and a user who turned it off keeps that.
+- Event map (`runtimes/codewhale/assets/hooks/lifecycle.sh`), observer events
+  only: `session_start` → HookSeen; `session_busy` → Start (also after an
+  approval, a queued follow-up, or a `!shell` turn); `waiting_for_user` →
+  PermissionRequest with `tool_name` = the payload's `reason` (`approval`,
+  `user_input`, `goal_continuation`); `turn_end` → Stop / StopCancelled /
+  StopFailure from its `status` (`completed` / `interrupted` / `failed`), and
+  Idle when `model_backed` is false (user shell, manual compaction, purge) or
+  the status is unknown; `session_idle` and `session_end` → Idle. Steering
+  events (`message_submit`, `tool_call_before`, `shell_env`) are not
+  registered: they block every submit or tool call.
+- Codewhale runs observer hooks on two workers, so completion order is not
+  guaranteed (measured: `turn_end` and `session_idle` start within 1 ms; a
+  queued follow-up's `session_busy` lands ~70 ms after the previous turn's
+  closers). Idle therefore posts HookSeen and only writes the durable seed,
+  where it never overwrites a known outcome: an opener that lands after its
+  closer is repaired by the next rescan instead of leaving a stuck spinner.
+- Esc ends the turn with a native `turn_end` `interrupted`, so
+  `escape_cancels_turn` stays off (Esc also closes Codewhale's pickers).
+- Conversation identity: the hook environment's `CODEWHALE_SESSION_ID`
+  (`sess_…`) only correlates hook records and is never forwarded. The saved
+  session `codewhale --resume` accepts is the one the Codewhale process holds
+  open as `<sessions>/.late-usage/<id>.live` (switched on `/new` and in-TUI
+  `/resume`). On every `turn_end` the reporter reads that path from its nearest
+  ancestor's open files (`/proc/<pid>/fd`, else `lsof`) and forwards the id and
+  `<sessions>/<id>.json` only when that document exists. Without it (an
+  unknown future layout, no `lsof`), Resume stays on continue-last.
+- Resume: a captured id becomes `codewhale --resume '<id>'`, otherwise
+  `codewhale --continue`
+  (the most recent session in this workspace). `codewhale resume <id>` is
+  normalized to the flag form; a fresh launch drops `-c`, `--continue`,
+  `-r`, `--resume`, `--session-id`, `--fresh`, and a leading `resume <id>`
+  (`runtimes/codewhale/adapter/resume.rs`).
+- Transcript: `$CODEWHALE_HOME/sessions/<id>.json` (default
+  `~/.codewhale/sessions`), one compact JSON document with `metadata`
+  (`workspace`, `model`) first and `messages[]` of `{role, content[]}` blocks
+  (`text`, `tool_use`, `tool_result`, `thinking`). The `<turn_meta>` block
+  Codewhale appends to each user message is dropped. Without a captured path,
+  the best match is the session file whose `metadata.workspace` is the
+  Session's folder (real-path comparison).
+- MCP: the `unpeel` stdio entry goes into the mcp.json Codewhale reads
+  (`DEEPSEEK_MCP_CONFIG`, then the config's `mcp_config_path`, then the same
+  current/legacy resolution as config.toml), under `servers` or the
+  `mcpServers` compatibility key the file already uses. A user's own `unpeel`
+  server is kept and the managed entry becomes `unpeel-unpeel`. Codewhale
+  starts MCP servers with only `HOME` and `PATH`, so the gate recovers the
+  Session from process ancestry and finds the Unpeel home at `~/.unpeel`.
+  Both files are edited under a `<file>.lock` flock, the name Codewhale
+  itself uses for its `mcp.json` edits.
+- `[updates]` probes `codewhale --version` (`codewhale 0.10.2 (<hash>)`)
+  against the npm registry; the update recipe is `command codewhale update`.
+- Screen fallback: the footer reads `Esc to interrupt` and the composer
+  placeholder becomes `Type a follow-up…` while a turn runs; the `│❯` composer
+  line is visible in both states, so the working markers decide.
+- Verified with Codewhale 0.10.2 (`UNPEEL_CODEWHALE_TEST_BINARY=… run.sh
+  codewhale_lifecycle`, an OpenAI-compatible stub as the model, isolated HOME
+  and `UNPEEL_HOME`): install, busy → done, shell approval → attention →
+  done, Esc → cancelled, captured saved-session id, `unpeel transcript`, the
+  MCP tools inside the hosted Session, and Resume Agent relaunching
+  `codewhale --resume '<id>'` in the same PTY. Without the binary the case
+  drives a fake Codewhale through the installed hook commands, including the
+  out-of-order delivery above.
+
 ## Adding a built-in agent runtime
 
 Built-in provider knowledge lives under one discoverable source package:

@@ -327,7 +327,7 @@ pub(crate) struct ReporterCase {
     pub(crate) input: &'static str,
 }
 
-pub(crate) fn reporter_cases() -> [ReporterCase; 10] {
+pub(crate) fn reporter_cases() -> [ReporterCase; 11] {
     [
         ReporterCase {
             label: "claude-generation",
@@ -388,6 +388,12 @@ pub(crate) fn reporter_cases() -> [ReporterCase; 10] {
             script: super::MUSE_HOOK_SCRIPT,
             args: &[],
             input: r#"{"hook_event_name":"Stop"}"#,
+        },
+        ReporterCase {
+            label: "codewhale-generation",
+            script: super::CODEWHALE_HOOK_SCRIPT,
+            args: &["TurnEnd"],
+            input: r#"{"event":"turn_end","model_backed":true,"status":"completed"}"#,
         },
     ]
 }

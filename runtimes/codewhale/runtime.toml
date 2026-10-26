@@ -1,0 +1,73 @@
+schema_version = 1
+id = "net.codewhale.cli"
+slug = "codewhale"
+legacy_slug = "codewhale"
+label = "Codewhale"
+adapter = "builtin:codewhale"
+legacy_order = 16
+platforms = ["macos", "linux"]
+supports_quick_launch = true
+capabilities = ["lifecycle_hooks", "resume", "restart_agent", "mcp_sessions", "mcp_browser", "transcript", "notify_when_done"]
+
+[display]
+tint = "#1E8FD8"
+spinner_tint = "#1E8FD8"
+icon = "codewhale"
+icon_asset = "assets/icon.svg"
+icon_source = "https://github.com/codewhale-hq/Codewhale/blob/main/brand/mark-mono.svg"
+icon_license = "vendor-brand-asset"
+window_padding_x = 8
+
+# Codewhale (formerly DeepSeek-TUI) is the open-source terminal agent whose
+# default provider is DeepSeek. The installer drops two identical binaries,
+# `codewhale` and its short alias `codew`, into ~/.local/bin.
+[install]
+official_url = "https://codewhale.net"
+command = "curl -fsSL https://codewhale.net/install.sh | sh"
+# `codewhale update` replaces both release binaries; the shell builtin keeps
+# the maintenance command out of a managed agent launch.
+update_command = "command codewhale update"
+
+[updates]
+version_args = ["--version"]
+latest_url = "https://registry.npmjs.org/codewhale/latest"
+json_pointer = "/version"
+
+# The npm package's `bin/codewhale.js` only locates and execs the native
+# binary, so the foreground process is the binary itself.
+[detection]
+command_aliases = ["codewhale", "codew"]
+process_aliases = ["codewhale", "codew", "codewhale-tui"]
+script_path_signatures = []
+
+# Native `turn_end` reports `interrupted` on Esc, so the Host's Escape fence
+# is not needed (and Esc also closes Codewhale's pickers).
+[lifecycle]
+source = "hooks"
+authority = "complete"
+fallback = "screen"
+completion_reliable = true
+attention_reliable = true
+
+# Screen fallback (integration not installed): the footer reads
+# "Esc to interrupt" and the composer placeholder becomes "Type a follow-up…"
+# while a turn runs. The "│❯" composer line is visible in both states, so the
+# working markers decide the verdict.
+[screen]
+working = ["Esc to interrupt", "Type a follow-up"]
+idle_prompt = ["│❯"]
+
+[integration]
+summary = "Adds Unpeel-managed [[hooks.hooks]] entries to Codewhale's config.toml and the unpeel MCP server to ~/.codewhale/mcp.json."
+manual_command = "codewhale mcp add unpeel --command {shim}"
+
+[[usage.stores]]
+root = ".codewhale/sessions"
+extensions = ["json"]
+parent_dir_name = "sessions"
+
+[[suggested_presets]]
+id = "codewhale"
+label = "codewhale"
+command = "codewhale"
+quick_launch = false
