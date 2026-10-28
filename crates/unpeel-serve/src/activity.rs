@@ -43,6 +43,8 @@ struct Entry {
     pending_opener: Option<(String, Option<String>, SystemTime)>,
     last_turn_started_at: Option<u64>,
     completed: bool,
+    /// First successful Stop of this turn; duplicate delivery is not another completion.
+    completed_at: Option<SystemTime>,
     /// Host-owned generation of the managed runtime inside this PTY. An
     /// in-place agent restart increments it while the Session id remains the
     /// same, so the old runtime's hook latch must not bleed into the new one.
@@ -197,12 +199,16 @@ impl ActivityEngine {
         match canonical.as_str() {
             "Start" | "UserPromptSubmit" => {
                 entry.completed = false;
+                entry.completed_at = None;
                 entry.background_expired = false;
                 entry.last_turn_started_at = Some(unix_ms(now));
                 entry.state = Some(HookState::Busy);
                 entry.deadline_at = Some(now + HOOK_IDLE_TIMEOUT);
             }
             "Stop" | "StopFailure" => {
+                if canonical == "Stop" && !entry.completed {
+                    entry.completed_at = Some(now);
+                }
                 entry.completed = canonical == "Stop";
                 entry.state = Some(HookState::Idle);
                 entry.deadline_at = None;
@@ -330,6 +336,12 @@ impl ActivityEngine {
                 && !entry.background_expired
                 && entry.background.values().all(|activity| activity.expired)
         })
+    }
+
+    pub fn completed_at(&self, session_id: &str) -> Option<u64> {
+        self.is_completed(session_id)
+            .then(|| self.entries.get(session_id)?.completed_at.map(unix_ms))
+            .flatten()
     }
 
     fn sync_background_from_disk(

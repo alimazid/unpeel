@@ -62,6 +62,8 @@ while True:
         report("state=blocked:kind=permission:app=reporter:msg=" + msg("Approve deploy?"))
     elif data == b"d":
         report("state=done:app=reporter:msg=" + msg("Built in 2s"))
+    elif data == b"m":
+        report("state=done:app=reporter:msg=" + msg("Updated completion detail"))
     elif data == b"i":
         report("state=idle:app=reporter")
 ''')
@@ -128,6 +130,13 @@ while True:
                                          timeout=10)), str(activity()))
         case.check("done records one finished activity",
                    bool(service.wait_for(lambda: finished_count() == 1, timeout=10)), str(finished_count()))
+
+        control(home, sid, "m")
+        case.check("completion detail updates reach the manifest",
+                   bool(service.wait_for(lambda: program_status().get("msg") == "Updated completion detail")))
+        service.read_for(1.2)
+        case.check("completion detail churn does not repeat notification", finished_count() == 1,
+                   str(finished_count()))
 
         control(home, sid, "w")
         service.wait_for(published("busy"), timeout=10)

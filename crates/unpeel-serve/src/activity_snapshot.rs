@@ -129,13 +129,7 @@ fn signature(
                 raw_status,
                 activity_source: row.status_source.word(),
                 unread,
-                completed: match row.status_source {
-                    crate::sessions::StatusSource::Program => row
-                        .program_status
-                        .as_ref()
-                        .is_some_and(|program| program.state.is_finished()),
-                    _ => engine.is_completed(&row.id),
-                },
+                completed: row.completed_at(engine).is_some(),
             }
         })
         .collect::<Vec<_>>();

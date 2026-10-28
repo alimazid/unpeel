@@ -623,6 +623,8 @@ pub struct HostRuntime {
     overlay_refresh_pending: bool,
     activity_log: unpeel_core::activity_log::ActivityLogStore,
     unread_ids: HashSet<String>,
+    /// Completion edges can occur while a program keeps reporting idle.
+    completed_turns: HashMap<String, u64>,
     /// Host-owned auto-stop sweep (`auto_stop.rs`).
     auto_stop: crate::auto_stop::Sweeper,
     /// Removes stopped Sessions past the keep limit (`retention.rs`).
@@ -710,6 +712,11 @@ impl HostRuntime {
         );
         let activity_log =
             unpeel_core::activity_log::ActivityLogStore::load_default().unwrap_or_default();
+        let completed_turns = model
+            .rows
+            .iter()
+            .filter_map(|row| row.completed_at(&engine).map(|at| (row.id.clone(), at)))
+            .collect();
         let persisted_unread =
             crate::activity_snapshot::load_unread(&unpeel_core::app_paths::activity_state_path());
         let unread_ids = derive_unread(&model, &activity_log, &persisted_unread);
@@ -755,6 +762,7 @@ impl HostRuntime {
             overlay_refresh_pending: false,
             activity_log,
             unread_ids,
+            completed_turns,
             last_activity_state_signature: None,
             snapshot,
             approvals,
@@ -1137,6 +1145,19 @@ impl HostRuntime {
         let mut events = Vec::new();
         for row in &self.model.rows {
             let old = previous.get(&row.id).copied();
+            let completed_at = row.completed_at(&self.engine);
+            let newly_completed = completed_at.is_some_and(|at| {
+                self.completed_turns
+                    .get(&row.id)
+                    .is_none_or(|previous| at > *previous)
+            }) && (row
+                .program_status
+                .as_ref()
+                .is_none_or(|program| !program.state.is_finished())
+                || matches!(
+                    old,
+                    Some(Status::Starting | Status::Busy | Status::Attention)
+                ));
             let kind = if old.is_none() && row.running {
                 Some(unpeel_core::activity_log::ActivityLogKind::Started)
             } else if row.status == Status::Attention && old != Some(Status::Attention) {
@@ -1145,21 +1166,10 @@ impl HostRuntime {
                 // A screen-derived edge is not proof of completion: the
                 // fallback tier animates the sidebar but never notifies.
                 && row.status_source != crate::sessions::StatusSource::Screen
-                && match row.status_source {
-                    // A program's report says whether it finished (`done`,
-                    // `error`) or was interrupted back to `idle`.
-                    crate::sessions::StatusSource::Program => row
-                        .program_status
-                        .as_ref()
-                        .is_some_and(|program| program.state.is_finished()),
-                    _ => {
-                        !self.engine.is_latched(&row.id) || self.engine.is_completed(&row.id)
-                    }
-                }
-                && matches!(
-                    old,
-                    Some(Status::Starting | Status::Busy | Status::Attention)
-                )
+                && (newly_completed
+                    || (row.status_source != crate::sessions::StatusSource::Program
+                        && !self.engine.is_latched(&row.id)
+                        && matches!(old, Some(Status::Starting | Status::Busy | Status::Attention))))
             {
                 Some(unpeel_core::activity_log::ActivityLogKind::Finished)
             } else if row.status == Status::Exited && old.is_some_and(|old| old != Status::Exited) {
@@ -1170,7 +1180,12 @@ impl HostRuntime {
             if let Some(kind) = kind {
                 events.push((row.clone(), kind));
             }
+            if let Some(at) = completed_at {
+                self.completed_turns.insert(row.id.clone(), at);
+            }
         }
+        self.completed_turns
+            .retain(|id, _| self.model.rows.iter().any(|row| &row.id == id));
         if canonical_activity_owner {
             for (row, kind) in events {
                 self.append_activity(&row, kind, now, None);

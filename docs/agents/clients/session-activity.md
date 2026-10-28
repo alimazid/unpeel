@@ -42,14 +42,20 @@ Host is that terminal for every hosted PTY:
   blocked → Attention, idle/done/error → Idle, with
   `activitySource: "program"`. It outranks hooks, the screen tier, and the
   menu heuristic; the hook engine keeps observing underneath and owns the
-  row again the moment the program clears its records. Only `done` and
-  `error` count as a finished turn (completion notification, `completed`);
-  a program interrupted back to `idle` is not one.
+  row again the moment the program clears its records. `done` and `error`
+  count as a finished turn (completion notification, `completed`). An `idle`
+  report alone does not: a program interrupted back to `idle` is not a
+  completion. A successful Stop hook newer than the idle report can confirm
+  completion independently, including when the visible state never left
+  idle. This preserves unread results for programs that report idle but
+  deliver their turn outcomes through hooks. Working and blocked program
+  reports still win; duplicate Stops do not create another completion.
 - Session rows carry `programStatus` (`state`, `kind`, `progress`, `app`,
   `title`, `message`, `updatedAtUnixMs`) while running: untrusted,
   single-line, display-only text.
 
-Matrix: `crates/unpeel-cli/tests/cases/program_status.py`.
+Matrix: `crates/unpeel-cli/tests/cases/program_status.py` and
+`crates/unpeel-cli/tests/cases/codex_program_completion.py`.
 
 [osc7501]: https://www.superlogical.com/rex/docs/build/program-status
 

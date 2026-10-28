@@ -167,6 +167,24 @@ pub struct SessionRow {
 }
 
 impl SessionRow {
+    /// Completion evidence is separate from busy/idle authority. An idle
+    /// program report alone is not completion, but a newer successful hook
+    /// can confirm it without overriding the program's published state.
+    pub(crate) fn completed_at(&self, engine: &ActivityEngine) -> Option<u64> {
+        if self.status != Status::Idle {
+            return None;
+        }
+        match self.program_status.as_ref().filter(|_| self.running) {
+            Some(program) if program.state.is_finished() => Some(program.changed_at),
+            Some(program) if program.state == ProgramState::Idle => engine
+                .completed_at(&self.id)
+                .filter(|at| *at > program.changed_at),
+            Some(_) => None,
+            None if self.status_source != StatusSource::Screen => engine.completed_at(&self.id),
+            None => None,
+        }
+    }
+
     pub fn dir(&self) -> PathBuf {
         app_paths::app_sessions_root().join(&self.id)
     }
