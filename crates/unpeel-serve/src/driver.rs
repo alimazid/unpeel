@@ -1132,6 +1132,28 @@ impl HostRuntime {
             .iter()
             .map(|row| (row.id.clone(), row.status))
             .collect::<HashMap<_, _>>();
+        // A program's `done`/`error` report completes a turn only on the edge
+        // into that state. Status alone cannot show the edge: `working`, `done`
+        // and `error` all render as the same Idle row. The store's edge counter
+        // is authoritative (it sees every report, including a done -> idle ->
+        // done that no single scan observed); the scan-level finished bit keeps
+        // a manifest written before that counter existed working.
+        let previous_program_edges = self
+            .model
+            .rows
+            .iter()
+            .map(|row| {
+                let program = row.program_status.as_ref();
+                (
+                    row.id.clone(),
+                    (
+                        program
+                            .is_some_and(|program| program.state.is_finished()),
+                        program.map_or(0, |program| program.finished_edges),
+                    ),
+                )
+            })
+            .collect::<HashMap<_, _>>();
         let keep_visible = self.unread_ids.clone();
         self.model = scan_sidebar(
             &mut self.engine,
@@ -1146,18 +1168,26 @@ impl HostRuntime {
         for row in &self.model.rows {
             let old = previous.get(&row.id).copied();
             let completed_at = row.completed_at(&self.engine);
-            let newly_completed = completed_at.is_some_and(|at| {
-                self.completed_turns
-                    .get(&row.id)
-                    .is_none_or(|previous| at > *previous)
-            }) && (row
+            let program_finished = row
                 .program_status
                 .as_ref()
-                .is_none_or(|program| !program.state.is_finished())
-                || matches!(
-                    old,
-                    Some(Status::Starting | Status::Busy | Status::Attention)
-                ));
+                .is_some_and(|program| program.state.is_finished());
+            let (finished_before, edges_before) = previous_program_edges
+                .get(&row.id)
+                .copied()
+                .unwrap_or((false, 0));
+            let completion_edge = row
+                .program_status
+                .as_ref()
+                .is_some_and(|program| program.finished_edges > edges_before)
+                || (program_finished && !finished_before);
+            let newly_completed = completed_at
+                .is_some_and(|at| {
+                    self.completed_turns
+                        .get(&row.id)
+                        .is_none_or(|previous| at > *previous)
+                })
+                && (!program_finished || completion_edge);
             let kind = if old.is_none() && row.running {
                 Some(unpeel_core::activity_log::ActivityLogKind::Started)
             } else if row.status == Status::Attention && old != Some(Status::Attention) {

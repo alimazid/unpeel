@@ -43,13 +43,18 @@ Host is that terminal for every hosted PTY:
   `activitySource: "program"`. It outranks hooks, the screen tier, and the
   menu heuristic; the hook engine keeps observing underneath and owns the
   row again the moment the program clears its records. `done` and `error`
-  count as a finished turn (completion notification, `completed`). An `idle`
-  report alone does not: a program interrupted back to `idle` is not a
-  completion. A successful Stop hook newer than the idle report can confirm
-  completion independently, including when the visible state never left
-  idle. This preserves unread results for programs that report idle but
-  deliver their turn outcomes through hooks. Working and blocked program
-  reports still win; duplicate Stops do not create another completion.
+  count as a finished turn (completion notification, `completed`) on the
+  **edge into** that state — a store-side counter, so `idle`→`done` within
+  one tick still notifies and re-reporting the same `done` with new detail
+  does not. An `idle` report alone is not a completion: a program
+  interrupted back to `idle` is not one. A successful Stop hook newer than
+  the program's most recent **non-idle** report confirms completion
+  independently, including when the visible state never left idle. Ordering
+  against that report — not the record's last content change — matters
+  because a program redraws its idle status with fresh text: codex re-reports
+  `idle` after a turn, and that redraw must not discard the Stop that closed
+  it. Working and blocked program reports still win; duplicate Stops do not
+  create another completion.
 - Session rows carry `programStatus` (`state`, `kind`, `progress`, `app`,
   `title`, `message`, `updatedAtUnixMs`) while running: untrusted,
   single-line, display-only text.

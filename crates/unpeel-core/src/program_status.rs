@@ -275,6 +275,19 @@ struct StoredRecord {
     seq: u64,
     /// Wall-clock ms of the last change to this record's content.
     changed_at: u64,
+    /// Wall-clock ms of the most recent report whose state was not `idle`.
+    /// A turn's Stop hook stays credible while it is newer than this: an idle
+    /// re-report that merely redraws text must not invalidate the turn.
+    last_non_idle_at: Option<u64>,
+    /// Wall-clock ms of the most recent `done`/`error` report. While it is as
+    /// recent as `last_non_idle_at`, that report — not a later Stop — already
+    /// completed the turn.
+    last_finished_at: Option<u64>,
+    /// Count of transitions into a finished state. The store sees every
+    /// report, so this survives a scan that never observed the state in
+    /// between (done -> idle -> done inside one tick). Readers compare it to
+    /// the value they last published to find a new completion.
+    finished_edges: u64,
     owner: Option<ProcessOwner>,
 }
 
@@ -307,13 +320,26 @@ impl ProgramStatusStore {
                     if stored.record == record {
                         return false;
                     }
+                    if !stored.record.state.is_finished() && record.state.is_finished() {
+                        stored.finished_edges += 1;
+                    }
                     stored.record = record;
                     stored.changed_at = now_ms;
+                    if stored.record.state != ProgramState::Idle {
+                        stored.last_non_idle_at = Some(now_ms);
+                        if stored.record.state.is_finished() {
+                            stored.last_finished_at = Some(now_ms);
+                        }
+                    }
                     return true;
                 }
+                let finished_edges = u64::from(record.state.is_finished());
                 self.records.insert(
                     id,
                     StoredRecord {
+                        last_non_idle_at: (record.state != ProgramState::Idle).then_some(now_ms),
+                        last_finished_at: record.state.is_finished().then_some(now_ms),
+                        finished_edges,
                         record,
                         seq,
                         changed_at: now_ms,
@@ -400,6 +426,9 @@ impl ProgramStatusStore {
             msg: record.msg.clone(),
             id: (!id.is_empty()).then(|| id.clone()),
             changed_at: stored.changed_at,
+            last_non_idle_at: stored.last_non_idle_at,
+            last_finished_at: stored.last_finished_at,
+            finished_edges: stored.finished_edges,
         })
     }
 
@@ -443,6 +472,17 @@ pub struct ProgramStatusSummary {
     /// Wall-clock ms the record's content last changed.
     #[serde(default)]
     pub changed_at: u64,
+    /// Wall-clock ms the program last reported a state other than `idle`.
+    /// Completion evidence is ordered against this, not `changed_at`, so a
+    /// redrawn idle status cannot hide a turn that just finished.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_non_idle_at: Option<u64>,
+    /// Wall-clock ms of the most recent `done`/`error` report.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_finished_at: Option<u64>,
+    /// How many times this record has entered a finished state.
+    #[serde(default)]
+    pub finished_edges: u64,
 }
 
 impl ProgramStatusSummary {

@@ -176,9 +176,25 @@ impl SessionRow {
         }
         match self.program_status.as_ref().filter(|_| self.running) {
             Some(program) if program.state.is_finished() => Some(program.changed_at),
-            Some(program) if program.state == ProgramState::Idle => engine
-                .completed_at(&self.id)
-                .filter(|at| *at > program.changed_at),
+            Some(program) if program.state == ProgramState::Idle => {
+                // A finished report that is still the newest thing the program
+                // said already completed this turn. Return its own stamp so
+                // completion stays stable while the program redraws an idle
+                // status afterwards.
+                if let (Some(finished), Some(active)) =
+                    (program.last_finished_at, program.last_non_idle_at)
+                {
+                    if finished >= active {
+                        return Some(finished);
+                    }
+                }
+                // Order against the last non-idle assertion, not the last
+                // content change: codex re-reports `idle` with fresh text after
+                // a turn, which must not discard the Stop that closed it.
+                engine
+                    .completed_at(&self.id)
+                    .filter(|at| program.last_non_idle_at.is_none_or(|active| *at > active))
+            }
             Some(_) => None,
             None if self.status_source != StatusSource::Screen => engine.completed_at(&self.id),
             None => None,

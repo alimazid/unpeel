@@ -21,6 +21,7 @@ def body(case):
         handle.write(f"#!{sys.executable}\n" + '''
 import json, os, subprocess, tty
 tty.setraw(0)
+idle_churn = [0]
 def hook(event):
     with open(os.path.join(os.environ["HOME"], ".codex/hooks.json")) as handle:
         registrations = json.load(handle)["hooks"][event]
@@ -38,6 +39,11 @@ while True:
     elif data == b"\\x1b": hook("Interrupt")
     elif data == b"w": os.write(1, b"\\x1b]7501;state=working:app=codex\\x07")
     elif data == b"i": os.write(1, b"\\x1b]7501;state=idle:app=codex\\x07")
+    elif data == b"c":
+        # Real codex re-reports idle with new text (a redrawn prompt/status),
+        # which moves the record's changed_at after the turn's Stop hook.
+        idle_churn[0] += 1
+        os.write(1, b"\\x1b]7501;state=idle:app=codex:msg=ready " + str(idle_churn[0]).encode() + b"\\x07")
     elif data == b"b": os.write(1, b"\\x1b]7501;state=blocked:app=codex\\x07")
     elif b"\\r" in data: hook("UserPromptSubmit")
 ''')
@@ -132,6 +138,20 @@ while True:
         expect("a newer idle report does not reuse an old Stop")
         service.read_for(1.2)
         expect_finished(2)
+
+        # Real codex's turn order is working -> Stop hook -> idle report. The
+        # idle report is a content change, so it must not invalidate the Stop
+        # that just closed the turn.
+        control(home, session_id, "next prompt\r")
+        control(home, session_id, "w")
+        expect("program working wins", status="busy")
+        control(home, session_id, "s")
+        service.read_for(1.2)
+        expect("Stop cannot complete a working program", status="busy")
+        control(home, session_id, "c")
+        expect("codex idle churn after Stop preserves completion", completed=True)
+        expect_finished(3)
+
     finally:
         run_cli(home, ["rm", session_id], env=environment, timeout=45)
 

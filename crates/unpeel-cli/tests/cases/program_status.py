@@ -138,13 +138,25 @@ while True:
         case.check("completion detail churn does not repeat notification", finished_count() == 1,
                    str(finished_count()))
 
+        # A short turn can go straight from idle to done without ever
+        # reporting working. The edge into `done` is the completion, not the
+        # visible status change — idle and done both render as an idle row.
+        control(home, sid, "i")
+        case.check("the program returns to idle without completing",
+                   bool(service.wait_for(published("idle"), timeout=10)), str(activity()))
+        control(home, sid, "d")
+        case.check("done after an idle report records a second finished activity",
+                   bool(service.wait_for(lambda: finished_count() == 2, timeout=10)),
+                   str(finished_count()))
+
         control(home, sid, "w")
         service.wait_for(published("busy"), timeout=10)
         control(home, sid, "i")
         case.check("an interrupted turn returns to idle",
                    bool(service.wait_for(published("idle"), timeout=10)), str(activity()))
         service.read_for(1.5)
-        case.check("an interrupted turn is not a finished one", finished_count() == 1, str(finished_count()))
+        case.check("an interrupted turn is not a finished one", finished_count() == 2,
+                   str(finished_count()))
 
         control(home, sid, "w")
         case.check("a new turn is busy again",
