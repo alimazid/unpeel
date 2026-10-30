@@ -94,7 +94,8 @@ pub fn snippet(raw: &str) -> Option<String> {
         prose.push_str(&paragraph);
     }
     let prose = prose.split_whitespace().collect::<Vec<_>>().join(" ");
-    (!prose.is_empty()).then(|| truncate_on_word(&prose, MAX_SNIPPET_CHARS))
+    let prose = prose.trim_end_matches(';');
+    (!prose.is_empty()).then(|| truncate_on_word(prose, MAX_SNIPPET_CHARS))
 }
 
 /// Cap a raw reply before it is queued, on a character boundary.
@@ -159,6 +160,7 @@ fn sanitize(raw: &str) -> String {
 fn paragraphs(text: &str) -> Vec<String> {
     let mut out = Vec::new();
     let mut current: Vec<String> = Vec::new();
+    let mut headings = Vec::new();
     let mut in_fence = false;
     for line in text.lines() {
         let trimmed = line.trim();
@@ -174,13 +176,34 @@ fn paragraphs(text: &str) -> Vec<String> {
             flush(&mut current, &mut out);
             continue;
         }
-        let flattened = flatten_inline(strip_block_marker(trimmed));
-        if !flattened.is_empty() {
-            current.push(flattened);
+        let (text, block) = strip_block_marker(trimmed);
+        let mut flattened = flatten_inline(text);
+        if flattened.is_empty() {
+            continue;
+        }
+        match block {
+            // A heading labels the reply ("## Summary"); it reads as noise
+            // in a banner unless it is all there is.
+            Block::Heading => {
+                flush(&mut current, &mut out);
+                headings.push(flattened);
+            }
+            Block::Item => {
+                // Keep list items apart once their line breaks are gone.
+                if !flattened.ends_with(['.', '!', '?', ';', ':', '…']) {
+                    flattened.push(';');
+                }
+                current.push(flattened);
+            }
+            Block::Text => current.push(flattened),
         }
     }
     flush(&mut current, &mut out);
-    out
+    if out.is_empty() {
+        headings
+    } else {
+        out
+    }
 }
 
 fn flush(current: &mut Vec<String>, out: &mut Vec<String>) {
@@ -198,28 +221,34 @@ fn is_rule(line: &str) -> bool {
             .any(|&mark| line.chars().all(|c| c == mark || c == ' '))
 }
 
-/// Drop a heading, quote, or list marker at the start of a line.
-fn strip_block_marker(line: &str) -> &str {
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Block {
+    Heading,
+    Item,
+    Text,
+}
+
+/// Drop a heading, quote, or list marker at the start of a line, saying
+/// which kind of line it was.
+fn strip_block_marker(line: &str) -> (&str, Block) {
     let hashes = line.chars().take_while(|&c| c == '#').count();
-    let line = if hashes > 0 && (line.len() == hashes || line[hashes..].starts_with(' ')) {
-        line[hashes..].trim_start()
-    } else {
-        line
-    };
+    if hashes > 0 && (line.len() == hashes || line[hashes..].starts_with(' ')) {
+        return (line[hashes..].trim_start(), Block::Heading);
+    }
     let line = line.trim_start_matches('>').trim_start();
     for bullet in ["- [ ] ", "- [x] ", "- ", "* ", "+ "] {
         if let Some(rest) = line.strip_prefix(bullet) {
-            return rest.trim_start();
+            return (rest.trim_start(), Block::Item);
         }
     }
     let digits = line.chars().take_while(char::is_ascii_digit).count();
     if digits > 0 {
         let rest = &line[digits..];
         if let Some(rest) = rest.strip_prefix(". ").or_else(|| rest.strip_prefix(") ")) {
-            return rest.trim_start();
+            return (rest.trim_start(), Block::Item);
         }
     }
-    line
+    (line, Block::Text)
 }
 
 /// `[text](url)` → `text`; emphasis and code markers removed.
@@ -289,9 +318,7 @@ mod tests {
                    [the parser](https://example.com/p).\n\n- added a test\n- ran `cargo test`";
         assert_eq!(
             snippet(raw).as_deref(),
-            Some(
-                "Summary Done. Fixed the parse_row bug in the parser. added a test ran cargo test"
-            )
+            Some("Done. Fixed the parse_row bug in the parser. added a test; ran cargo test")
         );
     }
 
@@ -352,6 +379,23 @@ mod tests {
     }
 
     #[test]
+    fn headings_are_dropped_unless_they_are_all_there_is() {
+        assert_eq!(
+            snippet("## Summary\n\nAll green.\n\n### Next\nShip it.").as_deref(),
+            Some("All green. Ship it.")
+        );
+        assert_eq!(snippet("# Done").as_deref(), Some("Done"));
+    }
+
+    #[test]
+    fn list_items_stay_separated() {
+        assert_eq!(
+            snippet("Changes:\n- parser fixed\n- tests added.\n- docs").as_deref(),
+            Some("Changes: parser fixed; tests added. docs")
+        );
+    }
+
+    #[test]
     fn adversarial_brackets_stay_fast() {
         let started = std::time::Instant::now();
         let opens = format!("{}](", "[".repeat(MAX_RAW_MESSAGE_BYTES));
@@ -381,7 +425,7 @@ mod tests {
     fn numbered_lists_and_quotes_lose_their_markers() {
         assert_eq!(
             snippet("1. first\n2) second\n> quoted").as_deref(),
-            Some("first second quoted")
+            Some("first; second; quoted")
         );
     }
 
