@@ -1011,6 +1011,7 @@ private struct HostNotificationsSettingsPanel: View {
     let name: String
 
     @State private var menuAttention = true
+    @State private var notifyAll = false // Fork-only
     @State private var hasOverride = false
     @State private var loaded = false
 
@@ -1090,6 +1091,8 @@ private struct HostNotificationsSettingsPanel: View {
                             + "on-screen menu."
                     )
                 }
+
+                completionSection // Fork-only
             }
             .formStyle(.grouped)
             .scrollContentBackground(.hidden)
@@ -1097,20 +1100,70 @@ private struct HostNotificationsSettingsPanel: View {
         .onAppear(perform: load)
     }
 
+    /// Fork-only: the all-agents "Notify when done" knob, written to the
+    /// workspace's suite like menu attention.
+    private var completionSection: some View {
+        Section {
+            LabeledContent {
+                Toggle(
+                    "",
+                    isOn: Binding(
+                        get: { notifyAll },
+                        set: { newValue in
+                            notifyAll = newValue
+                            guard loaded else { return }
+                            hasOverride = true
+                            suite.set(newValue, forKey: NotifyWhenDoneAllAgents.key)
+                            WorkspacesSettingsPanel.pingReloadAppearance(
+                                homeDir: URL(fileURLWithPath: home, isDirectory: true)
+                            )
+                        }
+                    )
+                )
+                .toggleStyle(.switch)
+                .labelsHidden()
+                .controlSize(.small)
+            } label: {
+                VStack(alignment: .leading, spacing: 1) {
+                    Text("Notify when any agent finishes")
+                        .font(.system(size: 13))
+                        .foregroundStyle(Theme.foreground)
+                    Text("Every agent Session behaves as if \u{201C}Notify when "
+                        + "done\u{201D} were on.")
+                        .font(.system(size: 11))
+                        .foregroundStyle(Theme.mutedForeground)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
+        } header: {
+            SettingsSectionHeader(
+                title: "Finished turns",
+                description: "When an agent finishes and is waiting for your "
+                    + "next message."
+            )
+        }
+    }
+
     private func load() {
         let own = suite.object(forKey: UnpeelStore.menuAttentionDetectionKey) as? Bool
         hasOverride = own != nil
+            || NotifyWhenDoneAllAgents.hasOwnSetting(in: suite) // Fork-only
         // Own value → default workspace's (.standard baseline) → on.
         menuAttention = own
             ?? UserDefaults.standard.object(
                 forKey: UnpeelStore.menuAttentionDetectionKey
             ) as? Bool
             ?? true
+        // Fork-only: own value → default workspace's → off.
+        notifyAll = NotifyWhenDoneAllAgents.resolve(
+            own: suite, baseline: .standard, isDefaultInstance: false
+        )
         DispatchQueue.main.async { loaded = true }
     }
 
     private func revertToDefault() {
         suite.removeObject(forKey: UnpeelStore.menuAttentionDetectionKey)
+        suite.removeObject(forKey: NotifyWhenDoneAllAgents.key) // Fork-only
         loaded = false
         load()
         WorkspacesSettingsPanel.pingReloadAppearance(
@@ -3943,7 +3996,11 @@ struct NotificationsSettingsPanel: View {
                         ) {
                             store.revertNotificationsToInheritedBaseline()
                         }
-                        .disabled(!UnpeelStore.hasOwnMenuAttentionSetting)
+                        .disabled(
+                            !UnpeelStore.hasOwnMenuAttentionSetting
+                                // Fork-only: the all-agents completion knob.
+                                && !NotifyWhenDoneAllAgents.hasOwnSettingForThisInstance
+                        )
                     } header: {
                         SettingsSectionHeader(
                             title: "Inherits from \(UnpeelWorkspaceContext.defaultWorkspaceName ?? "Personal")",
@@ -3956,10 +4013,50 @@ struct NotificationsSettingsPanel: View {
                 }
 
                 menuAttentionSection
+                completionSection // Fork-only
                 notificationsSection
             }
             .formStyle(.grouped)
             .scrollContentBackground(.hidden)
+        }
+    }
+
+    /// Fork-only: "Notify when done" for every agent Session at once
+    /// (`NotifyWhenDoneAllAgents`), instead of opting each one in from its
+    /// context menu.
+    private var completionSection: some View {
+        Section {
+            LabeledContent {
+                Toggle(
+                    "",
+                    isOn: Binding(
+                        get: { store.notifyWhenDoneForAllAgents },
+                        set: { store.notifyWhenDoneForAllAgents = $0 }
+                    )
+                )
+                .toggleStyle(.switch)
+                .labelsHidden()
+                .controlSize(.small)
+            } label: {
+                VStack(alignment: .leading, spacing: 1) {
+                    Text("Notify when any agent finishes")
+                        .font(.system(size: 13))
+                        .foregroundStyle(Theme.foreground)
+                    Text("Every agent Session behaves as if \u{201C}Notify when "
+                        + "done\u{201D} were on: a banner (and a push to a paired "
+                        + "iPhone) when it finishes a turn, unless you are already "
+                        + "looking at it. Clicking the banner opens the Session.")
+                        .font(.system(size: 11))
+                        .foregroundStyle(Theme.mutedForeground)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
+        } header: {
+            SettingsSectionHeader(
+                title: "Finished turns",
+                description: "When an agent finishes and is waiting for your "
+                    + "next message."
+            )
         }
     }
 
@@ -4051,8 +4148,8 @@ struct NotificationsSettingsPanel: View {
                 title: "Notifications",
                 description: "A macOS banner (and a push to a paired iPhone) when a session "
                     + "needs input, or finishes if you turned on \u{201C}Notify when done\u{201D} "
-                    + "for it. Phone alerts use Link/APNs even while terminal traffic stays "
-                    + "Direct or SSH. Mac and phone tests exercise their respective delivery "
+                    + "for it (or for every agent above). Phone alerts use Link/APNs even "
+                    + "while terminal traffic stays Direct or SSH. Mac and phone tests exercise their respective delivery "
                     + "paths; phone diagnostics distinguish a missing APNs token, Link "
                     + "entitlement failure, and APNs rejection."
             )

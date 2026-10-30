@@ -503,6 +503,36 @@ final class UnpeelStore: ObservableObject {
 
     private var suppressMenuAttentionPersistence = false
 
+    // Fork-only: Settings ▸ Notifications "Notify when any agent finishes"
+    // (`NotifyWhenDoneAllAgents`) — every finished turn is eligible, as if
+    // each Session had "Notify when done" on. Read by the adapter's
+    // `notification.deliver` handler.
+    @Published var notifyWhenDoneForAllAgents: Bool =
+        NotifyWhenDoneAllAgents.resolveForThisInstance()
+    {
+        didSet {
+            guard oldValue != notifyWhenDoneForAllAgents,
+                  !suppressNotifyWhenDoneForAllAgentsPersistence
+            else { return }
+            AppDefaults.shared.set(
+                notifyWhenDoneForAllAgents, forKey: NotifyWhenDoneAllAgents.key
+            )
+        }
+    }
+
+    private var suppressNotifyWhenDoneForAllAgentsPersistence = false
+
+    /// Fork-only: re-resolve the all-agents knob (revert, peer edits through
+    /// the reload ping) without materializing an inherited value as an own
+    /// override.
+    private func reresolveNotifyWhenDoneForAllAgents() {
+        let resolved = NotifyWhenDoneAllAgents.resolveForThisInstance()
+        guard resolved != notifyWhenDoneForAllAgents else { return }
+        suppressNotifyWhenDoneForAllAgentsPersistence = true
+        notifyWhenDoneForAllAgents = resolved
+        suppressNotifyWhenDoneForAllAgentsPersistence = false
+    }
+
     /// The effective menu-attention setting: this workspace's own value,
     /// else the default workspace's (Decision 4 generalized — the shared
     /// `.standard` domain is the local-filesystem baseline), else on.
@@ -534,6 +564,9 @@ final class UnpeelStore: ObservableObject {
         suppressMenuAttentionPersistence = true
         menuAttentionDetectionEnabled = Self.resolveMenuAttentionDetection()
         suppressMenuAttentionPersistence = false
+        // Fork-only: the all-agents completion knob reverts with it.
+        AppDefaults.shared.removeObject(forKey: NotifyWhenDoneAllAgents.key)
+        reresolveNotifyWhenDoneForAllAgents()
     }
 
     /// Decision 4's revert for Features on THIS instance: drop every own
@@ -2937,8 +2970,12 @@ final class UnpeelStore: ObservableObject {
                         return
                     }
                     let macObserved = self.observedSessionID == sessionID
-                    let eligible = !requiresNotifyWhenDone
-                        || self.notifyWhenDoneSessionIDs.contains(sessionID)
+                    // Fork-only: the all-agents knob counts as an opt-in.
+                    let eligible = NotifyWhenDoneAllAgents.isEligible(
+                        requiresNotifyWhenDone: requiresNotifyWhenDone,
+                        sessionOptedIn: self.notifyWhenDoneSessionIDs.contains(sessionID),
+                        allAgents: self.notifyWhenDoneForAllAgents
+                    )
                     if eligible {
                         if sendDesktop && !macObserved {
                             DesktopNotifier.shared.notify(
@@ -4242,6 +4279,7 @@ final class UnpeelStore: ObservableObject {
             menuAttentionDetectionEnabled = resolvedMenuAttention
             suppressMenuAttentionPersistence = false
         }
+        reresolveNotifyWhenDoneForAllAgents() // Fork-only
         let resolvedFlags = Set(
             AppFeature.all
                 .filter { UnpeelFeatureFlags.isEnabled($0) }
