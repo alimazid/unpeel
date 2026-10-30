@@ -136,12 +136,13 @@ final class FakeGitHistory: @unchecked Sendable {
         services(sharing: GitRepositoryHub(services: hubServices))
     }
 
-    func services(sharing repositories: GitRepositoryHub) -> GitHistoryServices {
+    func services(sharing repositories: GitRepositoryHub, roots: GitRepositoryRoots? = nil) -> GitHistoryServices {
         GitHistoryServices(
             branches: { [self] root in branches(root) },
             logPage: { [self] root, scope, offset, limit in logPage(root, scope, offset, limit) },
             commitDetail: { [self] root, commit in detail(root, commit) },
-            repositories: repositories
+            repositories: repositories,
+            repositoryRoots: roots
         )
     }
 }
@@ -227,4 +228,61 @@ final class FakeMonitors: @unchecked Sendable {
     }
 
     var active: [Monitor] { all.filter { !$0.isStopped } }
+}
+
+/// Scripted nested repositories per folder; every folder named in one
+/// of them counts as a repository.
+final class FakeNestedFinder: @unchecked Sendable {
+    private let lock = NSLock()
+    private var nested: [String: [String]] = [:]
+    private var extraRepositories: Set<String> = []
+    private var searches: [String] = []
+    private var searchDelay: TimeInterval?
+
+    /// Delays every search.
+    func setSearchDelay(_ delay: TimeInterval?) {
+        lock.lock(); defer { lock.unlock() }
+        searchDelay = delay
+    }
+
+    func set(_ repositories: [String], in folder: String) {
+        lock.lock(); defer { lock.unlock() }
+        nested[folder] = repositories
+    }
+
+    func addRepository(_ folder: String) {
+        lock.lock(); defer { lock.unlock() }
+        extraRepositories.insert(folder)
+    }
+
+    func repositories(in folder: String) -> [String] {
+        if let delay = lockedSearchDelay { Thread.sleep(forTimeInterval: delay) }
+        lock.lock(); defer { lock.unlock() }
+        searches.append(folder)
+        return nested[folder] ?? []
+    }
+
+    private var lockedSearchDelay: TimeInterval? {
+        lock.lock(); defer { lock.unlock() }
+        return searchDelay
+    }
+
+    func isRepository(_ folder: String) -> Bool {
+        lock.lock(); defer { lock.unlock() }
+        return extraRepositories.contains(folder) || nested.values.contains { $0.contains(folder) }
+    }
+
+    /// Resolver services served by this fake; paths are taken as real.
+    var services: GitRepositoryRootsServices {
+        GitRepositoryRootsServices(
+            findNested: { [self] in repositories(in: $0) },
+            isRepository: { [self] in isRepository($0) },
+            canonical: { $0 }
+        )
+    }
+
+    var searchedFolders: [String] {
+        lock.lock(); defer { lock.unlock() }
+        return searches
+    }
 }

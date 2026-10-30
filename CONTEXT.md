@@ -10,8 +10,9 @@ the shipped product vocabulary (Host, Controller, Session, Project) is in
 ### Explorer
 
 **Explorer Root**:
-The folder the EXPLORER and the Git views show: the selected Session's
-worktree if it has one, otherwise its Project's root. Local Hosts only.
+The folder the EXPLORER shows: the selected Session's worktree if it has
+one, otherwise its Project's root. The Git views read its repository, or
+the Nested Repository in use when it is not one. Local Hosts only.
 _Avoid_: workspace folder, repo root
 
 **File Operation**:
@@ -60,6 +61,15 @@ _Avoid_: git graph, source control, history pane, git log view
 The choice of which branch's commits Git History lists. It never changes the
 working tree.
 _Avoid_: branch selector, branch picker, branch switcher
+
+**Nested Repository**:
+A git repository in a folder inside an Explorer Root that is not itself a
+repository. Git History and the Git Status Decorations follow the one in
+use: chosen in Git History or with the EXPLORER's Use as Git Repository,
+remembered per Explorer Root, and used without asking when it is the only
+one found (up to two levels down). Never offered when the Explorer Root is
+a repository.
+_Avoid_: subrepo, child repo, submodule
 
 **Checked-out Branch**:
 The branch HEAD points to in the Explorer Root's working tree, shown in the

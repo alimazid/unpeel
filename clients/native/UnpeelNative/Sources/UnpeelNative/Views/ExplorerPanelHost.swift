@@ -12,6 +12,7 @@ import AppKit
 import os
 import SwiftUI
 import UnpeelExplorer
+import UnpeelGit
 
 @MainActor
 final class ExplorerHostActions: ExplorerActionHandler {
@@ -162,8 +163,13 @@ final class ExplorerSectionModel: ObservableObject {
     /// without the EXPLORER expanding over Git History.
     private var pendingReveal: String?
 
-    init(defaults: UserDefaults = AppDefaults.shared) {
-        viewModel = ExplorerViewModel(stateStore: ExplorerStateStore(defaults: defaults))
+    /// Fork-only: nested repositories. `repositoryRoots` is shared with
+    /// Git History, so both follow the same repository.
+    init(defaults: UserDefaults = AppDefaults.shared, repositoryRoots: GitRepositoryRoots = .app) {
+        viewModel = ExplorerViewModel(
+            services: .live(repositoryRoots: repositoryRoots),
+            stateStore: ExplorerStateStore(defaults: defaults)
+        )
     }
 
     /// Fork-only: git support. Reveals `path` in the tree now when it is

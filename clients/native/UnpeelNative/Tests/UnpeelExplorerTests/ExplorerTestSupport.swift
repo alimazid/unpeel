@@ -72,9 +72,10 @@ class ExplorerViewModelTestCase: XCTestCase {
     }
 
     /// Real scans (no ignore checking) with no watcher; `repositories`
-    /// turns on Git Status Decorations.
+    /// turns on Git Status Decorations, `roots` nested repositories.
     func services(
-        log: ScanLog? = nil, delay: [String: TimeInterval] = [:], repositories: GitRepositoryHub? = nil
+        log: ScanLog? = nil, delay: [String: TimeInterval] = [:], repositories: GitRepositoryHub? = nil,
+        roots: GitRepositoryRoots? = nil
     ) -> ExplorerServices {
         ExplorerServices(
             scan: { directory, root in
@@ -83,7 +84,8 @@ class ExplorerViewModelTestCase: XCTestCase {
                 return try DirectoryScanner(ignore: NoIgnoreChecker()).scan(directory: directory, root: root)
             },
             makeWatcher: { _, _ in nil },
-            repositories: repositories
+            repositories: repositories,
+            repositoryRoots: roots
         )
     }
 

@@ -67,9 +67,9 @@ public struct GitReader: Sendable {
             let lines = output.text.split(separator: "\n", omittingEmptySubsequences: false).map(String.init)
             guard lines.count >= 3 else { return .failure(.failed("git rev-parse gave no repository paths")) }
             return .success(GitRepositoryLocation(
-                workTree: Self.canonical(lines[0]),
-                gitDirectory: Self.canonical(lines[1]),
-                commonDirectory: Self.canonical(lines[2])
+                workTree: GitPath.canonical(lines[0]),
+                gitDirectory: GitPath.canonical(lines[1]),
+                commonDirectory: GitPath.canonical(lines[2])
             ))
         }
     }
@@ -102,12 +102,6 @@ public struct GitReader: Sendable {
         guard case .failure(.failed(let reason)) = detected else { return detected }
         Self.logger.info("commit \(commit.sha, privacy: .public) listed without rename detection: \(reason, privacy: .public)")
         return read([])
-    }
-
-    private static func canonical(_ path: String) -> String {
-        guard let resolved = realpath(path, nil) else { return path }
-        defer { free(resolved) }
-        return String(cString: resolved)
     }
 
     /// Fields of one log record, NUL-separated; `-z` ends each record with

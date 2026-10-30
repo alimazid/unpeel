@@ -10,6 +10,8 @@ public final class ExplorerOutlineController: NSObject,
         case copyPath, copyRelativePath, refresh, collapse
         // Fork-only: explorer operations.
         case newFile, newFolder, rename, trash, cut, copy, paste, duplicate
+        // Fork-only: nested repositories.
+        case useAsGitRepository
 
         var title: String {
             switch self {
@@ -31,6 +33,7 @@ public final class ExplorerOutlineController: NSObject,
             case .copy: return "Copy"
             case .paste: return "Paste"
             case .duplicate: return "Duplicate"
+            case .useAsGitRepository: return "Use as Git Repository"
             }
         }
     }
@@ -588,7 +591,7 @@ public final class ExplorerOutlineController: NSObject,
             ? (markdownOnly
                 ? [.open, .openInMarkdownEditor, .openInEditor, .revealInFinder, .quickLook, nil]
                 : [.open, .openInEditor, .revealInFinder, .quickLook, nil])
-            : [.revealInFinder, nil]
+            : [.revealInFinder] + useAsGitRepository(resolved.map(\.path)) + [nil]
         actions += creationActions
         actions += send
         actions += clipboardActions
@@ -599,6 +602,12 @@ public final class ExplorerOutlineController: NSObject,
             actions.append(.collapse)
         }
         return actions
+    }
+
+    /// Fork-only: nested repositories. Offered for one folder that is a
+    /// repository inside an Explorer Root that is not one.
+    private func useAsGitRepository(_ paths: [String]) -> [MenuAction?] {
+        paths.count == 1 && viewModel.canUseAsGitRepository(paths[0]) ? [.useAsGitRepository] : []
     }
 
     public func menuNeedsUpdate(_ menu: NSMenu) {
@@ -680,6 +689,8 @@ public final class ExplorerOutlineController: NSObject,
             paste(into: paths)
         case .duplicate:
             duplicate(paths)
+        case .useAsGitRepository:
+            if paths.count == 1 { viewModel.useAsGitRepository(paths[0]) }
         case .collapse:
             for path in expandedDirectoriesOnly(paths) {
                 // If the outline already has this item expanded, collapsing

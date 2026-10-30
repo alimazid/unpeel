@@ -15,6 +15,16 @@ import SwiftUI
 import UnpeelExplorer
 import UnpeelGit
 
+/// Fork-only: nested repositories. The one record of which repository each
+/// Explorer Root's git views read, shared by the EXPLORER and Git History
+/// and remembered in this instance's defaults.
+extension GitRepositoryRoots {
+    static let app = GitRepositoryRoots(
+        hub: .shared,
+        choices: GitRepositoryChoiceStore(defaults: AppDefaults.shared)
+    )
+}
+
 /// A changed file clicked in an expanded commit: revealed in the EXPLORER
 /// (at once when its tree is showing, otherwise the next time it opens)
 /// and opened through the EXPLORER's own open-with path — Markdown in the
@@ -43,9 +53,9 @@ final class GitHistorySectionModel: ObservableObject {
 
     /// Reads with the shared runner and refreshes on its own through the
     /// hub the EXPLORER's decorations use, which watches HEAD, the index
-    /// and refs.
+    /// and refs; follows the nested repository chosen with them.
     init(viewModel: GitHistoryViewModel = GitHistoryViewModel(
-        services: .reading(GitReader(), repositories: .shared)
+        services: .reading(GitReader(), repositories: .shared, repositoryRoots: .app)
     )) {
         self.viewModel = viewModel
     }

@@ -18,26 +18,30 @@ public struct GitDecorations: Equatable, Sendable {
         self.untrackedFolders = untrackedFolders
     }
 
-    public init(snapshot: GitRepositorySnapshot) {
+    /// `root` is the folder the tree shows. When it holds the repository
+    /// (Fork-only: nested repositories), the repository's own folder and
+    /// those between it and `root` carry its strongest state too.
+    public init(snapshot: GitRepositorySnapshot, shownFrom root: String? = nil) {
         let workTree = snapshot.location.workTree
+        let ceiling = root.flatMap { workTree.hasPrefix($0 + "/") ? $0 : nil } ?? workTree
         var kinds: [String: GitChangeKind] = [:]
         var untrackedFolders: Set<String> = []
         for entry in snapshot.status.entries {
             let path = (workTree as NSString).appendingPathComponent(entry.path)
             if entry.isDirectory { untrackedFolders.insert(path) }
             kinds[path] = kinds[path].map { GitChangeKind.strongest($0, entry.kind) } ?? entry.kind
-            Self.propagate(entry.kind, above: path, below: workTree, into: &kinds)
+            Self.propagate(entry.kind, above: path, below: ceiling, into: &kinds)
         }
         self.init(kinds: kinds, untrackedFolders: untrackedFolders)
     }
 
-    /// Raises every folder between `path` and `workTree` to at least
+    /// Raises every folder between `path` and `ceiling` to at least
     /// `kind`. Stops at the first folder already that strong: every folder
     /// above it was raised at least as far when it was.
     private static func propagate(
-        _ kind: GitChangeKind, above path: String, below workTree: String, into kinds: inout [String: GitChangeKind]
+        _ kind: GitChangeKind, above path: String, below ceiling: String, into kinds: inout [String: GitChangeKind]
     ) {
-        let prefix = workTree + "/"
+        let prefix = ceiling + "/"
         var folder = (path as NSString).deletingLastPathComponent
         while folder.hasPrefix(prefix) {
             if let existing = kinds[folder], existing.precedence >= kind.precedence { return }

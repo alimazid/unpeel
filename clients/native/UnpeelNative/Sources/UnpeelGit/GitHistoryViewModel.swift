@@ -13,6 +13,11 @@ import os
 /// EXPLORER's decorations share — and its change signal refreshes
 /// everything in place. Collapsing the section (`suspend`) stops reading
 /// and watching but keeps what is shown, for expanding again.
+///
+/// Fork-only: nested repositories. With `GitRepositoryRoots`, an Explorer
+/// Root that is not a repository shows the nested repository chosen in it
+/// (`repository`, `chooseRepository`); switching repositories starts the
+/// list over, like a new Explorer Root.
 @MainActor
 public final class GitHistoryViewModel: ObservableObject {
     public static let defaultPageSize = 200
@@ -34,6 +39,10 @@ public final class GitHistoryViewModel: ObservableObject {
     /// Where the repository lives; changed-file paths are relative to its
     /// work tree.
     @Published public private(set) var location: GitRepositoryLocation?
+    /// Fork-only: nested repositories. Which repository the Explorer Root
+    /// reads, as last resolved; nil without `GitRepositoryRoots` or before
+    /// the first resolution.
+    @Published public private(set) var repository: GitRepositoryRootState?
     /// Where the list is scrolled; kept while the section is collapsed so
     /// expanding it lands where the user left off. Not published: only the
     /// outline reads it, when it is rebuilt.
@@ -55,8 +64,12 @@ public final class GitHistoryViewModel: ObservableObject {
     /// Commit details read so far for this root; a commit never changes.
     var detailCache: [String: GitCommitDetail] = [:]
 
-    /// This root's hold on the shared hub: its status and change signal.
+    /// The repository's hold on the shared hub: its status and change
+    /// signal.
     private var subscription: GitRepositorySubscription?
+    /// Fork-only: nested repositories. The Explorer Root's hold on which
+    /// repository it reads.
+    private var choiceSubscription: GitRepositorySubscription?
     /// Collapsed or hidden: not following the root, but keeping the list.
     private var isSuspended = false
     /// Serves change signals: a burst costs one refresh.
@@ -74,12 +87,20 @@ public final class GitHistoryViewModel: ObservableObject {
 
     deinit {
         subscription?.cancel()
+        choiceSubscription?.cancel()
     }
 
-    /// The Explorer Root git reads run in, when there is one.
-    public var root: String? {
+    /// The Explorer Root the history follows, when there is one.
+    public var explorerRoot: String? {
         guard case .local(let root, _) = context else { return nil }
         return root
+    }
+
+    /// Where git reads run: the nested repository in use, else the
+    /// Explorer Root.
+    public var root: String? {
+        guard let explorerRoot else { return nil }
+        return repository?.repositoryRoot ?? explorerRoot
     }
 
     /// Which commits the list shows.
@@ -112,17 +133,10 @@ public final class GitHistoryViewModel: ObservableObject {
         changeRefresh.reset()
         isSuspended = false
         context = next
-        head = nil
-        filter = .checkedOut
-        branches = []
-        expanded = nil
-        location = nil
-        detailCache = [:]
-        commits = []
-        hasMore = false
-        scrollOffset = 0
+        repository = nil
+        clearList()
         status = Self.initialStatus(for: next)
-        follow(root)
+        follow(explorerRoot)
         let current = generation
         return Task { await self.load(generation: current, merging: false) }
     }
@@ -142,8 +156,21 @@ public final class GitHistoryViewModel: ObservableObject {
     /// commits land on top, and the expanded commit stays if still listed.
     private func resume() -> Task<Void, Never> {
         isSuspended = false
-        follow(root)
+        follow(explorerRoot)
         return refresh()
+    }
+
+    /// Everything shown for one repository, gone.
+    private func clearList() {
+        head = nil
+        filter = .checkedOut
+        branches = []
+        expanded = nil
+        location = nil
+        detailCache = [:]
+        commits = []
+        hasMore = false
+        scrollOffset = 0
     }
 
     /// Re-reads everything for the current root, keeping what is shown —
@@ -187,11 +214,26 @@ public final class GitHistoryViewModel: ObservableObject {
         }
     }
 
+    /// Follows `explorerRoot` (nil lets go): which repository it reads,
+    /// and that repository through the hub. A signal for a previous
+    /// generation is ignored.
+    private func follow(_ explorerRoot: String?) {
+        choiceSubscription?.cancel()
+        choiceSubscription = nil
+        followRepository(nil)
+        guard let explorerRoot else { return }
+        let current = generation
+        choiceSubscription = services.repositoryRoots?.subscribe(explorerRoot: explorerRoot) { [weak self] in
+            guard let self, current == self.generation else { return }
+            self.heardRepositoryChange()
+        }
+        followRepository(root)
+    }
+
     /// Follows `root` through the hub (nil lets go). The hub watches the
     /// repository — or, for a folder that is not one yet, waits for a
-    /// `.git` — while any view follows it. A signal for a previous
-    /// generation is ignored.
-    private func follow(_ root: String?) {
+    /// `.git` — while any view follows it.
+    private func followRepository(_ root: String?) {
         subscription?.cancel()
         subscription = nil
         guard let root else { return }
@@ -202,13 +244,63 @@ public final class GitHistoryViewModel: ObservableObject {
         }
     }
 
+    // MARK: - Nested repositories
+
+    /// Fork-only: nested repositories. Shows `repository` — a repository
+    /// inside the Explorer Root, or nil for the folder itself — and
+    /// remembers the choice; the EXPLORER's decorations follow it too.
+    /// Only for an Explorer Root that is not a repository.
+    @discardableResult
+    public func chooseRepository(_ repository: String?) -> Task<Void, Never> {
+        guard let explorerRoot, let roots = services.repositoryRoots, choiceSubscription != nil,
+              roots.choose(repository, in: explorerRoot)
+        else { return Task {} }
+        // Choosing told every follower, this one included; the user is
+        // waiting, so this one loads now rather than after the debounce.
+        changeRefresh.reset()
+        return refresh()
+    }
+
+    /// A newly resolved repository for the Explorer Root. Another
+    /// repository than the one shown starts over, as a new Explorer Root
+    /// would; returns whether it did.
+    private func useRepository(_ resolved: GitRepositoryRootState) -> Bool {
+        let previous = root
+        repository = resolved
+        guard resolved.repositoryRoot != previous else { return false }
+        listGeneration += 1
+        loadingMore = false
+        clearList()
+        status = .loading
+        if !isSuspended { followRepository(resolved.repositoryRoot) }
+        return true
+    }
+
     // MARK: - Loading
 
     private func load(generation current: Int, merging: Bool) async {
-        guard current == generation, let root else { return }
-        let token = nextReplacementToken()
+        guard current == generation, let explorerRoot, let expectedRoot = root else { return }
+        var token = nextReplacementToken()
         let readBranches = services.branches
-        let branchesRead = Task.detached(priority: .userInitiated) { readBranches(root) }
+        // Started for the repository shown so far, alongside resolving
+        // which one to show (nearly always the same one again).
+        var branchesRead = Task.detached(priority: .userInitiated) { readBranches(expectedRoot) }
+        if let roots = services.repositoryRoots {
+            let resolved = await roots.resolve(explorerRoot: explorerRoot)
+            guard current == generation else { return }
+            // Another repository is shown even when a newer read (a branch
+            // chosen meanwhile) took over: that read was for the old one,
+            // so it is dropped and this load reads the new one.
+            if resolved != repository, useRepository(resolved) {
+                token = nextReplacementToken()
+            } else if token != replacementToken {
+                return
+            }
+        }
+        guard let root else { return }
+        if root != expectedRoot {
+            branchesRead = Task.detached(priority: .userInitiated) { readBranches(root) }
+        }
         let snapshotResult = await services.repositories.status(root: root)
         let branchesResult = await branchesRead.value
         guard current == generation, token == replacementToken else { return }

@@ -20,6 +20,10 @@ public struct ExplorerServices: Sendable {
     /// Fork-only: git support. Where Git Status Decorations come from; nil
     /// shows none.
     public let repositories: GitRepositoryHub?
+    /// Fork-only: nested repositories. Which repository an Explorer Root
+    /// that is not one decorates from, shared with Git History; nil always
+    /// decorates from the Explorer Root itself.
+    public let repositoryRoots: GitRepositoryRoots?
     /// Fork-only: explorer operations. The File Operations for a root.
     public let makeOperations: MakeOperations
     /// Fork-only: explorer operations. A paste or drop copying more than
@@ -30,21 +34,28 @@ public struct ExplorerServices: Sendable {
         scan: @escaping Scan,
         makeWatcher: @escaping MakeWatcher,
         repositories: GitRepositoryHub? = nil,
+        repositoryRoots: GitRepositoryRoots? = nil,
         makeOperations: @escaping MakeOperations = { FileOperations(root: $0) },
         largeTransfer: TransferSize = .largeTransfer
     ) {
         self.scan = scan
         self.makeWatcher = makeWatcher
         self.repositories = repositories
+        self.repositoryRoots = repositoryRoots
         self.makeOperations = makeOperations
         self.largeTransfer = largeTransfer
     }
 
-    @MainActor public static var live: ExplorerServices {
+    @MainActor public static var live: ExplorerServices { live(repositoryRoots: nil) }
+
+    /// Fork-only: nested repositories. The live services, choosing nested
+    /// repositories through `repositoryRoots`.
+    @MainActor public static func live(repositoryRoots: GitRepositoryRoots?) -> ExplorerServices {
         ExplorerServices(
             scan: { directory, root in try DirectoryScanner().scan(directory: directory, root: root) },
             makeWatcher: { root, handler in FileSystemWatcher(root: root, handler: handler) },
-            repositories: .shared
+            repositories: .shared,
+            repositoryRoots: repositoryRoots
         )
     }
 }
@@ -71,6 +82,9 @@ public final class ExplorerViewModel: ObservableObject {
     /// Fork-only: git support. The current root's Git Status Decorations
     /// (see `ExplorerViewModel+Decorations`).
     @Published public internal(set) var decorations: GitDecorations = .none
+    /// Fork-only: nested repositories. Which repository the decorations
+    /// come from, as last resolved; nil without `GitRepositoryRoots`.
+    @Published public internal(set) var repositoryState: GitRepositoryRootState?
     /// Fork-only: explorer operations. The latest File Operation failure,
     /// shown in the EXPLORER's message strip until dismissed, the next
     /// operation succeeds, or the root changes.
@@ -392,6 +406,8 @@ public final class ExplorerViewModel: ObservableObject {
     public func refresh() -> Task<Void, Never> {
         guard let model else { return Task {} }
         let reload = scheduleReload(Set(model.directories.keys))
+        // Fork-only: nested repositories — repositories cloned since are found.
+        searchForRepositoriesAgain()
         let decorating = workingTreeDidChange()
         return Task {
             await reload.value
@@ -402,7 +418,8 @@ public final class ExplorerViewModel: ObservableObject {
     @discardableResult
     public func handleChange(_ change: FileSystemChange) -> Task<Void, Never> {
         guard let model else { return Task {} }
-        let decorating = Self.touchesWorkingTree(change, root: model.root) ? workingTreeDidChange() : Task {}
+        let repositoryRoot = nestedRepositoryRoot ?? model.root
+        let decorating = Self.touchesWorkingTree(change, root: repositoryRoot) ? workingTreeDidChange() : Task {}
         let tracked = Set(model.directories.keys)
         // A dropped/coalesced event says nothing usable about WHICH paths
         // changed, so — like a `.gitignore` edit — everything tracked is
