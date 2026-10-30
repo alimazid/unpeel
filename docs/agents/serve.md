@@ -532,7 +532,11 @@ boundary:
   Keychain plus the shared locked authority file.
 - `notification.deliver` keeps lifecycle edges, observation policy, unread,
   exact viewing-device suppression, and phone targeting in the Host while the
-  app performs only macOS banner and APNs delivery.
+  app performs only macOS banner and APNs delivery. (Fork-only: a `done`
+  body is the program's `msg` from the report that made the edge, else a
+  flattened, ≤240-character snippet of the turn's Stop
+  `last_assistant_message` (`completion_snippet.rs`), else "Finished". That
+  text is also sent in the phone push through Link/APNs.)
 - `approval.present` mirrors the Host's bounded approval queue into native
   presentation. Answers return through the generation-bound Host approval
   verb; Swift is not another approval authority.

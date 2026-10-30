@@ -625,6 +625,8 @@ pub struct HostRuntime {
     unread_ids: HashSet<String>,
     /// Completion edges can occur while a program keeps reporting idle.
     completed_turns: HashMap<String, u64>,
+    /// Fork-only: each Session's final reply for the finished notification.
+    completion_messages: crate::completion_snippet::CompletionMessages,
     /// Host-owned auto-stop sweep (`auto_stop.rs`).
     auto_stop: crate::auto_stop::Sweeper,
     /// Removes stopped Sessions past the keep limit (`retention.rs`).
@@ -763,6 +765,7 @@ impl HostRuntime {
             activity_log,
             unread_ids,
             completed_turns,
+            completion_messages: Default::default(),
             last_activity_state_signature: None,
             snapshot,
             approvals,
@@ -888,6 +891,17 @@ impl HostRuntime {
                 );
                 true
             };
+            if accepted {
+                self.completion_messages.observe(
+                    &message.session_id,
+                    &message.event_name,
+                    message.completion_message.as_deref(),
+                    message
+                        .received_at
+                        .duration_since(UNIX_EPOCH)
+                        .map_or(0, |since| since.as_millis() as u64),
+                );
+            }
             dirty |= accepted;
         }
         while let Ok(session_id) = self.mark_read_rx.try_recv() {
@@ -1208,7 +1222,14 @@ impl HostRuntime {
                 None
             };
             if let Some(kind) = kind {
-                events.push((row.clone(), kind));
+                // Fork-only: the program's summary from the report that made
+                // this edge (an older `done` record's text is stale).
+                let edge_msg = row
+                    .program_status
+                    .as_ref()
+                    .filter(|program| completion_edge && program.state.is_finished())
+                    .and_then(|program| program.msg.clone());
+                events.push((row.clone(), kind, edge_msg));
             }
             if let Some(at) = completed_at {
                 self.completed_turns.insert(row.id.clone(), at);
@@ -1216,8 +1237,11 @@ impl HostRuntime {
         }
         self.completed_turns
             .retain(|id, _| self.model.rows.iter().any(|row| &row.id == id));
+        let rows = &self.model.rows;
+        self.completion_messages
+            .retain(|id| rows.iter().any(|row| row.id == id));
         if canonical_activity_owner {
-            for (row, kind) in events {
+            for (row, kind, edge_msg) in events {
                 self.append_activity(&row, kind, now, None);
                 let observed = match kind {
                     unpeel_core::activity_log::ActivityLogKind::NeedsInput => self
@@ -1228,14 +1252,22 @@ impl HostRuntime {
                             false,
                             now,
                         ),
-                    unpeel_core::activity_log::ActivityLogKind::Finished => self
-                        .deliver_notification(
+                    unpeel_core::activity_log::ActivityLogKind::Finished => {
+                        // Fork-only: show what the agent said, not just
+                        // "Finished".
+                        let hook_message = self.completion_messages.take(&row.id, now);
+                        let body = crate::completion_snippet::finished_body(
+                            edge_msg.as_deref(),
+                            hook_message.as_deref(),
+                        );
+                        self.deliver_notification(
                             &row,
                             crate::notifications::NotificationKind::Done,
-                            None,
+                            body.as_deref(),
                             true,
                             now,
-                        ),
+                        )
+                    }
                     _ => false,
                 };
                 if matches!(

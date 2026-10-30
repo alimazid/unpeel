@@ -45,6 +45,9 @@ pub struct HookEventMessage {
     /// than an in-place replacement launch recorded in the manifest.
     pub received_at: SystemTime,
     pub app_alert: Option<AppAlertMessage>,
+    /// Fork-only: the turn's final reply from a Stop payload
+    /// (`last_assistant_message`), bounded; feeds the finished notification.
+    pub completion_message: Option<String>,
 }
 
 impl HookEventMessage {
@@ -59,6 +62,7 @@ impl HookEventMessage {
             runtime_generation: None,
             received_at: SystemTime::now(),
             app_alert: None,
+            completion_message: None,
         }
     }
 
@@ -111,6 +115,21 @@ fn app_alert_from_json(json: &serde_json::Value) -> Result<AppAlertMessage, ()> 
     )?
     .ok_or(())?;
     Ok(AppAlertMessage { title, body })
+}
+
+/// Fork-only: the final reply a provider attaches to its Stop payload —
+/// Claude-compatible `last_assistant_message`, Codex's notify
+/// `last-assistant-message` — capped before it is queued.
+fn completion_message_from_json(json: &serde_json::Value) -> Option<String> {
+    [
+        "last_assistant_message",
+        "lastAssistantMessage",
+        "last-assistant-message",
+    ]
+    .iter()
+    .find_map(|key| json.get(*key)?.as_str())
+    .filter(|message| !message.trim().is_empty())
+    .map(crate::completion_snippet::bounded_raw)
 }
 
 fn runtime_generation_from_json(json: &serde_json::Value) -> Option<u64> {
@@ -683,6 +702,7 @@ fn handle_connection(
             runtime_generation: None,
             received_at,
             app_alert: Some(app_alert),
+            completion_message: None,
         });
         respond(&mut stream, "200 OK", r#"{"ok":true}"#);
         return;
@@ -790,6 +810,7 @@ fn handle_connection(
         runtime_generation,
         received_at,
         app_alert: None,
+        completion_message: completion_message_from_json(&json),
     });
     respond(&mut stream, "200 OK", r#"{"ok":true}"#);
 }
@@ -871,6 +892,40 @@ mod tests {
             0o600
         );
         let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn extracts_the_final_reply_from_provider_stop_shapes() {
+        for key in [
+            "last_assistant_message",
+            "lastAssistantMessage",
+            "last-assistant-message",
+        ] {
+            let json = serde_json::json!({"hook_event_name": "Stop", key: "Fixed it."});
+            assert_eq!(
+                completion_message_from_json(&json).as_deref(),
+                Some("Fixed it."),
+                "{key}"
+            );
+        }
+        assert_eq!(
+            completion_message_from_json(&serde_json::json!({"hook_event_name": "Stop"})),
+            None
+        );
+        assert_eq!(
+            completion_message_from_json(&serde_json::json!({"last_assistant_message": "  "})),
+            None
+        );
+        assert_eq!(
+            completion_message_from_json(&serde_json::json!({"last_assistant_message": 7})),
+            None
+        );
+        let long = "x".repeat(crate::completion_snippet::MAX_RAW_MESSAGE_BYTES * 2);
+        let json = serde_json::json!({"last_assistant_message": long});
+        assert_eq!(
+            completion_message_from_json(&json).map(|m| m.len()),
+            Some(crate::completion_snippet::MAX_RAW_MESSAGE_BYTES)
+        );
     }
 
     #[test]
