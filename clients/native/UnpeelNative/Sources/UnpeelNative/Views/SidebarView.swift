@@ -609,8 +609,9 @@ struct SidebarView: View {
                     // event.
                     // Fork-only: sidebar sections. The list area is a stack
                     // of sections — PROJECTS (the upstream carousel list
-                    // above, see `projectsSectionContent`) and EXPLORER —
-                    // starting under the traffic-light strip.
+                    // above, see `projectsSectionContent`), AGENTS, EXPLORER
+                    // and GIT HISTORY — starting under the traffic-light
+                    // strip.
                     SidebarSectionStack(layoutStore: sectionLayout, sections: sidebarSections)
                         .padding(.top, SidebarSectionMetrics.stackTopInset)
                         .transition(.sidebarPanel(fromTrailing: false))
@@ -775,6 +776,17 @@ struct SidebarView: View {
                 accessory: AnyView(EmptyView()),
                 actions: AnyView(ProjectsSectionActions(store: store)),
                 content: { AnyView(projectsSectionContent) }
+            ),
+            SidebarSectionDescriptor(
+                id: .agents,
+                accessory: AnyView(EmptyView()),
+                actions: AnyView(EmptyView()),
+                content: {
+                    AnyView(AgentsSectionPanel(
+                        store: store,
+                        showsAllRecent: store.selectedHostScope == .local
+                    ))
+                }
             ),
             SidebarSectionDescriptor(
                 id: .explorer,

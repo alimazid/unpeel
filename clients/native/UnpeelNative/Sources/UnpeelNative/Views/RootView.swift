@@ -834,6 +834,10 @@ struct ActivityMenuList: View {
     let onSelect: (GlobalActivityMenuItem) -> Void
     /// Footer link to the app-wide "All recent" page.
     let onShowAll: (() -> Void)?
+    /// Fork-only: the sidebar AGENTS section. The list takes whatever height
+    /// its container gives it (footer pinned below) instead of sizing
+    /// itself to its rows like the dropdowns.
+    var fillsHeight = false
 
     private var rowCount: Int { jobs.count + blockers.count + finished.count }
 
@@ -886,7 +890,8 @@ struct ActivityMenuList: View {
                     }
                 }
             }
-            .frame(height: scrollHeight)
+            .frame(height: fillsHeight ? nil : scrollHeight)
+            .frame(maxHeight: fillsHeight ? .infinity : nil)
             if let onShowAll {
                 AllRecentMenuRow(onSelect: onShowAll)
             }

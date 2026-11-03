@@ -13,7 +13,9 @@ import Foundation
 
 struct SidebarSectionLayout: Equatable, Sendable {
     static let currentVersion = 1
-    static let defaultWeights: [SidebarSectionID: Double] = [.projects: 0.4, .explorer: 0.6, .gitHistory: 0.4]
+    static let defaultWeights: [SidebarSectionID: Double] = [
+        .projects: 0.4, .agents: 0.25, .explorer: 0.6, .gitHistory: 0.4,
+    ]
     /// Weight for an id with neither a stored nor a default weight.
     static let fallbackWeight = 0.5
     /// Floor so a section dragged to zero can still be proportioned.
@@ -199,29 +201,35 @@ extension SidebarSectionLayout {
 
     /// Never fails: nil, unreadable or other-version data gives `.default`;
     /// unknown ids are dropped; known ids missing from the record are
-    /// appended visible, with their default weight and their fresh-install
-    /// collapse state (so GIT HISTORY joins an existing sidebar collapsed);
-    /// a record that hides every section shows them all again.
+    /// inserted visible at their default place (`insertionIndex`), with
+    /// their default weight and their fresh-install collapse state (so GIT
+    /// HISTORY joins an existing sidebar collapsed, and AGENTS expanded
+    /// right below PROJECTS); a record that hides every section shows them
+    /// all again.
     static func decode(_ data: Data?) -> SidebarSectionLayout {
         guard let data,
               let stored = try? JSONDecoder().decode(Stored.self, from: data),
               stored.version == currentVersion
         else { return .default }
 
-        var order: [SidebarSectionID] = []
+        var storedOrder: [SidebarSectionID] = []
         for raw in stored.order {
-            if let id = SidebarSectionID(rawValue: raw), !order.contains(id) {
-                order.append(id)
+            if let id = SidebarSectionID(rawValue: raw), !storedOrder.contains(id) {
+                storedOrder.append(id)
             }
         }
-        let appended = SidebarSectionID.allCases.filter { !order.contains($0) }
-        order += appended
+        let added = SidebarSectionID.allCases.filter { !storedOrder.contains($0) }
+        let order = added.reduce(storedOrder) { order, id in
+            var next = order
+            next.insert(id, at: insertionIndex(of: id, in: order))
+            return next
+        }
 
         func ids(_ raws: [String]) -> Set<SidebarSectionID> {
             Set(raws.compactMap(SidebarSectionID.init(rawValue:)))
         }
         let collapsed = ids(stored.collapsed)
-            .union(appended.filter { Self.default.collapsed.contains($0) })
+            .union(added.filter { Self.default.collapsed.contains($0) })
         var hidden = ids(stored.hidden)
         if hidden.count >= order.count { hidden = [] }
 
@@ -232,5 +240,17 @@ extension SidebarSectionLayout {
             }
         }
         return SidebarSectionLayout(order: order, hidden: hidden, collapsed: collapsed, weights: weights)
+    }
+
+    /// Where a section missing from a saved order joins it: right after the
+    /// nearest section that precedes it in the default order, or first when
+    /// none of those is present.
+    private static func insertionIndex(of id: SidebarSectionID, in order: [SidebarSectionID]) -> Int {
+        let defaults = SidebarSectionID.allCases
+        guard let position = defaults.firstIndex(of: id) else { return order.count }
+        for predecessor in defaults[..<position].reversed() {
+            if let index = order.firstIndex(of: predecessor) { return index + 1 }
+        }
+        return 0
     }
 }
