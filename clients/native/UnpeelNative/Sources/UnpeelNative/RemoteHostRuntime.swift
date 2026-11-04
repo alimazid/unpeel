@@ -520,6 +520,10 @@ final class RemoteHostRuntime: ObservableObject {
     private var markReadsSuppressedUntilRecovery: Set<String> = []
     private var markReadAwaitingSnapshotClearSessionIDs: Set<String> = []
     private var failedAutomaticMarkReadSessionIDs: Set<String> = []
+    /// Fork-only: sessions the user marked unread while they were on screen.
+    /// Automatic mark-read skips them until they leave the screen, so the
+    /// mark survives the very snapshot that publishes it.
+    private var heldUnreadSessionIDs: Set<String> = []
     private var pendingDesktopFitClearSessionIDs: Set<String> = []
     private var enqueuedDesktopFitClearSessionIDs: Set<String> = []
     private var latestViewportByPane: [RemoteTerminalPaneKey: RequestedDesktopFit] = [:]
@@ -998,6 +1002,11 @@ final class RemoteHostRuntime: ObservableObject {
             }
         }
         for sessionID in removed {
+            // A selected row blips out and back in; only a real departure
+            // releases an explicit unread mark.
+            if sessionID != selectedSessionID {
+                heldUnreadSessionIDs.remove(sessionID)
+            }
             settleFitTasks.removeValue(forKey: sessionID)?.cancel()
             guard let key = paneKey(for: sessionID) else { continue }
             stopOutputPump(for: key)
@@ -2058,6 +2067,7 @@ final class RemoteHostRuntime: ObservableObject {
         pendingMarkReadSessionIDs.formIntersection(validIDs)
         markReadAwaitingSnapshotClearSessionIDs.formIntersection(validIDs)
         failedAutomaticMarkReadSessionIDs.formIntersection(validIDs)
+        heldUnreadSessionIDs.formIntersection(validIDs)
         for session in next.sessions where !session.unread {
             pendingMarkReadSessionIDs.remove(session.id)
             markReadAwaitingSnapshotClearSessionIDs.remove(session.id)
@@ -2163,6 +2173,9 @@ final class RemoteHostRuntime: ObservableObject {
 
     private func transitionSelectedSession(to nextSessionID: String?) {
         guard selectedSessionID != nextSessionID else { return }
+        if let previous = selectedSessionID, !terminalSessionIsPresented(previous) {
+            heldUnreadSessionIDs.remove(previous)
+        }
         selectedSessionID = nextSessionID
         if let nextSessionID,
            let key = connection?.transport.continuityKey.paneFallbackKey {
@@ -3253,7 +3266,8 @@ final class RemoteHostRuntime: ObservableObject {
     private func requestMarkReadIfNeeded(_ sessionID: String) {
         guard snapshot?.sessions.first(where: { $0.id == sessionID })?.unread == true,
               !markReadAwaitingSnapshotClearSessionIDs.contains(sessionID),
-              !failedAutomaticMarkReadSessionIDs.contains(sessionID)
+              !failedAutomaticMarkReadSessionIDs.contains(sessionID),
+              !heldUnreadSessionIDs.contains(sessionID)
         else { return }
         markRead(sessionID: sessionID)
     }
@@ -3437,6 +3451,9 @@ extension RemoteHostRuntime {
         static let write = "session.input.write"
         static let titleSet = "session.title.set"
         static let pinSet = "session.pin.set"
+        static let markRead = "session.mark_read"
+        /// Fork-only: the user's explicit "Mark as Unread".
+        static let markUnread = "session.mark_unread"
         static let stop = "session.stop"
         static let remove = "session.remove"
         static let restart = "session.restart"
@@ -3539,6 +3556,48 @@ extension RemoteHostRuntime {
             _ = try await backend.setSessionProject(
                 sessionID: sessionID, projectID: projectID
             )
+        }
+    }
+
+    /// Fork-only "Mark as Unread". A selected or on-screen session holds the
+    /// mark until it leaves both instead of reading it again at once.
+    func markSessionUnread(_ sessionID: String) async throws {
+        let holds = terminalSessionIsPresented(sessionID) || selectedSessionID == sessionID
+        if holds { heldUnreadSessionIDs.insert(sessionID) }
+        do {
+            try await performOrganizationVerb(
+                capability: HostOperation.markUnread,
+                operation: "mark unread"
+            ) { backend in
+                _ = try await backend.markUnread(sessionID: sessionID)
+            }
+        } catch {
+            // A mark that may have landed keeps its hold.
+            if holds, (error as? RemoteHostVerbError)?.outcomeIsUnknown != true {
+                heldUnreadSessionIDs.remove(sessionID)
+            }
+            throw error
+        }
+    }
+
+    /// Fork-only: the user deliberately opened a held session; read it like
+    /// any other unread work on screen.
+    func releaseUnreadHold(_ sessionID: String) {
+        guard heldUnreadSessionIDs.remove(sessionID) != nil else { return }
+        if terminalSessionIsPresented(sessionID) {
+            requestMarkReadIfNeeded(sessionID)
+        }
+    }
+
+    /// Fork-only explicit "Mark as Read": a Host verb, so it also works on
+    /// transports whose terminals never ride this runtime.
+    func markSessionRead(_ sessionID: String) async throws {
+        heldUnreadSessionIDs.remove(sessionID)
+        try await performOrganizationVerb(
+            capability: HostOperation.markRead,
+            operation: "mark read"
+        ) { backend in
+            _ = try await backend.markRead(sessionID: sessionID)
         }
     }
 

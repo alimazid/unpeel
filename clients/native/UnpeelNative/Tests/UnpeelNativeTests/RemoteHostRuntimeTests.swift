@@ -283,6 +283,82 @@ final class RemoteHostRuntimeTests: XCTestCase {
         runtime.disconnect()
     }
 
+    func testMarkingTheShownSessionUnreadHoldsUntilItLeavesTheScreen() async throws {
+        let backend = ControlledRemoteBackend()
+        let runtime = makeRuntime(backend: backend)
+        let capabilities = [
+            "host.bootstrap",
+            "session.input.write",
+            "session.mark_read",
+            RemoteHostRuntime.HostOperation.markUnread,
+            "session.output.read",
+            "session.resize_desktop",
+        ]
+        runtime.connectSSH(target: "ssh://host", expectedHostID: "host")
+        await waitUntil { await backend.bootstrapCount == 1 }
+        await backend.resolveBootstrap(.success(makeSnapshot(
+            capabilities: capabilities,
+            sessions: [makeSession(id: "session"), makeSession(id: "other")]
+        )))
+        await waitUntil {
+            runtime.connectionState == .connected(name: "Host")
+                && runtime.selectedSessionID == "session"
+        }
+
+        try await runtime.markSessionUnread("session")
+        let calls = await backend.organizationCalls
+        XCTAssertEqual(calls, ["unread:session"])
+        // The refresh that publishes the mark must not read it again.
+        await waitUntil { await backend.bootstrapCount == 2 }
+        await backend.resolveBootstrap(.success(makeSnapshot(
+            capabilities: capabilities,
+            sessions: [makeSession(id: "session", unread: true), makeSession(id: "other")]
+        )))
+        runtime.selectSession("session")
+        try? await Task.sleep(nanoseconds: 5_000_000)
+        let heldEffects = await backend.effectCalls
+        XCTAssertEqual(heldEffects, [])
+
+        // Looking away and back reads it like any other unread work.
+        runtime.selectSession("other")
+        runtime.selectSession("session")
+        await waitUntil { await backend.effectCalls == [.markRead(sessionID: "session")] }
+        runtime.disconnect()
+    }
+
+    func testOpeningAHeldSessionDeliberatelyReadsIt() async throws {
+        let backend = ControlledRemoteBackend()
+        let runtime = makeRuntime(backend: backend)
+        let capabilities = [
+            "host.bootstrap",
+            "session.input.write",
+            "session.mark_read",
+            RemoteHostRuntime.HostOperation.markUnread,
+            "session.output.read",
+            "session.resize_desktop",
+        ]
+        runtime.connectSSH(target: "ssh://host", expectedHostID: "host")
+        await waitUntil { await backend.bootstrapCount == 1 }
+        await backend.resolveBootstrap(.success(makeSnapshot(
+            capabilities: capabilities,
+            sessions: [makeSession(id: "session")]
+        )))
+        await waitUntil { runtime.selectedSessionID == "session" }
+        try await runtime.markSessionUnread("session")
+        await waitUntil { await backend.bootstrapCount == 2 }
+        await backend.resolveBootstrap(.success(makeSnapshot(
+            capabilities: capabilities,
+            sessions: [makeSession(id: "session", unread: true)]
+        )))
+        try? await Task.sleep(nanoseconds: 5_000_000)
+        let heldEffects = await backend.effectCalls
+        XCTAssertEqual(heldEffects, [])
+
+        runtime.releaseUnreadHold("session")
+        await waitUntil { await backend.effectCalls == [.markRead(sessionID: "session")] }
+        runtime.disconnect()
+    }
+
     func testGroupPinUsesDedicatedCapabilityAndOrganizationEffect() async throws {
         let backend = ControlledRemoteBackend()
         let runtime = makeRuntime(backend: backend)
@@ -3431,6 +3507,11 @@ private actor ControlledRemoteBackend: NativeRemoteBackendProtocol {
     ) async throws -> NativeRemoteEffectReceipt {
         organizationCalls.append("pin:\(sessionID):\(pinned)")
         return NativeRemoteEffectReceipt(requestID: 901)
+    }
+
+    func markUnread(sessionID: String) async throws -> NativeRemoteEffectReceipt {
+        organizationCalls.append("unread:\(sessionID)")
+        return NativeRemoteEffectReceipt(requestID: 906)
     }
 
     func stopSession(sessionID: String) async throws -> NativeRemoteEffectReceipt {

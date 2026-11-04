@@ -5,7 +5,8 @@
 //  Fork-only: sidebar sections. AGENTS: the titlebar activity dropdown —
 //  blocked, working, then recently finished agents across every
 //  workspace, and the "All recent" link — as a section below PROJECTS.
-//  The titlebar bell stays as well.
+//  Pinned sessions follow, so they never drop out of it. The titlebar
+//  bell stays as well.
 //
 
 import SwiftUI
@@ -30,6 +31,7 @@ struct AgentsSectionPanel: View {
             jobs: model.activity.jobs,
             blockers: model.activity.blockers,
             finished: model.activity.finished,
+            pinned: model.activity.pinned,
             onSelect: { [store] item in
                 store.revealGlobalActivitySession(
                     workspaceKey: item.workspaceKey,

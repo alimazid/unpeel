@@ -1997,6 +1997,8 @@ fn session_summary_with_menu_attention(
             }
             None => true,
         };
+    // Fork-only: a user's "Mark as Unread" is its own claim.
+    let unread = unread || crate::session_ops::marked_unread(&manifest.session.id);
     let persisted_activity = activity
         .and_then(|value| value.get("activity_status"))
         .or_else(|| activity.and_then(|value| value.get("activityStatus")))

@@ -1303,11 +1303,74 @@ pub fn mark_read(session_id: &str) -> Result<(), String> {
 }
 
 pub fn read_marker(session_id: &str) -> Option<u64> {
-    let raw = std::fs::read(session_dir(session_id).join("read.json")).ok()?;
+    read_marker_in(&session_dir(session_id))
+}
+
+fn read_marker_in(dir: &std::path::Path) -> Option<u64> {
+    let raw = std::fs::read(dir.join("read.json")).ok()?;
     serde_json::from_slice::<serde_json::Value>(&raw)
         .ok()?
         .get("read_at")?
         .as_u64()
+}
+
+/// Fork-only: the user's explicit "Mark as Unread" (`unread.json`). It is
+/// its own unread claim, independent of activity, and the next read receipt
+/// retires it — showing the session clears it like any other unread work.
+pub fn mark_unread(session_id: &str) -> Result<(), String> {
+    write_unread_marker_in(&session_dir(session_id), now_ms())?;
+    // Unlike a receipt, no in-process channel follows this write, so the
+    // announce includes this process: the workspace worker that served the
+    // verb rescans at once instead of on its next poll.
+    crate::state_bus::announce(crate::state_bus::Change::SessionMarkers, None);
+    Ok(())
+}
+
+fn write_unread_marker_in(dir: &std::path::Path, unread_at: u64) -> Result<(), String> {
+    if !dir.is_dir() {
+        return Err(format!("no session dir {}", dir.display()));
+    }
+    let tmp = dir.join(".unread.json.tmp");
+    let body = serde_json::json!({ "unread_at": unread_at });
+    std::fs::write(&tmp, serde_json::to_vec(&body).map_err(|e| e.to_string())?)
+        .map_err(|e| e.to_string())?;
+    std::fs::rename(&tmp, dir.join("unread.json")).map_err(|e| e.to_string())
+}
+
+fn unread_marker_in(dir: &std::path::Path) -> Option<u64> {
+    let raw = std::fs::read(dir.join("unread.json")).ok()?;
+    serde_json::from_slice::<serde_json::Value>(&raw)
+        .ok()?
+        .get("unread_at")?
+        .as_u64()
+}
+
+/// When the user last marked this session unread, read or not.
+pub fn unread_marker(session_id: &str) -> Option<u64> {
+    unread_marker_in(&session_dir(session_id))
+}
+
+/// Whether the user marked this session unread after it was last read.
+pub fn marked_unread(session_id: &str) -> bool {
+    marked_unread_in(&session_dir(session_id))
+}
+
+fn marked_unread_in(dir: &std::path::Path) -> bool {
+    // Every rescan asks this of every row; most have no mark, so skip the
+    // receipt read for them.
+    let Some(unread_at) = unread_marker_in(dir) else {
+        return false;
+    };
+    manual_unread_pending(Some(unread_at), read_marker_in(dir))
+}
+
+/// A mark survives until a read receipt at or after it.
+fn manual_unread_pending(unread_at: Option<u64>, read_at: Option<u64>) -> bool {
+    match (unread_at, read_at) {
+        (Some(unread_at), Some(read_at)) => unread_at > read_at,
+        (Some(_), None) => true,
+        (None, _) => false,
+    }
 }
 
 /// Last real activity for a session.
@@ -2564,6 +2627,55 @@ mod phone_fit_marker_tests {
         std::fs::write(dir.join(PHONE_FIT_MARKER), b"not json").unwrap();
         assert!(read_phone_fit_marker_in(&dir).is_none());
         let _ = std::fs::remove_dir_all(dir);
+    }
+}
+
+#[cfg(test)]
+mod unread_marker_tests {
+    use super::{manual_unread_pending, marked_unread_in, write_unread_marker_in};
+
+    fn scratch() -> std::path::PathBuf {
+        let nonce = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0);
+        let dir =
+            std::env::temp_dir().join(format!("unpeel-unread-{}-{nonce}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    #[test]
+    fn a_mark_holds_until_a_read_receipt_at_or_after_it() {
+        assert!(!manual_unread_pending(None, None));
+        assert!(!manual_unread_pending(None, Some(5)));
+        assert!(manual_unread_pending(Some(5), None));
+        assert!(manual_unread_pending(Some(6), Some(5)));
+        assert!(!manual_unread_pending(Some(5), Some(5)));
+        assert!(!manual_unread_pending(Some(5), Some(6)));
+    }
+
+    #[test]
+    fn the_marker_round_trips_against_the_read_receipt() {
+        let dir = scratch();
+        assert!(!marked_unread_in(&dir));
+        std::fs::write(dir.join("read.json"), br#"{"read_at":100}"#).unwrap();
+        write_unread_marker_in(&dir, 200).unwrap();
+        assert!(dir.join("unread.json").exists());
+        assert!(marked_unread_in(&dir));
+        std::fs::write(dir.join("read.json"), br#"{"read_at":300}"#).unwrap();
+        assert!(!marked_unread_in(&dir));
+        std::fs::write(dir.join("unread.json"), b"not json").unwrap();
+        std::fs::remove_file(dir.join("read.json")).unwrap();
+        assert!(!marked_unread_in(&dir), "a malformed marker is no claim");
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn marking_a_missing_session_fails() {
+        let dir = scratch().join("gone");
+        assert!(write_unread_marker_in(&dir, 1).is_err());
+        assert!(!dir.exists());
     }
 }
 

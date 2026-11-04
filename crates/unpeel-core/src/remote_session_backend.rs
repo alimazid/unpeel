@@ -50,6 +50,7 @@ const OUTPUT_CAPABILITY: &str = "session.output.read";
 const WRITE_CAPABILITY: &str = "session.input.write";
 const RESIZE_DESKTOP_CAPABILITY: &str = "session.resize_desktop";
 const MARK_READ_CAPABILITY: &str = "session.mark_read";
+const MARK_UNREAD_CAPABILITY: &str = "session.mark_unread";
 const APPROVAL_ANSWER_CAPABILITY: &str = "approval.answer";
 const TITLE_SET_CAPABILITY: &str = "session.title.set";
 const PIN_SET_CAPABILITY: &str = "session.pin.set";
@@ -78,6 +79,7 @@ pub const REMOTE_CAPABILITY_OUTPUT_READ: &str = OUTPUT_CAPABILITY;
 pub const REMOTE_CAPABILITY_INPUT_WRITE: &str = WRITE_CAPABILITY;
 pub const REMOTE_CAPABILITY_RESIZE_DESKTOP: &str = RESIZE_DESKTOP_CAPABILITY;
 pub const REMOTE_CAPABILITY_MARK_READ: &str = MARK_READ_CAPABILITY;
+pub const REMOTE_CAPABILITY_MARK_UNREAD: &str = MARK_UNREAD_CAPABILITY;
 pub const REMOTE_CAPABILITY_TITLE_SET: &str = TITLE_SET_CAPABILITY;
 pub const REMOTE_CAPABILITY_PIN_SET: &str = PIN_SET_CAPABILITY;
 pub const REMOTE_CAPABILITY_NOTIFY_WHEN_DONE_SET: &str = NOTIFY_WHEN_DONE_CAPABILITY;
@@ -104,6 +106,7 @@ const OUTPUT_PATH: &str = "/mobile/output";
 const WRITE_PATH: &str = "/mobile/write";
 const RESIZE_DESKTOP_PATH: &str = "/mobile/resize-desktop";
 const MARK_READ_PATH: &str = "/mobile/mark-read";
+const MARK_UNREAD_PATH: &str = "/mobile/mark-unread";
 const APPROVAL_ANSWER_PATH: &str = "/mobile/approvals/answer";
 const SESSION_ORGANIZATION_PATH: &str = "/mobile/session-organization";
 const SESSION_ACTION_PATH: &str = "/mobile/session-action";
@@ -1815,6 +1818,24 @@ impl RemoteSessionBackend {
             "mark Session read",
             MARK_READ_CAPABILITY,
             MARK_READ_PATH,
+            body,
+        )
+    }
+
+    /// Fork-only: the user's explicit "Mark as Unread"
+    /// (`session.mark_unread`). Same body as the receipt, never replayed.
+    pub fn mark_session_unread(
+        &self,
+        session_id: &str,
+    ) -> Result<RemoteEffectReceipt, RemoteEffectFailure> {
+        let effect_turn = self.inner.begin_effect();
+        effect_preflight("mark Session unread", || validate_session_id(session_id))?;
+        let body = encode_effect_body("mark Session unread", &MarkReadWire { session_id })?;
+        self.inner.perform_effect(
+            &effect_turn,
+            "mark Session unread",
+            MARK_UNREAD_CAPABILITY,
+            MARK_UNREAD_PATH,
             body,
         )
     }
@@ -5343,6 +5364,50 @@ mod tests {
             );
             assert_eq!(connection.remaining(), 0);
         }
+    }
+
+    #[test]
+    fn mark_unread_posts_its_own_route_only_when_advertised() {
+        let connection = ScriptedConnection::new();
+        let generation = connection.generation(1);
+        add_bootstrap(
+            &connection,
+            generation,
+            bootstrap_json(
+                Some("host-1"),
+                HOST_PROTOCOL_MAJOR,
+                Some(&[BOOTSTRAP_CAPABILITY, MARK_READ_CAPABILITY]),
+            ),
+        );
+        let backend = RemoteSessionBackend::new(connection.clone());
+        backend.bootstrap().unwrap();
+        let failure = backend.mark_session_unread("s1").unwrap_err();
+        assert_eq!(failure.kind(), RemoteEffectFailureKind::NotApplied);
+        assert!(matches!(
+            failure.error(),
+            RemoteSessionBackendError::MissingCapability(capability)
+                if capability == MARK_UNREAD_CAPABILITY
+        ));
+        assert_eq!(connection.calls().len(), 1);
+
+        add_bootstrap(
+            &connection,
+            generation,
+            bootstrap_json(
+                Some("host-1"),
+                HOST_PROTOCOL_MAJOR,
+                Some(&[BOOTSTRAP_CAPABILITY, MARK_UNREAD_CAPABILITY]),
+            ),
+        );
+        connection.push(reply_step(
+            expected_effect(generation, MARK_UNREAD_PATH, json!({ "sessionID": "s1" })),
+            generation,
+            200,
+            br#"{"ok":true}"#.to_vec(),
+        ));
+        backend.bootstrap().unwrap();
+        assert!(backend.mark_session_unread("s1").is_ok());
+        assert_eq!(connection.remaining(), 0);
     }
 
     #[test]

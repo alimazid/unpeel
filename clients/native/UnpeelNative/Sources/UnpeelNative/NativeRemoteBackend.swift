@@ -172,6 +172,8 @@ protocol NativeRemoteBackendProtocol: Sendable {
     ) async throws -> NativeRemoteEffectReceipt
     func clearDesktopFit(sessionID: String) async throws -> NativeRemoteEffectReceipt
     func markRead(sessionID: String) async throws -> NativeRemoteEffectReceipt
+    /// Fork-only: the user's explicit "Mark as Unread" (`session.mark_unread`).
+    func markUnread(sessionID: String) async throws -> NativeRemoteEffectReceipt
     func setSessionTitle(sessionID: String, title: String) async throws
         -> NativeRemoteEffectReceipt
     func setSessionPinned(sessionID: String, pinned: Bool) async throws
@@ -232,6 +234,17 @@ protocol NativeRemoteBackendProtocol: Sendable {
 }
 
 extension NativeRemoteBackendProtocol {
+    /// Default for test doubles: fail closed, nothing was marked.
+    func markUnread(sessionID: String) async throws -> NativeRemoteEffectReceipt {
+        throw NativeRemoteBackendError(
+            result: Int32(UNPEEL_NATIVE_BRIDGE_ERROR_REMOTE),
+            code: "mark_unread_unavailable",
+            message: "Marking a session unread is unavailable on this backend.",
+            kind: "notApplied",
+            operation: "mark Session unread"
+        )
+    }
+
     func gitSettings() async throws -> RemoteGitSettings {
         throw NativeRemoteBackendError(result: Int32(UNPEEL_NATIVE_BRIDGE_ERROR_REMOTE),
             code: "git_settings_unavailable", message: "Update Unpeel on this Host to use Git settings.")
@@ -1044,6 +1057,14 @@ final class NativeRemoteBackend: @unchecked Sendable {
                 operation: "mark Session read"
             )
         }
+    }
+
+    func markUnread(sessionID: String) async throws -> NativeRemoteEffectReceipt {
+        try await performSessionEffect(
+            sessionID: sessionID,
+            operation: "mark Session unread",
+            call: unpeel_native_bridge_remote_mark_unread
+        )
     }
 
     // MARK: Session organization/lifecycle verbs

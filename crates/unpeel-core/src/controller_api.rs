@@ -975,6 +975,7 @@ fn replay_protected(request: &ControllerRequest) -> bool {
             | ("POST", "/mobile/resize")
             | ("POST", "/mobile/request-screenshot")
             | ("POST", "/mobile/mark-read")
+            | ("POST", "/mobile/mark-unread")
             | ("POST", "/mobile/artifact-delete")
     )
 }
@@ -1726,6 +1727,36 @@ fn route_uncached(
             // Session removed between bootstrap and tap still returns 200.
             // Existing dirs get the shared marker plus state-bus announce.
             let _ = session_ops::mark_read(&session_id);
+            json!({ "ok": true })
+        }
+        // Fork-only `session.mark_unread`: the user's explicit "Mark as
+        // Unread". Unlike the best-effort receipt above, a Session that no
+        // longer exists is reported, so the Controller can say so.
+        ("POST", "/mobile/mark-unread") => {
+            let session_id = match body_session_id(&request.body) {
+                Ok(session_id) => session_id,
+                Err(error) => {
+                    return Some(ControllerResponse {
+                        id: request.id.clone(),
+                        status: error.status,
+                        body: json!({ "error": error.message }),
+                    });
+                }
+            };
+            if session_host::load_manifest(&session_id).is_none() {
+                return Some(ControllerResponse {
+                    id: request.id.clone(),
+                    status: 404,
+                    body: json!({ "error": "unknown session" }),
+                });
+            }
+            if let Err(message) = session_ops::mark_unread(&session_id) {
+                return Some(ControllerResponse {
+                    id: request.id.clone(),
+                    status: 500,
+                    body: json!({ "error": format!("mark unread failed: {message}") }),
+                });
+            }
             json!({ "ok": true })
         }
         ("POST", "/mobile/session-order") => {
@@ -3055,6 +3086,13 @@ mod tests {
     #[test]
     fn mark_read_rejects_a_missing_session_id() {
         let response = route(&request("POST", "/mobile/mark-read"), None).unwrap();
+        assert_eq!(response.status, 400);
+        assert_eq!(response.body["error"], "invalid session id");
+    }
+
+    #[test]
+    fn mark_unread_rejects_a_missing_session_id() {
+        let response = route(&request("POST", "/mobile/mark-unread"), None).unwrap();
         assert_eq!(response.status, 400);
         assert_eq!(response.body["error"], "invalid session id");
     }

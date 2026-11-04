@@ -243,6 +243,13 @@
       "tui": true
     },
     {
+      "id": "session.mark_unread",
+      "method": "POST",
+      "path": "/mobile/mark-unread",
+      "native": true,
+      "tui": true
+    },
+    {
       "id": "session.metrics.read",
       "method": "GET",
       "path": "/mobile/metrics",

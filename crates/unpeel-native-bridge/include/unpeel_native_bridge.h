@@ -305,6 +305,15 @@ int32_t unpeel_native_bridge_remote_mark_read(
     size_t *out_length
 );
 
+/* Fork-only: the user's explicit "Mark as Unread" (session.mark_unread). */
+int32_t unpeel_native_bridge_remote_mark_unread(
+    unpeel_native_bridge_remote_handle_t handle,
+    const uint8_t *session_id_pointer,
+    size_t session_id_length,
+    uint8_t **out_pointer,
+    size_t *out_length
+);
+
 /*
  * Session organization/lifecycle effects. Same at-most-once contract and
  * JSON envelopes as the terminal effects above.

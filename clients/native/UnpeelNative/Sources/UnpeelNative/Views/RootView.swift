@@ -686,12 +686,15 @@ struct ActivityMenuSessions {
     let jobs: [SessionEntry]
     let blockers: [SessionEntry]
     let finished: [SessionEntry]
+    /// Fork-only: pinned sessions in none of the groups above.
+    let pinned: [SessionEntry]
 
     init(
         nodes: [ProjectNode],
         allSessions: [SessionEntry],
         jobs: [SessionEntry],
-        finished: [SessionEntry]
+        finished: [SessionEntry],
+        pinned: [SessionEntry] = []
     ) {
         var blockerCandidates: [SessionEntry] = []
         func collectBlockers(_ nodes: [ProjectNode]) {
@@ -724,6 +727,7 @@ struct ActivityMenuSessions {
         self.jobs = Self.uniqued(jobs, excluding: blockerIDs)
         let shownIDs = blockerIDs.union(self.jobs.map(\.id))
         self.finished = Self.uniqued(finished, excluding: shownIDs)
+        self.pinned = Self.uniqued(pinned, excluding: shownIDs.union(self.finished.map(\.id)))
     }
 
     var sectionCount: Int {
@@ -831,6 +835,9 @@ struct ActivityMenuList: View {
     let jobs: [GlobalActivityMenuItem]
     let blockers: [GlobalActivityMenuItem]
     let finished: [GlobalActivityMenuItem]
+    /// Fork-only: the AGENTS section's always-visible pinned sessions,
+    /// after every activity group. The dropdowns leave it empty.
+    var pinned: [GlobalActivityMenuItem] = []
     let onSelect: (GlobalActivityMenuItem) -> Void
     /// Footer link to the app-wide "All recent" page.
     let onShowAll: (() -> Void)?
@@ -839,10 +846,10 @@ struct ActivityMenuList: View {
     /// itself to its rows like the dropdowns.
     var fillsHeight = false
 
-    private var rowCount: Int { jobs.count + blockers.count + finished.count }
+    private var rowCount: Int { jobs.count + blockers.count + finished.count + pinned.count }
 
     private var sectionCount: Int {
-        [blockers, jobs, finished].reduce(into: 0) { count, rows in
+        [blockers, jobs, finished, pinned].reduce(into: 0) { count, rows in
             if !rows.isEmpty { count += 1 }
         }
     }
@@ -887,6 +894,14 @@ struct ActivityMenuList: View {
                         ForEach(finished) { session in
                             row(session, unread: true, working: false, blocked: false)
                         }
+                        if !pinned.isEmpty && (!blockers.isEmpty || !jobs.isEmpty || !finished.isEmpty) {
+                            Divider()
+                                .padding(.horizontal, 8)
+                                .padding(.vertical, 2)
+                        }
+                        ForEach(pinned) { session in
+                            row(session, unread: false, working: false, blocked: false, pinned: true)
+                        }
                     }
                 }
             }
@@ -900,7 +915,11 @@ struct ActivityMenuList: View {
 
     @ViewBuilder
     private func row(
-        _ item: GlobalActivityMenuItem, unread: Bool, working: Bool, blocked: Bool
+        _ item: GlobalActivityMenuItem,
+        unread: Bool,
+        working: Bool,
+        blocked: Bool,
+        pinned: Bool = false
     ) -> some View {
         TitlebarActivityMenuRow(
             title: item.session.title,
@@ -912,7 +931,8 @@ struct ActivityMenuList: View {
             alertBody: item.session.alertBody,
             unread: unread,
             working: working,
-            blocked: blocked
+            blocked: blocked,
+            pinned: pinned
         ) {
             onSelect(item)
         }
@@ -974,6 +994,9 @@ private struct TitlebarActivityMenuRow: View {
     let working: Bool
     /// Attention row: orange dot (left) + explicit Blocked label (right).
     let blocked: Bool
+    /// Fork-only: an idle pinned row in the AGENTS section — the CLI logo
+    /// (left) and the sidebar's pin glyph (right).
+    var pinned = false
     let onSelect: () -> Void
 
     @State private var hovering = false
@@ -1044,6 +1067,11 @@ private struct TitlebarActivityMenuRow: View {
                 } else if working || unread {
                     ToolIconView(command: command, size: 16)
                         .frame(width: 16, height: 16)
+                } else if pinned {
+                    ChromeIconView(icon: .pin, size: 12)
+                        .foregroundStyle(Theme.mutedForeground)
+                        .frame(width: 16, height: 16)
+                        .accessibilityLabel("Pinned")
                 } else if status == "Starting" || status == "Restarting" || status == "Resuming" {
                     Text(status)
                         .font(.system(size: 11))

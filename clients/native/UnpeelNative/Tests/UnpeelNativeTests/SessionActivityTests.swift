@@ -199,6 +199,13 @@ final class SessionActivityTests: XCTestCase {
         XCTAssertEqual(engine.hookOwnedState("s1"), .idle)
     }
 
+    func testAnUnreadHoldEndsOnlyWhenAnotherSessionIsObserved() {
+        XCTAssertNil(UnpeelStore.unreadHold(nil, afterObserving: "a"))
+        XCTAssertEqual(UnpeelStore.unreadHold("a", afterObserving: nil), "a")
+        XCTAssertEqual(UnpeelStore.unreadHold("a", afterObserving: "a"), "a")
+        XCTAssertNil(UnpeelStore.unreadHold("a", afterObserving: "b"))
+    }
+
     func testUnreadReconciliationMarksCompletedUnobservedSessionWhenItSettles() {
         let first = UnreadReconciliation.reconcile(
             pendingUnreadSessions: [],

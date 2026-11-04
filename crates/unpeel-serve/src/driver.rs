@@ -2258,6 +2258,15 @@ fn derive_unread(
         .iter()
         .filter(|row| {
             let claimed = row.unread || local_claims.contains(&row.id);
+            // Fork-only: a user's "Mark as Unread" is its own claim.
+            if let Some(unread_at) = unpeel_core::session_ops::unread_marker(&row.id) {
+                return explicitly_marked_unread(
+                    unread_at,
+                    unpeel_core::session_ops::read_marker(&row.id),
+                    claimed,
+                    |read_at| edge_after(&row.id, activity_log, read_at),
+                );
+            }
             if !claimed {
                 return false;
             }
@@ -2269,6 +2278,38 @@ fn derive_unread(
         })
         .map(|row| row.id.clone())
         .collect()
+}
+
+/// Fork-only. A pending mark is unread. Once a read retires it, the claim
+/// the mark left behind is not sticky: only a real edge after that read
+/// flags the row again — never output, which the terminal just shown
+/// redraws (a hook-less shell's activity is its output).
+fn explicitly_marked_unread(
+    unread_at: u64,
+    read_at: Option<u64>,
+    claimed: bool,
+    edge_after: impl FnOnce(u64) -> bool,
+) -> bool {
+    match read_at {
+        Some(read_at) if read_at >= unread_at => claimed && edge_after(read_at),
+        _ => true,
+    }
+}
+
+fn edge_after(
+    session_id: &str,
+    activity_log: &unpeel_core::activity_log::ActivityLogStore,
+    read_at: u64,
+) -> bool {
+    use unpeel_core::activity_log::ActivityLogKind;
+    activity_log.entries().iter().rev().any(|entry| {
+        entry.session_id == session_id
+            && entry.at > read_at
+            && matches!(
+                entry.kind,
+                ActivityLogKind::NeedsInput | ActivityLogKind::Finished | ActivityLogKind::Alert
+            )
+    })
 }
 
 fn project_name(model: &SidebarModel, row: &SessionRow) -> String {
@@ -2302,6 +2343,22 @@ fn project_name(model: &SidebarModel, row: &SessionRow) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn an_explicit_unread_mark_holds_until_read_and_then_needs_a_real_edge() {
+        let never = |_: u64| -> bool { panic!("a pending mark needs no edge") };
+        assert!(explicitly_marked_unread(200, None, false, never));
+        assert!(explicitly_marked_unread(200, Some(100), false, never));
+        // Read: output redraws are no edge, so the leftover claim is not.
+        assert!(!explicitly_marked_unread(200, Some(200), true, |_| false));
+        assert!(!explicitly_marked_unread(200, Some(300), true, |_| false));
+        // A real finish after the read is unread work again.
+        assert!(explicitly_marked_unread(200, Some(300), true, |read_at| {
+            assert_eq!(read_at, 300);
+            true
+        }));
+        assert!(!explicitly_marked_unread(200, Some(300), false, |_| true));
+    }
 
     #[test]
     fn native_probe_distinguishes_client_only_app_from_compatibility_host() {

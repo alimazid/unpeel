@@ -60,6 +60,7 @@ struct RecentActivityView: View {
                         store.closeRecentActivity()
                         store.revealSessionInSidebar(session.id)
                     }
+                    .contextMenu { unreadMenu(session.id) }
                 }
             }
         }
@@ -125,7 +126,21 @@ struct RecentActivityView: View {
             store.closeRecentActivity()
             store.revealSessionInSidebar(entry.sessionID)
         }
+        .contextMenu {
+            if sessionAlive { unreadMenu(entry.sessionID) }
+        }
         .opacity(sessionAlive ? 1 : 0.55)
+    }
+
+    /// Fork-only: Mark as Unread / Mark as Read, as in the sidebar.
+    @ViewBuilder
+    private func unreadMenu(_ sessionID: String) -> some View {
+        if store.sessionCanMarkUnread(sessionID) {
+            let unread = store.sessionIsUnread(sessionID)
+            Button(unread ? "Mark as Read" : "Mark as Unread") {
+                store.setSessionUnread(sessionID, unread: !unread)
+            }
+        }
     }
 
     private var emptyState: some View {

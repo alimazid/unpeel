@@ -1474,6 +1474,12 @@ final class UnpeelStore: ObservableObject {
     /// unread when they settle (sessionUnread.ts pendingUnreadSessions).
     private var pendingUnreadSessions: Set<String> = []
 
+    /// Fork-only: the session the user marked unread while it was selected
+    /// or on screen. Its mark holds until another session is observed —
+    /// leaving the app, Settings, or All recent and coming back to it does
+    /// not read it — otherwise the very rescan the mark triggers would.
+    private var heldUnreadSessionID: String?
+
     /// Sessions whose current `menu_prompt_active` flag the user dismissed
     /// ("Clear attention" in the sidebar context menu). The host's flag is
     /// level-held while the detected menu stays on screen, so a plain clear
@@ -3677,6 +3683,10 @@ final class UnpeelStore: ObservableObject {
         /// Any frontend may write or delete it; a missing/stale target
         /// falls back to the manifest project.
         case projectOverride = "project-override.json"
+        /// Fork-only: the user's explicit "Mark as Unread",
+        /// `{"unread_at": ms}`. Written by the Host (`session.mark_unread`);
+        /// the next read receipt retires it.
+        case unread = "unread.json"
     }
 
     nonisolated static func sharedMarkerURL(
@@ -5235,7 +5245,10 @@ final class UnpeelStore: ObservableObject {
             currentObservedSessionID: observedSessionID
         )
         pendingUnreadSessions = result.pendingUnreadSessions
-        for sessionID in result.unreadToClear { removeUnread(sessionID) }
+        heldUnreadSessionID = Self.unreadHold(heldUnreadSessionID, afterObserving: observedSessionID)
+        for sessionID in result.unreadToClear where sessionID != heldUnreadSessionID {
+            removeUnread(sessionID)
+        }
         for sessionID in result.unreadToMark { markUnread(sessionID) }
         previousObservedSessionID = observedSessionID
     }
@@ -5571,13 +5584,18 @@ final class UnpeelStore: ObservableObject {
             let readAt = (
                 Self.readSharedMarker(sessionID, .read)?["read_at"] as? NSNumber
             )?.int64Value
-            let settledAt = Self.latestUnreadActivityAt(
+            let activityAt = Self.latestUnreadActivityAt(
                 lifecycleAt: Self.sessionLastRealActivityAtMs(
                     sessionID,
                     command: command
                 ),
                 alertAt: alertAt
             )
+            // Fork-only: an explicit "Mark as Unread" is newer work too.
+            let markedUnreadAt = (
+                Self.readSharedMarker(sessionID, .unread)?["unread_at"] as? NSNumber
+            )?.int64Value
+            let settledAt = [activityAt, markedUnreadAt].compactMap { $0 }.max()
             if Self.sharedReadReceiptNeedsRefresh(readAt: readAt, settledAt: settledAt),
                Self.writeSharedMarker(
                    sessionID,
@@ -6868,8 +6886,19 @@ final class UnpeelStore: ObservableObject {
         if selectedSessionID != sessionID {
             selectedSessionID = sessionID
         }
+        releaseUnreadHold(sessionID)
 
         requestSidebarScroll(to: navigationID, centered: true)
+    }
+
+    /// Fork-only: opening a session from the AGENTS section, All recent, or
+    /// a notification is a deliberate read, so it ends a held "Mark as
+    /// Unread" on the session already on screen.
+    private func releaseUnreadHold(_ sessionID: String) {
+        remoteHostRuntime.releaseUnreadHold(sessionID)
+        guard heldUnreadSessionID == sessionID else { return }
+        heldUnreadSessionID = nil
+        reconcileUnread(persistSessionStates: false)
     }
 
     /// Follow a row that just moved in place (pinning teleports it up into
@@ -7139,6 +7168,57 @@ final class UnpeelStore: ObservableObject {
         return pinnedByProject[projectID]?.contains {
             $0.key == PinnedSidebarSession.key(forSessionID: sessionID)
         } ?? false
+    }
+
+    /// Fork-only: a held "Mark as Unread" survives observing nothing (another
+    /// app, Settings, All recent) or the session itself, and ends as soon as
+    /// another session is observed.
+    nonisolated static func unreadHold(
+        _ held: String?, afterObserving observed: String?
+    ) -> String? {
+        guard let held, let observed, observed != held else { return held }
+        return nil
+    }
+
+    /// Fork-only: whether a Session can offer Mark as Unread / Mark as Read.
+    /// Both are Host verbs, so the Host must advertise the new operation.
+    func sessionCanMarkUnread(_ sessionID: String) -> Bool {
+        routesSessionVerbThroughHost(sessionID)
+            && remoteHostRuntime.supportsHostOperation(
+                RemoteHostRuntime.HostOperation.markUnread
+            )
+    }
+
+    /// Fork-only "Mark as Unread" / "Mark as Read": the blue dot, and the
+    /// AGENTS section's recently-finished group, follow the Host's unread.
+    func setSessionUnread(_ sessionID: String, unread: Bool) {
+        guard sessionCanMarkUnread(sessionID) else { return }
+        guard unread else {
+            if heldUnreadSessionID == sessionID { heldUnreadSessionID = nil }
+            performRemoteVerb("Couldn't mark the session read") { runtime in
+                try await runtime.markSessionRead(sessionID)
+            }
+            return
+        }
+        let holds = sessionID == observedSessionID || sessionID == selectedSessionID
+        if holds { heldUnreadSessionID = sessionID }
+        let runtime = remoteHostRuntime
+        Task { @MainActor [weak self] in
+            do {
+                try await runtime.markSessionUnread(sessionID)
+            } catch {
+                let verbError = error as? RemoteHostVerbError
+                // A mark that may have landed keeps its hold.
+                if holds, verbError?.outcomeIsUnknown != true,
+                   self?.heldUnreadSessionID == sessionID {
+                    self?.heldUnreadSessionID = nil
+                }
+                Self.showRemoteVerbFailure(
+                    title: "Couldn't mark the session unread",
+                    message: verbError?.message ?? error.localizedDescription
+                )
+            }
+        }
     }
 
     /// Whether a Session can expose Pin/Unpin in its context menu. Remote
@@ -14171,6 +14251,21 @@ final class UnpeelStore: ObservableObject {
         }
     }
 
+    /// Fork-only: pinned sessions in sidebar order, for the AGENTS section.
+    var pinnedActivitySessions: [SessionEntry] {
+        var result: [SessionEntry] = []
+        func collect(_ nodes: [ProjectNode]) {
+            for node in nodes {
+                result.append(contentsOf: node.sessions.filter {
+                    isPinned(sessionID: $0.id, projectID: node.id)
+                })
+                collect(node.worktrees)
+            }
+        }
+        collect(displayNodes)
+        return result
+    }
+
     /// Project path for the terminal-header breadcrumb. Worktrees keep their
     /// branch in the compact icon suffix rendered after the breadcrumb.
     /// The project whose name/branch the titlebar shows: the selected
@@ -16218,6 +16313,7 @@ extension UnpeelStore {
             guard remoteSessionsByID[sessionID] != nil else { return }
             closeSettings()
             selectedSessionID = sessionID
+            releaseUnreadHold(sessionID)
             return
         }
 

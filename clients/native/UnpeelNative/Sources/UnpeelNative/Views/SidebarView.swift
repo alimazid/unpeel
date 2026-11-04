@@ -1182,6 +1182,7 @@ extension SessionRowView: @MainActor Equatable {
             && lhs.isUnread == rhs.isUnread
             && lhs.isPinned == rhs.isPinned
             && lhs.canPin == rhs.canPin
+            && lhs.canMarkUnread == rhs.canMarkUnread
             && lhs.isConfirmingRemove == rhs.isConfirmingRemove
             && lhs.isConfirmingStop == rhs.isConfirmingStop
             && lhs.isRemoving == rhs.isRemoving
@@ -1733,6 +1734,7 @@ struct ProjectNodeView: View {
             isUnread: store.sessionIsUnread(session.id),
             isPinned: store.isPinned(sessionID: session.id, projectID: node.id),
             canPin: store.sessionCanPin(session.id),
+            canMarkUnread: store.sessionCanMarkUnread(session.id),
             isConfirmingRemove: store.confirmingRemoveSessionID == session.id,
             isConfirmingStop: store.confirmingStopSessionID == session.id,
             isRemoving: store.removingSessionIDs.contains(session.id),
@@ -1778,6 +1780,7 @@ struct ProjectNodeView: View {
                 }
                 store.followSessionRowInSidebar(session.id)
             },
+            onSetUnread: { store.setSessionUnread(session.id, unread: $0) },
             onRequestRemove: { store.requestRemoveSession(session.id) },
             onConfirmRemove: { store.confirmRemoveSession(session.id) },
             onCancelRemove: { store.cancelRemoveConfirm() },
@@ -2951,6 +2954,8 @@ struct SessionRowView: View {
     /// indicator; unpinned rows never gain pin chrome on hover.
     var isPinned = false
     var canPin = true
+    /// Fork-only: offer Mark as Unread / Mark as Read (a Host verb).
+    var canMarkUnread = false
     /// Inline remove confirmation: the whole row swaps to
     /// "Remove session?" + Remove/Cancel.
     var isConfirmingRemove = false
@@ -3013,6 +3018,7 @@ struct SessionRowView: View {
     /// row shows one).
     var onClearAttention: () -> Void = {}
     var onSetPinned: (Bool) -> Void = { _ in }
+    var onSetUnread: (Bool) -> Void = { _ in }
     var onRequestRemove: () -> Void = {}
     var onConfirmRemove: () -> Void = {}
     var onCancelRemove: () -> Void = {}
@@ -3232,6 +3238,13 @@ struct SessionRowView: View {
         if canPin {
             Button(isPinned ? "Unpin" : "Pin") {
                 onSetPinned(!isPinned)
+            }
+        }
+        // Fork-only: the blue dot on demand, so the agent comes back to the
+        // AGENTS section's recently-finished group until it is read.
+        if canMarkUnread {
+            Button(isUnread ? "Mark as Read" : "Mark as Unread") {
+                onSetUnread(!isUnread)
             }
         }
         // Files the session into the project's pinned "Sidebar" group — the

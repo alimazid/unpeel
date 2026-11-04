@@ -772,6 +772,65 @@ def body(case):
         repr(receipt),
     )
 
+    # Fork-only `session.mark_unread`: the explicit mark is its own claim,
+    # published as the blue dot, and the next read receipt retires it.
+    def live_unread():
+        _, boot_now = mobile_request(port, "/mobile/bootstrap", token)
+        return next(
+            (item.get("unread") for item in boot_now.get("sessions", [])
+             if item.get("id") == "fixture-live"),
+            None,
+        )
+
+    time.sleep(0.01)
+    status, _ = mobile_request(
+        port, "/mobile/mark-unread", token, method="POST",
+        body={"sessionID": "fixture-live"},
+    )
+    marker = home.read_marker("fixture-live", "unread.json") or {}
+    marked = driver.wait_for(lambda: live_unread() is True, timeout=5)
+    case.check(
+        "mark-unread writes its marker and publishes the session unread",
+        status == 200
+        and isinstance(marker.get("unread_at"), int)
+        and marker["unread_at"] > (receipt or {}).get("read_at", 0)
+        and bool(marked),
+        repr((status, marker, live_unread())),
+    )
+    # A paired Controller rendering the terminal it marked from is no read.
+    for _ in range(3):
+        mobile_request(
+            port, "/mobile/output?session_id=fixture-live&limit=1000", token
+        )
+        time.sleep(0.6)
+    driver.read_for(1.5)
+    case.check(
+        "output polls of the marked session leave the mark in place",
+        live_unread() is True
+        and (home.read_marker("fixture-live", "read.json") or {}).get("read_at", 0)
+        < marker.get("unread_at", 0),
+        repr((live_unread(), home.read_marker("fixture-live", "read.json"))),
+    )
+    status, _ = mobile_request(
+        port, "/mobile/mark-read", token, method="POST",
+        body={"sessionID": "fixture-live"},
+    )
+    cleared = driver.wait_for(lambda: live_unread() is False, timeout=5)
+    case.check(
+        "the next read receipt clears an explicit unread mark",
+        status == 200 and bool(cleared),
+        repr(live_unread()),
+    )
+    status, missing = mobile_request(
+        port, "/mobile/mark-unread", token, method="POST",
+        body={"sessionID": "fixture-never-created"},
+    )
+    case.check(
+        "mark-unread reports a Session that does not exist",
+        status == 404 and missing.get("error") == "unknown session",
+        repr((status, missing)),
+    )
+
     started = time.monotonic()
     status, _ = mobile_request(
         port, "/mobile/write", token, method="POST",

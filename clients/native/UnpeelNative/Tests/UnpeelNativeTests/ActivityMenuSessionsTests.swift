@@ -95,6 +95,46 @@ final class ActivityMenuSessionsTests: XCTestCase {
         XCTAssertEqual(slice.finished.first?.alertBody, "Close to the weekly limit")
     }
 
+    func testPinnedSessionsShowOnlyWhenNoActivityGroupHasThem() {
+        let working = session("working", status: .busy)
+        let blocked = session("blocked", status: .attention)
+        let finished = session("finished", status: .idle)
+        let idle = session("idle", status: .idle)
+        let node = projectNode(sessions: [working, blocked, finished, idle])
+
+        let activity = ActivityMenuSessions(
+            nodes: [node],
+            allSessions: [working, blocked, finished, idle],
+            jobs: [working],
+            finished: [finished],
+            pinned: [working, blocked, finished, idle, idle]
+        )
+
+        XCTAssertEqual(activity.pinned.map(\.id), ["idle"])
+        XCTAssertEqual(activity.sectionCount, 3, "pinned rows are not an activity group")
+    }
+
+    func testRemoteSlicePinsOnlyIdleRows() {
+        let snapshot = RemoteBootstrapSnapshot(
+            folders: [],
+            projects: [RemoteProjectSummary(id: "project", name: "Project", path: "/project")],
+            presets: [],
+            sessions: [
+                remoteSession("working", projectID: "project", activity: .working, pinned: true),
+                remoteSession("done", projectID: "project", activity: .done, unread: true, pinned: true),
+                remoteSession("idle-pinned", projectID: "project", activity: .idle, pinned: true),
+                remoteSession("idle", projectID: "project", activity: .idle),
+            ],
+            capturedAtUnixMs: 1
+        )
+
+        let slice = WorkspaceActivityMenuSlice(snapshot: snapshot)
+
+        XCTAssertEqual(slice.jobs.map(\.sessionID), ["working"])
+        XCTAssertEqual(slice.finished.map(\.sessionID), ["done"])
+        XCTAssertEqual(slice.pinned.map(\.sessionID), ["idle-pinned"])
+    }
+
     func testGlobalRowIdentityIncludesWorkspaceKey() {
         let session = WorkspaceActivityMenuSession(
             sessionID: "same-id",
@@ -163,6 +203,7 @@ final class ActivityMenuSessionsTests: XCTestCase {
         projectID: String,
         activity: RemoteActivityState,
         unread: Bool = false,
+        pinned: Bool = false,
         alert: String? = nil
     ) -> RemoteSessionSummary {
         RemoteSessionSummary(
@@ -174,6 +215,7 @@ final class ActivityMenuSessionsTests: XCTestCase {
             status: .running,
             activity: activity,
             unread: unread,
+            pinned: pinned,
             latestAlertBody: alert,
             latestAlertAtUnixMs: alert == nil ? nil : 2
         )

@@ -2166,7 +2166,12 @@ fn handle_authenticated_with_effects(
     );
     if response.0 == 200 {
         if let (Some(session_id), Some(presence)) = (output_session_id, presence) {
-            if presence.touch_output(&session_id, principal, crate::presence::now_ms()) {
+            // Fork-only: an explicit "Mark as Unread" is retired only by an
+            // explicit read (the Controller's mark-read on showing it), never
+            // by the output polls of the very terminal it was marked from.
+            if presence.touch_output(&session_id, principal, crate::presence::now_ms())
+                && !unpeel_core::session_ops::marked_unread(&session_id)
+            {
                 // Treat a phone actually rendering output as a read receipt,
                 // just as selecting the Session in another Controller does.
                 // Presence buckets this to one write/second rather than one

@@ -222,6 +222,20 @@ Agent-drawn select menus (attention, host-side):
 
 Unread badges integrate with hook events and activity transitions (settles while unobserved → unread).
 
+Fork-only: **Mark as Unread / Mark as Read** (session context menu in the
+sidebar and on the All recent page) are Host verbs. `session.mark_unread`
+(`POST /mobile/mark-unread`) writes `unread.json` (`{"unread_at": ms}`) in the
+session directory; a mark newer than `read.json` is its own unread claim in
+the workspace worker's `derive_unread` and the bootstrap summary, so the row
+gets the blue dot and returns to the AGENTS section's recently-finished group.
+The next explicit read receipt retires it; a paired Controller's output polls
+(presence) do not. A mark made on the selected or viewed session holds until
+another session is observed (the store's `heldUnreadSessionID`, the runtime's
+`heldUnreadSessionIDs`), so leaving the app, Settings, or All recent and
+coming back does not read it. The AGENTS section also lists pinned
+sessions that are in no activity group, after the groups; the titlebar and
+menu-bar dropdowns do not.
+
 ### Escape cancellation and hook delivery
 
 Claude documents that Escape interrupts a response or tool call and that its

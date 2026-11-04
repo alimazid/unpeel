@@ -25,6 +25,9 @@ struct WorkspaceActivityMenuSlice: Equatable {
     var jobs: [WorkspaceActivityMenuSession] = []
     var blockers: [WorkspaceActivityMenuSession] = []
     var finished: [WorkspaceActivityMenuSession] = []
+    /// Fork-only: pinned sessions in none of the groups above, so the
+    /// AGENTS section always shows them.
+    var pinned: [WorkspaceActivityMenuSession] = []
 
     init() {}
 
@@ -73,6 +76,8 @@ struct WorkspaceActivityMenuSlice: Equatable {
                 jobs.append(item)
             } else if summary.unread {
                 finished.append(item)
+            } else if summary.pinned {
+                pinned.append(item)
             }
         }
     }
@@ -96,6 +101,7 @@ struct WorkspaceActivityMenuSlice: Equatable {
         jobs = activity.jobs.map(item)
         blockers = activity.blockers.map(item)
         finished = activity.finished.map(item)
+        pinned = activity.pinned.map(item)
     }
 
     private static func title(_ raw: String, fallback: String) -> String {
@@ -130,6 +136,9 @@ struct GlobalActivityMenuSessions: Equatable {
     var jobs: [GlobalActivityMenuItem] = []
     var blockers: [GlobalActivityMenuItem] = []
     var finished: [GlobalActivityMenuItem] = []
+    /// Fork-only: shown by the AGENTS section only, so the counts below —
+    /// which size the dropdowns — leave it out.
+    var pinned: [GlobalActivityMenuItem] = []
 
     static let empty = GlobalActivityMenuSessions()
 
@@ -160,6 +169,7 @@ struct GlobalActivityMenuSessions: Equatable {
             blockers.append(contentsOf: wrap(slice.blockers))
             jobs.append(contentsOf: wrap(slice.jobs))
             finished.append(contentsOf: wrap(slice.finished))
+            pinned.append(contentsOf: wrap(slice.pinned))
         }
     }
 
@@ -256,7 +266,8 @@ final class GlobalActivityMenuModel: ObservableObject {
             nodes: store.displayNodes,
             allSessions: Array(store.displaySessionsByID.values),
             jobs: store.activeJobSessions,
-            finished: store.unreadJobSessions
+            finished: store.unreadJobSessions,
+            pinned: store.pinnedActivitySessions
         )
         let foregroundSlice = WorkspaceActivityMenuSlice(
             local: foregroundActivity,
