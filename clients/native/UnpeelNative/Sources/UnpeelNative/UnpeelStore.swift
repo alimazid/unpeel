@@ -3531,15 +3531,16 @@ final class UnpeelStore: ObservableObject {
     /// stopped row whose Resume continues the conversation. Launches without
     /// a resumable conversation route to Remove instead — stopping them
     /// would only leave a dead row behind.
-    func requestStopSession(_ sessionID: String) {
+    func requestStopSession(_ sessionID: String, on surface: SessionRowSurface = .sidebar) {
         guard let session = displaySessionsByID[sessionID], session.isLive else { return }
         guard sessionCanStop(sessionID) else {
-            requestRemoveSession(sessionID)
+            requestRemoveSession(sessionID, on: surface)
             return
         }
         confirmingRemoveSessionID = nil
         switch session.status {
         case .starting, .busy, .attention:
+            confirmingSessionSurface = surface
             confirmingStopSessionID = sessionID
         case .idle, .exited:
             confirmStopSession(sessionID)
@@ -8434,6 +8435,8 @@ final class UnpeelStore: ObservableObject {
     enum SessionTitleEditorSurface: Equatable {
         case sidebar
         case paneHeader
+        /// Fork-only: the AGENTS section row.
+        case agentsSection
     }
 
     /// Identifies which of the two mirrored title surfaces owns first
@@ -9056,7 +9059,7 @@ final class UnpeelStore: ObservableObject {
     private var purgedSessionDirs: [String: Date] = [:]
     private static let purgedSessionDirTTL: TimeInterval = 180
 
-    func requestRemoveSession(_ sessionID: String) {
+    func requestRemoveSession(_ sessionID: String, on surface: SessionRowSurface = .sidebar) {
         // A dead row with no resumable conversation is just clutter — Remove
         // clears it instantly. The confirm exists for losing something: a
         // live terminal, or a conversation that could still resume.
@@ -9065,7 +9068,42 @@ final class UnpeelStore: ObservableObject {
             return
         }
         confirmingStopSessionID = nil
+        confirmingSessionSurface = surface
         confirmingRemoveSessionID = sessionID
+    }
+
+    /// Fork-only: the row list that armed the Stop or Remove confirmation
+    /// (see `SessionRowSurface`). Set before the id, so the row that
+    /// mounts the confirmation is the one that asked.
+    @Published private(set) var confirmingSessionSurface: SessionRowSurface = .sidebar
+
+    /// Fork-only: end the AGENTS-row rename or confirmation whose row is no
+    /// longer in the section (see `AgentsSectionInlineCleanup`).
+    func endAgentsSectionInlineState(keeping visibleSessionIDs: Set<String>) {
+        let cleanup = AgentsSectionInlineCleanup.resolve(
+            visibleSessionIDs: visibleSessionIDs,
+            editing: editingSessionID.map { ($0, editingSessionSurface) },
+            confirmingStop: confirmingStopSessionID,
+            confirmingRemove: confirmingRemoveSessionID,
+            confirmSurface: confirmingSessionSurface
+        )
+        if cleanup.endsEditing { editingSessionID = nil }
+        if cleanup.endsStopConfirm { confirmingStopSessionID = nil }
+        if cleanup.endsRemoveConfirm { confirmingRemoveSessionID = nil }
+    }
+
+    /// Fork-only: what this Session's row on `surface` shows inline.
+    func sessionRowInlineMode(
+        _ sessionID: String, on surface: SessionRowSurface
+    ) -> SessionRowInlineMode {
+        SessionRowInlineMode.resolve(
+            sessionID: sessionID,
+            on: surface,
+            editing: editingSessionID.map { ($0, editingSessionSurface) },
+            confirmingStop: confirmingStopSessionID,
+            confirmingRemove: confirmingRemoveSessionID,
+            confirmSurface: confirmingSessionSurface
+        )
     }
 
     /// Whether removing this Session deserves a confirmation dialog: it is

@@ -13,6 +13,10 @@ import UnpeelShared
 
 struct WorkspaceActivityMenuSession: Equatable {
     let sessionID: String
+    /// Fork-only: the project the sidebar lists the Session under (a moved
+    /// Session's group, not its own project), for the AGENTS row's
+    /// Pin/Unpin.
+    let projectID: String
     let title: String
     let command: String
     let projectPath: String
@@ -63,6 +67,7 @@ struct WorkspaceActivityMenuSlice: Equatable {
             guard seen.insert(summary.id).inserted else { continue }
             let item = WorkspaceActivityMenuSession(
                 sessionID: summary.id,
+                projectID: summary.projectID,
                 title: Self.title(summary.title, fallback: summary.command),
                 command: summary.command,
                 projectPath: projectPath(summary.projectID),
@@ -85,12 +90,14 @@ struct WorkspaceActivityMenuSlice: Equatable {
     init(
         local activity: ActivityMenuSessions,
         projectName: (String) -> String,
+        projectID: (SessionEntry) -> String,
         statusLabel: (SessionEntry) -> String,
         alertBody: (SessionEntry) -> String?
     ) {
         func item(_ session: SessionEntry) -> WorkspaceActivityMenuSession {
             WorkspaceActivityMenuSession(
                 sessionID: session.id,
+                projectID: projectID(session),
                 title: Self.title(session.label, fallback: session.presentationCommand),
                 command: session.presentationCommand,
                 projectPath: projectName(session.projectID),
@@ -102,6 +109,23 @@ struct WorkspaceActivityMenuSlice: Equatable {
         blockers = activity.blockers.map(item)
         finished = activity.finished.map(item)
         pinned = activity.pinned.map(item)
+    }
+
+    /// Fork-only: Session id → the id of the first node that lists it,
+    /// walking the sidebar tree in render order (worktrees and groups
+    /// included).
+    static func sessionProjectIDs(in nodes: [ProjectNode]) -> [String: String] {
+        var result: [String: String] = [:]
+        func collect(_ nodes: [ProjectNode]) {
+            for node in nodes {
+                for session in node.sessions where result[session.id] == nil {
+                    result[session.id] = node.id
+                }
+                collect(node.worktrees)
+            }
+        }
+        collect(nodes)
+        return result
     }
 
     private static func title(_ raw: String, fallback: String) -> String {
@@ -173,6 +197,31 @@ struct GlobalActivityMenuSessions: Equatable {
         }
     }
 
+    /// Fork-only: the AGENTS section's projection — the foreground slice
+    /// alone, so every row is in the scope the store's session verbs act
+    /// on. It never depends on the workspace list: a scope missing from it
+    /// still lists its rows.
+    init(
+        currentWorkspace slice: WorkspaceActivityMenuSlice,
+        key: String,
+        row: WorkspaceListRowModel?
+    ) {
+        func wrap(_ sessions: [WorkspaceActivityMenuSession]) -> [GlobalActivityMenuItem] {
+            sessions.map {
+                GlobalActivityMenuItem(
+                    workspaceKey: key,
+                    workspaceName: row?.name ?? "",
+                    workspaceTint: row?.tint ?? AppTint.none,
+                    session: $0
+                )
+            }
+        }
+        blockers = wrap(slice.blockers)
+        jobs = wrap(slice.jobs)
+        finished = wrap(slice.finished)
+        pinned = wrap(slice.pinned)
+    }
+
     var sectionCount: Int {
         [blockers, jobs, finished].reduce(into: 0) { count, sessions in
             if !sessions.isEmpty { count += 1 }
@@ -188,6 +237,9 @@ struct GlobalActivityMenuSessions: Equatable {
 @MainActor
 final class GlobalActivityMenuModel: ObservableObject {
     @Published private(set) var activity = GlobalActivityMenuSessions.empty
+    /// Fork-only: the AGENTS section lists the current workspace only; the
+    /// bell and the menu bar keep `activity`, across every workspace.
+    @Published private(set) var currentWorkspaceActivity = GlobalActivityMenuSessions.empty
 
     private weak var store: UnpeelStore?
     private let pool: WorkspacePool
@@ -262,16 +314,21 @@ final class GlobalActivityMenuModel: ObservableObject {
             }
             return false
         }
+        let displayNodes = store.displayNodes
         let foregroundActivity = ActivityMenuSessions(
-            nodes: store.displayNodes,
+            nodes: displayNodes,
             allSessions: Array(store.displaySessionsByID.values),
             jobs: store.activeJobSessions,
             finished: store.unreadJobSessions,
             pinned: store.pinnedActivitySessions
         )
+        let sidebarProjectIDs = WorkspaceActivityMenuSlice.sessionProjectIDs(
+            in: displayNodes
+        )
         let foregroundSlice = WorkspaceActivityMenuSlice(
             local: foregroundActivity,
             projectName: { store.activityProjectName($0) },
+            projectID: { sidebarProjectIDs[$0.id] ?? $0.projectID },
             statusLabel: { store.activityStatusLabel(for: $0) },
             alertBody: { store.activityAlertBody(for: $0) }
         )
@@ -288,5 +345,15 @@ final class GlobalActivityMenuModel: ObservableObject {
         )
 
         if result != activity { activity = result }
+
+        // Same key `revealGlobalActivitySession` treats as this window's
+        // scope, so a row click selects instead of rescoping.
+        let currentKey = store.currentScopeWorkspaceKey
+        let current = GlobalActivityMenuSessions(
+            currentWorkspace: foregroundSlice,
+            key: currentKey,
+            row: rows.first { $0.id == currentKey }
+        )
+        if current != currentWorkspaceActivity { currentWorkspaceActivity = current }
     }
 }

@@ -236,6 +236,16 @@ coming back does not read it. The AGENTS section also lists pinned
 sessions that are in no activity group, after the groups; the titlebar and
 menu-bar dropdowns do not.
 
+Fork-only: the AGENTS section lists the **current workspace only**
+(`GlobalActivityMenuModel.currentWorkspaceActivity`, the store's foreground
+projection), so its rows drop the "workspace ›" prefix; the titlebar bell and
+the menu-bar dropdown stay across every workspace. Because every AGENTS row
+is in the scope the store's session verbs act on, it carries the PROJECTS
+session menu (`SessionContextMenuItems`, shared with `SessionRowView`). Rename
+and the Stop/Remove confirmations happen inline in the row that started them:
+`editingSessionSurface` and `confirmingSessionSurface` name that surface, so
+the same Session's other row never mounts a second editor or dismiss monitor.
+
 ### Escape cancellation and hook delivery
 
 Claude documents that Escape interrupts a response or tool call and that its

@@ -138,6 +138,7 @@ final class ActivityMenuSessionsTests: XCTestCase {
     func testGlobalRowIdentityIncludesWorkspaceKey() {
         let session = WorkspaceActivityMenuSession(
             sessionID: "same-id",
+            projectID: "project",
             title: "Session",
             command: "codex",
             projectPath: "Project",

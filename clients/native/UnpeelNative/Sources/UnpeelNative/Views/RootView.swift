@@ -845,6 +845,12 @@ struct ActivityMenuList: View {
     /// its container gives it (footer pinned below) instead of sizing
     /// itself to its rows like the dropdowns.
     var fillsHeight = false
+    /// Fork-only: the AGENTS section lists one workspace, so its rows leave
+    /// out the "workspace ›" prefix.
+    var showsWorkspaceName = true
+    /// Fork-only: the AGENTS section wraps each row (session context menu,
+    /// inline rename and confirmations). The dropdowns keep the bare row.
+    var wrapRow: ((GlobalActivityMenuItem, ActivityMenuRowStyle, AnyView) -> AnyView)? = nil
 
     private var rowCount: Int { jobs.count + blockers.count + finished.count + pinned.count }
 
@@ -874,33 +880,21 @@ struct ActivityMenuList: View {
                             .padding(.vertical, 12)
                             .frame(maxWidth: .infinity, alignment: .leading)
                     } else {
-                        // Attention is actionable, so blockers always lead.
-                        ForEach(blockers) { session in
-                            row(session, unread: false, working: false, blocked: true)
-                        }
-                        if !blockers.isEmpty && (!jobs.isEmpty || !finished.isEmpty) {
-                            Divider()
-                                .padding(.horizontal, 8)
-                                .padding(.vertical, 2)
-                        }
-                        ForEach(jobs) { session in
-                            row(session, unread: false, working: true, blocked: false)
-                        }
-                        if !jobs.isEmpty && !finished.isEmpty {
-                            Divider()
-                                .padding(.horizontal, 8)
-                                .padding(.vertical, 2)
-                        }
-                        ForEach(finished) { session in
-                            row(session, unread: true, working: false, blocked: false)
-                        }
-                        if !pinned.isEmpty && (!blockers.isEmpty || !jobs.isEmpty || !finished.isEmpty) {
-                            Divider()
-                                .padding(.horizontal, 8)
-                                .padding(.vertical, 2)
-                        }
-                        ForEach(pinned) { session in
-                            row(session, unread: false, working: false, blocked: false, pinned: true)
+                        // One ForEach keyed by item (fork-only): a row that
+                        // changes group keeps its identity, its hover and an
+                        // AGENTS row's inline rename draft.
+                        ForEach(Self.entries(
+                            blockers: blockers, jobs: jobs,
+                            finished: finished, pinned: pinned
+                        )) { entry in
+                            switch entry {
+                            case let .row(item, style):
+                                row(item, style: style)
+                            case .divider:
+                                Divider()
+                                    .padding(.horizontal, 8)
+                                    .padding(.vertical, 2)
+                            }
                         }
                     }
                 }
@@ -913,30 +907,83 @@ struct ActivityMenuList: View {
         }
     }
 
+    /// Fork-only: one row or divider of the list, in display order.
+    enum Entry: Identifiable {
+        case row(GlobalActivityMenuItem, ActivityMenuRowStyle)
+        /// Named by the group it follows ("pinned": the one it precedes).
+        case divider(String)
+
+        var id: String {
+            switch self {
+            case let .row(item, _): return item.id
+            case let .divider(name): return "divider:" + name
+            }
+        }
+    }
+
+    /// Attention is actionable, so blockers always lead; dividers separate
+    /// non-empty groups, and pinned rows come last.
+    static func entries(
+        blockers: [GlobalActivityMenuItem],
+        jobs: [GlobalActivityMenuItem],
+        finished: [GlobalActivityMenuItem],
+        pinned: [GlobalActivityMenuItem]
+    ) -> [Entry] {
+        var entries: [Entry] = []
+        var seen = Set<String>()
+        func append(_ items: [GlobalActivityMenuItem], _ style: ActivityMenuRowStyle) {
+            for item in items where seen.insert(item.id).inserted {
+                entries.append(.row(item, style))
+            }
+        }
+        append(blockers, ActivityMenuRowStyle(unread: false, working: false, blocked: true, pinned: false))
+        if !blockers.isEmpty && (!jobs.isEmpty || !finished.isEmpty) {
+            entries.append(.divider("blockers"))
+        }
+        append(jobs, ActivityMenuRowStyle(unread: false, working: true, blocked: false, pinned: false))
+        if !jobs.isEmpty && !finished.isEmpty {
+            entries.append(.divider("jobs"))
+        }
+        append(finished, ActivityMenuRowStyle(unread: true, working: false, blocked: false, pinned: false))
+        if !pinned.isEmpty && (!blockers.isEmpty || !jobs.isEmpty || !finished.isEmpty) {
+            entries.append(.divider("pinned"))
+        }
+        append(pinned, ActivityMenuRowStyle(unread: false, working: false, blocked: false, pinned: true))
+        return entries
+    }
+
     @ViewBuilder
-    private func row(
-        _ item: GlobalActivityMenuItem,
-        unread: Bool,
-        working: Bool,
-        blocked: Bool,
-        pinned: Bool = false
-    ) -> some View {
-        TitlebarActivityMenuRow(
+    private func row(_ item: GlobalActivityMenuItem, style: ActivityMenuRowStyle) -> some View {
+        let plain = TitlebarActivityMenuRow(
             title: item.session.title,
             command: item.session.command,
             workspace: item.workspaceName,
             workspaceTint: item.workspaceTint,
+            showsWorkspace: showsWorkspaceName,
             projectPath: item.session.projectPath,
             status: item.session.status,
             alertBody: item.session.alertBody,
-            unread: unread,
-            working: working,
-            blocked: blocked,
-            pinned: pinned
+            unread: style.unread,
+            working: style.working,
+            blocked: style.blocked,
+            pinned: style.pinned
         ) {
             onSelect(item)
         }
+        if let wrapRow {
+            wrapRow(item, style, AnyView(plain))
+        } else {
+            plain
+        }
     }
+}
+
+/// Fork-only: which activity group a row renders as, for `wrapRow`.
+struct ActivityMenuRowStyle: Equatable {
+    let unread: Bool
+    let working: Bool
+    let blocked: Bool
+    let pinned: Bool
 }
 
 /// Footer row of the activity dropdowns: opens the app-wide "All recent"
@@ -983,6 +1030,8 @@ private struct TitlebarActivityMenuRow: View {
     let command: String
     let workspace: String
     let workspaceTint: AppTint
+    /// Fork-only: false in the AGENTS section, which lists one workspace.
+    var showsWorkspace = true
     let projectPath: String
     let status: String
     let alertBody: String?
@@ -1037,13 +1086,15 @@ private struct TitlebarActivityMenuRow: View {
                                 .truncationMode(.tail)
                         } else {
                             HStack(spacing: 4) {
-                                Circle()
-                                    .fill(workspaceTint.swatch)
-                                    .frame(width: 6, height: 6)
-                                Text(workspace)
-                                    .foregroundStyle(Theme.mutedForeground)
-                                Text("›")
-                                    .foregroundStyle(Theme.mutedForeground.opacity(0.65))
+                                if showsWorkspace {
+                                    Circle()
+                                        .fill(workspaceTint.swatch)
+                                        .frame(width: 6, height: 6)
+                                    Text(workspace)
+                                        .foregroundStyle(Theme.mutedForeground)
+                                    Text("›")
+                                        .foregroundStyle(Theme.mutedForeground.opacity(0.65))
+                                }
                                 Text(projectPath)
                                     .foregroundStyle(Theme.mutedForeground)
                                     .truncationMode(.tail)
