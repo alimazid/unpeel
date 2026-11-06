@@ -1108,6 +1108,10 @@ impl HostRuntime {
                 return;
             }
         };
+        if schedules.is_empty() && !self.schedules.has_pending() {
+            // A workspace without tasks pays one small file read per rescan.
+            return;
+        }
         let (projects, presets) = crate::mobile::create_catalog(&self.snapshot).unwrap_or_default();
         let now = crate::schedules::clock::now();
         for event in
