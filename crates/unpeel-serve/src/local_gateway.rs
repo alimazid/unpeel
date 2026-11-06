@@ -26,6 +26,9 @@ use crate::platform_adapter::{
 const ACCEPT_INTERVAL: Duration = Duration::from_millis(25);
 const CONTROL_TIMEOUT: Duration = Duration::from_secs(5);
 const PAIRING_CONTROL_PATH: &str = "/_unpeel/pairing";
+/// Scheduled Task verbs that need the live worker (Run now owns the
+/// overlap rule); same framing and owner-only socket as pairing.
+const SCHEDULES_CONTROL_PATH: &str = "/_unpeel/schedules";
 /// Verbs the disk-backed runtime omits from its descriptor but this socket
 /// serves from the worker's live authorities; keep in step with
 /// `crate::mobile::handle_local_live_route`.
@@ -54,6 +57,10 @@ pub(crate) enum LocalControlRequest {
     SetDeviceRelayAllowed {
         device_id: String,
         allowed: bool,
+        reply: mpsc::SyncSender<Result<serde_json::Value, String>>,
+    },
+    RunScheduleNow {
+        schedule_id: String,
         reply: mpsc::SyncSender<Result<serde_json::Value, String>>,
     },
 }
@@ -246,6 +253,9 @@ fn serve_connection(
     let handler = |request: unpeel_core::relay_wire::TunnelRequest, cancelled: &AtomicBool| {
         if request.path == PAIRING_CONTROL_PATH {
             return handle_local_control(request, &control_tx);
+        }
+        if request.path == SCHEDULES_CONTROL_PATH {
+            return handle_schedules_control(request, &control_tx);
         }
         if request.path == PLATFORM_ADAPTER_CONTROL_PATH {
             return handle_platform_adapter_control(id, request, &platform_adapters);
@@ -601,6 +611,44 @@ fn handle_local_control(
         }
         _ => return (400, br#"{"error":"invalid pairing action"}"#.to_vec()),
     };
+    await_control_reply(control_tx, control, &reply_rx, "pairing failed")
+}
+
+/// `{"action":"run","scheduleID":…}`: Run now through the worker, which
+/// answers at once with the Run id or why it refused.
+fn handle_schedules_control(
+    request: unpeel_core::relay_wire::TunnelRequest,
+    control_tx: &mpsc::Sender<LocalControlRequest>,
+) -> (u16, Vec<u8>) {
+    if request.method != "POST" {
+        return (405, br#"{"error":"method not allowed"}"#.to_vec());
+    }
+    let body = serde_json::from_slice::<serde_json::Value>(&request.body).unwrap_or_default();
+    if body.get("action").and_then(serde_json::Value::as_str) != Some("run") {
+        return (400, br#"{"error":"invalid schedules action"}"#.to_vec());
+    }
+    let Some(schedule_id) = body
+        .get("scheduleID")
+        .and_then(serde_json::Value::as_str)
+        .filter(|id| unpeel_core::schedules::is_valid_id(id))
+        .map(str::to_owned)
+    else {
+        return (400, br#"{"error":"valid scheduleID required"}"#.to_vec());
+    };
+    let (reply_tx, reply_rx) = mpsc::sync_channel(1);
+    let control = LocalControlRequest::RunScheduleNow {
+        schedule_id,
+        reply: reply_tx,
+    };
+    await_control_reply(control_tx, control, &reply_rx, "Run now failed")
+}
+
+fn await_control_reply(
+    control_tx: &mpsc::Sender<LocalControlRequest>,
+    control: LocalControlRequest,
+    reply_rx: &mpsc::Receiver<Result<serde_json::Value, String>>,
+    failed: &str,
+) -> (u16, Vec<u8>) {
     if control_tx.send(control).is_err() {
         return (
             503,
@@ -614,20 +662,37 @@ fn handle_local_control(
         ),
         Ok(Err(error)) => (
             409,
-            serde_json::to_vec(&serde_json::json!({ "error": error }))
-                .unwrap_or_else(|_| br#"{"error":"pairing failed"}"#.to_vec()),
+            serde_json::to_vec(&serde_json::json!({ "error": error })).unwrap_or_else(|_| {
+                serde_json::json!({ "error": failed })
+                    .to_string()
+                    .into_bytes()
+            }),
         ),
         Err(_) => (503, br#"{"error":"Host control timed out"}"#.to_vec()),
     }
 }
 
 fn pairing_control_call(home: &Path, body: serde_json::Value) -> Result<serde_json::Value, String> {
+    control_call(
+        home,
+        PAIRING_CONTROL_PATH,
+        body,
+        "workspace Host rejected pairing",
+    )
+}
+
+fn control_call(
+    home: &Path,
+    path: &str,
+    body: serde_json::Value,
+    rejected: &str,
+) -> Result<serde_json::Value, String> {
     let mut stream = UnixStream::connect(remote_stdio::local_host_socket_path(home))
         .map_err(|error| format!("connect to the workspace Host: {error}"))?;
     let request = unpeel_core::relay_wire::TunnelRequest {
         id: 1,
         method: "POST".into(),
-        path: PAIRING_CONTROL_PATH.into(),
+        path: path.into(),
         query: Vec::new(),
         auth: None,
         content_type: Some("application/json".into()),
@@ -651,9 +716,25 @@ fn pairing_control_call(home: &Path, body: serde_json::Value) -> Result<serde_js
         Err(value
             .get("error")
             .and_then(serde_json::Value::as_str)
-            .unwrap_or("workspace Host rejected pairing")
+            .unwrap_or(rejected)
             .to_owned())
     }
+}
+
+/// Run a Scheduled Task now through the workspace worker. Returns the new
+/// Run's id; refused while a Run of the task is in progress.
+pub fn run_schedule_now(home: &Path, schedule_id: &str) -> Result<String, String> {
+    let response = control_call(
+        home,
+        SCHEDULES_CONTROL_PATH,
+        serde_json::json!({ "action": "run", "scheduleID": schedule_id }),
+        "workspace Host refused Run now",
+    )?;
+    response
+        .get("runID")
+        .and_then(serde_json::Value::as_str)
+        .map(str::to_owned)
+        .ok_or("workspace Host omitted the Run id".into())
 }
 
 pub fn begin_pairing(

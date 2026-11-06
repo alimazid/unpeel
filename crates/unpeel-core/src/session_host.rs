@@ -181,6 +181,17 @@ pub struct SessionHostLaunch {
     /// Legacy launch field. Retained for compatibility; never enables a tool.
     #[serde(default)]
     pub computer_mcp_enabled: bool,
+    /// Set only for a Scheduled Task's Run: the Session's environment names
+    /// the task and the Run (`UNPEEL_SCHEDULE_ID`, `UNPEEL_SCHEDULE_RUN_ID`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub schedule_run: Option<ScheduleRunLaunch>,
+}
+
+/// The Scheduled Task and Run a Run Session belongs to.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ScheduleRunLaunch {
+    pub schedule_id: String,
+    pub run_id: String,
 }
 
 fn default_mcp_enabled() -> bool {

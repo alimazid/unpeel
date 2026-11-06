@@ -484,9 +484,10 @@ fn publish_status(
 /// Run the machine-wide supervisor in the foreground.
 pub fn run_service(mut report: impl FnMut(ServiceEvent)) -> Result<(), String> {
     SHUTDOWN_REQUESTED.store(false, Ordering::Release);
+    let handler = request_shutdown as extern "C" fn(libc::c_int) as libc::sighandler_t;
     unsafe {
-        libc::signal(libc::SIGINT, request_shutdown as libc::sighandler_t);
-        libc::signal(libc::SIGTERM, request_shutdown as libc::sighandler_t);
+        libc::signal(libc::SIGINT, handler);
+        libc::signal(libc::SIGTERM, handler);
     }
     let real_home = unpeel_core::app_paths::real_unpeel_home();
     let lease = ServiceLease::acquire(&real_home)?;

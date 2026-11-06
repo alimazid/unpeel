@@ -86,6 +86,27 @@ stored global rows to enabled; headless/Host consumers still honor the
 compatibility flag. Do not silently remove the flag or reinterpret disable as
 delete. Native convergence, if chosen, is a separate product change.
 
+### Scheduled Tasks
+
+`crates/unpeel-cli/src/schedules_cli.rs` owns `unpeel schedules`:
+
+```text
+unpeel schedules [list] [--json]
+unpeel schedules add <name> --project <id|name> --preset <id|label>
+                     (--once <YYYY-MM-DDTHH:MM[:SS]> | --daily <HH:MM[:SS]>) [--no-notify]
+unpeel schedules run|history|rm <id|name>
+```
+
+`add` and `rm` edit the raw `schedules` array through `app_state::edit`
+(unknown entries and fields pass through); the workspace worker re-reads it
+every rescan and fires due tasks itself (`unpeel_serve::schedules`). `run`
+(Run now) goes to the live worker over the owner-only `/_unpeel/schedules`
+control path, which refuses while a Run is in progress, so it needs a running
+Host. `list` and `history` read the per-task clock and Run log under
+`<UNPEEL_HOME>/schedules/<id>/` (`unpeel_core::schedule_store`). `add`,
+`run` and `rm` refuse inside a Session, the detection `unpeel send` uses.
+`rm` deletes the task and its history; its Run Sessions stay.
+
 ### Unpeel Link enrollment
 
 `crates/unpeel-cli/src/link_cli.rs` owns `unpeel link` — the scripted

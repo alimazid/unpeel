@@ -16,6 +16,7 @@ mod integrations_cli;
 mod link_cli;
 mod mcp_cli;
 mod open_cli;
+mod schedules_cli;
 mod settings_cli;
 mod state_cli;
 mod workspaces;

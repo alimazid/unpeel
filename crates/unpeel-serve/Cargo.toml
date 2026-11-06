@@ -24,6 +24,10 @@ sha2 = "0.10.9"
 base64 = { version = "0.23.1", features = ["std"] }
 rand = { version = "0.9.5", features = ["std", "std_rng", "os_rng"] }
 qrcode = { version = "0.14.1", default-features = false }
+# Scheduled Tasks: zoned wall-clock time and DST for Triggers. The system
+# zone (TZ, /etc/localtime) and the platform tz database only; no bundled
+# copy. Stays out of unpeel-core so the portable core never sees it.
+jiff = { version = "0.2.39", default-features = false, features = ["std", "tz-system", "tzdb-zoneinfo"] }
 
 [dev-dependencies]
 tempfile = "3"

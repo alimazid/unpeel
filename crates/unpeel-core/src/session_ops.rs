@@ -2188,11 +2188,42 @@ fn mcp_features_enabled_for_launch() -> (bool, bool, bool) {
 /// Spawn a fresh hosted session. Hook assets install host-side at spawn, so
 /// callers only provide the launch parameters. Returns the new session id.
 pub fn spawn_session(
+    session: SessionInfo,
+    cwd: &str,
+    hook_port: Option<u16>,
+    initial_cols: u16,
+    initial_rows: u16,
+) -> Result<String, String> {
+    spawn_session_with(session, cwd, hook_port, initial_cols, initial_rows, None)
+}
+
+/// [`spawn_session`] for a Scheduled Task's Run: the same launch, plus the
+/// task and Run in the Session's environment.
+pub fn spawn_scheduled_session(
+    session: SessionInfo,
+    cwd: &str,
+    hook_port: Option<u16>,
+    initial_cols: u16,
+    initial_rows: u16,
+    run: crate::session_host::ScheduleRunLaunch,
+) -> Result<String, String> {
+    spawn_session_with(
+        session,
+        cwd,
+        hook_port,
+        initial_cols,
+        initial_rows,
+        Some(run),
+    )
+}
+
+fn spawn_session_with(
     mut session: SessionInfo,
     cwd: &str,
     hook_port: Option<u16>,
     initial_cols: u16,
     initial_rows: u16,
+    schedule_run: Option<crate::session_host::ScheduleRunLaunch>,
 ) -> Result<String, String> {
     if session.id.is_empty() {
         session.id = uuid::Uuid::new_v4().to_string().to_lowercase();
@@ -2219,6 +2250,7 @@ pub fn spawn_session(
         mcp_enabled: sessions_mcp_enabled,
         browser_mcp_enabled,
         computer_mcp_enabled,
+        schedule_run,
     };
     let launch_file = write_launch_file(&launch)?;
     let host = resolve_host_binary()?;

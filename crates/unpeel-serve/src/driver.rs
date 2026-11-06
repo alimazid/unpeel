@@ -631,6 +631,8 @@ pub struct HostRuntime {
     auto_stop: crate::auto_stop::Sweeper,
     /// Removes stopped Sessions past the keep limit (`retention.rs`).
     retention: crate::retention::Retention,
+    /// Fires this workspace's Scheduled Tasks (`schedules/`).
+    schedules: crate::schedules::Scheduler,
     /// Last Host-wide sweep of abandoned resumable uploads.
     last_upload_sweep: Option<Instant>,
     last_activity_state_signature: Option<crate::activity_snapshot::ActivityStateSignature>,
@@ -786,6 +788,7 @@ impl HostRuntime {
             pty_core_status: None,
             auto_stop: crate::auto_stop::Sweeper::default(),
             retention: crate::retention::Retention::default(),
+            schedules: crate::schedules::Scheduler::default(),
             last_upload_sweep: None,
             browser_engine_rx: if browser_engine_install_enabled() {
                 Some(spawn_browser_engine_install(&home))
@@ -936,9 +939,14 @@ impl HostRuntime {
             self.rescan();
             self.last_scan = Instant::now();
             self.reconcile_direct(&mut emitted);
+            self.sweep_schedules(&mut emitted);
             self.sweep_auto_stop(&mut emitted);
             self.sweep_retention(&mut emitted);
             self.sweep_incomplete_uploads();
+        } else if self.schedules.has_pending() {
+            // Run now starts on the tick after it is accepted, not a rescan
+            // later.
+            self.sweep_schedules(&mut emitted);
         }
         self.reconcile_link(&mut emitted);
         self.supervise_streamer(&mut emitted);
@@ -1089,6 +1097,51 @@ impl HostRuntime {
     }
 
     /// Once per rescan: remove stopped Sessions past their group's keep limit.
+    /// Step the Scheduled Tasks against the wall clock. Definitions are
+    /// re-read from `app-state.json` every sweep, so an edit takes effect on
+    /// the next one; a file that will not read changes nothing.
+    fn sweep_schedules(&mut self, emitted: &mut Vec<ServeEvent>) {
+        let schedules = match unpeel_core::schedule_store::load_schedules() {
+            Ok(schedules) => schedules,
+            Err(error) => {
+                crate::tracelog::trace("host-worker", &format!("schedules not stepped: {error}"));
+                return;
+            }
+        };
+        if schedules.is_empty() && !self.schedules.has_pending() {
+            // A workspace without tasks pays one small file read per rescan.
+            return;
+        }
+        let (projects, presets) = crate::mobile::create_catalog(&self.snapshot).unwrap_or_default();
+        let now = crate::schedules::clock::now();
+        for event in
+            self.schedules
+                .sweep(&schedules, &projects, &presets, Some(self.hook_port), &now)
+        {
+            match event {
+                crate::schedules::SweepEvent::Started {
+                    schedule_id,
+                    run_id,
+                    session_id,
+                } => crate::tracelog::trace(
+                    "host-worker",
+                    &format!("schedule {schedule_id} started Run {run_id} in session {session_id}"),
+                ),
+                crate::schedules::SweepEvent::Recorded {
+                    schedule_id,
+                    run_id,
+                    status,
+                } => crate::tracelog::trace(
+                    "host-worker",
+                    &format!("schedule {schedule_id} Run {run_id}: {}", status.word()),
+                ),
+                crate::schedules::SweepEvent::Warning(warning) => {
+                    emitted.push(ServeEvent::Warning(warning))
+                }
+            }
+        }
+    }
+
     fn sweep_retention(&mut self, emitted: &mut Vec<ServeEvent>) {
         for event in self.retention.step(&self.model.expired, now_ms()) {
             match event {
@@ -1472,6 +1525,14 @@ impl HostRuntime {
                         self.reconcile_direct(emitted);
                         serde_json::json!({ "ok": true })
                     });
+                    let _ = reply.send(result);
+                }
+                LocalControlRequest::RunScheduleNow { schedule_id, reply } => {
+                    let result = unpeel_core::schedule_store::load_schedules()
+                        .and_then(|schedules| {
+                            self.schedules.request_run_now(&schedule_id, &schedules)
+                        })
+                        .map(|run_id| serde_json::json!({ "runID": run_id }));
                     let _ = reply.send(result);
                 }
                 LocalControlRequest::SetDeviceRelayAllowed {
@@ -2155,9 +2216,10 @@ impl Drop for HostRuntime {
 /// lease before returning.
 pub fn run(mut report: impl FnMut(ServeEvent)) -> Result<(), String> {
     SHUTDOWN_REQUESTED.store(false, Ordering::Release);
+    let handler = request_shutdown as extern "C" fn(libc::c_int) as libc::sighandler_t;
     unsafe {
-        libc::signal(libc::SIGINT, request_shutdown as libc::sighandler_t);
-        libc::signal(libc::SIGTERM, request_shutdown as libc::sighandler_t);
+        libc::signal(libc::SIGINT, handler);
+        libc::signal(libc::SIGTERM, handler);
     }
     let (mut driver, events) = HostRuntime::start()?;
     for event in events {

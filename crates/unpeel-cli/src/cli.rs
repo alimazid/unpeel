@@ -59,6 +59,9 @@ unpeel — run and steer CLI agent sessions
   unpeel presets star|unstar|enable|disable <label|id>
   unpeel presets edit <label|id> [--label L] [--command C]
   unpeel presets reorder <label|id> <position>
+  unpeel schedules [list] | add <name> --project P --preset L (--once T | --daily HH:MM)
+  unpeel schedules run|history|rm <id|name>
+                                  Scheduled Tasks the Host fires on its local clock
   unpeel link enroll <key>        activate Unpeel Link on this Host machine
   unpeel link status [--json]     show Link enrollment and entitlement state
   unpeel link deactivate          stop Link on this Host machine
@@ -1009,6 +1012,7 @@ pub fn run(args: &[String]) -> i32 {
             parsed.has("json"),
         )),
         "presets" => crate::state_cli::presets_cli(&args[1..]).map(|_| 0),
+        "schedules" | "schedule" => crate::schedules_cli::run(&args[1..]),
         "workspaces" => {
             crate::workspaces::cli(&parsed.positional[1..], parsed.has("json")).map(|_| 0)
         }

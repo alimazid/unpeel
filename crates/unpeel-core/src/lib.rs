@@ -105,6 +105,10 @@ pub mod program_status;
 pub mod pty_core;
 #[cfg(feature = "native-host")]
 pub mod screen_activity;
+#[cfg(feature = "native-host")]
+pub mod schedule_store;
+#[cfg(feature = "controller-core")]
+pub mod schedules;
 
 pub mod relay_connection;
 #[cfg(feature = "native-host")]
