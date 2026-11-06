@@ -34,6 +34,7 @@ impl Home {
                 observed_runtime: observed.map(str::to_owned),
                 command: command.into(),
                 label: format!("{id} label"),
+                custom_title: false,
             },
         );
         self
@@ -545,6 +546,7 @@ fn facts(observed: Option<&str>, command: &str) -> SessionFacts {
         observed_runtime: observed.map(str::to_owned),
         command: command.into(),
         label: "a session".into(),
+        custom_title: false,
     }
 }
 
@@ -595,24 +597,40 @@ fn any_catalog_runtime_is_an_agent_session() {
 }
 
 impl Home {
-    /// The Session's title as a frontend would read it right now.
-    fn retitle(mut self, id: &str, label: &str) -> Self {
-        self.sessions.get_mut(id).unwrap().label = label.into();
+    /// The Session's manifest says the user named it (an upstream rename).
+    fn custom_titled(mut self, id: &str) -> Self {
+        self.sessions.get_mut(id).unwrap().custom_title = true;
         self
     }
 
-    fn title_marker(&self, id: &str) -> Option<String> {
+    fn title_json(&self, id: &str) -> Option<serde_json::Value> {
         let raw = std::fs::read(self.sessions_root().join(id).join("title.json")).ok()?;
-        let value: serde_json::Value = serde_json::from_slice(&raw).ok()?;
-        value.get("title")?.as_str().map(str::to_owned)
+        serde_json::from_slice(&raw).ok()
+    }
+
+    fn title_marker(&self, id: &str) -> Option<String> {
+        self.title_json(id)?
+            .get("title")?
+            .as_str()
+            .map(str::to_owned)
+    }
+
+    /// The user renames the Session through the shared override.
+    fn rename(&self, id: &str, title: &str) {
+        let body = serde_json::json!({ "title": title, "updated_at": 7 });
+        std::fs::write(
+            self.sessions_root().join(id).join("title.json"),
+            body.to_string(),
+        )
+        .unwrap();
     }
 }
 
 #[test]
-fn set_names_a_session_that_has_no_title_yet_super_agent() {
-    // Still titled by its launch command: its first prompt (the Router
-    // instructions) would otherwise become its name.
-    let home = claude_home().retitle("router-1", "claude");
+fn set_names_a_session_the_user_never_named_super_agent() {
+    // Its agent-written title would otherwise follow the first prompt, now
+    // the Router instructions ("Unpeel inbox notice").
+    let home = claude_home();
     home.run(100, |ctx| set_at(ctx, "router-1")).unwrap();
     assert_eq!(
         home.title_marker("router-1").as_deref(),
@@ -621,8 +639,37 @@ fn set_names_a_session_that_has_no_title_yet_super_agent() {
 }
 
 #[test]
-fn set_keeps_the_title_of_a_session_the_user_or_agent_already_named() {
-    let home = claude_home().retitle("router-1", "hubspot integration");
+fn set_keeps_a_name_the_user_chose() {
+    let home = claude_home().custom_titled("router-2");
+    home.rename("router-1", "hubspot integration");
     home.run(100, |ctx| set_at(ctx, "router-1")).unwrap();
-    assert_eq!(home.title_marker("router-1"), None);
+    assert_eq!(
+        home.title_marker("router-1").as_deref(),
+        Some("hubspot integration")
+    );
+    home.run(200, |ctx| set_at(ctx, "router-2")).unwrap();
+    assert_eq!(home.title_marker("router-2"), None);
+}
+
+#[test]
+fn the_super_agent_name_goes_with_the_mark_but_a_users_rename_stays() {
+    let home = claude_home();
+    home.run(100, |ctx| set_at(ctx, "router-1")).unwrap();
+    home.run(200, |ctx| clear_at(ctx, "router-1")).unwrap();
+    assert_eq!(home.title_marker("router-1"), None, "cleared with the mark");
+
+    home.run(300, |ctx| set_at(ctx, "router-1")).unwrap();
+    home.run(400, |ctx| set_at(ctx, "router-2")).unwrap();
+    assert_eq!(home.title_marker("router-1"), None, "a switch takes it too");
+    assert_eq!(
+        home.title_marker("router-2").as_deref(),
+        Some("Super Agent")
+    );
+
+    home.rename("router-2", "my coordinator");
+    home.run(500, |ctx| clear_at(ctx, "router-2")).unwrap();
+    assert_eq!(
+        home.title_marker("router-2").as_deref(),
+        Some("my coordinator")
+    );
 }

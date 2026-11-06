@@ -23,6 +23,9 @@ pub struct SessionFacts {
     /// The launch command, as typed.
     pub command: String,
     pub label: String,
+    /// The user named it through an upstream rename (manifest
+    /// `custom_title`); a `title.json` rename is read from the file.
+    pub custom_title: bool,
 }
 
 impl SessionFacts {
@@ -201,6 +204,7 @@ fn home_facts(session_id: &str) -> Option<SessionFacts> {
         observed_runtime: crate::session_host::active_runtime_id(&manifest).map(str::to_owned),
         label: crate::session_ops::title_marker(session_id)
             .unwrap_or_else(|| manifest.session.label.clone()),
+        custom_title: manifest.session.custom_title,
         command: manifest.session.command,
     })
 }
@@ -251,27 +255,52 @@ pub(crate) fn set_at(ctx: &Ctx, session_id: &str) -> Result<VerbOutcome, VerbErr
         markers_written: true,
     };
     take_over(ctx, session_id, previous.as_deref()).map_err(VerbError::Failed)?;
-    name_untitled_router(ctx, session_id, &facts).map_err(VerbError::Failed)?;
+    name_router(ctx, session_id, &facts).map_err(VerbError::Failed)?;
     Ok(written)
 }
 
-/// The title a Router gets when it has none of its own yet.
+/// The title a Router gets while it is the Router, unless the user named it.
 const ROUTER_TITLE: &str = "Super Agent";
+/// `title.json` `by`: this title came from becoming the Router.
+const ROUTER_TITLE_BY: &str = "super_agent";
 
-/// A Session still titled by its launch command would take its name from
-/// its first prompt, which is now the Router instructions ("Unpeel inbox
-/// notice"). Name it instead, through the shared `title.json` override a
-/// rename writes; a title the user or the agent already chose stays.
-fn name_untitled_router(ctx: &Ctx, session_id: &str, facts: &SessionFacts) -> Result<(), String> {
-    if !facts.command.starts_with(facts.label.as_str()) {
+/// An agent-titled Session follows its conversation's title, which would
+/// now come from the Router instructions ("Unpeel inbox notice"). Name it
+/// through the shared `title.json` override a rename writes, marked as
+/// ours so it goes with the mark; a name the user chose always stays.
+fn name_router(ctx: &Ctx, session_id: &str, facts: &SessionFacts) -> Result<(), String> {
+    let path = ctx.sessions_root.join(session_id).join("title.json");
+    if facts.custom_title || path.exists() {
         return Ok(());
     }
-    let body = serde_json::json!({ "title": ROUTER_TITLE, "updated_at": ctx.now_ms }).to_string();
-    crate::hook_assets::write_file_atomic(
-        &ctx.sessions_root.join(session_id).join("title.json"),
-        &body,
-        "Router title",
-    )
+    let body = serde_json::json!({
+        "title": ROUTER_TITLE,
+        "updated_at": ctx.now_ms,
+        "by": ROUTER_TITLE_BY,
+    })
+    .to_string();
+    crate::hook_assets::write_file_atomic(&path, &body, "Router title")
+}
+
+/// Drop the title [`name_router`] gave, so the Session's own title shows
+/// again; a later rename by the user is theirs and stays.
+fn unname_router(ctx: &Ctx, session_id: &str) -> Result<(), String> {
+    let path = ctx.sessions_root.join(session_id).join("title.json");
+    let ours = std::fs::read(&path)
+        .ok()
+        .and_then(|raw| serde_json::from_slice::<serde_json::Value>(&raw).ok())
+        .is_some_and(|title| {
+            title.get("by").and_then(serde_json::Value::as_str) == Some(ROUTER_TITLE_BY)
+        });
+    if !ours {
+        return Ok(());
+    }
+    match std::fs::remove_file(&path) {
+        Err(error) if error.kind() != std::io::ErrorKind::NotFound => {
+            Err(format!("Router title: {error}"))
+        }
+        _ => Ok(()),
+    }
 }
 
 /// Everything after the mark: the new Router stops being anyone's Worker,
@@ -282,6 +311,7 @@ fn take_over(ctx: &Ctx, router_id: &str, previous: Option<&str>) -> Result<(), S
     super::remove_worker_marker_in(&ctx.sessions_root.join(router_id))?;
     let moved = match previous.filter(|previous| *previous != router_id) {
         Some(previous) => {
+            unname_router(ctx, previous)?;
             // What waits for the old Router is the new one's: Worker results
             // still wake it. The old Router's own instructions apply to no one.
             ctx.inbox
@@ -408,6 +438,7 @@ pub(crate) fn clear_at(ctx: &Ctx, session_id: &str) -> Result<VerbOutcome, VerbE
     }
     super::rewrite_worker_markers_in(ctx.sessions_root, session_id, None)
         .map_err(VerbError::Failed)?;
+    unname_router(ctx, session_id).map_err(VerbError::Failed)?;
     // Instructions it never read are no longer for it.
     ctx.inbox
         .drop_pending(session_id, is_router_instructions)
