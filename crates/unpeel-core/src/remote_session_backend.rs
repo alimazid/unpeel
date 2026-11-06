@@ -225,6 +225,11 @@ pub struct RemotePresetSummary {
     /// Hosts, which Controllers read as not one.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub agent_preset: Option<bool>,
+    /// The Host's word on whether the preset turns off its agent's approval
+    /// prompts (the task sheet warns). Absent on older Hosts: no warning.
+    /// Must round-trip here or the native bridge strips it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bypasses_approvals: Option<bool>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -8071,5 +8076,36 @@ mod tests {
         let forwarded = serde_json::to_value(&snapshot).unwrap();
         assert_eq!(forwarded["presets"][0]["agentPreset"], true);
         assert!(forwarded["presets"][1].get("agentPreset").is_none());
+    }
+
+    #[test]
+    fn bootstrap_carries_each_presets_bypass_flag_to_the_controller() {
+        let connection = ScriptedConnection::new();
+        let generation = connection.generation(1);
+        let mut body = bootstrap_json(
+            Some("host-1"),
+            HOST_PROTOCOL_MAJOR,
+            Some(&[BOOTSTRAP_CAPABILITY]),
+        );
+        body["presets"] = json!([
+            {"id": "yolo", "label": "Yolo", "command": "claude --dangerously-skip-permissions",
+             "enabled": true, "quickLaunch": false, "isDefault": false,
+             "agentPreset": true, "bypassesApprovals": true},
+            {"id": "claude", "label": "Claude", "command": "claude", "enabled": true,
+             "quickLaunch": false, "isDefault": false, "agentPreset": true,
+             "bypassesApprovals": false},
+            {"id": "old", "label": "Old", "command": "true", "enabled": true,
+             "quickLaunch": false, "isDefault": false}
+        ]);
+        add_bootstrap(&connection, generation, body);
+        let snapshot = RemoteSessionBackend::new(connection)
+            .bootstrap()
+            .expect("bootstrap decodes")
+            .snapshot;
+        // Swift's approval-bypass warning reads this from the forwarded snapshot.
+        let forwarded = serde_json::to_value(&snapshot).unwrap();
+        assert_eq!(forwarded["presets"][0]["bypassesApprovals"], true);
+        assert_eq!(forwarded["presets"][1]["bypassesApprovals"], false);
+        assert!(forwarded["presets"][2].get("bypassesApprovals").is_none());
     }
 }
