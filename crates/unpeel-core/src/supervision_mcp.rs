@@ -16,8 +16,13 @@ pub(crate) type Handler = fn(&Value) -> Result<String, String>;
 const SESSIONS_ACTIONS: &[(&str, Handler)] = &[];
 
 /// Extra `workspace` actions, as `SESSIONS_ACTIONS`.
-const WORKSPACE_ACTIONS: &[(&str, Handler)] =
-    &[("list_projects", crate::workspace_tools::tool_list_projects)];
+const WORKSPACE_ACTIONS: &[(&str, Handler)] = &[
+    ("list_projects", crate::workspace_tools::tool_list_projects),
+    ("create_group", crate::supervision_groups::tool_create_group),
+    ("rename_group", crate::supervision_groups::tool_rename_group),
+    ("remove_group", crate::supervision_groups::tool_remove_group),
+    ("move_session", crate::supervision_groups::tool_move_session),
+];
 
 pub(crate) fn sessions_action_names() -> impl Iterator<Item = &'static str> {
     SESSIONS_ACTIONS.iter().map(|(name, _)| *name)
@@ -63,9 +68,11 @@ pub(crate) fn extend_schema(tool: &str, definition: Value) -> Value {
     merge_properties(definition, extra_properties(tool))
 }
 
-/// Extra schema properties per tool (none yet).
+/// Extra schema properties per tool.
 fn extra_properties(tool: &str) -> Vec<(&'static str, Value)> {
-    let _ = tool;
+    if tool == "workspace" {
+        return crate::supervision_groups::schema_properties();
+    }
     Vec::new()
 }
 
@@ -89,7 +96,9 @@ fn merge_properties(definition: Value, properties: Vec<(&'static str, Value)>) -
 /// inputSchema})`.
 pub(crate) fn help_docs(tool: &str) -> Vec<(String, Value)> {
     if tool == "workspace" {
-        return crate::workspace_tools::help_docs();
+        let mut docs = crate::workspace_tools::help_docs();
+        docs.extend(crate::supervision_groups::help_docs());
+        return docs;
     }
     Vec::new()
 }
@@ -303,7 +312,13 @@ mod tests {
         assert_eq!(sessions_action_names().count(), 0);
         assert_eq!(
             workspace_action_names().collect::<Vec<_>>(),
-            ["list_projects"]
+            [
+                "list_projects",
+                "create_group",
+                "rename_group",
+                "remove_group",
+                "move_session"
+            ]
         );
     }
 
