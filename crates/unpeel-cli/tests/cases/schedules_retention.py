@@ -7,6 +7,10 @@ which stays a stopped row; the latest Run's Session stays live; Run
 Sessions never push the user's stopped Sessions out of the Project; the
 task keeps its newest five stopped Run Sessions and the oldest is removed;
 and deleting the task leaves its Run Sessions where retention put them.
+
+A finished Run is unread until someone looks (ticket 11, Q31), and an
+unread Run is never expired, so each Run is read once it is superseded:
+the user looked at it.
 """
 
 import datetime
@@ -81,6 +85,9 @@ def check_runs(case, service, home, task_id):
             stopped = service.wait_for(lambda: state_of(home, previous) == "exited", timeout=30)
             case.check(f"Run {number}: starting it stopped Run {number - 1}'s idle Session",
                        bool(stopped), f"{previous}: {state_of(home, previous)}")
+            # The receipt `session_ops::mark_read` writes, after the stop
+            # (the last thing to touch the Session).
+            home.marker(previous, "read.json", {"read_at": int(time.time() * 1000)})
         sessions.append(session_id)
     return sessions
 

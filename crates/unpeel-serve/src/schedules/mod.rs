@@ -5,6 +5,7 @@ pub mod agent_run;
 pub mod clock;
 pub mod cron;
 pub mod launch;
+pub mod notice;
 pub mod runner;
 pub mod step;
 pub mod trigger;

@@ -81,7 +81,13 @@ enum PlatformAdapterCall: Equatable {
         kind: String,
         requiresNotifyWhenDone: Bool,
         sendDesktop: Bool,
-        suppressDeviceIDs: [String]
+        suppressDeviceIDs: [String],
+        // Fork-only: Scheduled Tasks. The task a notice concerns (then
+        // `sessionID` may be empty: the Run never launched), and for a
+        // finished turn the task's "Notify when done". Absent from older
+        // Hosts.
+        scheduleID: String? = nil,
+        runNotifyWhenDone: Bool? = nil
     )
 }
 
@@ -659,12 +665,14 @@ final class HookServer: @unchecked Sendable {
                   let rawSendDesktop = request["sendDesktop"],
                   CFGetTypeID(rawSendDesktop as CFTypeRef) == CFBooleanGetTypeID(),
                   let sendDesktop = rawSendDesktop as? Bool,
-                  let rawSuppressed = request["suppressDeviceIDs"] as? [Any]
+                  let rawSuppressed = request["suppressDeviceIDs"] as? [Any],
+                  let run = scheduledRunFields(request)
             else { return .failure(.invalidEnvelope) }
             let sessionID = rawSessionID.trimmingCharacters(in: .whitespacesAndNewlines)
             let title = rawTitle.trimmingCharacters(in: .whitespacesAndNewlines)
             let bodyText = rawBody.trimmingCharacters(in: .whitespacesAndNewlines)
-            guard !sessionID.isEmpty,
+            // Only a Run that never launched comes without a Session.
+            guard sessionID.isEmpty ? run.scheduleID != nil : true,
                   sessionID.utf8.count <= 128,
                   !sessionID.contains("/"),
                   !sessionID.contains(".."),
@@ -696,11 +704,42 @@ final class HookServer: @unchecked Sendable {
                 kind: kind,
                 requiresNotifyWhenDone: requiresNotifyWhenDone,
                 sendDesktop: sendDesktop,
-                suppressDeviceIDs: suppressed
+                suppressDeviceIDs: suppressed,
+                scheduleID: run.scheduleID,
+                runNotifyWhenDone: run.notifyWhenDone
             ))
         default:
             return .failure(.unsupportedOperation)
         }
+    }
+
+    /// Fork-only: Scheduled Tasks. `notification.deliver`'s optional Run
+    /// fields, each absent from an older Host and as strict as the rest when
+    /// present: an id-shaped `scheduleID`, a JSON boolean
+    /// `runNotifyWhenDone`. `nil` when either is malformed.
+    private static func scheduledRunFields(
+        _ request: [String: Any]
+    ) -> (scheduleID: String?, notifyWhenDone: Bool?)? {
+        var scheduleID: String?
+        if let raw = request["scheduleID"], !(raw is NSNull) {
+            guard let text = raw as? String else { return nil }
+            let id = text.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !id.isEmpty,
+                  id.utf8.count <= 128,
+                  !id.contains("/"),
+                  !id.contains(".."),
+                  !id.unicodeScalars.contains(where: { CharacterSet.controlCharacters.contains($0) })
+            else { return nil }
+            scheduleID = id
+        }
+        var notifyWhenDone: Bool?
+        if let raw = request["runNotifyWhenDone"], !(raw is NSNull) {
+            guard CFGetTypeID(raw as CFTypeRef) == CFBooleanGetTypeID(),
+                  let value = raw as? Bool
+            else { return nil }
+            notifyWhenDone = value
+        }
+        return (scheduleID, notifyWhenDone)
     }
 
     private func respond(_ fd: Int32, status: Int, body: String) {
