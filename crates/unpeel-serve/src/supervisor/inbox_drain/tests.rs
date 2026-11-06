@@ -16,6 +16,10 @@ struct World {
     deny: bool,
     config: unpeel_core::supervision::SupervisorConfig,
     live: HashSet<String>,
+    /// State-bus announcements so far.
+    announced: usize,
+    /// App-state reads for the drain's settings.
+    settings_reads: usize,
 }
 
 #[derive(Default)]
@@ -46,13 +50,18 @@ impl HostIo for FakeIo {
     fn live_session_ids(&self) -> HashSet<String> {
         self.with(|world| world.live.clone())
     }
-    fn policy_deny(&self) -> bool {
-        self.with(|world| world.deny)
+    fn settings(&self) -> Settings {
+        self.with(|world| {
+            world.settings_reads += 1;
+            Settings {
+                config: world.config,
+                policy_deny: world.deny,
+            }
+        })
     }
-    fn config(&self) -> unpeel_core::supervision::SupervisorConfig {
-        self.with(|world| world.config)
+    fn announce(&self) {
+        self.with(|world| world.announced += 1);
     }
-    fn announce(&self) {}
 }
 
 struct Fixture {
@@ -165,6 +174,10 @@ impl Fixture {
 
     fn pending(&self) -> usize {
         self.store.pending_stats("router").items
+    }
+
+    fn announced(&self) -> usize {
+        self.io.with(|world| world.announced)
     }
 }
 
@@ -481,6 +494,32 @@ fn inboxes_of_long_gone_sessions_are_collected() {
         .enqueue("gone", item("lost", "done", Priority::Wake), T0)
         .unwrap();
     fx.drain.step(&[], T0);
+    let before = fx.announced();
     fx.drain.step(&[], T0 + 11 * 60_000);
     assert_eq!(fx.store.inbox_ids(), Vec::<String>::new());
+    assert_eq!(fx.announced(), before + 1, "a removed Inbox is announced");
+}
+
+#[test]
+fn a_hold_is_announced_when_it_changes_and_not_when_it_repeats() {
+    let mut fx = fixture();
+    report(&fx, "result", T0 - 10_000);
+    fx.step(&router(Status::Busy), T0);
+    assert_eq!(fx.hold().as_deref(), Some("busy"));
+    assert_eq!(fx.announced(), 1, "hold.json is shared state");
+    fx.step(&router(Status::Busy), T0 + 1_000);
+    assert_eq!(fx.announced(), 1, "an unchanged hold is not written again");
+}
+
+#[test]
+fn a_step_reads_its_settings_once_and_only_with_items_pending() {
+    let mut fx = fixture();
+    fx.step(&router(Status::Busy), T0);
+    assert_eq!(fx.io.with(|world| world.settings_reads), 0);
+    report(&fx, "one", T0);
+    fx.store
+        .enqueue("other", item("two", "done", Priority::Wake), T0)
+        .unwrap();
+    fx.step(&router(Status::Busy), T0 + 1_000);
+    assert_eq!(fx.io.with(|world| world.settings_reads), 1);
 }

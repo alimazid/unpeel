@@ -37,14 +37,30 @@ pub fn router_id() -> Option<String> {
 /// the Host's supervisor wants them once per sweep.
 pub fn router_and_config() -> (Option<String>, SupervisorConfig) {
     let state = crate::app_state::load().unwrap_or(Value::Null);
-    let seconds_mode = config::seconds_mode_from(
-        std::env::var("UNPEEL_TEST").ok().as_deref(),
-        std::env::var("UNPEEL_SUPERVISOR_SECONDS").ok().as_deref(),
-    );
     (
         router_id_in(&state),
-        config_from_state(&state, seconds_mode),
+        config_from_state(&state, config::seconds_mode()),
     )
+}
+
+/// The supervisor's settings and whether the app-wide write policy is
+/// Deny, from one app-state read, as the Inbox drain wants them per step.
+pub fn config_and_write_deny() -> (SupervisorConfig, bool) {
+    let state = crate::app_state::load().unwrap_or(Value::Null);
+    (
+        config_from_state(&state, config::seconds_mode()),
+        writes_denied_in(&state),
+    )
+}
+
+/// "Writing to other sessions: Deny", read as the MCP host reads it
+/// (`McpNonChildWriteAccess::from_state_str`; missing or junk is Ask).
+pub fn writes_denied_in(state: &Value) -> bool {
+    state
+        .get("mcp_nonchild_write_access")
+        .and_then(Value::as_str)
+        .map(crate::state::McpNonChildWriteAccess::from_state_str)
+        == Some(crate::state::McpNonChildWriteAccess::Deny)
 }
 
 /// The Router id in a raw app-state document. A malformed mark is no mark.
@@ -725,6 +741,29 @@ mod tests {
             &serde_json::json!({}),
             Some("router")
         ));
+    }
+
+    #[test]
+    fn only_an_explicit_deny_denies_writes() {
+        for (stored, denied) in [
+            (
+                serde_json::json!({ "mcp_nonchild_write_access": "deny" }),
+                true,
+            ),
+            (
+                serde_json::json!({ "mcp_nonchild_write_access": " DENY " }),
+                true,
+            ),
+            (
+                serde_json::json!({ "mcp_nonchild_write_access": "allow" }),
+                false,
+            ),
+            (serde_json::json!({ "mcp_nonchild_write_access": 3 }), false),
+            (serde_json::json!({}), false),
+            (Value::Null, false),
+        ] {
+            assert_eq!(writes_denied_in(&stored), denied, "{stored}");
+        }
     }
 
     #[test]

@@ -183,11 +183,15 @@ impl Default for SupervisorConfig {
 /// The settings on disk; a missing or unreadable file is all defaults.
 pub fn load_config() -> SupervisorConfig {
     let state = crate::app_state::load().unwrap_or(Value::Null);
-    let seconds_mode = seconds_mode_from(
+    config_from_state(&state, seconds_mode())
+}
+
+/// Whether this process counts minute settings in seconds (tests only).
+pub(crate) fn seconds_mode() -> bool {
+    seconds_mode_from(
         std::env::var("UNPEEL_TEST").ok().as_deref(),
         std::env::var("UNPEEL_SUPERVISOR_SECONDS").ok().as_deref(),
-    );
-    config_from_state(&state, seconds_mode)
+    )
 }
 
 /// Lenient: junk falls back to the default, never to something shorter.

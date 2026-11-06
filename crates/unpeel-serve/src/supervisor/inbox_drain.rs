@@ -44,10 +44,11 @@ pub trait HostIo: Send + Sync {
     fn paste(&self, session_id: &str, text: &str) -> Result<(), String>;
     /// Session ids that still have a manifest (Inbox GC).
     fn live_session_ids(&self) -> HashSet<String>;
-    /// App-wide "Writing to other sessions: Deny".
-    fn policy_deny(&self) -> bool;
-    fn config(&self) -> SupervisorConfig;
-    /// Inbox items were marked delivered.
+    /// The supervisor's settings and the app-wide write policy, from one
+    /// app-state read.
+    fn settings(&self) -> Settings;
+    /// Shared Inbox state changed (items delivered, a hold published, an
+    /// Inbox collected): announce `SessionMarkers` on the state bus.
     fn announce(&self);
 }
 
@@ -352,7 +353,7 @@ impl Drain {
         }
     }
 
-    /// Edge-write the hold reason for other processes.
+    /// Edge-write the hold reason for other processes, and announce it.
     fn publish(&mut self, id: &str, hold: Option<HoldReason>, now: u64) {
         let target = self.targets.entry(id.to_owned()).or_default();
         if target.published == hold {
@@ -363,8 +364,11 @@ impl Drain {
             reason: reason.word().to_owned(),
             since: now,
         });
-        if let Err(error) = self.store.set_hold(id, record.as_ref()) {
-            crate::tracelog::trace("supervisor", &format!("inbox hold for {id}: {error}"));
+        match self.store.set_hold(id, record.as_ref()) {
+            Ok(()) => self.io.announce(),
+            Err(error) => {
+                crate::tracelog::trace("supervisor", &format!("inbox hold for {id}: {error}"));
+            }
         }
     }
 
@@ -376,8 +380,12 @@ impl Drain {
             return;
         }
         self.last_gc = Some(now);
-        if let Err(error) = self.store.gc(&self.io.live_session_ids(), now) {
-            crate::tracelog::trace("supervisor", &format!("inbox gc failed: {error}"));
+        match self.store.gc(&self.io.live_session_ids(), now) {
+            Ok(removed) if !removed.is_empty() => self.io.announce(),
+            Ok(_) => {}
+            Err(error) => {
+                crate::tracelog::trace("supervisor", &format!("inbox gc failed: {error}"))
+            }
         }
     }
 
@@ -406,17 +414,16 @@ impl super::worker_alerts::DrainView for Drain {
 }
 
 /// Settings read once per step, only when some Inbox has pending items.
-struct Settings {
-    config: SupervisorConfig,
-    policy_deny: bool,
+#[derive(Debug, Clone, Copy)]
+pub struct Settings {
+    pub config: SupervisorConfig,
+    /// App-wide "Writing to other sessions: Deny".
+    pub policy_deny: bool,
 }
 
 impl Settings {
     fn load(io: &dyn HostIo) -> Self {
-        Self {
-            config: io.config(),
-            policy_deny: io.policy_deny(),
-        }
+        io.settings()
     }
 }
 
@@ -588,7 +595,19 @@ fn deliver(
     };
     let text = unpeel_core::session_inbox::render_batch(&batch);
     if let Err(error) = io.paste(id, &text) {
-        let _ = store.release(id, &batch.batch_id);
+        // The next paste is a fresh batch; a claim left behind would make it
+        // this one again, marked as a redelivery.
+        match store.release(id, &batch.batch_id) {
+            Ok(true) => io.announce(),
+            Ok(false) => {}
+            Err(release) => crate::tracelog::trace(
+                "supervisor",
+                &format!(
+                    "inbox claim {} for {id} not released: {release}",
+                    batch.batch_id
+                ),
+            ),
+        }
         return Outcome::Failed(error);
     }
     // Nothing will confirm a best guess; a last attempt stops the loop.
@@ -667,20 +686,12 @@ impl HostIo for HostTerminal {
             .collect()
     }
 
-    fn policy_deny(&self) -> bool {
-        unpeel_core::app_state::load()
-            .ok()
-            .and_then(|state| {
-                state
-                    .get("mcp_nonchild_write_access")
-                    .and_then(serde_json::Value::as_str)
-                    .map(unpeel_core::state::McpNonChildWriteAccess::from_state_str)
-            })
-            .is_some_and(|access| access == unpeel_core::state::McpNonChildWriteAccess::Deny)
-    }
-
-    fn config(&self) -> SupervisorConfig {
-        unpeel_core::supervision::load_config()
+    fn settings(&self) -> Settings {
+        let (config, policy_deny) = unpeel_core::supervision::config_and_write_deny();
+        Settings {
+            config,
+            policy_deny,
+        }
     }
 
     fn announce(&self) {
