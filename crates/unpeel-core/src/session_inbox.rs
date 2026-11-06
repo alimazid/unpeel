@@ -16,6 +16,7 @@
 //! directory so a transfer or removal never renames or unlinks a lock file
 //! another process is waiting on.
 
+use std::collections::HashSet;
 use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -27,6 +28,7 @@ const PENDING_DIR: &str = "pending";
 const DELIVERED_DIR: &str = "delivered";
 const LOCKS_DIR: &str = ".locks";
 const INFLIGHT_FILE: &str = "inflight.json";
+const MISSING_SINCE_FILE: &str = "missing-since";
 const MAX_ID_BYTES: usize = 128;
 
 /// Stored text per item (summary + body); the rest is cut at enqueue.
@@ -42,6 +44,8 @@ pub const DELIVERED_KEEP_ITEMS: usize = 200;
 pub const DELIVERED_KEEP_MS: u64 = 24 * 60 * 60 * 1000;
 /// Deliveries `list` shows.
 pub const LIST_DELIVERED: usize = 20;
+/// How long a session may have no manifest before GC removes its Inbox.
+pub const GC_GRACE_MS: u64 = 10 * 60 * 1000;
 
 /// Who queued an item. `Host` is reachable only from Host code; an MCP
 /// enqueue only ever names the calling Session.
@@ -436,6 +440,7 @@ impl Store {
             return Ok(());
         }
         remove_if_present(&source.join(INFLIGHT_FILE))?;
+        remove_if_present(&source.join(MISSING_SINCE_FILE))?;
         if !target.exists() {
             return fs::rename(&source, &target).map_err(|error| io_error(&source, error));
         }
@@ -443,6 +448,63 @@ impl Store {
             merge_items(&source.join(sub), &target, sub)?;
         }
         fs::remove_dir_all(&source).map_err(|error| io_error(&source, error))
+    }
+
+    /// Remove the Inboxes of sessions that have been gone (not in
+    /// `live_ids`, the ids with a manifest) for `GC_GRACE_MS`, and prune
+    /// every live Inbox's delivered history. The first sweep that misses a
+    /// session only stamps `missing-since`: Reload tears the session
+    /// directory down and respawns under the same id, and that gap must not
+    /// cost a Router its queue. Returns the removed ids.
+    pub fn gc(&self, live_ids: &HashSet<String>, now_ms: u64) -> Result<Vec<String>> {
+        let entries = match fs::read_dir(&self.root) {
+            Ok(entries) => entries,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+            Err(error) => return Err(io_error(&self.root, error)),
+        };
+        let ids: Vec<String> = entries
+            .flatten()
+            .filter(|entry| entry.path().is_dir())
+            .map(|entry| entry.file_name().to_string_lossy().into_owned())
+            .filter(|id| valid_id(id))
+            .collect();
+        let mut removed = Vec::new();
+        for id in ids {
+            match self.sweep(&id, live_ids.contains(&id), now_ms) {
+                Ok(true) => removed.push(id),
+                Ok(false) => {}
+                Err(error) => log::warn!("inbox gc skipped {id}: {error}"),
+            }
+        }
+        Ok(removed)
+    }
+
+    fn sweep(&self, session_id: &str, live: bool, now_ms: u64) -> Result<bool> {
+        let dir = self.dir(session_id)?;
+        let _lock = self.lock(session_id)?;
+        let stamp = dir.join(MISSING_SINCE_FILE);
+        if !dir.is_dir() {
+            return Ok(false);
+        }
+        if live {
+            remove_if_present(&stamp)?;
+            prune_delivered(&dir, now_ms)?;
+            return Ok(false);
+        }
+        let since = fs::read_to_string(&stamp)
+            .ok()
+            .and_then(|raw| raw.trim().parse::<u64>().ok());
+        match since {
+            None => {
+                write_bytes(&dir, MISSING_SINCE_FILE, now_ms.to_string().as_bytes())?;
+                Ok(false)
+            }
+            Some(since) if now_ms.saturating_sub(since) >= GC_GRACE_MS => {
+                fs::remove_dir_all(&dir).map_err(|error| io_error(&dir, error))?;
+                Ok(true)
+            }
+            Some(_) => Ok(false),
+        }
     }
 
     /// The session is gone for good: so is its Inbox.
@@ -1691,5 +1753,47 @@ mod tests {
         assert!(store.list("gone").unwrap().pending.is_empty());
         store.remove("gone").unwrap();
         assert!(store.remove("../x").is_err());
+    }
+
+    fn ids(list: &[&str]) -> std::collections::HashSet<String> {
+        list.iter().map(|id| id.to_string()).collect()
+    }
+
+    #[test]
+    fn gc_removes_an_inbox_only_once_its_session_has_been_gone_ten_minutes() {
+        let (_tmp, store) = store();
+        for id in ["live", "gone", "reloading"] {
+            store.enqueue(id, report("w1", "r0"), 1).unwrap();
+        }
+        let t0 = 1_000;
+        // First seen missing: nothing goes yet.
+        assert!(store.gc(&ids(&["live"]), t0).unwrap().is_empty());
+        // Reload keeps the id and its manifest comes back.
+        let both = ids(&["live", "reloading"]);
+        assert!(store.gc(&both, t0 + GC_GRACE_MS / 2).unwrap().is_empty());
+        assert_eq!(store.gc(&both, t0 + GC_GRACE_MS).unwrap(), ["gone"]);
+        assert!(!store.root.join("gone").exists());
+        // Missing again later starts a fresh grace period.
+        assert!(store
+            .gc(&ids(&["live"]), t0 + GC_GRACE_MS + 1)
+            .unwrap()
+            .is_empty());
+        assert_eq!(pending_summaries(&store, "reloading"), ["r0"]);
+        assert_eq!(pending_summaries(&store, "live"), ["r0"]);
+    }
+
+    #[test]
+    fn gc_also_prunes_delivered_history() {
+        let (_tmp, store) = store();
+        let id = store
+            .enqueue("live", report("w1", "r0"), 1)
+            .unwrap()
+            .item_id;
+        store.ack_through("live", &id, 2).unwrap();
+        assert!(store
+            .gc(&ids(&["live"]), 2 + DELIVERED_KEEP_MS + 1)
+            .unwrap()
+            .is_empty());
+        assert!(store.list("live").unwrap().delivered.is_empty());
     }
 }
