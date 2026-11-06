@@ -560,8 +560,8 @@ fn initialize_result(params: &Value) -> Value {
     anything else an App can show — usually mean a neighboring App pane: start with sessions \
     current and read that neighbor's app_context rather than guessing from the filesystem. Use \
     sessions report for a structured terminal message. 'workspace' owns presets and \
-    worktrees; 'artifacts' publishes review artifacts such as gallery images. \
-    'browser' (when present) operates a real browser isolated to this session (own profile and \
+    worktrees and reads Scheduled Tasks; 'artifacts' publishes review artifacts such as \
+    gallery images. 'browser' (when present) operates a real browser isolated to this session (own profile and \
     window, closed with the session). Core loop: open a URL, snapshot for element refs like \
     @e1, act by ref (click/fill), re-snapshot after navigation or DOM changes — refs go stale. \
     Prefer refs over CSS selectors. Use wait after actions that trigger loads; screenshot saves \
@@ -779,6 +779,7 @@ fn workspace_action_names() -> Vec<&'static str> {
         .iter()
         .map(|(action, _)| *action)
         .collect();
+    names.extend(crate::schedules_mcp::SCHEDULES_ACTIONS);
     names.push("help");
     names
 }
@@ -919,11 +920,12 @@ fn run_agents_action(action: &str, arguments: &Value) -> Result<String, String> 
 
 fn run_workspace_action(action: &str, arguments: &Value) -> Result<String, String> {
     if action == "help" {
-        return Ok(mapped_action_help(
-            WORKSPACE_TOOL,
-            WORKSPACE_ACTIONS,
-            optional_trimmed_str(arguments, "help_for"),
-        ));
+        return Ok(workspace_help(optional_trimmed_str(arguments, "help_for")));
+    }
+    if crate::schedules_mcp::SCHEDULES_ACTIONS.contains(&action) {
+        // Read-only, like presets: open to any Session past the gate.
+        sessions_gate()?;
+        return crate::schedules_mcp::run_action(action, arguments);
     }
     let Some((_, legacy)) = WORKSPACE_ACTIONS.iter().find(|(name, _)| *name == action) else {
         return Err(format!(
@@ -1828,8 +1830,9 @@ fn sessions_tool_definition() -> Value {
 fn workspace_tool_definition() -> Value {
     json!({
         "name": WORKSPACE_TOOL,
-        "description": "Read workspace launch presets and manage Unpeel worktrees without \
-    creating sessions. {\"action\":\"help\"} returns full per-action docs.",
+        "description": "Read workspace launch presets, manage Unpeel worktrees without \
+    creating sessions, and read Scheduled Tasks and their Runs (read-only). \
+    {\"action\":\"help\"} returns full per-action docs.",
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -1838,6 +1841,8 @@ fn workspace_tool_definition() -> Value {
                 "branch": { "type": "string", "description": "create_worktree: branch" },
                 "name": { "type": "string", "description": "create_worktree: folder name" },
                 "base_ref": { "type": "string", "description": "create_worktree: base ref" },
+                "schedule_id": { "type": "string", "description": "schedule_runs: task id" },
+                "limit": { "type": "integer", "description": "schedule_runs: most Runs" },
                 "help_for": { "type": "string", "description": "help: docs for one action" }
             },
             "required": ["action"],
@@ -1915,6 +1920,29 @@ fn mapped_action_help(
     actions: &[(&'static str, &'static str)],
     help_for: Option<&str>,
 ) -> String {
+    mapped_action_help_with(tool, actions, Vec::new(), help_for)
+}
+
+/// `workspace` help: the preset and worktree actions plus the Scheduled
+/// Tasks reads, which have no legacy definition.
+fn workspace_help(help_for: Option<&str>) -> String {
+    mapped_action_help_with(
+        WORKSPACE_TOOL,
+        WORKSPACE_ACTIONS,
+        crate::schedules_mcp::action_docs(),
+        help_for,
+    )
+}
+
+/// Help for `actions` from their legacy definitions, followed by `newer`
+/// definitions already named by action (actions added after the unified
+/// surface, which no stale client can call by a legacy name).
+fn mapped_action_help_with(
+    tool: &str,
+    actions: &[(&'static str, &'static str)],
+    newer: Vec<Value>,
+    help_for: Option<&str>,
+) -> String {
     let docs: Vec<(String, Value)> = legacy_sessions_tool_definitions()
         .into_iter()
         .filter_map(|definition| {
@@ -1925,6 +1953,10 @@ fn mapped_action_help(
                 .map(|(action, _)| *action)?;
             Some((action.to_string(), definition))
         })
+        .chain(newer.into_iter().filter_map(|definition| {
+            let action = definition.get("name").and_then(Value::as_str)?.to_string();
+            Some((action, definition))
+        }))
         .collect();
     let mut text = render_action_help(tool, &docs, help_for);
     // The legacy definitions cross-reference each other by old tool name;
@@ -5112,6 +5144,50 @@ mod tests {
             assert!(
                 skills_help_text.contains(expected),
                 "skills help missing {expected}"
+            );
+        }
+    }
+
+    #[test]
+    fn workspace_reads_scheduled_tasks_and_changes_none() {
+        let help = run_tool("workspace", &json!({ "action": "help" })).expect("workspace help");
+        for expected in [
+            "### list_presets",
+            "### schedules_list",
+            "### schedule_runs",
+        ] {
+            assert!(help.contains(expected), "workspace help missing {expected}");
+        }
+        let one = run_tool(
+            "workspace",
+            &json!({ "action": "help", "help_for": "schedule_runs" }),
+        )
+        .expect("scoped workspace help");
+        assert!(one.contains("### schedule_runs") && one.contains("schedule_id"));
+        assert!(!one.contains("### schedules_list") && !one.contains("### list_presets"));
+
+        // Read-only (decision Q8): the two reads are the only schedule
+        // actions advertised, and a write spelling is an unknown action.
+        let definition = workspace_tool_definition();
+        let scheduled: Vec<&str> = definition["inputSchema"]["properties"]["action"]["enum"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(Value::as_str)
+            .filter(|action| action.contains("schedule"))
+            .collect();
+        assert_eq!(scheduled, ["schedules_list", "schedule_runs"]);
+        for write in [
+            "schedules_add",
+            "schedule_edit",
+            "schedule_run",
+            "schedules_rm",
+        ] {
+            let refused = run_tool("workspace", &json!({ "action": write }))
+                .expect_err("a schedule write must not dispatch");
+            assert!(
+                refused.contains("Unknown workspace action"),
+                "{write}: {refused}"
             );
         }
     }

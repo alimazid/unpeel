@@ -110,6 +110,9 @@ pub mod pty_core;
 pub mod schedule_store;
 #[cfg(feature = "controller-core")]
 pub mod schedules;
+// Fork-only: Scheduled Tasks.
+#[cfg(feature = "native-host")]
+mod schedules_mcp;
 #[cfg(feature = "native-host")]
 pub mod screen_activity;
 
