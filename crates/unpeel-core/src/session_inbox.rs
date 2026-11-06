@@ -30,6 +30,7 @@ const LOCKS_DIR: &str = ".locks";
 const INFLIGHT_FILE: &str = "inflight.json";
 const MISSING_SINCE_FILE: &str = "missing-since";
 const HOLD_FILE: &str = "hold.json";
+const ROUTER_TOUCH_FILE: &str = "router-touch";
 const MAX_ID_BYTES: usize = 128;
 
 /// Stored text per item (summary + body); the rest is cut at enqueue.
@@ -332,6 +333,14 @@ pub fn transfer(old: &str, new: &str) -> Result<()> {
     Store::home().transfer(old, new)
 }
 
+pub fn touch_router(worker: &str) -> Result<()> {
+    Store::home().touch_router(worker, now_ms())
+}
+
+pub fn router_touched_at(worker: &str) -> Option<u64> {
+    Store::home().router_touched_at(worker)
+}
+
 pub fn remove(session_id: &str) -> Result<()> {
     Store::home().remove(session_id)
 }
@@ -574,6 +583,36 @@ impl Store {
     /// already name someone. They bypass the pending caps (the Worker's own
     /// Inbox already respected them). Returns how many moved.
     pub fn move_pending(&self, from: &str, to: &str) -> Result<usize> {
+        self.move_pending_with(from, to, |item| {
+            Some(InboxItem {
+                priority: Priority::RideAlong,
+                about: item.about.clone().or_else(|| Some(from.to_owned())),
+                ..item
+            })
+        })
+    }
+
+    /// A new Router took over from `from`: its undelivered items go to `to`
+    /// as they were (a Worker's result still wakes its new Router), except
+    /// those `drop` names, which no longer apply to anyone. Returns how many
+    /// moved.
+    pub fn hand_over_pending(
+        &self,
+        from: &str,
+        to: &str,
+        drop: impl Fn(&InboxItem) -> bool,
+    ) -> Result<usize> {
+        self.move_pending_with(from, to, |item| (!drop(&item)).then_some(item))
+    }
+
+    /// Every pending item of `from` leaves it; `reshape` gives what lands in
+    /// `to` (`None`: dropped). An in-flight claim on `from` is dropped too.
+    fn move_pending_with(
+        &self,
+        from: &str,
+        to: &str,
+        reshape: impl Fn(InboxItem) -> Option<InboxItem>,
+    ) -> Result<usize> {
         let (source, target) = (self.dir(from)?, self.dir(to)?);
         if from == to {
             return Ok(0);
@@ -585,17 +624,30 @@ impl Store {
         for item in pending {
             let source_path = source.join(PENDING_DIR).join(file_name(&item.id));
             if !item_exists(&target, &item.id) {
-                let returned = InboxItem {
-                    priority: Priority::RideAlong,
-                    about: item.about.clone().or_else(|| Some(from.to_owned())),
-                    ..item
-                };
-                write_item(&target.join(PENDING_DIR), &returned)?;
-                moved += 1;
+                if let Some(landed) = reshape(item) {
+                    write_item(&target.join(PENDING_DIR), &landed)?;
+                    moved += 1;
+                }
             }
             remove_if_present(&source_path)?;
         }
         Ok(moved)
+    }
+
+    /// The Router just wrote to, stopped or closed its Worker `worker`: the
+    /// supervisor reads this stamp to tell an edge the Router caused from
+    /// the Worker's own (§17.7). It lives in the Worker's Inbox directory,
+    /// which follows the Worker through a Resume.
+    pub fn touch_router(&self, worker: &str, now_ms: u64) -> Result<()> {
+        let dir = self.dir(worker)?;
+        let _lock = self.lock(worker)?;
+        write_bytes(&dir, ROUTER_TOUCH_FILE, now_ms.to_string().as_bytes())
+    }
+
+    /// When the Router last touched `worker`, in unix ms.
+    pub fn router_touched_at(&self, worker: &str) -> Option<u64> {
+        let raw = fs::read_to_string(self.dir(worker).ok()?.join(ROUTER_TOUCH_FILE)).ok()?;
+        raw.trim().parse().ok()
     }
 
     /// Resume gave the session a new id: its Inbox follows, merged into
@@ -705,6 +757,21 @@ impl Store {
                 .map(header)
                 .collect(),
         })
+    }
+
+    /// Every pending and delivered header, oldest first by enqueue time:
+    /// unlike `list`, older deliveries are kept, so a caller can find the
+    /// last item a given sender queued.
+    pub fn history(&self, session_id: &str) -> Result<Vec<ItemHeader>> {
+        let dir = self.dir(session_id)?;
+        let mut headers: Vec<ItemHeader> = [DELIVERED_DIR, PENDING_DIR]
+            .iter()
+            .flat_map(|sub| read_items(&dir.join(sub)))
+            .map(|item| header(&item))
+            .collect();
+        headers.sort_by(|a, b| (a.at, &a.id).cmp(&(b.at, &b.id)));
+        headers.dedup_by(|a, b| a.id == b.id);
+        Ok(headers)
     }
 
     /// The full stored item, pending or delivered: the Spill pointer target.
@@ -1928,6 +1995,86 @@ mod tests {
         assert!(!store.has_wake_pending("router"));
         assert_eq!(store.move_pending("w1", "router").unwrap(), 0);
         assert_eq!(store.move_pending("router", "router").unwrap(), 0);
+    }
+
+    #[test]
+    fn a_router_switch_hands_its_pending_items_over_as_they_were() {
+        let (_tmp, store) = store();
+        store
+            .enqueue("old", report("w1", "login fixed"), 1)
+            .unwrap();
+        let progress = NewItem {
+            priority: Priority::RideAlong,
+            status: Some("progress".into()),
+            ..report("w2", "halfway")
+        };
+        store.enqueue("old", progress, 2).unwrap();
+        let instructions = NewItem {
+            sender: Sender::Host,
+            kind: ItemKind::Task,
+            dedupe_key: Some("router-instructions:old:1".into()),
+            ..report("w1", "You are now the Super Agent.")
+        };
+        store.enqueue("old", instructions, 3).unwrap();
+
+        let is_instructions = |item: &InboxItem| item.sender == Sender::Host;
+        assert_eq!(
+            store
+                .hand_over_pending("old", "new", is_instructions)
+                .unwrap(),
+            2
+        );
+        assert!(store.list("old").unwrap().pending.is_empty());
+        let handed = store.list("new").unwrap().pending;
+        assert_eq!(
+            handed
+                .iter()
+                .map(|item| item.summary.as_str())
+                .collect::<Vec<_>>(),
+            ["login fixed", "halfway"]
+        );
+        // A Worker's result still wakes its new Router; nothing is re-addressed.
+        assert_eq!(handed[0].priority, Priority::Wake);
+        assert_eq!(handed[1].priority, Priority::RideAlong);
+        assert!(handed.iter().all(|item| item.about.is_none()));
+        assert!(store.has_wake_pending("new"));
+        assert_eq!(store.hand_over_pending("new", "new", |_| false).unwrap(), 0);
+    }
+
+    #[test]
+    fn history_lists_every_pending_and_delivered_header_oldest_first() {
+        let (_tmp, store) = store();
+        assert!(store.history("router").unwrap().is_empty());
+        let first = store.enqueue("router", report("w1", "one"), 10).unwrap();
+        for at in 11..40 {
+            store.enqueue("router", report("w2", "filler"), at).unwrap();
+        }
+        let last = store.enqueue("router", report("w1", "two"), 50).unwrap();
+        let delivered = store.enqueue("router", report("w1", "three"), 60).unwrap();
+        store.ack_through("router", &delivered.item_id, 70).unwrap();
+        store.enqueue("router", report("w1", "four"), 80).unwrap();
+
+        let history = store.history("router").unwrap();
+        // Unlike `list`, older deliveries are not cut at LIST_DELIVERED.
+        assert_eq!(history.len(), 33);
+        assert_eq!(history[0].id, first.item_id);
+        assert!(history.iter().any(|header| header.id == last.item_id));
+        assert_eq!(history.last().unwrap().summary, "four");
+        assert!(history.windows(2).all(|pair| pair[0].at <= pair[1].at));
+    }
+
+    #[test]
+    fn a_router_touch_is_stamped_and_read_back() {
+        let (_tmp, store) = store();
+        assert_eq!(store.router_touched_at("w1"), None);
+        store.touch_router("w1", 1_234).unwrap();
+        assert_eq!(store.router_touched_at("w1"), Some(1_234));
+        store.touch_router("w1", 5_678).unwrap();
+        assert_eq!(store.router_touched_at("w1"), Some(5_678));
+        // A stamp alone holds nothing and claims nothing.
+        assert!(store.list("w1").unwrap().pending.is_empty());
+        assert!(store.claim_batch("w1", 9_000).unwrap().is_none());
+        assert!(store.touch_router("../x", 1).is_err());
     }
 
     #[test]

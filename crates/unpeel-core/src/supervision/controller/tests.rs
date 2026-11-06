@@ -199,8 +199,53 @@ fn switching_the_router_moves_its_workers_and_briefs_the_new_one() {
     );
     assert!(!body.contains("id:worker-stopped"), "running only: {body}");
     assert!(body.contains("1 stopped"), "{body}");
-    // The old Router is an ordinary Session now; its Inbox is its own.
-    assert_eq!(home.pending("router-1").len(), 1);
+    // The old Router is an ordinary Session now: its own instructions,
+    // never delivered, no longer apply to anyone.
+    assert_eq!(home.pending("router-1").len(), 0);
+}
+
+#[test]
+fn switching_the_router_hands_the_old_routers_queue_to_the_new_one() {
+    let home = claude_home().session("w1", true, None, "codex");
+    home.run(100, |ctx| set_at(ctx, "router-1")).unwrap();
+    home.mark_worker("w1", "router-1", WorkerOrigin::Created);
+    let report = NewItem {
+        sender: Sender::Session("w1".into()),
+        kind: ItemKind::Report,
+        priority: Priority::Wake,
+        about: None,
+        status: Some("done".into()),
+        label: Some("w1 label".into()),
+        summary: "login fixed".into(),
+        body: String::new(),
+        dedupe_key: None,
+    };
+    home.inbox.enqueue("router-1", report, 150).unwrap();
+
+    home.run(200, |ctx| set_at(ctx, "router-2")).unwrap();
+    assert!(home.inbox.list("router-1").unwrap().pending.is_empty());
+    let handed: Vec<_> = home
+        .inbox
+        .list("router-2")
+        .unwrap()
+        .pending
+        .into_iter()
+        .filter(|item| item.sender == Sender::Session("w1".into()))
+        .collect();
+    assert_eq!(handed.len(), 1, "{handed:?}");
+    assert_eq!(handed[0].summary, "login fixed");
+    // Still a result: it wakes the new Router, about no one else.
+    assert_eq!(handed[0].priority, Priority::Wake);
+    assert_eq!(handed[0].about, None);
+    let instructions = home
+        .inbox
+        .list("router-2")
+        .unwrap()
+        .pending
+        .iter()
+        .filter(|item| item.summary == INSTRUCTIONS)
+        .count();
+    assert_eq!(instructions, 1, "only the new Router's own instructions");
 }
 
 #[test]

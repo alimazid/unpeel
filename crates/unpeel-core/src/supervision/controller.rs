@@ -244,6 +244,11 @@ fn take_over(ctx: &Ctx, router_id: &str, previous: Option<&str>) -> Result<(), S
     super::remove_worker_marker_in(&ctx.sessions_root.join(router_id))?;
     let moved = match previous.filter(|previous| *previous != router_id) {
         Some(previous) => {
+            // What waits for the old Router is the new one's: Worker results
+            // still wake it. The old Router's own instructions apply to no one.
+            ctx.inbox
+                .hand_over_pending(previous, router_id, is_router_instructions)
+                .map_err(|error| format!("Inbox of {previous}: {error}"))?;
             super::rewrite_worker_markers_in(ctx.sessions_root, previous, Some(router_id))?
         }
         None => 0,
@@ -257,6 +262,17 @@ fn take_over(ctx: &Ctx, router_id: &str, previous: Option<&str>) -> Result<(), S
         ),
         _ => Ok(()),
     }
+}
+
+/// Dedupe-key prefix of the Router instructions item.
+const INSTRUCTIONS_KEY_PREFIX: &str = "router-instructions:";
+
+fn is_router_instructions(item: &crate::session_inbox::InboxItem) -> bool {
+    item.sender == Sender::Host
+        && item
+            .dedupe_key
+            .as_deref()
+            .is_some_and(|key| key.starts_with(INSTRUCTIONS_KEY_PREFIX))
 }
 
 /// The instructions the Router reads on becoming one, and again after a
@@ -277,7 +293,7 @@ fn instructions_item(router_id: &str, since: u64) -> NewItem {
             crate::skills_mcp::ROUTER_SKILL_ID
         ),
         body: String::new(),
-        dedupe_key: Some(format!("router-instructions:{router_id}:{since}")),
+        dedupe_key: Some(format!("{INSTRUCTIONS_KEY_PREFIX}{router_id}:{since}")),
     }
 }
 
