@@ -95,10 +95,11 @@ impl CompletionMessages {
 
 /// The reply an agent left on its screen, for a Run whose agent reported
 /// none (the screen tier has no hook reply or done summary): the text below
-/// the last line that echoes `instructions` (else the top of the screen)
-/// and above the agent's input prompt (the last line starting with one of
-/// `prompt_markers`), less box rules and the glyphs agents put before a
-/// reply. Untrusted output, cleaned like any reply.
+/// the last line that echoes `instructions` and above the agent's input
+/// prompt (the last line starting with one of `prompt_markers`), less box
+/// rules and the glyphs agents put before a reply. `None` when the
+/// instructions are not in view: nothing then says where the reply starts.
+/// Untrusted output, cleaned like any reply.
 pub fn screen_reply(screen: &str, prompt_markers: &[String], instructions: &str) -> Option<String> {
     let lines: Vec<&str> = screen.lines().collect();
     let prompt = lines
@@ -110,7 +111,7 @@ pub fn screen_reply(screen: &str, prompt_markers: &[String], instructions: &str)
                 .any(|marker| !marker.is_empty() && line.starts_with(marker.as_str()))
         })
         .unwrap_or(lines.len());
-    let start = below_echo(&lines[..prompt], instructions);
+    let start = below_echo(&lines[..prompt], instructions)?;
     let reply: Vec<&str> = lines[start..prompt]
         .iter()
         .map(|line| {
@@ -124,24 +125,20 @@ pub fn screen_reply(screen: &str, prompt_markers: &[String], instructions: &str)
 
 /// The index of the first line below the agent's echo of `instructions`:
 /// the last line showing their first line, then each following line that
-/// shows the next one (blank lines skipped). `0` when they are not in view.
-fn below_echo(lines: &[&str], instructions: &str) -> usize {
+/// shows the next one (blank lines skipped). `None` when they are not in
+/// view (or there are none).
+fn below_echo(lines: &[&str], instructions: &str) -> Option<usize> {
     let wanted: Vec<String> = instructions
         .lines()
         .map(str::trim)
         .filter(|line| !line.is_empty())
         .map(|line| line.chars().take(40).collect())
         .collect();
-    let Some(first) = wanted.first() else {
-        return 0;
-    };
-    let Some(mut next) = lines
+    let first = wanted.first()?;
+    let mut next = lines
         .iter()
-        .rposition(|line| line.contains(first.as_str()))
-        .map(|echo| echo + 1)
-    else {
-        return 0;
-    };
+        .rposition(|line| line.contains(first.as_str()))?
+        + 1;
     for want in &wanted[1..] {
         let shown = (next..lines.len()).find(|&index| !lines[index].trim().is_empty());
         match shown.filter(|&index| lines[index].contains(want.as_str())) {
@@ -149,7 +146,7 @@ fn below_echo(lines: &[&str], instructions: &str) -> usize {
             None => break,
         }
     }
-    next
+    Some(next)
 }
 
 /// The notification text for `raw`, or `None` when nothing readable is left.
@@ -631,16 +628,21 @@ mod tests {
         );
     }
 
+    /// Without the instructions in view nothing says where the reply
+    /// starts, so there is no snippet: never the top of the screen.
     #[test]
-    fn a_screen_reply_without_the_instructions_in_view_reads_what_is_above_the_prompt() {
+    fn a_screen_reply_needs_the_instructions_in_view() {
         let codex =
             "• Sent the summary to the channel.\n\n› Ask Codex to do anything\n  gpt · ~/work";
         assert_eq!(
-            screen_reply(codex, &["›".into()], "a long prompt that scrolled away").as_deref(),
-            Some("Sent the summary to the channel.")
+            screen_reply(codex, &["›".into()], "a long prompt that scrolled away"),
+            None
         );
+        let banner = "Claude Code v2\n  ~/work\n\n⏺ Done.\n────\n❯\n────";
+        assert_eq!(screen_reply(banner, &claude_prompt(), "x"), None);
+        assert_eq!(screen_reply(banner, &claude_prompt(), "  \n"), None);
         // Box rules and an empty screen give nothing.
-        assert_eq!(screen_reply("────\n❯\n────", &claude_prompt(), "x"), None);
+        assert_eq!(screen_reply("❯ x\n────\n❯\n────", &claude_prompt(), "x"), None);
         assert_eq!(screen_reply("", &claude_prompt(), "x"), None);
     }
 }
