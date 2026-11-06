@@ -3,7 +3,7 @@ use crate::schedules::agent_run::AgentStatus;
 use jiff::civil::date;
 use jiff::tz::{self, TimeZone};
 use std::sync::Mutex;
-use unpeel_core::schedules::ScheduleTrigger;
+use unpeel_core::schedules::{RunPhase, ScheduleTrigger};
 
 /// Records what the store held when each Session was started.
 #[derive(Default)]

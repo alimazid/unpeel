@@ -31,12 +31,31 @@ pub struct LaunchPlan {
     pub cwd: String,
     pub worktree_path: Option<String>,
     pub worktree_branch: Option<String>,
-    /// The preset is an Agent Preset: the Run follows the agent lifecycle
-    /// (`agent_run`) instead of its command's exit.
-    pub agent: bool,
-    /// Typed into the agent once it is ready; `Some` only when `agent`.
-    /// Without them the Run is done once the agent is ready.
-    pub instructions: Option<String>,
+    pub kind: RunKind,
+}
+
+/// What a Run of the task follows once its Session is up.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RunKind {
+    /// A plain command: the Run ends with its exit.
+    Script,
+    /// An Agent Preset: the Run follows the agent's lifecycle
+    /// (`agent_run`). Its instructions are typed once the agent is ready;
+    /// without any, the Run is done then.
+    Agent { instructions: Option<String> },
+}
+
+impl RunKind {
+    pub fn is_agent(&self) -> bool {
+        matches!(self, Self::Agent { .. })
+    }
+
+    pub fn instructions(&self) -> Option<&str> {
+        match self {
+            Self::Agent { instructions } => instructions.as_deref(),
+            Self::Script => None,
+        }
+    }
 }
 
 /// What the Host sees of a running Run's Session.
@@ -273,7 +292,7 @@ fn fire(
 /// The Run's next line, once its Session says how it ended (a script Run)
 /// or where its agent is (an agent Run, `agent_run`).
 fn finish(run: &ScheduleRun, observation: &RunObservation, now_ms: u64) -> Option<ScheduleRun> {
-    if run.phase.is_some() && run.status.is_in_progress() {
+    if run.is_agent_run() && run.status.is_in_progress() {
         return agent_run::advance(run, observation, now_ms);
     }
     if run.status != RunStatus::Running {
@@ -344,7 +363,7 @@ fn launch(
         Ok(plan) => Action::Start {
             schedule_id: task.schedule.id.clone(),
             run: ScheduleRun {
-                phase: plan.agent.then_some(RunPhase::Launching),
+                phase: plan.kind.is_agent().then_some(RunPhase::Launching),
                 ..run
             },
             plan: plan.clone(),

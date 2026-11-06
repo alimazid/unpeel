@@ -27,8 +27,7 @@ fn plan() -> LaunchPlan {
         cwd: "/tmp".into(),
         worktree_path: None,
         worktree_branch: None,
-        agent: false,
-        instructions: None,
+        kind: RunKind::Script,
     }
 }
 

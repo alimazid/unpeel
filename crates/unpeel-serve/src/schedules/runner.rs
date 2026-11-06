@@ -15,7 +15,7 @@ use std::time::{Duration, Instant};
 use jiff::Zoned;
 use unpeel_core::controller_api::{HostCreatePreset, HostCreateProject};
 use unpeel_core::schedule_store::TaskStore;
-use unpeel_core::schedules::{RunPhase, RunStatus, Schedule, ScheduleClock, ScheduleRun};
+use unpeel_core::schedules::{RunStatus, Schedule, ScheduleClock, ScheduleRun};
 
 use super::agent_run::{self, AgentActivity, AgentObservation, Delivery};
 use super::clock;
@@ -280,12 +280,7 @@ impl Scheduler {
         self.deliveries.retain(|run_id, _| {
             tasks.iter().any(|task| {
                 task.latest_run.as_ref().is_some_and(|run| {
-                    run.run_id == *run_id
-                        && run.status.is_in_progress()
-                        && matches!(
-                            run.phase,
-                            Some(RunPhase::Launching | RunPhase::WaitingReady)
-                        )
+                    run.run_id == *run_id && run.status.is_in_progress() && run.is_starting_agent()
                 })
             })
         });
@@ -361,7 +356,7 @@ impl Scheduler {
         // record really has none.
         match self.effects.session(session_id) {
             (_, Some(code)) => RunObservation::Exited(code),
-            (SessionSeen::Live, None) if run.phase.is_some() => {
+            (SessionSeen::Live, None) if run.is_agent_run() => {
                 RunObservation::Agent(AgentObservation {
                     delivery: self.delivery_of(run),
                     activity: activity.get(session_id).cloned().unwrap_or_default(),
@@ -385,10 +380,7 @@ impl Scheduler {
     /// starting that no helper of this Host is typing for was being started
     /// by a Host that has since restarted.
     fn delivery_of(&self, run: &ScheduleRun) -> Option<Delivery> {
-        if !matches!(
-            run.phase,
-            Some(RunPhase::Launching | RunPhase::WaitingReady)
-        ) {
+        if !run.is_starting_agent() {
             return None;
         }
         Some(match self.deliveries.get(&run.run_id) {
@@ -537,8 +529,8 @@ impl Scheduler {
         std::thread::Builder::new()
             .name("unpeel-schedules".into())
             .spawn(move || {
-                let agent = request.plan.agent;
-                let instructions = request.plan.instructions.clone();
+                let agent = request.plan.kind.is_agent();
+                let instructions = request.plan.kind.instructions().map(str::to_owned);
                 let (schedule_id, run_id, session_id) = (
                     request.schedule_id.clone(),
                     request.run_id.clone(),

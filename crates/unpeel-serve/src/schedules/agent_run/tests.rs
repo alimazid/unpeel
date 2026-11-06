@@ -2,7 +2,7 @@
 
 use super::*;
 use crate::schedules::clock;
-use crate::schedules::step::{step, Action, LaunchPlan, TaskState};
+use crate::schedules::step::{step, Action, LaunchPlan, RunKind, TaskState};
 use jiff::civil::date;
 use jiff::tz::{self, TimeZone};
 use jiff::Zoned;
@@ -54,8 +54,9 @@ fn agent_task() -> TaskState {
             cwd: "/tmp".into(),
             worktree_path: None,
             worktree_branch: None,
-            agent: true,
-            instructions: Some(INSTRUCTIONS.into()),
+            kind: RunKind::Agent {
+                instructions: Some(INSTRUCTIONS.into()),
+            },
         }),
     }
 }
@@ -65,7 +66,7 @@ fn bare_agent_task() -> TaskState {
     let mut task = agent_task();
     task.schedule.instructions = None;
     if let Ok(plan) = &mut task.launch {
-        plan.instructions = None;
+        plan.kind = RunKind::Agent { instructions: None };
     }
     task
 }
@@ -149,7 +150,7 @@ fn an_agent_run_starts_launching_then_waits_for_the_agent() {
         .expect("the Run starts");
     assert_eq!(started.0.status, RunStatus::Running);
     assert_eq!(started.0.phase, Some(RunPhase::Launching));
-    assert_eq!(started.1.instructions.as_deref(), Some(INSTRUCTIONS));
+    assert_eq!(started.1.kind.instructions(), Some(INSTRUCTIONS));
 
     let up = observing(
         run_in(RunPhase::Launching, RunStatus::Running),

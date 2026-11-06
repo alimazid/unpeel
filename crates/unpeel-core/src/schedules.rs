@@ -321,6 +321,23 @@ pub struct ScheduleRun {
     pub prompted_at_ms: Option<u64>,
 }
 
+impl ScheduleRun {
+    /// An agent Run (a task on an Agent Preset): it follows its agent's
+    /// lifecycle, which its `phase` records, instead of a command's exit.
+    pub fn is_agent_run(&self) -> bool {
+        self.phase.is_some()
+    }
+
+    /// An agent Run still starting: its Session launching, or its agent not
+    /// ready for the instructions yet.
+    pub fn is_starting_agent(&self) -> bool {
+        matches!(
+            self.phase,
+            Some(RunPhase::Launching | RunPhase::WaitingReady)
+        )
+    }
+}
+
 /// An agent Run's lifecycle: `launching` (its Session starting),
 /// `waiting_ready` (for the agent's first readiness signal), `prompted`
 /// (instructions typed, no working signal yet), `working`.

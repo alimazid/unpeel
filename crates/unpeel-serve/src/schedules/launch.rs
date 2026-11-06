@@ -8,7 +8,7 @@ use unpeel_core::controller_api::{HostCreatePreset, HostCreateProject};
 use unpeel_core::schedules::save;
 use unpeel_core::schedules::Schedule;
 
-use super::step::LaunchPlan;
+use super::step::{LaunchPlan, RunKind};
 
 pub fn resolve(
     schedule: &Schedule,
@@ -30,8 +30,13 @@ pub fn resolve(
         cwd: target.cwd.to_owned(),
         worktree_path: target.project.worktree_path.clone(),
         worktree_branch: target.project.worktree_branch.clone(),
-        agent: unpeel_core::agent_readiness::is_agent_command(&target.preset.command),
-        instructions: target.instructions.map(str::to_owned),
+        kind: if unpeel_core::agent_readiness::is_agent_command(&target.preset.command) {
+            RunKind::Agent {
+                instructions: target.instructions.map(str::to_owned),
+            }
+        } else {
+            RunKind::Script
+        },
     })
 }
 
@@ -152,15 +157,15 @@ mod tests {
             &presets,
         )
         .expect("launchable");
-        assert_eq!(plan.instructions.as_deref(), Some("brief me"));
+        assert_eq!(plan.kind.instructions(), Some("brief me"));
         assert_eq!(plan.command, "claude --model opus", "launched as typed");
-        assert!(plan.agent);
+        assert!(plan.kind.is_agent());
 
         // Blank instructions are none: the Run is done once the agent is ready.
         let blank = resolve(&with_instructions("claude", "  \n"), &projects, &presets).unwrap();
-        assert_eq!((blank.agent, blank.instructions), (true, None));
+        assert_eq!(blank.kind, RunKind::Agent { instructions: None });
         let script = resolve(&schedule("p", "ok"), &projects, &presets).unwrap();
-        assert_eq!((script.agent, script.instructions), (false, None));
+        assert_eq!(script.kind, RunKind::Script);
     }
 
     #[test]

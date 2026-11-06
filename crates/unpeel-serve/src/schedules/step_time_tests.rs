@@ -9,7 +9,7 @@ use jiff::Zoned;
 use unpeel_core::schedules::{RunStatus, Schedule, ScheduleClock, ScheduleRun, ScheduleTrigger};
 
 use super::clock;
-use super::step::{step, Action, LaunchPlan, RunObservation, TaskState};
+use super::step::{step, Action, LaunchPlan, RunKind, RunObservation, TaskState};
 
 /// New York's rules: 2026-03-08 02:00 EST jumps to 03:00 EDT, 2026-11-01
 /// 02:00 EDT falls back to 01:00 EST.
@@ -66,8 +66,7 @@ fn task(trigger: ScheduleTrigger, created: u64) -> TaskState {
             cwd: "/tmp".into(),
             worktree_path: None,
             worktree_branch: None,
-            agent: false,
-            instructions: None,
+            kind: RunKind::Script,
         }),
     }
 }
