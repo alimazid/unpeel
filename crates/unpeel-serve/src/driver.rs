@@ -945,9 +945,10 @@ impl HostRuntime {
             self.reconcile_direct(&mut emitted);
             self.sweep_auto_stop(&mut emitted);
             self.sweep_retention(&mut emitted);
-            // Fork-only: the supervisor drains Inboxes; a held draft alerts.
+            // Fork-only: the supervisor drains Inboxes; a held draft alerts,
+            // an unanswered Worker prompt escalates.
             for notice in self.supervisor.step(&self.model, now_ms()) {
-                self.record_alert(&notice.session_id, notice.body, SystemTime::now());
+                self.deliver_supervisor_notice(notice);
             }
             self.sweep_incomplete_uploads();
         }
@@ -1944,6 +1945,31 @@ impl HostRuntime {
             self.unread_ids.remove(session_id);
         } else {
             self.unread_ids.insert(session_id.to_string());
+        }
+    }
+
+    /// Fork-only: a supervisor notice for the user. A Worker prompt the
+    /// Router left unanswered is the "needs input" its edge was not; the
+    /// rest are alerts. The edge itself was already logged as activity.
+    fn deliver_supervisor_notice(&mut self, notice: crate::supervisor::Notice) {
+        if notice.kind != crate::supervisor::NoticeKind::NeedsInput {
+            return self.record_alert(&notice.session_id, notice.body, SystemTime::now());
+        }
+        let Some(row) = self
+            .model
+            .rows
+            .iter()
+            .find(|row| row.id == notice.session_id)
+            .cloned()
+        else {
+            return;
+        };
+        let kind = crate::notifications::NotificationKind::NeedsInput;
+        if self.deliver_notification(&row, kind, Some(&notice.body), false, now_ms()) {
+            let _ = unpeel_core::session_ops::mark_read(&row.id);
+            self.unread_ids.remove(&row.id);
+        } else {
+            self.unread_ids.insert(row.id.clone());
         }
     }
 

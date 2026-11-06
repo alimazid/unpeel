@@ -267,6 +267,52 @@ fn clear_drops_the_mark_and_frees_every_worker() {
 }
 
 #[test]
+fn clear_drops_the_undelivered_router_instructions_and_keeps_the_rest() {
+    let home = claude_home();
+    home.run(100, |ctx| set_at(ctx, "router-1")).unwrap();
+    home.inbox
+        .enqueue(
+            "router-1",
+            NewItem {
+                sender: Sender::Session("w1".into()),
+                kind: ItemKind::Report,
+                priority: Priority::Wake,
+                about: None,
+                status: Some("done".into()),
+                label: None,
+                summary: "a Worker's result".into(),
+                body: String::new(),
+                dedupe_key: None,
+            },
+            150,
+        )
+        .unwrap();
+
+    home.run(200, |ctx| clear_at(ctx, "router-1")).unwrap();
+    let pending: Vec<String> = home
+        .inbox
+        .list("router-1")
+        .unwrap()
+        .pending
+        .into_iter()
+        .map(|header| header.summary)
+        .collect();
+    assert_eq!(
+        pending,
+        ["a Worker's result"],
+        "no instructions for an ordinary session"
+    );
+
+    // Made the Router again later: the instructions come back.
+    home.run(300, |ctx| set_at(ctx, "router-1")).unwrap();
+    assert_eq!(
+        home.inbox.list("router-1").unwrap().pending.len(),
+        2,
+        "a new mark is a new instructions item"
+    );
+}
+
+#[test]
 fn clear_is_a_no_op_unless_the_session_is_the_router() {
     let home = claude_home().session("w1", true, None, "codex");
     home.run(100, |ctx| set_at(ctx, "router-1")).unwrap();

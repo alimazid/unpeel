@@ -70,6 +70,16 @@ pub struct CursorLine {
 pub struct Notice {
     pub session_id: String,
     pub body: String,
+    pub kind: NoticeKind,
+}
+
+/// How the worker delivers a [`Notice`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NoticeKind {
+    /// An informational alert (a draft holding queued items).
+    Alert,
+    /// The Session waits on the user (an unanswered Worker prompt).
+    NeedsInput,
 }
 
 /// Per-target state between steps.
@@ -78,6 +88,8 @@ struct Target {
     /// The current quiet idle period; dropped by the next Busy → Idle cycle.
     episode: Option<Episode>,
     in_flight: bool,
+    /// When the paste in flight (or the last one) was started.
+    spawned_at: Option<u64>,
     awaiting: Option<Awaiting>,
     retry_at: u64,
     /// Paste times within the last hour (the budget).
@@ -122,6 +134,8 @@ pub struct Drain {
     outcomes_rx: Receiver<(String, Outcome)>,
     /// Latest `UserPromptSubmit` per session.
     prompt_submits: HashMap<String, u64>,
+    /// Sessions whose Inbox held undelivered items at the last step.
+    pending: HashSet<String>,
     last_gc: Option<u64>,
 }
 
@@ -149,6 +163,7 @@ impl Drain {
             outcomes_tx,
             outcomes_rx,
             prompt_submits: HashMap::new(),
+            pending: HashSet::new(),
             last_gc: None,
         }
     }
@@ -170,8 +185,12 @@ impl Drain {
         let ids = self.store.inbox_ids();
         let mut settings = None;
         let mut notices = Vec::new();
+        self.pending.clear();
         for id in &ids {
             let stats = self.store.pending_stats(id);
+            if stats.items > 0 {
+                self.pending.insert(id.clone());
+            }
             let hold = if stats.items == 0 {
                 self.forget(id);
                 None
@@ -267,6 +286,7 @@ impl Drain {
         }
         if let Some(target) = self.targets.get_mut(id) {
             target.in_flight = true;
+            target.spawned_at = Some(now);
         }
         Some(HoldReason::InFlight)
     }
@@ -414,6 +434,19 @@ impl Drain {
     }
 }
 
+impl super::worker_alerts::DrainView for Drain {
+    fn pasted_between(&self, session_id: &str, from: u64, to: u64) -> bool {
+        self.targets.get(session_id).is_some_and(|target| {
+            let within = |at: &u64| (from..=to).contains(at);
+            target.spawned_at.as_ref().is_some_and(within) || target.pastes.iter().any(within)
+        })
+    }
+
+    fn has_pending(&self, session_id: &str) -> bool {
+        self.pending.contains(session_id)
+    }
+}
+
 /// Settings read once per step, only when some Inbox has pending items.
 struct Settings {
     config: SupervisorConfig,
@@ -467,6 +500,7 @@ fn draft_notice(row: &SessionRow, items: usize) -> Notice {
     Notice {
         session_id: row.id.clone(),
         body: format!("{count} for {label} {verb} waiting"),
+        kind: NoticeKind::Alert,
     }
 }
 
@@ -981,6 +1015,7 @@ mod tests {
             [Notice {
                 session_id: "router".into(),
                 body: "2 queued messages for Router are waiting".into(),
+                kind: NoticeKind::Alert,
             }]
         );
         assert!(fx

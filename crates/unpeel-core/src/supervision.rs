@@ -31,6 +31,20 @@ pub fn router_id() -> Option<String> {
     router_id_in(&crate::app_state::load().ok()?)
 }
 
+/// The Router id and the supervisor's settings from one app-state read, as
+/// the Host's supervisor wants them once per sweep.
+pub fn router_and_config() -> (Option<String>, SupervisorConfig) {
+    let state = crate::app_state::load().unwrap_or(Value::Null);
+    let seconds_mode = config::seconds_mode_from(
+        std::env::var("UNPEEL_TEST").ok().as_deref(),
+        std::env::var("UNPEEL_SUPERVISOR_SECONDS").ok().as_deref(),
+    );
+    (
+        router_id_in(&state),
+        config_from_state(&state, seconds_mode),
+    )
+}
+
 /// The Router id in a raw app-state document. A malformed mark is no mark.
 pub fn router_id_in(state: &Value) -> Option<String> {
     router_id_in_map(state.as_object()?)

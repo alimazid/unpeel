@@ -605,6 +605,27 @@ impl Store {
         self.move_pending_with(from, to, |item| (!drop(&item)).then_some(item))
     }
 
+    /// Fork-only (ticket 09): drop the pending items `drop` names, for good
+    /// (a stopped Router's own instructions). A batch already claimed is
+    /// re-claimed without them. Returns how many were dropped.
+    pub fn drop_pending(
+        &self,
+        session_id: &str,
+        drop: impl Fn(&InboxItem) -> bool,
+    ) -> Result<usize> {
+        let dir = self.dir(session_id)?;
+        if !dir.is_dir() {
+            return Ok(0);
+        }
+        let _lock = self.lock(session_id)?;
+        let mut dropped = 0;
+        for item in settled_pending(&dir)?.iter().filter(|item| drop(item)) {
+            remove_if_present(&dir.join(PENDING_DIR).join(file_name(&item.id)))?;
+            dropped += 1;
+        }
+        Ok(dropped)
+    }
+
     /// Every pending item of `from` leaves it; `reshape` gives what lands in
     /// `to` (`None`: dropped). An in-flight claim on `from` is dropped too.
     fn move_pending_with(

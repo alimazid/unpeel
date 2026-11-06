@@ -370,6 +370,10 @@ pub(crate) fn clear_at(ctx: &Ctx, session_id: &str) -> Result<VerbOutcome, VerbE
     }
     super::rewrite_worker_markers_in(ctx.sessions_root, session_id, None)
         .map_err(VerbError::Failed)?;
+    // Instructions it never read are no longer for it.
+    ctx.inbox
+        .drop_pending(session_id, is_router_instructions)
+        .map_err(|error| VerbError::Failed(format!("Inbox of {session_id}: {error}")))?;
     Ok(VerbOutcome {
         changed: true,
         state_written: true,
