@@ -764,6 +764,7 @@ const BROWSER_ACTIONS: &[&str] = &[
 
 fn sessions_action_names() -> Vec<&'static str> {
     let mut names: Vec<&'static str> = SESSIONS_ACTIONS.iter().map(|(action, _)| *action).collect();
+    names.extend(crate::supervision_mcp::sessions_action_names()); // Fork-only
     names.push("help");
     names
 }
@@ -779,6 +780,7 @@ fn workspace_action_names() -> Vec<&'static str> {
         .iter()
         .map(|(action, _)| *action)
         .collect();
+    names.extend(crate::supervision_mcp::workspace_action_names()); // Fork-only
     names.push("help");
     names
 }
@@ -880,6 +882,12 @@ fn run_sessions_action(action: &str, arguments: &Value) -> Result<String, String
                 .find(|(name, _)| *name == normalized)
         });
     let Some((_, legacy)) = mapped else {
+        // Fork-only: Super Agent actions, behind the same gate.
+        if let Some(result) =
+            crate::supervision_mcp::sessions_action(normalized, arguments, sessions_gate)
+        {
+            return result;
+        }
         return Err(format!(
             "Unknown sessions action: {action}. Valid actions: {}. Call {{\"action\":\"help\"}} \
 for per-action docs.",
@@ -926,6 +934,12 @@ fn run_workspace_action(action: &str, arguments: &Value) -> Result<String, Strin
         ));
     }
     let Some((_, legacy)) = WORKSPACE_ACTIONS.iter().find(|(name, _)| *name == action) else {
+        // Fork-only: Super Agent actions, behind the same gate.
+        if let Some(result) =
+            crate::supervision_mcp::workspace_action(action, arguments, sessions_gate)
+        {
+            return result;
+        }
         return Err(format!(
             "Unknown workspace action: {action}. Valid actions: {}. Call \
 {{\"action\":\"help\"}} for per-action docs.",
@@ -1228,7 +1242,10 @@ fn require_worktree_access() -> Result<(), String> {
         .ok()
         .and_then(|raw| serde_json::from_slice::<Value>(&raw).ok())
         .unwrap_or(Value::Null);
-    if worktree_access_enabled(&state) {
+    // Fork-only: being the Router implies worktree access.
+    if worktree_access_enabled(&state)
+        || crate::supervision::router_has_worktree_access(&state, self_session_id().as_deref())
+    {
         Ok(())
     } else {
         Err(
@@ -1329,6 +1346,7 @@ fn load_security() -> McpSecurity {
                 .collect()
         })
         .unwrap_or_default();
+    let grants = crate::supervision::grant_override(&value, grants); // Fork-only: the Router manages
     let default_grant = value
         .get("mcp_default_access")
         .and_then(|raw| serde_json::from_value::<McpGrant>(raw.clone()).ok())
@@ -1375,7 +1393,11 @@ pub(crate) fn activity_status_for_manifest(
         .filter(|status| valid_activity_status(status))
         .map(str::to_string)
         .unwrap_or_else(|| match manifest.state {
-            HostedSessionState::Running => "idle".to_string(),
+            // Fork-only: "unknown", not "idle", while the Host worker runs (§8e).
+            HostedSessionState::Running => crate::supervision::running_status_without_activity(
+                crate::supervision::host_worker_running(),
+            )
+            .to_string(),
             HostedSessionState::Exited => "exited".to_string(),
         })
 }
@@ -1765,7 +1787,12 @@ fn agents_tool_definition() -> Value {
     })
 }
 
+// Fork-only: Super Agent parameters join the advertised schema.
 fn sessions_tool_definition() -> Value {
+    crate::supervision_mcp::extend_schema(SESSIONS_TOOL, base_sessions_tool_definition())
+}
+
+fn base_sessions_tool_definition() -> Value {
     json!({
         "name": SESSIONS_TOOL,
         "description": "Inspect and control Unpeel terminal sessions as terminal containers, \
@@ -1825,7 +1852,12 @@ fn sessions_tool_definition() -> Value {
     })
 }
 
+// Fork-only: Super Agent parameters join the advertised schema.
 fn workspace_tool_definition() -> Value {
+    crate::supervision_mcp::extend_schema(WORKSPACE_TOOL, base_workspace_tool_definition())
+}
+
+fn base_workspace_tool_definition() -> Value {
     json!({
         "name": WORKSPACE_TOOL,
         "description": "Read workspace launch presets and manage Unpeel worktrees without \
@@ -1915,7 +1947,7 @@ fn mapped_action_help(
     actions: &[(&'static str, &'static str)],
     help_for: Option<&str>,
 ) -> String {
-    let docs: Vec<(String, Value)> = legacy_sessions_tool_definitions()
+    let mut docs: Vec<(String, Value)> = legacy_sessions_tool_definitions()
         .into_iter()
         .filter_map(|definition| {
             let legacy = definition.get("name").and_then(Value::as_str)?;
@@ -1926,6 +1958,7 @@ fn mapped_action_help(
             Some((action.to_string(), definition))
         })
         .collect();
+    docs.extend(crate::supervision_mcp::help_docs(tool)); // Fork-only
     let mut text = render_action_help(tool, &docs, help_for);
     // The legacy definitions cross-reference each other by old tool name;
     // rewrite those mentions to the action vocabulary agents actually use.
@@ -2749,6 +2782,11 @@ fn tool_get_current_session(_args: &Value) -> Result<String, String> {
         "access": current_session_access_json(&security, &caller),
         "pane_context": caller_pane_context_json(&caller.session.id, &activity),
     });
+    // Fork-only: Super Agent fields (Inbox, Worker cards).
+    let result = crate::supervision_mcp::merge_extras(
+        result,
+        crate::supervision_mcp::current_extras(&caller),
+    );
 
     serde_json::to_string_pretty(&result)
         .map_err(|e| format!("Failed to encode current-session context: {e}"))
@@ -3064,6 +3102,8 @@ fn tool_wait_for_agent(args: &Value) -> Result<String, String> {
         .and_then(Value::as_u64)
         .unwrap_or(WAIT_DEFAULT_TIMEOUT_MS)
         .clamp(WAIT_MIN_TIMEOUT_MS, WAIT_MAX_TIMEOUT_MS);
+    let timeout_ms =
+        crate::supervision_mcp::cap_wait_timeout(self_session_id().as_deref(), timeout_ms); // Fork-only
     let started = Instant::now();
     loop {
         crate::mcp_cancel::bail_if_cancelled()?;
@@ -3171,6 +3211,8 @@ fn tool_wait_for_text(args: &Value) -> Result<String, String> {
         .and_then(Value::as_u64)
         .unwrap_or(WAIT_DEFAULT_TIMEOUT_MS)
         .clamp(WAIT_MIN_TIMEOUT_MS, WAIT_MAX_TIMEOUT_MS);
+    let timeout_ms =
+        crate::supervision_mcp::cap_wait_timeout(self_session_id().as_deref(), timeout_ms); // Fork-only
 
     let needle_cmp = if case_sensitive {
         needle.to_string()
@@ -3250,6 +3292,8 @@ fn tool_wait_for_status(args: &Value) -> Result<String, String> {
         .and_then(Value::as_u64)
         .unwrap_or(WAIT_DEFAULT_TIMEOUT_MS)
         .clamp(WAIT_MIN_TIMEOUT_MS, WAIT_MAX_TIMEOUT_MS);
+    let timeout_ms =
+        crate::supervision_mcp::cap_wait_timeout(self_session_id().as_deref(), timeout_ms); // Fork-only
 
     let started = std::time::Instant::now();
     loop {
@@ -3282,6 +3326,12 @@ fn tool_send_text(args: &Value) -> Result<String, String> {
     let session_id = required_str(args, "session_id")?;
     let text = required_str(args, "text")?;
     let submit = args.get("submit").and_then(Value::as_bool).unwrap_or(true);
+    // Fork-only: a Worker's message to its Router goes through the Inbox.
+    if let Some(routed) =
+        crate::supervision_mcp::route_send_text(args, caller_manifest().as_ref(), session_id)
+    {
+        return routed;
+    }
     require_session(session_id, WriteAccess::Write)?;
     let target = load_manifest(session_id);
 
@@ -3383,6 +3433,10 @@ fn tool_report(args: &Value) -> Result<String, String> {
     let target_session_id = required_str(args, "session_id")?;
     let target = load_manifest(target_session_id)
         .ok_or_else(|| format!("Session '{target_session_id}' is no longer available."))?;
+    // Fork-only: a Worker's report to its Router is queued, not pasted.
+    if let Some(routed) = crate::supervision_mcp::route_report(args, &caller, &target) {
+        return routed;
+    }
     require_session(target_session_id, WriteAccess::Write)?;
     let report = build_session_report(args, &caller, &target)?;
     let submit = args.get("submit").and_then(Value::as_bool).unwrap_or(true);
@@ -3477,6 +3531,8 @@ fn resolve_create_command(
 /// thing that lets the same caller remove it later.
 fn tool_create_session(args: &Value) -> Result<String, String> {
     let caller = require_manage_caller(creation_disabled_message)?;
+    // Fork-only: Super Agent create parameters, read before anything spawns.
+    let hooks = crate::supervision_mcp::create_hooks(args, &caller)?;
     // Like `unpeel new --project`: desktop-owned projects never appear in
     // app-state's project list, so an explicit id is taken as given.
     let project_id = optional_trimmed_str(args, "project_id")
@@ -3485,6 +3541,7 @@ fn tool_create_session(args: &Value) -> Result<String, String> {
     let (command, source_preset_id) = resolve_create_command(args, &project_id)?;
     let cwd = optional_trimmed_str(args, "cwd")
         .map(str::to_string)
+        .or_else(|| hooks.default_cwd()) // Fork-only: the named Project's folder
         .unwrap_or_else(|| caller.cwd.clone());
     if !std::path::Path::new(&cwd).is_dir() {
         return Err(format!("cwd '{cwd}' is not a directory."));
@@ -3517,9 +3574,11 @@ fn tool_create_session(args: &Value) -> Result<String, String> {
         role: None,
         task: None,
     };
+    let session = hooks.prepare(session); // Fork-only
     let session_id = crate::session_ops::spawn_session(session, &cwd, None, 120, 32)?;
     let ready = session_host::wait_until_ready(&session_id, Duration::from_secs(15));
-    serde_json::to_string_pretty(&json!({
+    // Fork-only: `after_spawn` records the Worker and extends the result.
+    serde_json::to_string_pretty(&hooks.after_spawn(&session_id, json!({
         "session_id": session_id,
         "label": label,
         "command": command,
@@ -3528,7 +3587,7 @@ fn tool_create_session(args: &Value) -> Result<String, String> {
         "state": if ready.is_ok() { "running" } else { "starting" },
         "created_by": caller.session.id,
         "note": "Use wait_for_text for the program's prompt before send_text; close removes it.",
-    }))
+    })))
     .map_err(|e| format!("Failed to encode create result: {e}"))
 }
 
@@ -3543,7 +3602,10 @@ fn tool_close_session(args: &Value) -> Result<String, String> {
     let target = load_manifest(target_id).ok_or_else(|| {
         format!("Unknown session id '{target_id}'. Use list to find valid targets.")
     })?;
-    if target.session.spawned_by.as_deref() != Some(caller.session.id.as_str()) {
+    // Fork-only: `may_close` lets a Router close its Workers too.
+    if target.session.spawned_by.as_deref() != Some(caller.session.id.as_str())
+        && !crate::supervision_mcp::may_close(&caller, &target)
+    {
         return Err(format!(
             "Session '{target_id}' was not created by this session, so it stays user-owned. \
 Ask the user to close it."
@@ -5640,6 +5702,15 @@ mod tests {
         // Not equivalent to unrelated states.
         assert!(!status_matches("working", "idle"));
         assert!(!status_matches("blocked", "done"));
+    }
+
+    /// Fork-only (§8e): a Session the Host has not published yet reads
+    /// `unknown`, and a wait for the turn to finish keeps waiting on it.
+    #[test]
+    fn waits_for_a_finished_turn_keep_waiting_on_unknown() {
+        assert!(!status_matches("unknown", "idle"));
+        assert!(!status_matches("unknown", "done"));
+        assert!(valid_activity_status("unknown"));
     }
 
     #[test]
