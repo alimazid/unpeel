@@ -220,6 +220,11 @@ pub struct RemotePresetSummary {
     pub is_default: bool,
     #[serde(default)]
     pub tint_color_hex: Option<u32>,
+    /// Fork-only: Scheduled Tasks. The Host's word on whether the preset is
+    /// an Agent Preset (takes a task's instructions); absent on older
+    /// Hosts, which Controllers read as not one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent_preset: Option<bool>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -1579,6 +1584,9 @@ impl RemoteSessionBackend {
                 .to_string()
                 .into_bytes());
         }
+        if let Some((capability, path)) = schedule_write_route(operation) {
+            return self.json_resource_effect(OPERATION, capability, path, bytes);
+        }
         let (method, capability, path, keys): (&str, &str, &str, &[&str]) = match operation {
             "directories" => (
                 "GET",
@@ -1642,6 +1650,40 @@ impl RemoteSessionBackend {
                 .map(|exchange| exchange.body)
         }
     }
+
+    /// Fork-only: Scheduled Tasks. A write whose body is the caller's JSON
+    /// object as given (a Trigger is nested, so a flat parameter map cannot
+    /// carry it). Anything else is refused before it is sent.
+    fn json_resource_effect(
+        &self,
+        operation: &'static str,
+        capability: &'static str,
+        path: &'static str,
+        body: Vec<u8>,
+    ) -> Result<Vec<u8>, RemoteEffectFailure> {
+        let is_object = serde_json::from_slice::<Value>(&body).is_ok_and(|value| value.is_object());
+        if !is_object {
+            return Err(effect_failure(
+                operation,
+                RemoteEffectFailureKind::NotApplied,
+                invalid_effect_input(operation, "The request body must be a JSON object"),
+            ));
+        }
+        let turn = self.inner.begin_effect();
+        self.inner
+            .perform_effect_exchange(
+                &turn,
+                operation,
+                capability,
+                path,
+                &[],
+                "application/json",
+                body,
+                DEFAULT_EFFECT_TIMEOUT,
+            )
+            .map(|exchange| exchange.body)
+    }
+
     pub fn new(connection: Arc<dyn HostConnection>) -> Self {
         Self::with_timeouts(
             connection,
@@ -3924,6 +3966,18 @@ fn validate_output_options(
         )));
     }
     Ok(())
+}
+
+/// Fork-only: Scheduled Tasks. The write operations the bridge may send,
+/// with their capability and route; their bodies are JSON as given.
+fn schedule_write_route(operation: &str) -> Option<(&'static str, &'static str)> {
+    match operation {
+        "createSchedule" => Some(("schedules.create", "/mobile/schedules")),
+        "editSchedule" => Some(("schedules.edit", "/mobile/schedules/edit")),
+        "deleteSchedule" => Some(("schedules.delete", "/mobile/schedules/delete")),
+        "runSchedule" => Some(("schedules.run", "/mobile/schedules/run")),
+        _ => None,
+    }
 }
 
 fn invalid_effect_input(
@@ -7821,5 +7875,111 @@ mod tests {
             1,
             "only the bootstrap reached the Host"
         );
+    }
+
+    #[test]
+    fn schedule_writes_send_their_json_body_behind_their_capabilities() {
+        let writes = [
+            ("createSchedule", "schedules.create", "/mobile/schedules"),
+            ("editSchedule", "schedules.edit", "/mobile/schedules/edit"),
+            (
+                "deleteSchedule",
+                "schedules.delete",
+                "/mobile/schedules/delete",
+            ),
+            ("runSchedule", "schedules.run", "/mobile/schedules/run"),
+        ];
+        let connection = ScriptedConnection::new();
+        let generation = connection.generation(1);
+        let mut capabilities = vec![BOOTSTRAP_CAPABILITY];
+        capabilities.extend(writes.iter().map(|(_, capability, _)| *capability));
+        add_bootstrap(
+            &connection,
+            generation,
+            bootstrap_json(Some("host-1"), HOST_PROTOCOL_MAJOR, Some(&capabilities)),
+        );
+        let body = json!({
+            "scheduleID": "sch_1",
+            "trigger": {"kind": "weekly", "weekday": "friday", "time": "17:00"},
+            "enabled": false
+        });
+        for (_, _, path) in writes {
+            connection.push(reply_step(
+                expected_effect(generation, path, body.clone()),
+                generation,
+                200,
+                br#"{"ok":true}"#.to_vec(),
+            ));
+        }
+        let backend = RemoteSessionBackend::new(connection.clone());
+        backend.bootstrap().unwrap();
+        for (operation, _, _) in writes {
+            assert_eq!(
+                backend.resource_request(
+                    operation,
+                    &HashMap::new(),
+                    serde_json::to_vec(&body).unwrap()
+                ),
+                Ok(br#"{"ok":true}"#.to_vec()),
+                "{operation}"
+            );
+        }
+        assert_eq!(connection.remaining(), 0);
+
+        let refused = backend.resource_request("createSchedule", &HashMap::new(), b"[1]".to_vec());
+        assert!(
+            refused.is_err(),
+            "a body that is not a JSON object is not sent"
+        );
+        assert_eq!(connection.calls().len(), 1 + writes.len());
+    }
+
+    #[test]
+    fn schedule_writes_need_the_host_to_advertise_them() {
+        let connection = ScriptedConnection::new();
+        let generation = connection.generation(1);
+        add_bootstrap(
+            &connection,
+            generation,
+            bootstrap_json(
+                Some("host-1"),
+                HOST_PROTOCOL_MAJOR,
+                Some(&[BOOTSTRAP_CAPABILITY, "schedules"]),
+            ),
+        );
+        let backend = RemoteSessionBackend::new(connection.clone());
+        backend.bootstrap().unwrap();
+        let sent = backend.resource_request("runSchedule", &HashMap::new(), b"{}".to_vec());
+        assert!(sent.is_err());
+        assert_eq!(
+            connection.calls().len(),
+            1,
+            "only the bootstrap reached the Host"
+        );
+    }
+
+    #[test]
+    fn bootstrap_carries_each_presets_agent_flag_to_the_controller() {
+        let connection = ScriptedConnection::new();
+        let generation = connection.generation(1);
+        let mut body = bootstrap_json(
+            Some("host-1"),
+            HOST_PROTOCOL_MAJOR,
+            Some(&[BOOTSTRAP_CAPABILITY]),
+        );
+        body["presets"] = json!([
+            {"id": "claude", "label": "Claude", "command": "claude", "enabled": true,
+             "quickLaunch": false, "isDefault": false, "agentPreset": true},
+            {"id": "old", "label": "Old", "command": "true", "enabled": true,
+             "quickLaunch": false, "isDefault": false}
+        ]);
+        add_bootstrap(&connection, generation, body);
+        let snapshot = RemoteSessionBackend::new(connection)
+            .bootstrap()
+            .expect("bootstrap decodes")
+            .snapshot;
+        let forwarded = serde_json::to_value(&snapshot).unwrap();
+        assert_eq!(forwarded["presets"][0]["agentPreset"], true);
+        assert!(forwarded["presets"][1].get("agentPreset").is_none());
     }
 }

@@ -267,6 +267,7 @@
           "name": "Nightly report",
           "projectID": "p",
           "presetID": "claude",
+          "instructions": "write the nightly report",
           "trigger": { "kind": "daily", "time": "22:00" },
           "enabled": true,
           "notifyWhenDone": true,

@@ -200,5 +200,34 @@ fn every_principal_may_read_and_the_router_answers_both_routes() {
     assert!(route(&request("/mobile/schedulesx", &[])).is_none());
     let mut post = request("/mobile/schedules", &[]);
     post.method = "POST".into();
-    assert!(route(&post).is_none(), "writes are not this module's yet");
+    let write = route(&post).expect("writes are routed here too");
+    assert_eq!(write.status, 400, "a create needs an object body");
+}
+
+#[test]
+fn every_preset_row_says_whether_it_is_an_agent_preset() {
+    let mut presets = vec![
+        json!({"id": "claude", "command": "claude --dangerously-skip-permissions"}),
+        json!({"id": "codex", "command": "/opt/bin/codex"}),
+        json!({"id": "script", "command": "./backup.sh"}),
+        json!({"id": "no-signal", "command": "pi"}),
+        json!({"id": "blank", "command": ""}),
+        json!({"id": "no-command"}),
+    ];
+    mark_agent_presets(&mut presets);
+    let flags: Vec<_> = presets
+        .iter()
+        .map(|row| (row["id"].as_str().unwrap(), row["agentPreset"].as_bool()))
+        .collect();
+    assert_eq!(
+        flags,
+        vec![
+            ("claude", Some(true)),
+            ("codex", Some(true)),
+            ("script", Some(false)),
+            ("no-signal", Some(false)),
+            ("blank", Some(false)),
+            ("no-command", Some(false)),
+        ]
+    );
 }

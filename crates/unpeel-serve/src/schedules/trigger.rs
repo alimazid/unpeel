@@ -155,6 +155,44 @@ impl Trigger {
     }
 }
 
+/// The save-time check of a Controller's write
+/// (`unpeel_core::controller_schedules`): the Trigger in its stored form,
+/// or what is wrong with it. A task saved enabled must still come due
+/// ([`Trigger::check`]); one saved paused only needs a Trigger that reads,
+/// since resuming checks it again.
+pub fn for_save(
+    trigger: &ScheduleTrigger,
+    comes_due: bool,
+    now: DateTime,
+) -> Result<ScheduleTrigger, String> {
+    let parsed = match Trigger::parse(trigger) {
+        Some(parsed) if !comes_due => parsed,
+        // `check` reads at least as strictly as `parse`, so it says what is
+        // wrong with a Trigger that does not parse.
+        _ => Trigger::check(trigger, now)?,
+    };
+    Ok(match (parsed, trigger) {
+        (Trigger::Hourly(_), _) => trigger.clone(),
+        (Trigger::Daily(time), _) => ScheduleTrigger::Daily {
+            time: clock::format_time(time),
+        },
+        (Trigger::Weekdays(time), _) => ScheduleTrigger::Weekdays {
+            time: clock::format_time(time),
+        },
+        (Trigger::Weekly(day, time), _) => ScheduleTrigger::Weekly {
+            weekday: clock::weekday_name(day).to_owned(),
+            time: clock::format_time(time),
+        },
+        (Trigger::Once(at), _) => ScheduleTrigger::Once {
+            at: clock::format_datetime(at),
+        },
+        (Trigger::Cron(_), ScheduleTrigger::Cron { expr }) => ScheduleTrigger::Cron {
+            expr: expr.split_whitespace().collect::<Vec<_>>().join(" "),
+        },
+        (Trigger::Cron(_), _) => trigger.clone(),
+    })
+}
+
 /// A Trigger as a person reads it (`hourly at :15`, `weekly friday 17:00`,
 /// `cron 0 9 * * 1-5`).
 pub fn describe(trigger: &ScheduleTrigger) -> String {
@@ -502,5 +540,66 @@ mod tests {
         ] {
             assert_eq!(Trigger::parse(&trigger), None, "{trigger:?}");
         }
+    }
+
+    #[test]
+    fn a_controller_trigger_is_saved_in_its_stored_form() {
+        let now = at(6, 12, 0);
+        let saved = |trigger: ScheduleTrigger| for_save(&trigger, true, now);
+        assert_eq!(
+            saved(ScheduleTrigger::Daily {
+                time: "09:43:00".into()
+            }),
+            Ok(ScheduleTrigger::Daily {
+                time: "09:43".into()
+            })
+        );
+        assert_eq!(
+            saved(ScheduleTrigger::Weekly {
+                weekday: "friday".into(),
+                time: "17:00:30".into()
+            }),
+            Ok(ScheduleTrigger::Weekly {
+                weekday: "friday".into(),
+                time: "17:00:30".into()
+            })
+        );
+        assert_eq!(
+            saved(ScheduleTrigger::Once {
+                at: "2026-11-07T08:00:00".into()
+            }),
+            Ok(ScheduleTrigger::Once {
+                at: "2026-11-07T08:00".into()
+            })
+        );
+        assert_eq!(
+            saved(ScheduleTrigger::Cron {
+                expr: " 0  9 * * 1-5 ".into()
+            }),
+            Ok(ScheduleTrigger::Cron {
+                expr: "0 9 * * 1-5".into()
+            })
+        );
+        assert_eq!(
+            saved(ScheduleTrigger::Hourly { minute: 5 }),
+            Ok(ScheduleTrigger::Hourly { minute: 5 })
+        );
+    }
+
+    #[test]
+    fn a_paused_task_may_keep_a_time_that_passed_but_never_a_malformed_one() {
+        let now = at(6, 12, 0);
+        let past = ScheduleTrigger::Once {
+            at: "2026-11-06T08:00".into(),
+        };
+        let refused = for_save(&past, true, now).unwrap_err();
+        assert!(refused.contains("in the past"), "{refused}");
+        assert_eq!(for_save(&past, false, now), Ok(past));
+        let malformed = ScheduleTrigger::Daily {
+            time: "25:00".into(),
+        };
+        let refused = for_save(&malformed, false, now).unwrap_err();
+        assert!(refused.contains("not a local time"), "{refused}");
+        assert!(for_save(&ScheduleTrigger::Unknown, false, now).is_err());
     }
 }

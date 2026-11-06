@@ -1,15 +1,17 @@
-//! Fork-only: Scheduled Tasks. The Controller read routes (`schedules`,
-//! `schedules.runs`) and the bootstrap's `schedulesRevision`.
+//! Fork-only: Scheduled Tasks. The Controller routes and the bootstrap's
+//! `schedulesRevision` and Agent Preset flags.
 //!
 //! - `GET /mobile/schedules`: every task with its next run and its latest
 //!   Run (the Run events a Controller notices: done, needs you, failed,
 //!   failed to start, skipped).
 //! - `GET /mobile/schedules/runs?scheduleID=<id>[&limit=<n>]`: a task's Run
 //!   history, newest first.
+//! - The user's writes (create, edit / pause / resume, delete, Run now):
+//!   [`write`].
 //!
-//! Both read the disk only: definitions from `app-state.json`, the next run
-//! and the Runs from the per-task files the workspace worker publishes
-//! (`schedule_store`). No route needs the scheduler, a clock, or a time
+//! The reads use the disk only: definitions from `app-state.json`, the next
+//! run and the Runs from the per-task files the workspace worker publishes
+//! (`schedule_store`). No read needs the scheduler, a clock, or a time
 //! zone, so every Host adapter serves them alike. `protocol/schedules-
 //! samples-v1.json` pins both bodies for the Rust Host and the Swift DTOs.
 
@@ -22,20 +24,64 @@ use crate::controller_api::{ControllerPrincipal, ControllerRequest, ControllerRe
 use crate::schedule_store::{self, TaskStore};
 use crate::schedules::{self, Schedule, ScheduleClock, ScheduleRun};
 
+mod write;
+
+pub use write::{
+    has_host, install_host, principal_can_write_schedules, RunNowRefusal, ScheduleHost,
+};
+
 /// `GET /mobile/schedules`.
 pub const LIST_CAPABILITY: &str = "schedules";
 /// `GET /mobile/schedules/runs`.
 pub const RUNS_CAPABILITY: &str = "schedules.runs";
+/// `POST /mobile/schedules`.
+pub const CREATE_CAPABILITY: &str = "schedules.create";
+/// `POST /mobile/schedules/edit`, pause and resume included.
+pub const EDIT_CAPABILITY: &str = "schedules.edit";
+/// `POST /mobile/schedules/delete`.
+pub const DELETE_CAPABILITY: &str = "schedules.delete";
+/// `POST /mobile/schedules/run`: Run now.
+pub const RUN_CAPABILITY: &str = "schedules.run";
+/// The write routes, served only where a [`ScheduleHost`] is installed.
+pub const WRITE_CAPABILITIES: [&str; 4] = [
+    CREATE_CAPABILITY,
+    EDIT_CAPABILITY,
+    DELETE_CAPABILITY,
+    RUN_CAPABILITY,
+];
 const LIST_PATH: &str = "/mobile/schedules";
 const RUNS_PATH: &str = "/mobile/schedules/runs";
 
-/// A refused read: HTTP status and the message Controllers show.
+/// A refused request: HTTP status and the message Controllers show.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Failure(pub u16, pub String);
 
-/// The read routes, for `controller_api::route_uncached`. Any other method
-/// or path is not this module's.
+/// Every bootstrap preset row says whether it is an Agent Preset (one that
+/// starts an agent Unpeel can tell is ready), so a Controller shows a
+/// task's Instructions field only where the Host would accept them; it
+/// never classifies a command itself.
+pub fn mark_agent_presets(presets: &mut [Value]) {
+    for preset in presets {
+        let agent = preset
+            .get("command")
+            .and_then(Value::as_str)
+            .is_some_and(crate::agent_readiness::is_agent_command);
+        if let Some(row) = preset.as_object_mut() {
+            row.insert("agentPreset".into(), Value::Bool(agent));
+        }
+    }
+}
+
+/// The routes, for `controller_api::route_uncached`. Any other method or
+/// path is not this module's.
 pub fn route(request: &ControllerRequest) -> Option<ControllerResponse> {
+    if let Some((status, body)) = write::route(request) {
+        return Some(ControllerResponse {
+            id: request.id.clone(),
+            status,
+            body,
+        });
+    }
     if request.method != "GET" || !matches!(request.path.as_str(), LIST_PATH | RUNS_PATH) {
         return None;
     }
@@ -163,22 +209,24 @@ struct TaskOnDisk {
 fn tasks_at(state: &Value, root: &Path) -> Vec<TaskOnDisk> {
     schedules::schedules_from_value(state.get("schedules"))
         .into_iter()
-        .map(|schedule| {
-            // Every listed id is valid, so the store always opens.
-            let store = TaskStore::open(root, &schedule.id).ok();
-            TaskOnDisk {
-                clock: store.as_ref().and_then(|store| store.clock().ok()),
-                runs: store.as_ref().map(TaskStore::runs).unwrap_or_default(),
-                schedule,
-            }
-        })
+        .map(|schedule| TaskOnDisk::at(schedule, root))
         .collect()
 }
 
 impl TaskOnDisk {
+    fn at(schedule: Schedule, root: &Path) -> Self {
+        // Every listed id is valid, so the store always opens.
+        let store = TaskStore::open(root, &schedule.id).ok();
+        Self {
+            clock: store.as_ref().and_then(|store| store.clock().ok()),
+            runs: store.as_ref().map(TaskStore::runs).unwrap_or_default(),
+            schedule,
+        }
+    }
+
     fn wire(&self) -> Value {
         let schedule = &self.schedule;
-        json!({
+        let mut row = json!({
             "id": schedule.id,
             "name": schedule.name,
             "projectID": schedule.project_id,
@@ -193,7 +241,13 @@ impl TaskOnDisk {
             // The Run in progress, else the newest outcome: an occurrence
             // skipped behind a live Run never hides it.
             "lastRun": schedules::current_run(&self.runs).map(run_wire),
-        })
+        });
+        // What a Run types into its agent, so the edit sheet can show (and
+        // Duplicate can copy) them; absent for a task without any.
+        if let Some(instructions) = &schedule.instructions {
+            row["instructions"] = Value::String(instructions.clone());
+        }
+        row
     }
 
     /// What the worker published as the next occurrence; a disabled task
@@ -205,6 +259,11 @@ impl TaskOnDisk {
             None => Value::Null,
         }
     }
+}
+
+/// One task's list row, with its per-task files under `root`.
+fn row_at(schedule: Schedule, root: &Path) -> Value {
+    TaskOnDisk::at(schedule, root).wire()
 }
 
 fn run_wire(run: &ScheduleRun) -> Value {

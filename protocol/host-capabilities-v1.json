@@ -486,6 +486,34 @@
       "path": "/mobile/schedules/runs",
       "native": true,
       "tui": true
+    },
+    {
+      "id": "schedules.create",
+      "method": "POST",
+      "path": "/mobile/schedules",
+      "native": true,
+      "tui": true
+    },
+    {
+      "id": "schedules.edit",
+      "method": "POST",
+      "path": "/mobile/schedules/edit",
+      "native": true,
+      "tui": true
+    },
+    {
+      "id": "schedules.delete",
+      "method": "POST",
+      "path": "/mobile/schedules/delete",
+      "native": true,
+      "tui": true
+    },
+    {
+      "id": "schedules.run",
+      "method": "POST",
+      "path": "/mobile/schedules/run",
+      "native": true,
+      "tui": true
     }
   ]
 }
