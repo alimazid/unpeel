@@ -741,3 +741,17 @@ fn remove(args: &Args) -> Result<(), String> {
     println!("removed {}", schedule.name);
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    /// The help is a compile-time string; this keeps its cap the one the
+    /// save rules enforce.
+    #[test]
+    fn the_help_states_the_instructions_cap() {
+        let limit = unpeel_core::schedules::save::instructions_limit();
+        assert!(
+            super::HELP.contains(&format!("Up to {limit}.")),
+            "{limit}"
+        );
+    }
+}
