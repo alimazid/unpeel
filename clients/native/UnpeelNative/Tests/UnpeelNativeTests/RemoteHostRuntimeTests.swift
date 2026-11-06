@@ -251,6 +251,26 @@ final class RemoteHostRuntimeTests: XCTestCase {
         XCTAssertFalse(RemoteHostRuntime.snapshotContentEqual(base, alerted))
     }
 
+    func testContentEqualityNoticesSuperAgentChanges() {
+        // Stop Being Super Agent changes nothing else a quiet row renders;
+        // a snapshot judged equal kept the badge and the nested Worker.
+        let marked = makeSnapshot(sessions: [
+            makeSession(id: "router", superAgent: true),
+            makeSession(id: "worker", superAgentRouterID: "router"),
+        ])
+        let cleared = makeSnapshot(sessions: [
+            makeSession(id: "router"),
+            makeSession(id: "worker"),
+        ])
+        let freedOnly = makeSnapshot(sessions: [
+            makeSession(id: "router", superAgent: true),
+            makeSession(id: "worker"),
+        ])
+
+        XCTAssertFalse(RemoteHostRuntime.snapshotContentEqual(marked, cleared))
+        XCTAssertFalse(RemoteHostRuntime.snapshotContentEqual(marked, freedOnly))
+    }
+
     func testContentEqualityNoticesWorkspaceSettingsChanges() {
         let first = makeSnapshot(workspaceSettings: makeWorkspaceSettings(menuAttention: true))
         let second = makeSnapshot(workspaceSettings: makeWorkspaceSettings(menuAttention: false))
@@ -3221,7 +3241,9 @@ final class RemoteHostRuntimeTests: XCTestCase {
         worktreePath: String? = nil,
         worktreeBranch: String? = nil,
         latestAlertBody: String? = nil,
-        latestAlertAt: Int64? = nil
+        latestAlertAt: Int64? = nil,
+        superAgent: Bool = false,
+        superAgentRouterID: String? = nil
     ) -> RemoteSessionSummary {
         RemoteSessionSummary(
             id: id,
@@ -3240,7 +3262,9 @@ final class RemoteHostRuntimeTests: XCTestCase {
             worktreeBranch: worktreeBranch,
             lastOutputPreview: preview,
             latestAlertBody: latestAlertBody,
-            latestAlertAtUnixMs: latestAlertAt
+            latestAlertAtUnixMs: latestAlertAt,
+            superAgent: superAgent,
+            superAgentRouterID: superAgentRouterID
         )
     }
 

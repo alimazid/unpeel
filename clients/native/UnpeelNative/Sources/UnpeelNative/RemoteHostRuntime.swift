@@ -3418,6 +3418,9 @@ final class RemoteHostRuntime: ObservableObject {
             && lhs.terminalBackgroundHex == rhs.terminalBackgroundHex
             && lhs.capabilities == rhs.capabilities
             && lhs.spinnerColorHex == rhs.spinnerColorHex
+            // Fork-only: the Super Agent badge and Worker nesting.
+            && lhs.superAgent == rhs.superAgent
+            && lhs.superAgentRouterID == rhs.superAgentRouterID
             // Alert-only polling changes must reach the desktop activity
             // dropdown even when their timestamps share one minute bucket.
             && lhs.latestAlertBody == rhs.latestAlertBody
