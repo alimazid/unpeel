@@ -15,7 +15,9 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use serde_json::{Map, Value};
 
 mod config;
-pub use config::{config_from_state, load_config, SupervisorConfig};
+pub use config::{
+    config_from_state, load_config, SupervisorConfig, SupervisorSetting, SUPERVISOR_SETTINGS,
+};
 mod controller;
 pub use controller::{
     clear_super_agent, hand_over_to_super_agent, set_super_agent, with_summary_fields,

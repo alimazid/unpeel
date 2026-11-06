@@ -16,7 +16,7 @@ import time
 import uuid
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from harness import BINARY, CRATES, run  # noqa: E402
+from harness import BINARY, CRATES, run, run_cli  # noqa: E402
 
 
 def git(repo, *words):
@@ -137,6 +137,22 @@ def body(case):
     worktree_row = next((row for row in listed.get("projects", []) if row.get("id") == child), {})
     case.check("list_projects lists the worktree under its root",
                worktree_row.get("kind") == "worktree" and worktree_row.get("worktree_branch") == "feature", str(worktree_row))
+
+    # 5. The supervisor's settings are scriptable with `unpeel settings`.
+    default = run_cli(home, ["settings", "get", "supervisor_max_children", "--json"])
+    case.check("supervisor_max_children reads its default",
+               default.returncode == 0 and json.loads(default.stdout or "{}").get("value") == 8, detail(default))
+    changed = run_cli(home, ["settings", "set", "supervisor_max_children", "4"])
+    case.check("unpeel settings sets it in app-state",
+               changed.returncode == 0 and home.state().get("supervisor_max_children") == 4, detail(changed))
+    refused = run_cli(home, ["settings", "set", "supervisor_stall_minutes", "7"])
+    case.check("a value off the menu is refused and nothing is written",
+               refused.returncode != 0 and "supervisor_stall_minutes" not in home.state(), detail(refused))
+    listed_settings = run_cli(home, ["settings", "list", "--json"])
+    values = json.loads(listed_settings.stdout or "{}")
+    case.check("settings list shows the supervisor keys",
+               values.get("supervisor_max_children") == 4 and values.get("supervisor_stall_minutes") == 20,
+               listed_settings.stdout[:400])
 
 
 run("super_agent_workspace", body)
