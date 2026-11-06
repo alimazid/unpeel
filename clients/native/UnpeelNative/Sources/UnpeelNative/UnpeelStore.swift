@@ -2967,32 +2967,52 @@ final class UnpeelStore: ObservableObject {
                     rawKind,
                     requiresNotifyWhenDone,
                     sendDesktop,
-                    suppressDeviceIDs
+                    suppressDeviceIDs,
+                    scheduleID,
+                    runNotifyWhenDone
                 )):
-                    guard HookServer.isKnownSession(sessionID),
+                    // Fork-only: a Run's notice may name no known Session.
+                    guard let target = NotificationTarget.resolve(
+                              sessionID: sessionID,
+                              sessionKnown: !sessionID.isEmpty
+                                  && HookServer.isKnownSession(sessionID),
+                              scheduleID: scheduleID
+                          ),
                           let kind = SessionPushKind(rawValue: rawKind)
                     else {
                         reply(404, #"{"error":"unknown session"}"#)
                         return
                     }
-                    let macObserved = self.observedSessionID == sessionID
-                    // Fork-only: the all-agents knob counts as an opt-in.
+                    let macObserved = target.sessionID.map { self.observedSessionID == $0 } ?? false
+                    // Fork-only: the all-agents knob counts as an opt-in; a
+                    // Run's task setting takes its place.
                     let eligible = NotifyWhenDoneAllAgents.isEligible(
                         requiresNotifyWhenDone: requiresNotifyWhenDone,
-                        sessionOptedIn: self.notifyWhenDoneSessionIDs.contains(sessionID),
-                        allAgents: self.notifyWhenDoneForAllAgents
+                        sessionOptedIn: target.sessionID
+                            .map(self.notifyWhenDoneSessionIDs.contains) ?? false,
+                        allAgents: self.notifyWhenDoneForAllAgents,
+                        runNotifyWhenDone: runNotifyWhenDone
                     )
                     if eligible {
                         if sendDesktop && !macObserved {
-                            DesktopNotifier.shared.notify(
-                                title: title,
-                                body: body,
-                                sessionID: sessionID,
-                                kind: kind.rawValue
-                            )
+                            if let sessionID = target.sessionID {
+                                DesktopNotifier.shared.notify(
+                                    title: title,
+                                    body: body,
+                                    sessionID: sessionID,
+                                    kind: kind.rawValue
+                                )
+                            } else {
+                                DesktopNotifier.shared.notifyRun(
+                                    title: title,
+                                    body: body,
+                                    bannerKey: target.bannerKey,
+                                    kind: kind.rawValue
+                                )
+                            }
                         }
                         self.dispatchPhonePush(
-                            sessionID: sessionID,
+                            sessionID: target.pushSessionID,
                             title: title,
                             body: body,
                             kind: kind,
