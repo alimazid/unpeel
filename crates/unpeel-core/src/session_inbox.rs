@@ -29,6 +29,7 @@ const DELIVERED_DIR: &str = "delivered";
 const LOCKS_DIR: &str = ".locks";
 const INFLIGHT_FILE: &str = "inflight.json";
 const MISSING_SINCE_FILE: &str = "missing-since";
+const HOLD_FILE: &str = "hold.json";
 const MAX_ID_BYTES: usize = 128;
 
 /// Stored text per item (summary + body); the rest is cut at enqueue.
@@ -170,6 +171,27 @@ pub struct ItemHeader {
 pub struct Listing {
     pub pending: Vec<ItemHeader>,
     pub delivered: Vec<ItemHeader>,
+}
+
+/// What is pending, for the supervisor's delivery gates.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct PendingStats {
+    pub items: usize,
+    /// At least one wake item: only those start a delivery.
+    pub wake: bool,
+    pub oldest_at: Option<u64>,
+    pub newest_at: Option<u64>,
+}
+
+/// `hold.json`: why the supervisor is not pasting this Inbox right now
+/// (`busy`, `no_agent_authority`, …), for `sessions inbox` and `report`
+/// results in other processes. Edge-written by the Host worker only while
+/// items are pending.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Hold {
+    pub reason: String,
+    /// Unix ms the supervisor first held for this reason.
+    pub since: u64,
 }
 
 /// Everything pending at claim time, pasted as one: wake and ride-along
@@ -318,6 +340,10 @@ pub fn gc(live_ids: &HashSet<String>) -> Result<Vec<String>> {
     Store::home().gc(live_ids, now_ms())
 }
 
+pub fn hold(session_id: &str) -> Option<Hold> {
+    Store::home().hold(session_id)
+}
+
 /// The Inbox store under one root: `Store::home` for the real one,
 /// `Store::at` for a temp directory in tests. Times are passed in so tests
 /// control them.
@@ -389,6 +415,60 @@ impl Store {
             item.priority == Priority::Wake
                 && !dir.join(DELIVERED_DIR).join(file_name(&item.id)).exists()
         })
+    }
+
+    /// Counts and enqueue times of what is pending (already-delivered
+    /// leftovers excluded, as in `has_wake_pending`).
+    pub fn pending_stats(&self, session_id: &str) -> PendingStats {
+        let Ok(dir) = self.dir(session_id) else {
+            return PendingStats::default();
+        };
+        read_items(&dir.join(PENDING_DIR))
+            .iter()
+            .filter(|item| !dir.join(DELIVERED_DIR).join(file_name(&item.id)).exists())
+            .fold(PendingStats::default(), |stats, item| PendingStats {
+                items: stats.items + 1,
+                wake: stats.wake || item.priority == Priority::Wake,
+                oldest_at: Some(stats.oldest_at.map_or(item.at, |at| at.min(item.at))),
+                newest_at: Some(stats.newest_at.map_or(item.at, |at| at.max(item.at))),
+            })
+    }
+
+    /// Every session id with an Inbox directory, sorted.
+    pub fn inbox_ids(&self) -> Vec<String> {
+        let Ok(entries) = fs::read_dir(&self.root) else {
+            return Vec::new();
+        };
+        let mut ids: Vec<String> = entries
+            .flatten()
+            .filter(|entry| entry.path().is_dir())
+            .map(|entry| entry.file_name().to_string_lossy().into_owned())
+            .filter(|id| valid_id(id))
+            .collect();
+        ids.sort();
+        ids
+    }
+
+    /// Publish (or, with `None`, clear) the current hold reason. Never
+    /// creates an Inbox: a session without pending items has nothing held.
+    pub fn set_hold(&self, session_id: &str, hold: Option<&Hold>) -> Result<()> {
+        let dir = self.dir(session_id)?;
+        let _lock = self.lock(session_id)?;
+        match hold {
+            Some(hold) if dir.join(PENDING_DIR).is_dir() => {
+                let bytes =
+                    serde_json::to_vec(hold).map_err(|error| InboxError::Io(error.to_string()))?;
+                write_bytes(&dir, HOLD_FILE, &bytes)
+            }
+            Some(_) => Ok(()),
+            None => remove_if_present(&dir.join(HOLD_FILE)),
+        }
+    }
+
+    /// The last published hold reason, if any.
+    pub fn hold(&self, session_id: &str) -> Option<Hold> {
+        let raw = fs::read(self.dir(session_id).ok()?.join(HOLD_FILE)).ok()?;
+        serde_json::from_slice(&raw).ok()
     }
 
     /// Claim everything pending for one paste. An earlier claim that was
@@ -532,6 +612,7 @@ impl Store {
         }
         remove_if_present(&source.join(INFLIGHT_FILE))?;
         remove_if_present(&source.join(MISSING_SINCE_FILE))?;
+        remove_if_present(&source.join(HOLD_FILE))?;
         if !target.exists() {
             return fs::rename(&source, &target).map_err(|error| io_error(&source, error));
         }
@@ -548,19 +629,14 @@ impl Store {
     /// directory down and respawns under the same id, and that gap must not
     /// cost a Router its queue. Returns the removed ids.
     pub fn gc(&self, live_ids: &HashSet<String>, now_ms: u64) -> Result<Vec<String>> {
-        let entries = match fs::read_dir(&self.root) {
-            Ok(entries) => entries,
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
-            Err(error) => return Err(io_error(&self.root, error)),
-        };
-        let ids: Vec<String> = entries
-            .flatten()
-            .filter(|entry| entry.path().is_dir())
-            .map(|entry| entry.file_name().to_string_lossy().into_owned())
-            .filter(|id| valid_id(id))
-            .collect();
+        if let Err(error) = fs::read_dir(&self.root) {
+            if error.kind() == std::io::ErrorKind::NotFound {
+                return Ok(Vec::new());
+            }
+            return Err(io_error(&self.root, error));
+        }
         let mut removed = Vec::new();
-        for id in ids {
+        for id in self.inbox_ids() {
             match self.sweep(&id, live_ids.contains(&id), now_ms) {
                 Ok(true) => removed.push(id),
                 Ok(false) => {}
@@ -1901,5 +1977,77 @@ mod tests {
             .unwrap()
             .is_empty());
         assert!(store.list("live").unwrap().delivered.is_empty());
+    }
+
+    #[test]
+    fn pending_stats_count_items_and_spot_a_wake_item() {
+        let (_tmp, store) = store();
+        assert_eq!(store.pending_stats("router"), PendingStats::default());
+        let progress = NewItem {
+            priority: Priority::RideAlong,
+            ..report("w1", "halfway")
+        };
+        store.enqueue("router", progress.clone(), 100).unwrap();
+        store.enqueue("router", progress, 250).unwrap();
+        assert_eq!(
+            store.pending_stats("router"),
+            PendingStats {
+                items: 2,
+                wake: false,
+                oldest_at: Some(100),
+                newest_at: Some(250),
+            }
+        );
+        let done = store.enqueue("router", report("w1", "done"), 400).unwrap();
+        let stats = store.pending_stats("router");
+        assert!(stats.wake);
+        assert_eq!((stats.items, stats.newest_at), (3, Some(400)));
+        store.ack_through("router", &done.item_id, 500).unwrap();
+        assert_eq!(store.pending_stats("router"), PendingStats::default());
+    }
+
+    #[test]
+    fn inbox_ids_list_every_inbox_directory() {
+        let (_tmp, store) = store();
+        assert!(store.inbox_ids().is_empty());
+        for id in ["b", "a"] {
+            store.enqueue(id, report("w1", "r0"), 1).unwrap();
+        }
+        // The lock directory is not an Inbox.
+        assert_eq!(store.inbox_ids(), ["a", "b"]);
+    }
+
+    #[test]
+    fn a_hold_reason_is_published_only_while_items_are_pending() {
+        let (_tmp, store) = store();
+        let busy = Hold {
+            reason: "busy".into(),
+            since: 7,
+        };
+        // No Inbox, no hold file: publishing never creates one.
+        store.set_hold("router", Some(&busy)).unwrap();
+        assert_eq!(store.hold("router"), None);
+        assert!(!store.root.join("router").exists());
+
+        store.enqueue("router", report("w1", "r0"), 1).unwrap();
+        store.set_hold("router", Some(&busy)).unwrap();
+        assert_eq!(store.hold("router"), Some(busy));
+        store.set_hold("router", None).unwrap();
+        assert_eq!(store.hold("router"), None);
+        store.set_hold("router", None).unwrap();
+    }
+
+    #[test]
+    fn transfer_drops_the_hold_reason_with_the_claim() {
+        let (_tmp, store) = store();
+        store.enqueue("old", report("w1", "r0"), 1).unwrap();
+        let held = Hold {
+            reason: "exited".into(),
+            since: 2,
+        };
+        store.set_hold("old", Some(&held)).unwrap();
+        store.transfer("old", "new").unwrap();
+        assert_eq!(store.hold("new"), None);
+        assert_eq!(pending_summaries(&store, "new"), ["r0"]);
     }
 }
