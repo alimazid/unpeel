@@ -17,7 +17,7 @@ pub const HELP: &str = "\
 usage: unpeel schedules [list] [--json]
        unpeel schedules add <name> --project <id|name> --preset <id|label>
                             (--once <YYYY-MM-DDTHH:MM[:SS]> | --daily <HH:MM[:SS]>)
-                            [--no-notify] [--json]
+                            [--instructions <text>] [--no-notify] [--json]
        unpeel schedules run <id|name> [--json]
        unpeel schedules history <id|name> [--json]
        unpeel schedules rm <id|name>
@@ -26,7 +26,11 @@ A Scheduled Task starts a Session from a preset in a Project each time its
 Trigger comes due, on this Host's local wall clock. The Host fires it while
 `unpeel serve` runs, with the app open or not; a time missed while the Host
 was down runs once when it is back. `run` starts a Run now. Only the user
-changes tasks: add, run and rm refuse inside a Session.";
+changes tasks: add, run and rm refuse inside a Session.
+
+--instructions is for an Agent Preset (one that starts an agent Unpeel can
+tell is ready): each Run launches it as typed, types the instructions once
+the agent is ready, and follows it to done or needs you. Up to 256 KiB.";
 
 /// Most characters a task name keeps.
 const MAX_NAME_CHARS: usize = 200;
@@ -37,7 +41,7 @@ struct Args {
     switches: std::collections::HashSet<String>,
 }
 
-const VALUE_FLAGS: &[&str] = &["project", "preset", "once", "daily"];
+const VALUE_FLAGS: &[&str] = &["project", "preset", "once", "daily", "instructions"];
 const SWITCHES: &[&str] = &["json", "no-notify", "help"];
 
 fn parse(args: &[String]) -> Result<Args, String> {
@@ -143,6 +147,7 @@ fn schedule_json(schedule: &Schedule) -> Value {
         "name": schedule.name,
         "project_id": schedule.project_id,
         "preset_id": schedule.preset_id,
+        "instructions": schedule.instructions,
         "trigger": schedule.trigger,
         "enabled": schedule.enabled,
         "notify_when_done": schedule.notify_when_done,
@@ -202,6 +207,9 @@ fn run_line(run: &ScheduleRun) -> String {
         run.status.word(),
         run.scheduled_for.as_deref().unwrap_or("run now")
     );
+    if let Some(phase) = run.phase.filter(|_| run.status.is_in_progress()) {
+        line.push_str(&format!("  ({})", phase.word()));
+    }
     if run.late {
         line.push_str("  late");
     }
@@ -220,6 +228,9 @@ fn run_line(run: &ScheduleRun) -> String {
     if let Some(reason) = &run.reason {
         line.push_str(&format!("  ({reason})"));
     }
+    if let Some(snippet) = &run.snippet {
+        line.push_str(&format!("\n    {snippet}"));
+    }
     line
 }
 
@@ -234,9 +245,10 @@ fn add(args: &Args, json: bool) -> Result<(), String> {
     let name = add_name(args)?;
     let trigger = add_trigger(args)?;
     let project_id = resolve_project(required(args, "project")?)?;
-    let preset_id = resolve_preset(required(args, "preset")?, &project_id)?;
+    let (preset_id, preset_command) = resolve_preset(required(args, "preset")?, &project_id)?;
+    let instructions = add_instructions(args, &preset_id, &preset_command)?;
     let id = format!("sch_{}", uuid::Uuid::new_v4());
-    let entry = json!({
+    let mut entry = json!({
         "id": id,
         "name": name,
         "project_id": project_id,
@@ -246,6 +258,9 @@ fn add(args: &Args, json: bool) -> Result<(), String> {
         "notify_when_done": !args.switches.contains("no-notify"),
         "created_at_ms": clock::epoch_ms(&clock::now()),
     });
+    if let Some(instructions) = instructions {
+        entry["instructions"] = Value::String(instructions);
+    }
     unpeel_core::app_state::edit(|state| {
         schedules_mut(state)?.push(entry.clone());
         Ok(())
@@ -303,6 +318,27 @@ fn add_trigger(args: &Args) -> Result<ScheduleTrigger, String> {
     }
 }
 
+/// `--instructions`: only an Agent Preset takes them (ADR 0005), and no more
+/// than a create may type.
+fn add_instructions(args: &Args, preset_id: &str, command: &str) -> Result<Option<String>, String> {
+    let Some(text) = args.values.get("instructions") else {
+        return Ok(None);
+    };
+    if text.trim().is_empty() {
+        return Err("--instructions cannot be empty".into());
+    }
+    if text.len() > unpeel_core::initial_text::MAX_INITIAL_TEXT_BYTES {
+        return Err("--instructions are longer than 256 KiB".into());
+    }
+    if !unpeel_core::agent_readiness::is_agent_command(command) {
+        return Err(format!(
+            "the preset {preset_id} is not an Agent Preset: its command ({command}) does not \
+             start an agent Unpeel can tell is ready, so it cannot take --instructions"
+        ));
+    }
+    Ok(Some(text.clone()))
+}
+
 fn required<'a>(args: &'a Args, flag: &str) -> Result<&'a str, String> {
     args.values
         .get(flag)
@@ -334,10 +370,10 @@ fn resolve_project(selector: &str) -> Result<String, String> {
 }
 
 /// An enabled preset by id, then by unique label: the Project's own and the
-/// global ones, the catalog a Run resolves against.
-fn resolve_preset(selector: &str, project_id: &str) -> Result<String, String> {
+/// global ones, the catalog a Run resolves against. Its id and command.
+fn resolve_preset(selector: &str, project_id: &str) -> Result<(String, String), String> {
     let state = unpeel_serve::sessions::load_app_state();
-    let mut presets: Vec<(String, String)> = state
+    let mut stored: Vec<_> = state
         .iter()
         .flat_map(|state| &state.presets)
         .filter(|preset| {
@@ -347,23 +383,38 @@ fn resolve_preset(selector: &str, project_id: &str) -> Result<String, String> {
                     .as_deref()
                     .is_none_or(|id| id == project_id)
         })
-        .map(|preset| (preset.id.clone(), preset.label.clone()))
+        .collect();
+    // The Project's own preset comes first, as when a Run resolves it.
+    stored.sort_by_key(|preset| preset.project_id.is_none());
+    // (id, label, command)
+    let mut presets: Vec<(String, String, String)> = stored
+        .into_iter()
+        .map(|preset| {
+            (
+                preset.id.clone(),
+                preset.label.clone(),
+                preset.command.clone(),
+            )
+        })
         .collect();
     if let Some(overlay) = unpeel_serve::overlay::load() {
-        presets.extend(
-            overlay
-                .presets
-                .iter()
-                .map(|(label, _)| (format!("overlay-{label}"), label.clone())),
-        );
+        presets.extend(overlay.presets.iter().map(|(label, command)| {
+            (format!("overlay-{label}"), label.clone(), command.clone())
+        }));
     }
-    pick(
+    let id = pick(
         "preset",
         selector,
         presets
             .iter()
-            .map(|(id, label)| (id.as_str(), label.as_str())),
-    )
+            .map(|(id, label, _)| (id.as_str(), label.as_str())),
+    )?;
+    let command = presets
+        .iter()
+        .find(|(candidate, _, _)| *candidate == id)
+        .map(|(_, _, command)| command.clone())
+        .unwrap_or_default();
+    Ok((id, command))
 }
 
 /// The id `selector` names: an exact id first, then a unique name.

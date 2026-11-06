@@ -12,8 +12,9 @@
 //! still in progress is recorded as skipped.
 
 use jiff::Zoned;
-use unpeel_core::schedules::{RunStatus, Schedule, ScheduleClock, ScheduleRun};
+use unpeel_core::schedules::{RunPhase, RunStatus, Schedule, ScheduleClock, ScheduleRun};
 
+use super::agent_run::{self, AgentObservation};
 use super::clock;
 use super::trigger::Trigger;
 
@@ -30,6 +31,10 @@ pub struct LaunchPlan {
     pub cwd: String,
     pub worktree_path: Option<String>,
     pub worktree_branch: Option<String>,
+    /// Typed into the agent once it is ready; `Some` only on an Agent
+    /// Preset. A Run with instructions follows the agent lifecycle
+    /// (`agent_run`), one without follows its command's exit.
+    pub instructions: Option<String>,
 }
 
 /// What the Host sees of a running Run's Session.
@@ -49,6 +54,8 @@ pub enum RunObservation {
     Missing,
     /// The Session could not be started.
     SpawnFailed(String),
+    /// An agent Run's Session is up and its command has not exited.
+    Agent(AgentObservation),
 }
 
 /// One task as the step sees it.
@@ -225,8 +232,12 @@ fn step_task(
     actions.extend(runs);
 }
 
-/// The running Run's final line, once its Session says how it ended.
+/// The Run's next line, once its Session says how it ended (a script Run)
+/// or where its agent is (an agent Run, `agent_run`).
 fn finish(run: &ScheduleRun, observation: &RunObservation, now_ms: u64) -> Option<ScheduleRun> {
+    if run.phase.is_some() && run.status.is_in_progress() {
+        return agent_run::advance(run, observation, now_ms);
+    }
     if run.status != RunStatus::Running {
         return None;
     }
@@ -237,22 +248,11 @@ fn finish(run: &ScheduleRun, observation: &RunObservation, now_ms: u64) -> Optio
             Some(*code),
             Some(format!("the command exited with status {code}")),
         ),
-        RunObservation::Ended => (
-            RunStatus::Failed,
-            None,
-            Some("the Session ended before its command reported an exit status".to_string()),
-        ),
-        RunObservation::Missing => (
-            RunStatus::Failed,
-            None,
-            Some("the Run's Session no longer exists".to_string()),
-        ),
-        RunObservation::SpawnFailed(error) => (
-            RunStatus::Failed,
-            None,
-            Some(format!("the Session could not start: {error}")),
-        ),
-        RunObservation::Idle | RunObservation::Launching | RunObservation::Live => return None,
+        RunObservation::Idle
+        | RunObservation::Launching
+        | RunObservation::Live
+        | RunObservation::Agent(_) => return None,
+        lost => (RunStatus::Failed, None, session_lost(lost)),
     };
     Some(ScheduleRun {
         status,
@@ -261,6 +261,24 @@ fn finish(run: &ScheduleRun, observation: &RunObservation, now_ms: u64) -> Optio
         ended_at_ms: Some(now_ms),
         ..run.clone()
     })
+}
+
+/// Why a Run whose Session went away failed; `None` while it is still there.
+pub(super) fn session_lost(observation: &RunObservation) -> Option<String> {
+    match observation {
+        RunObservation::Ended => {
+            Some("the Session ended before its command reported an exit status".to_string())
+        }
+        RunObservation::Missing => Some("the Run's Session no longer exists".to_string()),
+        RunObservation::SpawnFailed(error) => {
+            Some(format!("the Session could not start: {error}"))
+        }
+        RunObservation::Idle
+        | RunObservation::Launching
+        | RunObservation::Live
+        | RunObservation::Exited(_)
+        | RunObservation::Agent(_) => None,
+    }
 }
 
 /// Start the Run, or record it failed when it cannot start (the Project or
@@ -283,11 +301,16 @@ fn launch(
         exit_code: None,
         reason: None,
         snippet: None,
+        phase: None,
+        prompted_at_ms: None,
     };
     match &task.launch {
         Ok(plan) => Action::Start {
             schedule_id: task.schedule.id.clone(),
-            run,
+            run: ScheduleRun {
+                phase: plan.instructions.as_ref().map(|_| RunPhase::Launching),
+                ..run
+            },
             plan: plan.clone(),
         },
         Err(reason) => record(
@@ -319,6 +342,8 @@ fn skipped(
         exit_code: None,
         reason: Some(reason.to_string()),
         snippet: None,
+        phase: None,
+        prompted_at_ms: None,
     }
 }
 
@@ -360,6 +385,7 @@ mod tests {
             cwd: "/tmp".into(),
             worktree_path: None,
             worktree_branch: None,
+            instructions: None,
         }
     }
 
@@ -370,6 +396,7 @@ mod tests {
                 name: "Morning".into(),
                 project_id: "p".into(),
                 preset_id: "ok".into(),
+                instructions: None,
                 trigger,
                 enabled: true,
                 notify_when_done: true,
@@ -408,6 +435,8 @@ mod tests {
             exit_code: None,
             reason: None,
             snippet: None,
+            phase: None,
+            prompted_at_ms: None,
         });
         task.observation = observation;
         task

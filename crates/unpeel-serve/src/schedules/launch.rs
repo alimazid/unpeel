@@ -40,7 +40,32 @@ pub fn resolve(
         cwd,
         worktree_path: project.worktree_path.clone(),
         worktree_branch: project.worktree_branch.clone(),
+        instructions: instructions(schedule, preset)?,
     })
+}
+
+/// The task's instructions, when its preset can take them: an Agent Preset
+/// (a runtime Unpeel can tell is ready), within the create path's cap. A
+/// preset edited into a plain command since the task was saved fails the
+/// Run rather than typing the instructions into a shell.
+fn instructions(schedule: &Schedule, preset: &HostCreatePreset) -> Result<Option<String>, String> {
+    let Some(text) = schedule
+        .instructions
+        .as_deref()
+        .filter(|text| !text.trim().is_empty())
+    else {
+        return Ok(None);
+    };
+    if !unpeel_core::agent_readiness::is_agent_command(&preset.command) {
+        return Err(format!(
+            "the preset {} is not an Agent Preset, so it cannot take the task's instructions",
+            preset.id
+        ));
+    }
+    if text.len() > unpeel_core::initial_text::MAX_INITIAL_TEXT_BYTES {
+        return Err("the task's instructions are longer than 256 KiB".into());
+    }
+    Ok(Some(text.to_owned()))
 }
 
 #[cfg(test)]
@@ -54,6 +79,7 @@ mod tests {
             name: "Morning".into(),
             project_id: project_id.into(),
             preset_id: preset_id.into(),
+            instructions: None,
             trigger: ScheduleTrigger::Unknown,
             enabled: true,
             notify_when_done: true,
@@ -136,5 +162,45 @@ mod tests {
 
         let elsewhere = preset("ok", "true", Some("other"));
         assert!(resolve(&schedule("p", "ok"), &[project("p", "/work")], &[elsewhere]).is_err());
+    }
+
+    fn with_instructions(preset_id: &str, instructions: &str) -> Schedule {
+        Schedule {
+            instructions: Some(instructions.into()),
+            ..schedule("p", preset_id)
+        }
+    }
+
+    #[test]
+    fn an_agent_presets_run_carries_its_instructions() {
+        let presets = [
+            preset("claude", "claude --model opus", None),
+            preset("ok", "true", None),
+        ];
+        let projects = [project("p", "/work")];
+        let plan = resolve(&with_instructions("claude", "brief me"), &projects, &presets)
+            .expect("launchable");
+        assert_eq!(plan.instructions.as_deref(), Some("brief me"));
+        assert_eq!(plan.command, "claude --model opus", "launched as typed");
+
+        // Blank instructions are none: the Run follows its command's exit.
+        let blank = resolve(&with_instructions("claude", "  \n"), &projects, &presets).unwrap();
+        assert_eq!(blank.instructions, None);
+        let script = resolve(&schedule("p", "ok"), &projects, &presets).unwrap();
+        assert_eq!(script.instructions, None);
+    }
+
+    #[test]
+    fn instructions_the_preset_cannot_take_are_the_reason_it_cannot_start() {
+        let presets = [preset("ok", "true", None), preset("claude", "claude", None)];
+        let projects = [project("p", "/work")];
+        let script = resolve(&with_instructions("ok", "brief me"), &projects, &presets);
+        assert!(
+            script.as_ref().unwrap_err().contains("not an Agent Preset"),
+            "{script:?}"
+        );
+        let huge = "x".repeat(unpeel_core::initial_text::MAX_INITIAL_TEXT_BYTES + 1);
+        let too_long = resolve(&with_instructions("claude", &huge), &projects, &presets);
+        assert!(too_long.unwrap_err().contains("256 KiB"));
     }
 }
