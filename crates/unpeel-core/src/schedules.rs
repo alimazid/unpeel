@@ -349,15 +349,25 @@ pub fn fold_runs(lines: impl IntoIterator<Item = ScheduleRun>) -> Vec<ScheduleRu
 /// the one in progress, if any — an occurrence skipped behind it never
 /// takes its place, so the Host keeps following it, it keeps blocking the
 /// next occurrence and Run now, and Controllers keep showing it — else the
-/// newest outcome (when it ended, or started), the later Run on a tie.
+/// newest outcome (when it ended, or started), the later Run on a tie. A
+/// Run that says nothing of its time counts as new as the Runs before it.
 pub fn current_run(runs: &[ScheduleRun]) -> Option<&ScheduleRun> {
     if let Some(live) = runs.iter().rev().find(|run| run.status.is_in_progress()) {
         return Some(live);
     }
-    runs.iter()
-        .enumerate()
-        .max_by_key(|(index, run)| (run.ended_at_ms.or(run.started_at_ms), *index))
-        .map(|(_, run)| run)
+    let mut newest: Option<(u64, &ScheduleRun)> = None;
+    let mut latest_seen = 0;
+    for run in runs {
+        let at = run
+            .ended_at_ms
+            .or(run.started_at_ms)
+            .unwrap_or(latest_seen);
+        latest_seen = latest_seen.max(at);
+        if newest.is_none_or(|(best, _)| at >= best) {
+            newest = Some((at, run));
+        }
+    }
+    newest.map(|(_, run)| run)
 }
 
 /// A task's `clock.json`: the last occurrence the Host fired (the due rule's
@@ -675,7 +685,16 @@ mod tests {
             ended_at_ms: Some(15),
             ..finished
         };
-        assert_eq!(current_run(&[earlier, skipped.clone()]), Some(&skipped));
+        assert_eq!(
+            current_run(&[earlier.clone(), skipped.clone()]),
+            Some(&skipped)
+        );
+        // A line that says nothing of its time reads at its place in the log.
+        let timeless = run_at("run_from_disk", RunStatus::Skipped, None, None);
+        assert_eq!(
+            current_run(&[earlier, timeless.clone()]),
+            Some(&timeless)
+        );
         assert_eq!(current_run(&[]), None);
     }
 
