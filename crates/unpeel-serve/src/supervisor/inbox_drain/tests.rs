@@ -376,6 +376,66 @@ fn the_hourly_budget_counts_pastes_per_target() {
     assert_eq!(fx.pastes().len(), 2);
 }
 
+/// A two-row screen whose second row is the input line `text`, the cursor
+/// at `col`, and `suggestion` the faint byte range the Host reported there.
+fn input_screen(
+    text: &str,
+    col: u16,
+    suggestion: Option<(u32, u32)>,
+) -> unpeel_core::terminal_viewport::TerminalViewportSnapshot {
+    let mut snapshot = serde_json::json!({
+        "cols": 80, "rows": 2, "outputOffset": 0, "truncated": false,
+        "cursorRow": 1, "cursorCol": col, "scrollbackRows": 0,
+        "viewportStartRow": 0, "scrollOffsetRows": 0,
+        "viewportRows": [{ "text": "", "styles": [] }, { "text": text, "styles": [] }],
+    });
+    if let Some((start, end)) = suggestion {
+        snapshot["suggestedInput"] =
+            serde_json::json!({ "row": 1, "byteStart": start, "byteEnd": end });
+    }
+    serde_json::from_value(snapshot).unwrap()
+}
+
+#[test]
+fn the_input_line_leaves_out_suggested_input() {
+    let empty = cursor_line(&input_screen("> ", 2, None));
+    assert_eq!(
+        empty,
+        CursorLine {
+            text: ">".into(),
+            col: 2
+        }
+    );
+    let suggested = cursor_line(&input_screen("> leave the epic", 2, Some((2, 16))));
+    assert_eq!(suggested, empty, "a suggestion is not typed input");
+    let typed = cursor_line(&input_screen("> leave", 7, None));
+    assert_ne!(typed, empty);
+}
+
+#[test]
+fn a_suggestion_appearing_on_the_input_line_does_not_hold_the_paste() {
+    let mut fx = fixture();
+    fx.io
+        .with(|world| world.cursor = Some(cursor_line(&input_screen("> ", 2, None))));
+    report(&fx, "result", T0 - 10_000);
+    let idle = router(Status::Idle);
+    fx.step(&router(Status::Busy), T0);
+    // The baseline is the empty prompt; then Claude Code paints its
+    // suggested reply there, faint, with the cursor still at its start.
+    report(&fx, "more", T0 + 50);
+    fx.step(&idle, T0 + 100);
+    assert_eq!(fx.hold().as_deref(), Some("debounce"));
+    fx.io.with(|world| {
+        world.cursor = Some(cursor_line(&input_screen(
+            "> leave the epic",
+            2,
+            Some((2, 16)),
+        )));
+    });
+    fx.step_and_settle(&idle, T0 + 3_000);
+    assert_eq!(fx.pastes().len(), 1, "a suggestion is not a draft");
+}
+
 #[test]
 fn a_changed_input_line_holds_the_paste_and_tells_the_user_once() {
     let mut fx = fixture();

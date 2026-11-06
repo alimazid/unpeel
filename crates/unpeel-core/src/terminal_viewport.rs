@@ -135,6 +135,29 @@ impl TerminalViewportSnapshot {
             .text
             .get(suggested.byte_start as usize..suggested.byte_end as usize)
     }
+
+    /// The cursor's row, right-trimmed, with the suggested input cut out:
+    /// what is really on an input line. `None` when the cursor row is
+    /// outside `viewport_rows`.
+    pub fn cursor_row_text_without_suggestion(&self) -> Option<String> {
+        let cursor_row = (self.scrollback_rows + u32::from(self.cursor_row))
+            .checked_sub(self.viewport_start_row)? as usize;
+        let text = &self.viewport_rows.get(cursor_row)?.text;
+        let suggested = self
+            .suggested_input
+            .as_ref()
+            .filter(|suggested| usize::from(suggested.row) == cursor_row)
+            .filter(|_| self.suggested_input_text().is_some());
+        let without = match suggested {
+            Some(suggested) => format!(
+                "{}{}",
+                &text[..suggested.byte_start as usize],
+                &text[suggested.byte_end as usize..]
+            ),
+            None => text.clone(),
+        };
+        Some(without.trim_end().to_owned())
+    }
 }
 
 /// DEC private modes that shape input semantics and are worth re-asserting
@@ -2211,6 +2234,57 @@ mod tests {
         let suggested = snapshot.suggested_input.as_ref().expect("suggested input");
         assert_eq!(suggested.byte_start as usize, "日本 ".len());
         assert_eq!(snapshot.suggested_input_text(), Some("ghost"));
+    }
+
+    #[test]
+    fn cursor_row_text_leaves_out_the_suggestion() {
+        let empty = render_terminal_viewport_from_bytes(
+            "\x1b[38;2;153;153;153m❯\u{a0}\x1b[39m".as_bytes(),
+            40,
+            2,
+            0,
+            false,
+            0,
+            None,
+        );
+        let suggested =
+            render_terminal_viewport_from_bytes(CLAUDE_SUGGESTION_ROW, 40, 2, 0, false, 0, None);
+        let typed = render_terminal_viewport_from_bytes(
+            "❯\u{a0}fix\x1b[1;3H".as_bytes(),
+            40,
+            2,
+            0,
+            false,
+            0,
+            None,
+        );
+
+        assert_eq!(
+            empty.cursor_row_text_without_suggestion().as_deref(),
+            Some("❯")
+        );
+        assert_eq!(
+            suggested.cursor_row_text_without_suggestion(),
+            empty.cursor_row_text_without_suggestion()
+        );
+        assert_eq!(
+            typed.cursor_row_text_without_suggestion().as_deref(),
+            Some("❯\u{a0}fix")
+        );
+    }
+
+    #[test]
+    fn cursor_row_text_follows_the_cursor_into_a_window() {
+        let mut bytes = numbered_lines(30);
+        bytes.extend_from_slice(b"\r\n> typed \x1b[2mghost\x1b[22m\x1b[5D");
+        let tail = render_terminal_viewport_from_bytes(&bytes, 20, 5, 0, false, 0, Some(2));
+        assert_eq!(
+            tail.cursor_row_text_without_suggestion().as_deref(),
+            Some("> typed")
+        );
+
+        let scrolled = render_terminal_viewport_from_bytes(&bytes, 20, 5, 0, false, 10, None);
+        assert_eq!(scrolled.cursor_row_text_without_suggestion(), None);
     }
 
     #[test]
