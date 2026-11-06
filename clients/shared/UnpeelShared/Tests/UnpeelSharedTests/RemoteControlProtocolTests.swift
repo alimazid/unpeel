@@ -757,6 +757,46 @@ final class RemoteControlProtocolTests: XCTestCase {
         XCTAssertNil(object["providerID"])
     }
 
+    // Fork-only: the Host publishes who is the Super Agent and whom each
+    // Worker reports to; older Hosts omit both fields.
+    func testSessionSummaryDecodesTheSuperAgentFieldsTolerantly() throws {
+        let worker = """
+        {"id":"w1","projectID":"p1","title":"t","command":"codex",
+         "createdAtUnixMs":1,"status":"running","activity":"idle",
+         "superAgent":false,"superAgentRouterID":"router-1"}
+        """
+        let decodedWorker = try JSONDecoder().decode(
+            RemoteSessionSummary.self, from: Data(worker.utf8)
+        )
+        XCTAssertFalse(decodedWorker.superAgent)
+        XCTAssertEqual(decodedWorker.superAgentRouterID, "router-1")
+
+        let router = """
+        {"id":"router-1","projectID":"p1","title":"t","command":"claude",
+         "createdAtUnixMs":1,"status":"running","activity":"idle","superAgent":true}
+        """
+        let decodedRouter = try JSONDecoder().decode(
+            RemoteSessionSummary.self, from: Data(router.utf8)
+        )
+        XCTAssertTrue(decodedRouter.superAgent)
+        XCTAssertNil(decodedRouter.superAgentRouterID)
+        let encoded = try JSONEncoder().encode(decodedRouter)
+        let object = try XCTUnwrap(
+            JSONSerialization.jsonObject(with: encoded) as? [String: Any]
+        )
+        XCTAssertEqual(object["superAgent"] as? Bool, true)
+
+        let older = """
+        {"id":"s1","projectID":"p1","title":"t","command":"claude",
+         "createdAtUnixMs":1,"status":"running","activity":"idle"}
+        """
+        let decodedOlder = try JSONDecoder().decode(
+            RemoteSessionSummary.self, from: Data(older.utf8)
+        )
+        XCTAssertFalse(decodedOlder.superAgent)
+        XCTAssertNil(decodedOlder.superAgentRouterID)
+    }
+
     func testViewportFrameRoundTripsStyledCells() throws {
         let frame = RemoteViewportFrame(
             sessionID: "session-1",
