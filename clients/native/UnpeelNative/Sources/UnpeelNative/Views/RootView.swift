@@ -689,13 +689,18 @@ struct ActivityMenuSessions {
     /// Fork-only: pinned sessions and the Super Agent in none of the
     /// groups above.
     let pinned: [SessionEntry]
+    /// Fork-only: running Workers in none of the groups above (the idle
+    /// ones), listed under the Super Agent in AGENTS only. Candidates come
+    /// from `WorkspaceActivityMenuSlice.runningWorkers(in:)`.
+    let workers: [SessionEntry]
 
     init(
         nodes: [ProjectNode],
         allSessions: [SessionEntry],
         jobs: [SessionEntry],
         finished: [SessionEntry],
-        pinned: [SessionEntry] = []
+        pinned: [SessionEntry] = [],
+        workers: [SessionEntry] = []
     ) {
         var blockerCandidates: [SessionEntry] = []
         func collectBlockers(_ nodes: [ProjectNode]) {
@@ -729,6 +734,10 @@ struct ActivityMenuSessions {
         let shownIDs = blockerIDs.union(self.jobs.map(\.id))
         self.finished = Self.uniqued(finished, excluding: shownIDs)
         self.pinned = Self.uniqued(pinned, excluding: shownIDs.union(self.finished.map(\.id)))
+        self.workers = Self.uniqued(
+            workers,
+            excluding: shownIDs.union(self.finished.map(\.id)).union(self.pinned.map(\.id))
+        )
     }
 
     var sectionCount: Int {
@@ -839,6 +848,10 @@ struct ActivityMenuList: View {
     /// Fork-only: the AGENTS section's always-visible pinned sessions and
     /// Super Agent, after every activity group. The dropdowns leave it empty.
     var pinned: [GlobalActivityMenuItem] = []
+    /// Fork-only: AGENTS lists the Super Agent's running Workers indented
+    /// under it; `workers` are its idle ones. The dropdowns never nest.
+    var workers: [GlobalActivityMenuItem] = []
+    var nestsWorkers = false
     let onSelect: (GlobalActivityMenuItem) -> Void
     /// Footer link to the app-wide "All recent" page.
     let onShowAll: (() -> Void)?
@@ -886,7 +899,8 @@ struct ActivityMenuList: View {
                         // AGENTS row's inline rename draft.
                         ForEach(Self.entries(
                             blockers: blockers, jobs: jobs,
-                            finished: finished, pinned: pinned
+                            finished: finished, pinned: pinned,
+                            workers: workers, nestsWorkers: nestsWorkers
                         )) { entry in
                             switch entry {
                             case let .row(item, style):
@@ -923,33 +937,50 @@ struct ActivityMenuList: View {
     }
 
     /// Attention is actionable, so blockers always lead; dividers separate
-    /// non-empty groups, and pinned rows come last.
+    /// non-empty groups, and pinned rows come last. With `nestsWorkers`
+    /// (AGENTS), the Super Agent's running Workers follow its row instead,
+    /// and `workers` — its idle ones — are listed there only.
     static func entries(
         blockers: [GlobalActivityMenuItem],
         jobs: [GlobalActivityMenuItem],
         finished: [GlobalActivityMenuItem],
-        pinned: [GlobalActivityMenuItem]
+        pinned: [GlobalActivityMenuItem],
+        workers: [GlobalActivityMenuItem] = [],
+        nestsWorkers: Bool = false
     ) -> [Entry] {
+        let nesting = nestsWorkers
+            ? SuperAgentNesting([
+                (blockers, .blocked), (jobs, .working), (finished, .finished),
+                (pinned, .pinned), (workers, .idle),
+            ])
+            : .none
+        let shownBlockers = nesting.topLevel(blockers)
+        let shownJobs = nesting.topLevel(jobs)
+        let shownFinished = nesting.topLevel(finished)
+        let shownPinned = nesting.topLevel(pinned)
         var entries: [Entry] = []
         var seen = Set<String>()
         func append(_ items: [GlobalActivityMenuItem], _ style: ActivityMenuRowStyle) {
             for item in items where seen.insert(item.id).inserted {
                 entries.append(.row(item, style))
+                for worker in nesting.workers(under: item) where seen.insert(worker.item.id).inserted {
+                    entries.append(.row(worker.item, worker.style))
+                }
             }
         }
-        append(blockers, ActivityMenuRowStyle(unread: false, working: false, blocked: true, pinned: false))
-        if !blockers.isEmpty && (!jobs.isEmpty || !finished.isEmpty) {
+        append(shownBlockers, .blocked)
+        if !shownBlockers.isEmpty && (!shownJobs.isEmpty || !shownFinished.isEmpty) {
             entries.append(.divider("blockers"))
         }
-        append(jobs, ActivityMenuRowStyle(unread: false, working: true, blocked: false, pinned: false))
-        if !jobs.isEmpty && !finished.isEmpty {
+        append(shownJobs, .working)
+        if !shownJobs.isEmpty && !shownFinished.isEmpty {
             entries.append(.divider("jobs"))
         }
-        append(finished, ActivityMenuRowStyle(unread: true, working: false, blocked: false, pinned: false))
-        if !pinned.isEmpty && (!blockers.isEmpty || !jobs.isEmpty || !finished.isEmpty) {
+        append(shownFinished, .finished)
+        if !shownPinned.isEmpty && (!shownBlockers.isEmpty || !shownJobs.isEmpty || !shownFinished.isEmpty) {
             entries.append(.divider("pinned"))
         }
-        append(pinned, ActivityMenuRowStyle(unread: false, working: false, blocked: false, pinned: true))
+        append(shownPinned, .pinned)
         return entries
     }
 
@@ -972,12 +1003,19 @@ struct ActivityMenuList: View {
         ) {
             onSelect(item)
         }
-        if let wrapRow {
-            wrapRow(item, style, AnyView(plain))
-        } else {
-            plain
+        Group {
+            if let wrapRow {
+                wrapRow(item, style, AnyView(plain))
+            } else {
+                plain
+            }
         }
+        // Fork-only: a Worker under its Super Agent, inline rows included.
+        .padding(.leading, CGFloat(style.depth) * Self.nestedIndent)
     }
+
+    /// Fork-only: one nesting step, the sidebar's.
+    static let nestedIndent: CGFloat = 14
 }
 
 /// Fork-only: which activity group a row renders as, for `wrapRow`.
@@ -986,6 +1024,23 @@ struct ActivityMenuRowStyle: Equatable {
     let working: Bool
     let blocked: Bool
     let pinned: Bool
+    /// 1 for a Worker listed under its Super Agent in AGENTS.
+    var depth = 0
+
+    static let blocked = ActivityMenuRowStyle(unread: false, working: false, blocked: true, pinned: false)
+    static let working = ActivityMenuRowStyle(unread: false, working: true, blocked: false, pinned: false)
+    static let finished = ActivityMenuRowStyle(unread: true, working: false, blocked: false, pinned: false)
+    static let pinned = ActivityMenuRowStyle(unread: false, working: false, blocked: false, pinned: true)
+    /// An idle Worker that only its Super Agent lists.
+    static let idle = ActivityMenuRowStyle(unread: false, working: false, blocked: false, pinned: false)
+
+    /// The same look, one level in.
+    func nested() -> ActivityMenuRowStyle {
+        ActivityMenuRowStyle(
+            unread: unread, working: working, blocked: blocked, pinned: pinned,
+            depth: depth + 1
+        )
+    }
 }
 
 /// Footer row of the activity dropdowns: opens the app-wide "All recent"
