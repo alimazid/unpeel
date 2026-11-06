@@ -2583,7 +2583,28 @@ fn restart_session_unlocked(
         }
         return Err(message);
     }
+    if !keep_id {
+        follow_replaced_run_session(&old.session, session_id, &replacement_id);
+    }
     Ok(replacement_id)
+}
+
+/// A Scheduled Task's Runs keep opening a Run Session that a Resume
+/// replaced under a new id. Best effort: the replacement already runs, and
+/// a Run that still names the old id only loses its link.
+fn follow_replaced_run_session(old: &SessionInfo, old_id: &str, new_id: &str) {
+    let Some(task) = crate::schedules::run_sessions::schedule_id(old.spawned_by.as_deref()) else {
+        return;
+    };
+    match crate::schedule_store::TaskStore::for_schedule(task)
+        .and_then(|store| store.replace_session(old_id, new_id))
+    {
+        Ok(true) => crate::state_bus::announce(crate::state_bus::Change::Schedules, None),
+        Ok(false) => {}
+        Err(error) => {
+            log::warn!("Runs of {task} still name {old_id}, replaced by {new_id}: {error}")
+        }
+    }
 }
 
 /// Best-effort cleanup for every failure after the original Session has been

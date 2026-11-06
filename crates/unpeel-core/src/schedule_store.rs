@@ -127,6 +127,43 @@ impl TaskStore {
         Ok(schedules::current_run(&self.runs()?).cloned())
     }
 
+    /// Point every Run line naming `old_session_id` at `new_session_id`:
+    /// Resume relaunches a Run Session under a new id, and the task's Runs
+    /// must keep opening it. Other lines stay byte for byte. `false` when
+    /// no line named it (or the task has no log, which stays absent).
+    pub fn replace_session(
+        &self,
+        old_session_id: &str,
+        new_session_id: &str,
+    ) -> Result<bool, String> {
+        let path = self.dir.join(RUNS_FILE);
+        if !path.exists() {
+            return Ok(false);
+        }
+        let _lock = self.lock()?;
+        let raw = fs::read(&path).map_err(|error| format!("read {}: {error}", path.display()))?;
+        let mut body = Vec::with_capacity(raw.len());
+        let mut replaced = false;
+        for line in raw.split_inclusive(|byte| *byte == b'\n') {
+            match serde_json::from_slice::<ScheduleRun>(line.trim_ascii_end()) {
+                Ok(run) if run.session_id.as_deref() == Some(old_session_id) => {
+                    let run = ScheduleRun {
+                        session_id: Some(new_session_id.to_string()),
+                        ..run
+                    };
+                    serde_json::to_writer(&mut body, &run).map_err(|error| error.to_string())?;
+                    body.push(b'\n');
+                    replaced = true;
+                }
+                _ => body.extend_from_slice(line),
+            }
+        }
+        if replaced {
+            replace_file(&path, &body)?;
+        }
+        Ok(replaced)
+    }
+
     /// Delete the task's clock and Run log. Its Run Sessions are untouched.
     pub fn remove(&self) -> Result<(), String> {
         match fs::remove_dir_all(&self.dir) {
@@ -434,6 +471,46 @@ mod tests {
                 ("sch_c".to_string(), None),
             ])
         );
+    }
+
+    /// Resume relaunches a Run Session under a new id: the Runs that named
+    /// the old one name its replacement, and nothing else changes.
+    #[test]
+    fn a_resumed_run_session_is_followed_to_its_new_id() {
+        with_store(|store| {
+            let with_session = |run_id: &str, status, session: &str| ScheduleRun {
+                session_id: Some(session.into()),
+                ..run(run_id, status)
+            };
+            store
+                .append_run(&with_session("run_1", RunStatus::Running, "old"))
+                .unwrap();
+            store
+                .append_run(&with_session("run_1", RunStatus::Done, "old"))
+                .unwrap();
+            store
+                .append_run(&with_session("run_2", RunStatus::Done, "other"))
+                .unwrap();
+            assert_eq!(store.replace_session("old", "new"), Ok(true));
+            let sessions: Vec<_> = store
+                .runs()
+                .unwrap()
+                .into_iter()
+                .map(|run| (run.run_id, run.status, run.session_id))
+                .collect();
+            assert_eq!(
+                sessions,
+                vec![
+                    ("run_1".to_string(), RunStatus::Done, Some("new".to_string())),
+                    ("run_2".to_string(), RunStatus::Done, Some("other".to_string())),
+                ]
+            );
+            assert_eq!(store.replace_session("unknown", "x"), Ok(false));
+        });
+        with_store(|store| {
+            assert_eq!(store.replace_session("old", "new"), Ok(false));
+            assert!(!store.dir().exists(), "a task with no log gains no store");
+        });
     }
 
     #[test]
