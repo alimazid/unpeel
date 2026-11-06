@@ -140,7 +140,12 @@ fn sweep_seeing(
     at: &Zoned,
 ) -> Vec<SweepEvent> {
     let (projects, presets) = catalog();
-    scheduler.sweep(schedules, &projects, &presets, activity, Some(4321), at)
+    let catalog = RunCatalog {
+        projects: &projects,
+        presets: &presets,
+        known_presets: &[],
+    };
+    scheduler.sweep(schedules, &catalog, activity, Some(4321), at)
 }
 
 /// Wait for the helper thread, then let a sweep drain its outcome.

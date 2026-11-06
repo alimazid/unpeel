@@ -11,7 +11,7 @@ pub mod runner;
 pub mod step;
 pub mod trigger;
 
-pub use runner::{Scheduler, SweepEvent};
+pub use runner::{RunCatalog, Scheduler, SweepEvent};
 
 #[cfg(test)]
 mod step_time_tests;

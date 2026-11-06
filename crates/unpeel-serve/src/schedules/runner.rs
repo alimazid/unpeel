@@ -16,6 +16,7 @@ use jiff::Zoned;
 use unpeel_core::controller_api::{HostCreatePreset, HostCreateProject};
 use unpeel_core::schedule_store::TaskStore;
 use unpeel_core::schedules::{RunStatus, Schedule, ScheduleClock, ScheduleRun};
+use unpeel_core::state::Preset;
 
 use super::agent_run::{self, AgentActivity, AgentObservation, Delivery};
 use super::clock;
@@ -114,6 +115,15 @@ enum HelperEvent {
     },
 }
 
+/// What a sweep resolves Runs against: the Host's create catalog, plus every
+/// preset row in the app state so a Run that cannot start names its preset.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct RunCatalog<'a> {
+    pub projects: &'a [HostCreateProject],
+    pub presets: &'a [HostCreatePreset],
+    pub known_presets: &'a [Preset],
+}
+
 pub struct Scheduler {
     root: PathBuf,
     effects: Arc<dyn Effects>,
@@ -208,8 +218,7 @@ impl Scheduler {
     pub fn sweep(
         &mut self,
         schedules: &[Schedule],
-        projects: &[HostCreateProject],
-        presets: &[HostCreatePreset],
+        catalog: &RunCatalog,
         activity: &HashMap<String, AgentActivity>,
         hook_port: Option<u16>,
         now: &Zoned,
@@ -221,7 +230,7 @@ impl Scheduler {
 
         let mut tasks = Vec::new();
         for schedule in schedules {
-            match self.task_state(schedule, projects, presets, activity, now, &mut events) {
+            match self.task_state(schedule, catalog, activity, now, &mut events) {
                 Ok(task) => tasks.push(task),
                 Err(error) => {
                     // A Run now accepted before the task stopped reading
@@ -289,8 +298,7 @@ impl Scheduler {
     fn task_state(
         &mut self,
         schedule: &Schedule,
-        projects: &[HostCreateProject],
-        presets: &[HostCreatePreset],
+        catalog: &RunCatalog,
         activity: &HashMap<String, AgentActivity>,
         now: &Zoned,
         events: &mut Vec<SweepEvent>,
@@ -329,7 +337,12 @@ impl Scheduler {
             latest_run,
             observation,
             run_now: self.run_now.remove(&schedule.id),
-            launch: launch::resolve(schedule, projects, presets),
+            launch: launch::resolve(
+                schedule,
+                catalog.projects,
+                catalog.presets,
+                catalog.known_presets,
+            ),
         })
     }
 

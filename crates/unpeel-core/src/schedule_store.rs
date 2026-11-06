@@ -17,6 +17,7 @@ use std::path::{Path, PathBuf};
 
 use crate::schedules::run_sessions::{LatestRunSessions, RunSessionRow};
 use crate::schedules::{self, Schedule, ScheduleClock, ScheduleRun};
+use crate::state::Preset;
 
 /// Runs a task keeps once its log is compacted.
 pub const MAX_RUNS: usize = 50;
@@ -37,6 +38,28 @@ pub fn schedules_root() -> PathBuf {
 pub fn load_schedules() -> Result<Vec<Schedule>, String> {
     let state = crate::app_state::load()?;
     Ok(schedules::schedules_from_value(state.get("schedules")))
+}
+
+/// [`load_schedules`] plus every preset row, turned off ones too, from the
+/// same read: a Run that cannot start names its preset by label.
+pub fn load_schedules_and_presets() -> Result<(Vec<Schedule>, Vec<Preset>), String> {
+    let state = crate::app_state::load()?;
+    Ok((
+        schedules::schedules_from_value(state.get("schedules")),
+        presets_from_value(state.get("presets")),
+    ))
+}
+
+/// Preset rows decoded entry by entry; one that will not decode is skipped.
+pub fn presets_from_value(value: Option<&serde_json::Value>) -> Vec<Preset> {
+    value
+        .and_then(serde_json::Value::as_array)
+        .map(|rows| {
+            rows.iter()
+                .filter_map(|row| serde_json::from_value(row.clone()).ok())
+                .collect()
+        })
+        .unwrap_or_default()
 }
 
 /// One task's state directory.
@@ -433,6 +456,32 @@ mod tests {
                 .collect();
             assert_eq!(ids, vec!["run_1", "run_2"]);
         });
+    }
+
+    #[test]
+    fn every_preset_row_decodes_turned_off_ones_too_and_a_bad_one_costs_only_itself() {
+        let rows = serde_json::json!([
+            {"id": "a", "label": "Alpha", "command": "true", "project_id": null,
+             "enabled": false, "quick_launch": false},
+            {"id": "broken"},
+            {"id": "b", "label": "Beta", "command": "true", "project_id": "p"}
+        ]);
+        let presets = presets_from_value(Some(&rows));
+        let decoded: Vec<_> = presets
+            .iter()
+            .map(|preset| {
+                (
+                    preset.label.as_str(),
+                    preset.enabled,
+                    preset.project_id.as_deref(),
+                )
+            })
+            .collect();
+        assert_eq!(
+            decoded,
+            vec![("Alpha", false, None), ("Beta", true, Some("p"))]
+        );
+        assert!(presets_from_value(None).is_empty());
     }
 
     /// A task's latest Run Session is the Session of its current Run;

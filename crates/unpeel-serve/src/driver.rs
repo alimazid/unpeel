@@ -1108,8 +1108,9 @@ impl HostRuntime {
     /// Session came up stops its task's earlier idle Run Sessions
     /// (`run_sessions.rs`).
     fn sweep_schedules(&mut self, emitted: &mut Vec<ServeEvent>) {
-        let schedules = match unpeel_core::schedule_store::load_schedules() {
-            Ok(schedules) => schedules,
+        let definitions = unpeel_core::schedule_store::load_schedules_and_presets();
+        let (schedules, known_presets) = match definitions {
+            Ok(definitions) => definitions,
             Err(error) => {
                 crate::tracelog::trace("host-worker", &format!("schedules not stepped: {error}"));
                 return;
@@ -1120,16 +1121,17 @@ impl HostRuntime {
             return;
         }
         let (projects, presets) = crate::mobile::create_catalog(&self.snapshot).unwrap_or_default();
+        let catalog = crate::schedules::RunCatalog {
+            projects: &projects,
+            presets: &presets,
+            known_presets: &known_presets,
+        };
         let activity = self.run_activity();
+        let hook_port = Some(self.hook_port);
         let now = crate::schedules::clock::now();
-        let events = self.schedules.sweep(
-            &schedules,
-            &projects,
-            &presets,
-            &activity,
-            Some(self.hook_port),
-            &now,
-        );
+        let events = self
+            .schedules
+            .sweep(&schedules, &catalog, &activity, hook_port, &now);
         // Run events reach Controllers through the schedules projection;
         // the ping only says "re-read it now" (one per sweep).
         if events

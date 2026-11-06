@@ -330,7 +330,7 @@ def check_script_runs(case, service, home, adapter):
                and [(n.get("kind"), n.get("sessionID"), n.get("title"), n.get("body"))
                     for n in sent]
                == [("alert", "", "Doomed",
-                    "Failed: the preset doomed does not exist in that Project or is turned off")],
+                    "Failed: the preset “Doomed preset” is turned off")],
                json.dumps(sent))
 
 
@@ -403,7 +403,7 @@ def body(case):
     home.project("p", "notify", home.root)
     home.preset(label="ok", command="true", preset_id="ok")
     home.preset(label="three", command="/bin/sh -c 'exit 3'", preset_id="three")
-    home.preset(label="doomed", command="true", preset_id="doomed")
+    home.preset(label="Doomed preset", command="true", preset_id="doomed")
     for kind in ("program", "question", "silent", "screen"):
         home.preset(label=kind, command=write_fake(home, kind), preset_id=kind)
     service = case.serve(env={
