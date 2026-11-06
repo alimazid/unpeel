@@ -315,6 +315,34 @@ int32_t unpeel_native_bridge_remote_mark_unread(
 );
 
 /*
+ * Fork-only: the Super Agent verbs (session.super_agent.set / .clear /
+ * .hand_over). Same at-most-once contract as mark_unread.
+ */
+int32_t unpeel_native_bridge_remote_super_agent_set(
+    unpeel_native_bridge_remote_handle_t handle,
+    const uint8_t *session_id_pointer,
+    size_t session_id_length,
+    uint8_t **out_pointer,
+    size_t *out_length
+);
+
+int32_t unpeel_native_bridge_remote_super_agent_clear(
+    unpeel_native_bridge_remote_handle_t handle,
+    const uint8_t *session_id_pointer,
+    size_t session_id_length,
+    uint8_t **out_pointer,
+    size_t *out_length
+);
+
+int32_t unpeel_native_bridge_remote_super_agent_hand_over(
+    unpeel_native_bridge_remote_handle_t handle,
+    const uint8_t *session_id_pointer,
+    size_t session_id_length,
+    uint8_t **out_pointer,
+    size_t *out_length
+);
+
+/*
  * Session organization/lifecycle effects. Same at-most-once contract and
  * JSON envelopes as the terminal effects above.
  */

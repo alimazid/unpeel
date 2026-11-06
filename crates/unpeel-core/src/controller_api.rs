@@ -911,6 +911,25 @@ fn body_session_id(body: &Value) -> Result<String, ControllerApiError> {
     Ok(session_id.to_owned())
 }
 
+/// Fork-only: one `session.super_agent.*` verb, `{sessionID}` in, `{ok}`
+/// out. The verb decides every refusal before it writes, so a 4xx here is
+/// always not-applied.
+fn super_agent_verb(
+    request: &ControllerRequest,
+    verb: fn(&str) -> Result<crate::supervision::VerbOutcome, crate::supervision::VerbError>,
+) -> ControllerResponse {
+    let (status, body) = match body_session_id(&request.body).map(|id| verb(&id)) {
+        Err(error) => (error.status, json!({ "error": error.message })),
+        Ok(Err(error)) => (error.status(), json!({ "error": error.to_string() })),
+        Ok(Ok(outcome)) => (200, json!({ "ok": true, "changed": outcome.changed })),
+    };
+    ControllerResponse {
+        id: request.id.clone(),
+        status,
+        body,
+    }
+}
+
 fn query_session_id(query: &HashMap<String, String>) -> Result<String, ControllerApiError> {
     let Some(session_id) = query.get("session_id").or_else(|| query.get("sessionID")) else {
         return Err(ControllerApiError::new(400, "invalid session id"));
@@ -976,6 +995,10 @@ fn replay_protected(request: &ControllerRequest) -> bool {
             | ("POST", "/mobile/request-screenshot")
             | ("POST", "/mobile/mark-read")
             | ("POST", "/mobile/mark-unread")
+            // Fork-only: `session.super_agent.*`.
+            | ("POST", "/mobile/super-agent/set")
+            | ("POST", "/mobile/super-agent/clear")
+            | ("POST", "/mobile/super-agent/hand-over")
             | ("POST", "/mobile/artifact-delete")
     )
 }
@@ -1758,6 +1781,25 @@ fn route_uncached(
                 });
             }
             json!({ "ok": true })
+        }
+        // Fork-only `session.super_agent.*`: logic in `supervision`.
+        ("POST", "/mobile/super-agent/set") => {
+            return Some(super_agent_verb(
+                request,
+                crate::supervision::set_super_agent,
+            ))
+        }
+        ("POST", "/mobile/super-agent/clear") => {
+            return Some(super_agent_verb(
+                request,
+                crate::supervision::clear_super_agent,
+            ))
+        }
+        ("POST", "/mobile/super-agent/hand-over") => {
+            return Some(super_agent_verb(
+                request,
+                crate::supervision::hand_over_to_super_agent,
+            ))
         }
         ("POST", "/mobile/session-order") => {
             // Replace one project's hand-ordered sidebar ranks. The list is
@@ -3095,6 +3137,40 @@ mod tests {
         let response = route(&request("POST", "/mobile/mark-unread"), None).unwrap();
         assert_eq!(response.status, 400);
         assert_eq!(response.body["error"], "invalid session id");
+    }
+
+    // Fork-only: the Super Agent verbs answer like `session.mark_unread`.
+    const SUPER_AGENT_ROUTES: [&str; 3] = [
+        "/mobile/super-agent/set",
+        "/mobile/super-agent/clear",
+        "/mobile/super-agent/hand-over",
+    ];
+
+    #[test]
+    fn super_agent_verbs_reject_a_missing_session_id() {
+        for path in SUPER_AGENT_ROUTES {
+            let response = route(&request("POST", path), None).unwrap();
+            assert_eq!(response.status, 400, "{path}");
+            assert_eq!(response.body["error"], "invalid session id", "{path}");
+        }
+    }
+
+    #[test]
+    fn super_agent_verbs_report_a_session_that_does_not_exist() {
+        for path in SUPER_AGENT_ROUTES {
+            let mut unknown = request("POST", path);
+            unknown.body = json!({ "sessionID": format!("never-{}", uuid::Uuid::new_v4()) });
+            let response = route(&unknown, None).unwrap();
+            assert_eq!(response.status, 404, "{path}");
+            assert_eq!(response.body["error"], "unknown session", "{path}");
+        }
+    }
+
+    #[test]
+    fn super_agent_verbs_are_replay_protected() {
+        for path in SUPER_AGENT_ROUTES {
+            assert!(replay_protected(&request("POST", path)), "{path}");
+        }
     }
 
     #[test]

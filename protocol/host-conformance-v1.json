@@ -531,6 +531,72 @@
       }
     },
     {
+      "id": "super-agent.set.missing-session",
+      "method": "POST",
+      "path": "/mobile/super-agent/set",
+      "body": {},
+      "expected": {
+        "native": 400,
+        "tui": 400
+      }
+    },
+    {
+      "id": "super-agent.set.unknown-session",
+      "method": "POST",
+      "path": "/mobile/super-agent/set",
+      "body": {
+        "sessionID": "conformance-unknown"
+      },
+      "expected": {
+        "native": 404,
+        "tui": 404
+      }
+    },
+    {
+      "id": "super-agent.clear.missing-session",
+      "method": "POST",
+      "path": "/mobile/super-agent/clear",
+      "body": {},
+      "expected": {
+        "native": 400,
+        "tui": 400
+      }
+    },
+    {
+      "id": "super-agent.clear.unknown-session",
+      "method": "POST",
+      "path": "/mobile/super-agent/clear",
+      "body": {
+        "sessionID": "conformance-unknown"
+      },
+      "expected": {
+        "native": 404,
+        "tui": 404
+      }
+    },
+    {
+      "id": "super-agent.hand-over.missing-session",
+      "method": "POST",
+      "path": "/mobile/super-agent/hand-over",
+      "body": {},
+      "expected": {
+        "native": 400,
+        "tui": 400
+      }
+    },
+    {
+      "id": "super-agent.hand-over.unknown-session",
+      "method": "POST",
+      "path": "/mobile/super-agent/hand-over",
+      "body": {
+        "sessionID": "conformance-unknown"
+      },
+      "expected": {
+        "native": 404,
+        "tui": 404
+      }
+    },
+    {
       "id": "transcript.missing-session",
       "method": "GET",
       "path": "/mobile/transcript-markdown",

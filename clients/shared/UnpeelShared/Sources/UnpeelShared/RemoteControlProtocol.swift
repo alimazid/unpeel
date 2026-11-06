@@ -715,6 +715,12 @@ public struct RemoteSessionSummary: Codable, Equatable, Identifiable, Sendable {
     /// actually runs, before any OSC 7 report arrives. Additive; absent on
     /// older Hosts ⇒ nil (fall back to the project path).
     public let cwd: String?
+    /// Fork-only: this Session is the workspace's Super Agent (the Router).
+    /// Additive; absent on older Hosts ⇒ false.
+    public let superAgent: Bool
+    /// Fork-only: the Super Agent this Session works for (a Worker), from
+    /// the Host's Worker marker. Absent ⇒ an ordinary Session.
+    public let superAgentRouterID: String?
 
     public init(
         id: String,
@@ -751,7 +757,9 @@ public struct RemoteSessionSummary: Codable, Equatable, Identifiable, Sendable {
         phoneFitSinceUnixMs: Int64? = nil,
         latestAlertBody: String? = nil,
         latestAlertAtUnixMs: Int64? = nil,
-        cwd: String? = nil
+        cwd: String? = nil,
+        superAgent: Bool = false,
+        superAgentRouterID: String? = nil
     ) {
         self.id = id
         self.projectID = projectID
@@ -788,6 +796,8 @@ public struct RemoteSessionSummary: Codable, Equatable, Identifiable, Sendable {
         self.latestAlertBody = latestAlertBody
         self.latestAlertAtUnixMs = latestAlertAtUnixMs
         self.cwd = cwd
+        self.superAgent = superAgent
+        self.superAgentRouterID = superAgentRouterID
     }
 
     // Custom decode so the newer fields are optional on the wire — a Mac that
@@ -806,6 +816,7 @@ public struct RemoteSessionSummary: Codable, Equatable, Identifiable, Sendable {
         case latestAlertBody, latestAlertAtUnixMs
         case cwd
         case activitySource
+        case superAgent, superAgentRouterID
     }
 
     public init(from decoder: Decoder) throws {
@@ -847,6 +858,8 @@ public struct RemoteSessionSummary: Codable, Equatable, Identifiable, Sendable {
         latestAlertBody = try c.decodeIfPresent(String.self, forKey: .latestAlertBody)
         latestAlertAtUnixMs = try c.decodeIfPresent(Int64.self, forKey: .latestAlertAtUnixMs)
         cwd = try c.decodeIfPresent(String.self, forKey: .cwd)
+        superAgent = try c.decodeIfPresent(Bool.self, forKey: .superAgent) ?? false
+        superAgentRouterID = try c.decodeIfPresent(String.self, forKey: .superAgentRouterID)
     }
 }
 

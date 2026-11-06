@@ -362,6 +362,7 @@ impl DiskCatalog {
         let mut sessions = Vec::new();
         let mut manifests = manifests;
         let host_owner_principal_id = crate::state::host_owner_principal_id(&host_id);
+        let router_id = crate::supervision::router_id_in(&state); // Fork-only
         manifests.sort_by(|left, right| {
             right
                 .session
@@ -389,6 +390,8 @@ impl DiskCatalog {
             );
             // The bootstrap includes the same inactive preview as the Host
             // sidebar.
+            // Fork-only: `superAgent` / `superAgentRouterID`.
+            let summary = crate::supervision::with_summary_fields(summary, router_id.as_deref());
             sessions.push(summary);
         }
         crate::session_ops::attach_mixed_session_order_fields(&mut wire_projects);
