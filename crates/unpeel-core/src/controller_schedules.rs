@@ -27,7 +27,7 @@ use crate::schedules::{self, Schedule, ScheduleClock, ScheduleRun};
 mod write;
 
 pub use write::{
-    has_host, install_host, principal_can_write_schedules, RunNowRefusal, ScheduleHost,
+    has_host, install_host, principal_can_write_schedules, NextRun, RunNowRefusal, ScheduleHost,
 };
 
 /// `GET /mobile/schedules`.

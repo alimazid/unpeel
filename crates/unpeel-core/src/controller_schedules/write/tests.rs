@@ -41,10 +41,12 @@ impl Drop for Private {
 }
 
 /// The worker, faked: a catalog, a Trigger check that refuses a past Once
-/// and writes times without zero seconds, and a scripted Run now.
+/// and writes times without zero seconds, a scripted Run now, and a next
+/// run for every enabled task (none by default: what the disk says).
 struct FakeHost {
     checks: Mutex<Vec<(ScheduleTrigger, bool)>>,
     run_now: Result<String, RunNowRefusal>,
+    next_run: Option<NextRun>,
 }
 
 impl FakeHost {
@@ -52,6 +54,17 @@ impl FakeHost {
         Self {
             checks: Mutex::new(Vec::new()),
             run_now: Ok("run_fake".into()),
+            next_run: None,
+        }
+    }
+
+    fn next_running_at(at: &str, at_ms: u64) -> Self {
+        Self {
+            next_run: Some(NextRun {
+                at: at.into(),
+                at_ms,
+            }),
+            ..Self::new()
         }
     }
 
@@ -123,6 +136,10 @@ impl SaveHost for FakeHost {
 impl ScheduleHost for FakeHost {
     fn run_now(&self, _schedule_id: &str) -> Result<String, RunNowRefusal> {
         self.run_now.clone()
+    }
+
+    fn next_run(&self, schedule: &Schedule, _clock: &ScheduleClock) -> Option<NextRun> {
+        self.next_run.clone().filter(|_| schedule.enabled)
     }
 }
 
@@ -465,6 +482,46 @@ fn the_same_trigger_sent_back_is_not_checked_again() {
     assert_eq!(status, 200);
     assert!(host.checks().is_empty());
     assert!(stored_entry(&private).get("clock_reset_at_ms").is_none());
+}
+
+/// The worker publishes a task's next run on its next sweep; the write's
+/// own answer already says it, on the Host's clock, and never an older
+/// Trigger's that the disk still holds.
+#[test]
+fn a_write_answers_with_the_hosts_next_run_before_the_worker_publishes_it() {
+    let private = Private::new(json!({}));
+    let host = FakeHost::next_running_at("2026-11-07T09:43", 1_794_062_580_000);
+    let (status, created) = answer_with(&post(CREATE_PATH, daily_body()), Some(&host), &private);
+    assert_eq!(status, 200, "{created}");
+    let expected = json!({ "at": "2026-11-07T09:43", "atMs": 1_794_062_580_000_u64 });
+    assert_eq!(created["schedule"]["nextRun"], expected);
+    assert_eq!(
+        private.listed()[0]["nextRun"],
+        Value::Null,
+        "not published yet"
+    );
+
+    let id = created["schedule"]["id"].as_str().unwrap().to_owned();
+    std::fs::create_dir_all(private.dir.join("schedules").join(&id)).unwrap();
+    std::fs::write(
+        private.dir.join("schedules").join(&id).join("clock.json"),
+        r#"{"next_occurrence":"2026-11-07T08:00","next_occurrence_ms":1}"#,
+    )
+    .unwrap();
+    let edit = |body: Value| {
+        let mut body = body;
+        body["scheduleID"] = json!(id);
+        answer_with(&post(EDIT_PATH, body), Some(&host), &private)
+    };
+    let (_, moved) = edit(json!({ "trigger": {"kind": "daily", "time": "09:43"} }));
+    assert_eq!(
+        moved["schedule"]["nextRun"], expected,
+        "not the stale clock's"
+    );
+    let (_, paused) = edit(json!({ "enabled": false }));
+    assert_eq!(paused["schedule"]["nextRun"], Value::Null);
+    let (_, resumed) = edit(json!({ "enabled": true }));
+    assert_eq!(resumed["schedule"]["nextRun"], expected);
 }
 
 #[test]

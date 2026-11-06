@@ -28,7 +28,7 @@ use super::{codes, Failure};
 use crate::controller_api::{ControllerPrincipal, ControllerRequest};
 use crate::schedule_store::TaskStore;
 use crate::schedules::save::{self, SaveHost, SaveRefusal};
-use crate::schedules::{self, Schedule, ScheduleEdit, ScheduleTrigger};
+use crate::schedules::{self, Schedule, ScheduleClock, ScheduleEdit, ScheduleTrigger};
 
 pub(super) const CREATE_PATH: &str = "/mobile/schedules";
 pub(super) const EDIT_PATH: &str = "/mobile/schedules/edit";
@@ -47,11 +47,24 @@ pub enum RunNowRefusal {
     NoAnswer(String),
 }
 
+/// A task's next run as its row lists it: the local date-time and its
+/// instant (`nextRun.at`, `nextRun.atMs`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NextRun {
+    pub at: String,
+    pub at_ms: u64,
+}
+
 /// What only the workspace worker can do for the write routes: the save
-/// rules' Host half (its clock and catalog, [`SaveHost`]) and Run now.
+/// rules' Host half (its clock and catalog, [`SaveHost`]), Run now, and a
+/// saved task's next run.
 pub trait ScheduleHost: SaveHost + Send + Sync {
     /// Start a Run of the task now; its Run id.
     fn run_now(&self, schedule_id: &str) -> Result<String, RunNowRefusal>;
+    /// The task's next run on the Host's clock from its definition and its
+    /// stored `clock`, as the worker will publish it on its next sweep;
+    /// `None` while it is paused or never fires.
+    fn next_run(&self, schedule: &Schedule, clock: &ScheduleClock) -> Option<NextRun>;
 }
 
 /// A process slot, not a routed context: every transport (`/mobile`, the
@@ -204,7 +217,7 @@ fn create(
         list.push(entry.clone());
         Ok(())
     })?;
-    saved_row(workspace, &entry)
+    saved_row(workspace, host, &entry)
 }
 
 // ── edit, pause, resume ──
@@ -254,7 +267,7 @@ fn edit(
         *entry = schedules::apply_edit(entry, &change, now_ms);
         Ok(Value::Object(entry.clone()))
     })?;
-    saved_row(workspace, &saved)
+    saved_row(workspace, host, &saved)
 }
 
 /// An edit's new Trigger, checked (it must come due while the task stays
@@ -424,8 +437,14 @@ fn decode(entry: &Map<String, Value>) -> Result<Schedule, Failure> {
         .ok_or_else(|| Failure::new(500, codes::INTERNAL, "the Scheduled Task does not read"))
 }
 
-/// `{"schedule": <row>}` for an entry as saved, as the list route lists it.
-fn saved_row(workspace: &Workspace, entry: &Value) -> Result<Value, Failure> {
+/// `{"schedule": <row>}` for an entry as saved, as the list route lists it,
+/// with the next run the Host will publish for it: until the worker's next
+/// sweep the disk still holds none (a new task) or an older Trigger's.
+fn saved_row(
+    workspace: &Workspace,
+    host: &dyn ScheduleHost,
+    entry: &Value,
+) -> Result<Value, Failure> {
     let entry = entry.as_object().ok_or_else(|| {
         Failure::new(
             500,
@@ -433,7 +452,18 @@ fn saved_row(workspace: &Workspace, entry: &Value) -> Result<Value, Failure> {
             "the saved Scheduled Task is not an object",
         )
     })?;
-    Ok(json!({ "schedule": super::row_at(decode(entry)?, &workspace.root) }))
+    let schedule = decode(entry)?;
+    // A clock that will not read counts as none, as the scheduler restarts it.
+    let clock = TaskStore::open(&workspace.root, &schedule.id)
+        .and_then(|store| store.clock())
+        .unwrap_or_default();
+    let next_run = host.next_run(&schedule, &clock).map_or(
+        Value::Null,
+        |next| json!({ "at": next.at, "atMs": next.at_ms }),
+    );
+    let mut row = super::row_at(schedule, &workspace.root);
+    row["nextRun"] = next_run;
+    Ok(json!({ "schedule": row }))
 }
 
 /// Where the routes read and write: this workspace (`app-state.json`,
