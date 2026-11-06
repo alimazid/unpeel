@@ -17,7 +17,8 @@ pub enum Rule {
     /// Waiting on a prompt for `supervisor_blocked_minutes`.
     Blocked,
     /// A turn ended without finishing (interrupted, or its hook latch
-    /// expired).
+    /// expired). A Worker only its screen speaks for gets a screen-detected
+    /// finish instead (`worker_alerts::quiet_end`).
     WentQuiet,
     /// Exited while busy or waiting, or with a failing code. Raised from
     /// the Exited edge itself (`notices::exited`).

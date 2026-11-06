@@ -802,6 +802,75 @@ fn a_finished_edge_one_rescan_late_still_counts() {
     assert_eq!(fx.statuses(), ["finished"]);
 }
 
+/// A Worker whose busy/idle comes from its screen (or from nothing): that
+/// tier never produces a Finished edge.
+fn screen_worker(status: Status, source: StatusSource) -> SessionRow {
+    SessionRow {
+        status_source: source,
+        ..worker(status)
+    }
+}
+
+/// One screen-detected turn: Busy at `start`, Idle 10 s later, then idle
+/// rescans.
+fn screen_turn(fx: &mut Fixture, start: u64, idle_source: StatusSource) {
+    fx.step(&[screen_worker(Status::Idle, idle_source)], start - 1_000);
+    fx.step(&[screen_worker(Status::Busy, StatusSource::Screen)], start);
+    for at in [start + 10_000, start + 11_000, start + 12_000] {
+        fx.step(&[screen_worker(Status::Idle, idle_source)], at);
+    }
+}
+
+#[test]
+fn a_screen_detected_turn_end_is_a_finished_notice_not_went_quiet() {
+    let mut fx = fixture();
+    fx.drain.pastes.push((WORKER.into(), T0 + 9_000));
+    screen_turn(&mut fx, T0 + 10_000, StatusSource::Screen);
+    let queued = fx.queued();
+    assert_eq!(queued.len(), 1);
+    let notice = &queued[0];
+    // The shape the Router's Worker cards read as a Finished notice.
+    assert_eq!(
+        (notice.sender.clone(), notice.kind, notice.priority),
+        (Sender::Host, ItemKind::Lifecycle, Priority::Wake)
+    );
+    assert_eq!(notice.about.as_deref(), Some(WORKER));
+    assert_eq!(notice.status.as_deref(), Some("finished"));
+    assert_eq!(
+        notice.summary,
+        "\"fix-login\" finished (screen-detected: no reply was captured; read its screen \
+         for the result)."
+    );
+    assert!(notice.body.is_empty());
+}
+
+#[test]
+fn a_screen_detected_finish_comes_once_per_busy_to_idle() {
+    let mut fx = fixture();
+    screen_turn(&mut fx, T0 + 10_000, StatusSource::None);
+    screen_turn(&mut fx, T0 + 40_000, StatusSource::Screen);
+    assert_eq!(fx.statuses(), ["finished", "finished"]);
+}
+
+#[test]
+fn a_screen_detected_finish_after_a_report_this_turn_queues_nothing_more() {
+    let mut fx = fixture();
+    fx.report_from_worker("done", T0 + 15_000);
+    screen_turn(&mut fx, T0 + 10_000, StatusSource::Screen);
+    assert_eq!(fx.queued().len(), 1, "only the report");
+}
+
+#[test]
+fn a_hook_turn_that_ends_without_finishing_still_went_quiet() {
+    let mut fx = fixture();
+    let hooks = |status| screen_worker(status, StatusSource::Hooks);
+    fx.step(&[hooks(Status::Idle)], T0 + 9_000);
+    fx.step(&[hooks(Status::Busy)], T0 + 10_000);
+    fx.step(&[hooks(Status::Idle)], T0 + 20_000);
+    fx.step(&[hooks(Status::Idle)], T0 + 21_000);
+    assert_eq!(fx.statuses(), ["went_quiet"]);
+}
+
 #[test]
 fn the_router_interrupting_its_worker_is_not_went_quiet() {
     let mut fx = fixture();

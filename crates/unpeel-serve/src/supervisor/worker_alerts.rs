@@ -24,7 +24,7 @@ use unpeel_core::supervision::SupervisorConfig;
 use super::inbox_drain::{Notice, NoticeKind};
 use super::worker_host::{Exit, HostWorkers, WorkerHost};
 use super::{notices, watchdog};
-use crate::sessions::{SessionRow, Status};
+use crate::sessions::{SessionRow, Status, StatusSource};
 
 /// A Router write, stop or keypress this recent caused the Worker's edge.
 pub const SELF_CAUSED_MS: u64 = 5_000;
@@ -341,19 +341,10 @@ impl WorkerAlerts {
             };
             let mut due =
                 watchdog::due(&evidence(track, row, durable, self.started_at), config, now);
-            // Checked a step after the turn ended, so a Finished edge one
-            // rescan late still counts.
-            if let Some((turn, ended_at)) = track.ended_quietly.filter(|(_, at)| *at < now) {
-                track.ended_quietly = None;
-                let finished = track.finished_at.is_some_and(|at| at >= turn.started_at);
-                let interrupted_by_router = touched.is_some_and(|touched| {
-                    touched <= ended_at
-                        && touched + SELF_CAUSED_MS >= ended_at
-                        && turn.started_at <= touched
-                });
-                if !finished && !interrupted_by_router && row.status == Status::Idle {
-                    due.push(watchdog::went_quiet(turn.started_at, ended_at));
-                }
+            match quiet_end(&self.store, router, track, row, touched, now) {
+                Some(QuietEnd::WentQuiet(alarm)) => due.push(alarm),
+                Some(QuietEnd::ScreenFinished(notice)) => alarms.push(notice),
+                None => {}
             }
             for alarm in due {
                 if track.fired.insert((alarm.rule, alarm.episode)) {
@@ -524,6 +515,46 @@ fn observe(track: &mut Track, row: &SessionRow, now: u64, started_at: u64) {
     track.status = Some(row.status);
     track.running = row.running;
     track.seen_at = now;
+}
+
+/// What a turn that ended without finishing becomes.
+enum QuietEnd {
+    WentQuiet(watchdog::Alarm),
+    ScreenFinished(NewItem),
+}
+
+/// A turn that ended without a Finished edge, checked a step after it
+/// ended so an edge one rescan late still counts. Nothing when it did
+/// finish, the Router interrupted it, or it is no longer idle. A Worker only
+/// its screen (or nothing) speaks for never gets that edge, so its Busy →
+/// Idle is a best-guess finish (unless it reported this turn); any other
+/// Worker went quiet.
+fn quiet_end(
+    store: &Store,
+    router: &str,
+    track: &mut Track,
+    row: &SessionRow,
+    touched: Option<u64>,
+    now: u64,
+) -> Option<QuietEnd> {
+    let (turn, ended_at) = track.ended_quietly.filter(|(_, at)| *at < now)?;
+    track.ended_quietly = None;
+    let finished = track.finished_at.is_some_and(|at| at >= turn.started_at);
+    let interrupted_by_router = touched.is_some_and(|touched| {
+        touched <= ended_at && touched + SELF_CAUSED_MS >= ended_at && turn.started_at <= touched
+    });
+    if finished || interrupted_by_router || row.status != Status::Idle {
+        return None;
+    }
+    if !matches!(row.status_source, StatusSource::Screen | StatusSource::None) {
+        return Some(QuietEnd::WentQuiet(watchdog::went_quiet(
+            turn.started_at,
+            ended_at,
+        )));
+    }
+    track.finished_at = Some(ended_at);
+    (!reported_since(store, router, &row.id, turn.started_at))
+        .then(|| QuietEnd::ScreenFinished(notices::screen_finished(row, turn.started_at)))
 }
 
 fn evidence(
