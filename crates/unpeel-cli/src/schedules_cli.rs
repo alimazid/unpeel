@@ -9,24 +9,41 @@
 
 use serde_json::{json, Map, Value};
 use unpeel_core::schedule_store::TaskStore;
-use unpeel_core::schedules::{Schedule, ScheduleRun, ScheduleTrigger};
+use unpeel_core::schedules::{self, Schedule, ScheduleEdit, ScheduleRun, ScheduleTrigger};
 use unpeel_serve::schedules::clock;
-use unpeel_serve::schedules::trigger::Trigger;
+use unpeel_serve::schedules::trigger::{self, Trigger};
 
 pub const HELP: &str = "\
 usage: unpeel schedules [list] [--json]
        unpeel schedules add <name> --project <id|name> --preset <id|label>
-                            (--once <YYYY-MM-DDTHH:MM[:SS]> | --daily <HH:MM[:SS]>)
-                            [--instructions <text>] [--no-notify] [--json]
+                            <trigger> [--instructions <text>] [--no-notify] [--json]
+       unpeel schedules edit <id|name> [--name <name>] [--project <id|name>]
+                             [--preset <id|label>] [<trigger>]
+                             [--notify | --no-notify] [--json]
+       unpeel schedules pause|resume <id|name>
        unpeel schedules run <id|name> [--json]
        unpeel schedules history <id|name> [--json]
        unpeel schedules rm <id|name>
 
+<trigger> is one of:
+  --hourly <minute>                every hour at that minute (0-59)
+  --daily <HH:MM[:SS]>             every day
+  --weekdays <HH:MM[:SS]>          Monday to Friday
+  --weekly <day> <HH:MM[:SS]>      one day a week (mon … sun)
+  --once <YYYY-MM-DDTHH:MM[:SS]>   once
+  --cron '<min> <hour> <day> <month> <weekday>'
+                                   a 5-field cron expression (quote it)
+
 A Scheduled Task starts a Session from a preset in a Project each time its
-Trigger comes due, on this Host's local wall clock. The Host fires it while
+Trigger comes due, on this Host's local wall clock: it follows the system
+time zone when the machine travels, a time that a clock change skips runs
+when the change ends, and a repeated time runs once. The Host fires it while
 `unpeel serve` runs, with the app open or not; a time missed while the Host
-was down runs once when it is back. `run` starts a Run now. Only the user
-changes tasks: add, run and rm refuse inside a Session.
+was down runs once when it is back. `pause` stops a task firing; `resume`
+restarts its clock from now, so times that passed while it was paused never
+run (a new Trigger counts from the edit the same way). `run` starts a Run
+now. Only the user changes tasks: add, edit, pause, resume, run and rm
+refuse inside a Session.
 
 --instructions is for an Agent Preset (one that starts an agent Unpeel can
 tell is ready): each Run launches it as typed, types the instructions once
@@ -41,8 +58,21 @@ struct Args {
     switches: std::collections::HashSet<String>,
 }
 
-const VALUE_FLAGS: &[&str] = &["project", "preset", "once", "daily", "instructions"];
-const SWITCHES: &[&str] = &["json", "no-notify", "help"];
+const VALUE_FLAGS: &[&str] = &[
+    "project",
+    "preset",
+    "name",
+    "hourly",
+    "daily",
+    "weekdays",
+    "once",
+    "cron",
+    "instructions",
+];
+/// `--weekly <day> <time>`, kept as one `"<day> <time>"` value.
+const WEEKLY: &str = "weekly";
+const TRIGGER_FLAGS: &[&str] = &["hourly", "daily", "weekdays", WEEKLY, "once", "cron"];
+const SWITCHES: &[&str] = &["json", "notify", "no-notify", "help"];
 
 fn parse(args: &[String]) -> Result<Args, String> {
     let mut parsed = Args {
@@ -58,6 +88,17 @@ fn parse(args: &[String]) -> Result<Args, String> {
                     .next()
                     .ok_or_else(|| format!("--{flag} needs a value"))?;
                 parsed.values.insert(flag.to_string(), value.clone());
+            }
+            Some(WEEKLY) => {
+                let needs = || "--weekly needs a day and a time: --weekly fri 09:00".to_string();
+                let day = items.next().ok_or_else(needs)?;
+                // One quoted value (`--weekly "fri 09:00"`) or two.
+                let value = if day.trim().contains(' ') {
+                    day.trim().to_string()
+                } else {
+                    format!("{day} {}", items.next().ok_or_else(needs)?)
+                };
+                parsed.values.insert(WEEKLY.to_string(), value);
             }
             Some(flag) if SWITCHES.contains(&flag) => {
                 parsed.switches.insert(flag.to_string());
@@ -87,6 +128,9 @@ pub fn run(args: &[String]) -> Result<i32, String> {
     match verb {
         "list" | "ls" => list(json),
         "add" => refuse_inside_session("add").and_then(|()| add(&args, json)),
+        "edit" => refuse_inside_session("edit").and_then(|()| edit(&args, json)),
+        "pause" => refuse_inside_session("pause").and_then(|()| pause(&args)),
+        "resume" => refuse_inside_session("resume").and_then(|()| resume(&args)),
         "run" => refuse_inside_session("run").and_then(|()| run_now(&args, json)),
         "history" => history(&args, json),
         "rm" | "remove" => refuse_inside_session("rm").and_then(|()| remove(&args)),
@@ -124,11 +168,11 @@ fn list(json: bool) -> Result<(), String> {
             "{}  {:24}  {:24}  {:8}  next {:19}  last {}",
             schedule.id,
             schedule.name.chars().take(24).collect::<String>(),
-            trigger_label(&schedule.trigger),
+            trigger::describe(&schedule.trigger),
             if schedule.enabled {
                 "enabled"
             } else {
-                "disabled"
+                "paused"
             },
             row["next_run"].as_str().unwrap_or("-"),
             row["last_run"]["status"].as_str().unwrap_or("-"),
@@ -141,7 +185,12 @@ fn schedule_json(schedule: &Schedule) -> Value {
     let store = TaskStore::for_schedule(&schedule.id).ok();
     let clock_state = store.as_ref().and_then(|store| store.clock().ok());
     let latest = store.as_ref().and_then(TaskStore::latest_run);
-    let next = next_run(schedule, clock_state.as_ref());
+    let next = trigger::next_run(
+        schedule,
+        &clock_state.unwrap_or_default(),
+        &clock::system_zone(),
+    )
+    .map(|next| next.strftime("%Y-%m-%d %H:%M:%S").to_string());
     json!({
         "id": schedule.id,
         "name": schedule.name,
@@ -155,29 +204,6 @@ fn schedule_json(schedule: &Schedule) -> Value {
         "next_run": next,
         "last_run": latest.map(|run| json!({ "run_id": run.run_id, "status": run.status })),
     })
-}
-
-/// The next occurrence the Host will fire, as local time in this Host's
-/// zone.
-fn next_run(
-    schedule: &Schedule,
-    clock_state: Option<&unpeel_core::schedules::ScheduleClock>,
-) -> Option<String> {
-    let trigger = Trigger::parse(&schedule.trigger).filter(|_| schedule.enabled)?;
-    let after = clock_state
-        .and_then(|clock_state| clock_state.last_occurrence.as_deref())
-        .and_then(clock::parse_datetime)
-        .or_else(|| clock::civil_at_ms(schedule.created_at_ms, &clock::system_zone()))?;
-    let next = trigger.next_after(after)?;
-    Some(next.strftime("%Y-%m-%d %H:%M:%S").to_string())
-}
-
-fn trigger_label(trigger: &ScheduleTrigger) -> String {
-    match trigger {
-        ScheduleTrigger::Once { at } => format!("once {at}"),
-        ScheduleTrigger::Daily { time } => format!("daily {time}"),
-        ScheduleTrigger::Unknown => "unknown (never fires)".into(),
-    }
 }
 
 fn history(args: &Args, json: bool) -> Result<(), String> {
@@ -243,7 +269,12 @@ fn local_time(ms: u64) -> Option<String> {
 
 fn add(args: &Args, json: bool) -> Result<(), String> {
     let name = add_name(args)?;
-    let trigger = add_trigger(args)?;
+    let trigger = trigger_flags(args)?.ok_or_else(|| {
+        format!(
+            "give exactly one Trigger: --hourly, --daily, --weekdays, --weekly, --once or --cron\n\n{HELP}"
+        )
+    })?;
+    let notify = notify_flag(args)?.unwrap_or(true);
     let project_id = resolve_project(required(args, "project")?)?;
     let (preset_id, preset_command) = resolve_preset(required(args, "preset")?, &project_id)?;
     let instructions = add_instructions(args, &preset_id, &preset_command)?;
@@ -255,7 +286,7 @@ fn add(args: &Args, json: bool) -> Result<(), String> {
         "preset_id": preset_id,
         "trigger": trigger,
         "enabled": true,
-        "notify_when_done": !args.switches.contains("no-notify"),
+        "notify_when_done": notify,
         "created_at_ms": clock::epoch_ms(&clock::now()),
     });
     if let Some(instructions) = instructions {
@@ -279,9 +310,16 @@ fn add(args: &Args, json: bool) -> Result<(), String> {
 }
 
 fn add_name(args: &Args) -> Result<String, String> {
-    let name = args.positional.get(1).map(|name| name.trim()).unwrap_or("");
-    if name.is_empty() || args.positional.len() > 2 {
-        return Err(format!("unpeel schedules add needs one name\n\n{HELP}"));
+    match args.positional.as_slice() {
+        [_, name] => task_name(name),
+        _ => Err(format!("unpeel schedules add needs one name\n\n{HELP}")),
+    }
+}
+
+fn task_name(raw: &str) -> Result<String, String> {
+    let name = raw.trim();
+    if name.is_empty() {
+        return Err("a task needs a name".into());
     }
     if name.chars().any(char::is_control) {
         return Err("a task name cannot contain control characters".into());
@@ -289,32 +327,14 @@ fn add_name(args: &Args) -> Result<String, String> {
     Ok(name.chars().take(MAX_NAME_CHARS).collect())
 }
 
-fn add_trigger(args: &Args) -> Result<ScheduleTrigger, String> {
-    match (args.values.get("once"), args.values.get("daily")) {
-        (Some(at), None) => {
-            let at = clock::parse_datetime(at).ok_or_else(|| {
-                format!("--once {at:?} is not a local date-time YYYY-MM-DDTHH:MM[:SS]")
-            })?;
-            if at <= clock::now().datetime() {
-                return Err(format!(
-                    "--once {} is in the past",
-                    clock::format_datetime(at)
-                ));
-            }
-            Ok(ScheduleTrigger::Once {
-                at: clock::format_datetime(at),
-            })
-        }
-        (None, Some(time)) => {
-            let time = clock::parse_time(time)
-                .ok_or_else(|| format!("--daily {time:?} is not a local time HH:MM[:SS]"))?;
-            Ok(ScheduleTrigger::Daily {
-                time: clock::format_time(time),
-            })
-        }
-        _ => Err(format!(
-            "give exactly one Trigger: --once or --daily\n\n{HELP}"
-        )),
+/// `--notify` or `--no-notify`, if either is given.
+fn notify_flag(args: &Args) -> Result<Option<bool>, String> {
+    match (
+        args.switches.contains("notify"),
+        args.switches.contains("no-notify"),
+    ) {
+        (true, true) => Err("give --notify or --no-notify, not both".into()),
+        (on, off) => Ok((on || off).then_some(on)),
     }
 }
 
@@ -327,6 +347,12 @@ fn add_instructions(args: &Args, preset_id: &str, command: &str) -> Result<Optio
     if text.trim().is_empty() {
         return Err("--instructions cannot be empty".into());
     }
+    checked_instructions(text, preset_id, command).map(Some)
+}
+
+/// The rules every writer of instructions applies: an Agent Preset, at most
+/// 256 KiB.
+fn checked_instructions(text: &str, preset_id: &str, command: &str) -> Result<String, String> {
     if text.len() > unpeel_core::initial_text::MAX_INITIAL_TEXT_BYTES {
         return Err("--instructions are longer than 256 KiB".into());
     }
@@ -336,7 +362,74 @@ fn add_instructions(args: &Args, preset_id: &str, command: &str) -> Result<Optio
              start an agent Unpeel can tell is ready, so it cannot take --instructions"
         ));
     }
-    Ok(Some(text.clone()))
+    Ok(text.to_string())
+}
+
+/// The Trigger the flags give, in its stored form, after the save-time
+/// check every writer runs; `None` when no Trigger flag is given.
+fn trigger_flags(args: &Args) -> Result<Option<ScheduleTrigger>, String> {
+    let given: Vec<&str> = TRIGGER_FLAGS
+        .iter()
+        .copied()
+        .filter(|flag| args.values.contains_key(*flag))
+        .collect();
+    let flag = match given.as_slice() {
+        [] => return Ok(None),
+        [flag] => *flag,
+        _ => {
+            let named: Vec<String> = given.iter().map(|flag| format!("--{flag}")).collect();
+            return Err(format!(
+                "give exactly one Trigger, not {}\n\n{HELP}",
+                named.join(" and ")
+            ));
+        }
+    };
+    let value = args.values.get(flag).map(String::as_str).unwrap_or("");
+    let trigger = stored_trigger(flag, value)?;
+    Trigger::check(&trigger, clock::now().datetime())
+        .map_err(|error| format!("--{flag}: {error}"))?;
+    Ok(Some(trigger))
+}
+
+/// A Trigger flag's value in the stored form: times and dates without
+/// zero seconds, a weekday's full name, a cron expression's fields
+/// single-spaced. A value that does not read is passed on as typed, for
+/// [`Trigger::check`] to say what is wrong with it.
+fn stored_trigger(flag: &str, value: &str) -> Result<ScheduleTrigger, String> {
+    let time = |raw: &str| {
+        clock::parse_time(raw)
+            .map(clock::format_time)
+            .unwrap_or_else(|| raw.to_string())
+    };
+    Ok(match flag {
+        "hourly" => ScheduleTrigger::Hourly {
+            minute: value
+                .trim()
+                .parse()
+                .map_err(|_| format!("--hourly {value:?} is not a minute 0-59"))?,
+        },
+        "daily" => ScheduleTrigger::Daily { time: time(value) },
+        "weekdays" => ScheduleTrigger::Weekdays { time: time(value) },
+        WEEKLY => {
+            let (day, at) = value.split_once(' ').unwrap_or((value, ""));
+            ScheduleTrigger::Weekly {
+                weekday: clock::weekday_from_input(day)
+                    .map(clock::weekday_name)
+                    .map(str::to_string)
+                    .unwrap_or_else(|| day.to_string()),
+                time: time(at.trim()),
+            }
+        }
+        "once" => ScheduleTrigger::Once {
+            at: clock::parse_datetime(value)
+                .map(clock::format_datetime)
+                .unwrap_or_else(|| value.to_string()),
+        },
+        "cron" => ScheduleTrigger::Cron {
+            expr: value.split_whitespace().collect::<Vec<_>>().join(" "),
+        },
+        _ => return Err(format!("--{flag} is not a Trigger")),
+    })
 }
 
 fn required<'a>(args: &'a Args, flag: &str) -> Result<&'a str, String> {
@@ -449,6 +542,134 @@ fn schedules_mut(state: &mut Map<String, Value>) -> Result<&mut Vec<Value>, Stri
         .or_insert_with(|| Value::Array(Vec::new()))
         .as_array_mut()
         .ok_or_else(|| "app-state.json schedules is not a list; not changing it".to_string())
+}
+
+// ── edit / pause / resume ──
+
+fn edit(args: &Args, json: bool) -> Result<(), String> {
+    let schedule = select(args)?;
+    let project_id = args
+        .values
+        .get("project")
+        .map(|selector| resolve_project(selector))
+        .transpose()?;
+    let in_project = project_id.as_deref().unwrap_or(&schedule.project_id);
+    let preset = match args.values.get("preset") {
+        Some(selector) => Some(resolve_preset(selector, in_project)?),
+        None => {
+            if project_id.is_some() && resolve_preset(&schedule.preset_id, in_project).is_err() {
+                return Err(format!(
+                    "the preset {} is not available in that Project; give --preset too",
+                    schedule.preset_id
+                ));
+            }
+            None
+        }
+    };
+    let change = ScheduleEdit {
+        name: args
+            .values
+            .get("name")
+            .map(|name| task_name(name))
+            .transpose()?,
+        project_id,
+        preset_id: preset.map(|(id, _)| id),
+        trigger: trigger_flags(args)?,
+        enabled: None,
+        notify_when_done: notify_flag(args)?,
+    };
+    if change == ScheduleEdit::default() {
+        return Err(format!(
+            "nothing to change: give --name, --project, --preset, a Trigger, --notify or --no-notify\n\n{HELP}"
+        ));
+    }
+    let edited = save_edit(&schedule.id, &change)?;
+    if json {
+        println!("{}", schedule_json(&edited));
+    } else {
+        println!("edited {}", display_name(&edited));
+    }
+    if !edited.enabled {
+        eprintln!(
+            "note: {} is paused; `unpeel schedules resume {}` runs it again",
+            display_name(&edited),
+            edited.id
+        );
+    }
+    Ok(())
+}
+
+fn pause(args: &Args) -> Result<(), String> {
+    let schedule = select(args)?;
+    if !schedule.enabled {
+        println!("{} is already paused", display_name(&schedule));
+        return Ok(());
+    }
+    let paused = save_edit(&schedule.id, &enabled(false))?;
+    println!("paused {}", display_name(&paused));
+    Ok(())
+}
+
+/// Resume restarts the task's clock from now: what fell while it was
+/// paused never runs.
+fn resume(args: &Args) -> Result<(), String> {
+    let schedule = select(args)?;
+    if schedule.enabled {
+        println!("{} is not paused", display_name(&schedule));
+        return Ok(());
+    }
+    if let ScheduleTrigger::Once { at } = &schedule.trigger {
+        if Trigger::check(&schedule.trigger, clock::now().datetime()).is_err() {
+            return Err(format!(
+                "{}'s time {at} has passed; give it a new one with `unpeel schedules edit {} --once …`",
+                display_name(&schedule),
+                schedule.id
+            ));
+        }
+    }
+    let resumed = save_edit(&schedule.id, &enabled(true))?;
+    let next = schedule_json(&resumed)["next_run"]
+        .as_str()
+        .map(|next| format!("; next run {next}"))
+        .unwrap_or_default();
+    println!("resumed {}{next}", display_name(&resumed));
+    Ok(())
+}
+
+fn enabled(enabled: bool) -> ScheduleEdit {
+    ScheduleEdit {
+        enabled: Some(enabled),
+        ..ScheduleEdit::default()
+    }
+}
+
+/// Apply `change` to the task's entry under the `app-state.json` flock
+/// (announced, so the Host re-reads it), and return the task as saved.
+fn save_edit(schedule_id: &str, change: &ScheduleEdit) -> Result<Schedule, String> {
+    let now_ms = clock::epoch_ms(&clock::now());
+    let saved = unpeel_core::app_state::edit(|state| {
+        let entry = schedules_mut(state)?
+            .iter_mut()
+            .find(|entry| entry.get("id").and_then(Value::as_str) == Some(schedule_id))
+            .ok_or_else(|| format!("no Scheduled Task {schedule_id}; it was removed"))?;
+        let stored = entry
+            .as_object()
+            .ok_or_else(|| format!("Scheduled Task {schedule_id} is not an object"))?;
+        let edited = Value::Object(schedules::apply_edit(stored, change, now_ms));
+        *entry = edited.clone();
+        Ok(edited)
+    })?;
+    schedules::schedules_from_value(Some(&Value::Array(vec![saved])))
+        .pop()
+        .ok_or_else(|| format!("Scheduled Task {schedule_id} no longer reads"))
+}
+
+fn display_name(schedule: &Schedule) -> &str {
+    if schedule.name.trim().is_empty() {
+        &schedule.id
+    } else {
+        &schedule.name
+    }
 }
 
 // ── run / rm ──

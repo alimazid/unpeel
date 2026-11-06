@@ -41,6 +41,7 @@ fn agent_task() -> TaskState {
             enabled: true,
             notify_when_done: true,
             created_at_ms: ms(0, 0),
+            clock_reset_at_ms: None,
         },
         clock: ScheduleClock::default(),
         latest_run: None,

@@ -52,6 +52,12 @@ pub struct Schedule {
     pub notify_when_done: bool,
     #[serde(default)]
     pub created_at_ms: u64,
+    /// When the task's clock last restarted: on Resume, and when its
+    /// Trigger changed. No occurrence at or before it fires, so a paused
+    /// task never catches up and a moved Trigger never fires a time that
+    /// passed before the move. Absent, the clock counts from creation.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub clock_reset_at_ms: Option<u64>,
 }
 
 impl Schedule {
@@ -59,16 +65,32 @@ impl Schedule {
     pub fn spawned_by(&self) -> String {
         format!("{SPAWNED_BY_PREFIX}{}", self.id)
     }
+
+    /// The instant the task's clock counts from: only occurrences after it
+    /// (and after the last one fired) are due.
+    pub fn counts_from_ms(&self) -> u64 {
+        self.clock_reset_at_ms.unwrap_or(0).max(self.created_at_ms)
+    }
 }
 
 /// When a Scheduled Task comes due, on the Host's local wall clock.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum ScheduleTrigger {
-    /// Once at a local date-time, `YYYY-MM-DDTHH:MM[:SS]`.
-    Once { at: String },
+    /// Every hour at this minute past it, `0..=59`.
+    Hourly { minute: u8 },
     /// Every day at a local time, `HH:MM[:SS]`.
     Daily { time: String },
+    /// Monday to Friday at a local time.
+    Weekdays { time: String },
+    /// One day a week at a local time; the day's lowercase English name
+    /// (`"monday"` … `"sunday"`).
+    Weekly { weekday: String, time: String },
+    /// Once at a local date-time, `YYYY-MM-DDTHH:MM[:SS]`.
+    Once { at: String },
+    /// A 5-field cron expression (minute hour day-of-month month
+    /// day-of-week), read on the local wall clock. Created from the CLI only.
+    Cron { expr: String },
     /// A kind this build does not know (a newer writer), or a known kind
     /// whose fields do not decode. It never fires.
     #[default]
@@ -80,11 +102,71 @@ impl ScheduleTrigger {
     /// The `kind` tag as stored.
     pub fn kind(&self) -> &'static str {
         match self {
-            Self::Once { .. } => "once",
+            Self::Hourly { .. } => "hourly",
             Self::Daily { .. } => "daily",
+            Self::Weekdays { .. } => "weekdays",
+            Self::Weekly { .. } => "weekly",
+            Self::Once { .. } => "once",
+            Self::Cron { .. } => "cron",
             Self::Unknown => "unknown",
         }
     }
+}
+
+/// A user's change to one task; `None` leaves a field as it is. Pausing is
+/// `enabled: Some(false)`, resuming `Some(true)`.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ScheduleEdit {
+    pub name: Option<String>,
+    pub project_id: Option<String>,
+    pub preset_id: Option<String>,
+    pub trigger: Option<ScheduleTrigger>,
+    pub enabled: Option<bool>,
+    pub notify_when_done: Option<bool>,
+}
+
+/// `entry`, a task as stored in `app-state.json`, with `edit` applied.
+/// Every writer edits the raw entry, so fields this build does not know
+/// pass through. Resuming a paused task or giving it a different Trigger
+/// restarts its clock at `now_ms` ([`Schedule::clock_reset_at_ms`]): the
+/// occurrences before that never fire.
+pub fn apply_edit(
+    entry: &serde_json::Map<String, serde_json::Value>,
+    edit: &ScheduleEdit,
+    now_ms: u64,
+) -> serde_json::Map<String, serde_json::Value> {
+    use serde_json::Value;
+    let mut edited = entry.clone();
+    let mut restart = false;
+    for (key, value) in [
+        ("name", &edit.name),
+        ("project_id", &edit.project_id),
+        ("preset_id", &edit.preset_id),
+    ] {
+        if let Some(value) = value {
+            edited.insert(key.into(), Value::String(value.clone()));
+        }
+    }
+    if let Some(trigger) = &edit.trigger {
+        let trigger = serde_json::to_value(trigger).unwrap_or(Value::Null);
+        restart |= entry.get("trigger") != Some(&trigger);
+        edited.insert("trigger".into(), trigger);
+    }
+    if let Some(enabled) = edit.enabled {
+        let was_enabled = entry
+            .get("enabled")
+            .and_then(Value::as_bool)
+            .unwrap_or(true);
+        restart |= enabled && !was_enabled;
+        edited.insert("enabled".into(), Value::Bool(enabled));
+    }
+    if let Some(notify) = edit.notify_when_done {
+        edited.insert("notify_when_done".into(), Value::Bool(notify));
+    }
+    if restart {
+        edited.insert("clock_reset_at_ms".into(), Value::from(now_ms));
+    }
+    edited
 }
 
 fn deserialize_trigger<'de, D>(deserializer: D) -> Result<ScheduleTrigger, D::Error>
@@ -303,6 +385,7 @@ mod tests {
                 enabled: true,
                 notify_when_done: true,
                 created_at_ms: 7,
+                clock_reset_at_ms: None,
             }]
         );
     }
@@ -326,6 +409,138 @@ mod tests {
                 ("sch_no_trigger", &ScheduleTrigger::Unknown),
             ]
         );
+    }
+
+    fn stored_entry() -> serde_json::Map<String, serde_json::Value> {
+        serde_json::json!({
+            "id": "sch_1",
+            "name": "Morning",
+            "project_id": "p",
+            "preset_id": "ok",
+            "trigger": {"kind": "daily", "time": "09:00"},
+            "enabled": true,
+            "notify_when_done": true,
+            "created_at_ms": 7,
+            "instructions": "from a newer build",
+            "a_future_field": [1, 2]
+        })
+        .as_object()
+        .cloned()
+        .unwrap()
+    }
+
+    #[test]
+    fn an_edit_changes_only_the_fields_it_names() {
+        let entry = stored_entry();
+        let edited = apply_edit(
+            &entry,
+            &ScheduleEdit {
+                name: Some("Evening".into()),
+                preset_id: Some("other".into()),
+                notify_when_done: Some(false),
+                ..ScheduleEdit::default()
+            },
+            1_000,
+        );
+        let mut expected = entry.clone();
+        expected.insert("name".into(), "Evening".into());
+        expected.insert("preset_id".into(), "other".into());
+        expected.insert("notify_when_done".into(), false.into());
+        assert_eq!(edited, expected, "unknown fields pass through");
+    }
+
+    #[test]
+    fn a_new_trigger_restarts_the_clock_and_the_same_one_does_not() {
+        let hourly = ScheduleEdit {
+            trigger: Some(ScheduleTrigger::Hourly { minute: 15 }),
+            ..ScheduleEdit::default()
+        };
+        let edited = apply_edit(&stored_entry(), &hourly, 1_000);
+        assert_eq!(
+            edited.get("trigger"),
+            Some(&serde_json::json!({"kind": "hourly", "minute": 15}))
+        );
+        assert_eq!(edited.get("clock_reset_at_ms"), Some(&1_000.into()));
+
+        let same = ScheduleEdit {
+            trigger: Some(ScheduleTrigger::Daily {
+                time: "09:00".into(),
+            }),
+            ..ScheduleEdit::default()
+        };
+        assert_eq!(apply_edit(&stored_entry(), &same, 1_000), stored_entry());
+    }
+
+    #[test]
+    fn resuming_restarts_the_clock_and_pausing_keeps_it() {
+        let pause = ScheduleEdit {
+            enabled: Some(false),
+            ..ScheduleEdit::default()
+        };
+        let paused = apply_edit(&stored_entry(), &pause, 1_000);
+        assert_eq!(paused.get("enabled"), Some(&false.into()));
+        assert_eq!(paused.get("clock_reset_at_ms"), None);
+
+        let resume = ScheduleEdit {
+            enabled: Some(true),
+            ..ScheduleEdit::default()
+        };
+        let resumed = apply_edit(&paused, &resume, 2_000);
+        assert_eq!(resumed.get("enabled"), Some(&true.into()));
+        assert_eq!(resumed.get("clock_reset_at_ms"), Some(&2_000.into()));
+        assert_eq!(
+            apply_edit(&resumed, &resume, 3_000),
+            resumed,
+            "a task already running is not resumed again"
+        );
+
+        let mut never_said = stored_entry();
+        never_said.remove("enabled");
+        assert_eq!(
+            apply_edit(&never_said, &resume, 3_000).get("clock_reset_at_ms"),
+            None,
+            "a task with no enabled field is enabled"
+        );
+    }
+
+    #[test]
+    fn the_clock_counts_from_the_later_of_creation_and_a_restart() {
+        let mut schedule = decode(serde_json::json!([stored_entry()])).remove(0);
+        assert_eq!(schedule.counts_from_ms(), 7);
+        schedule.clock_reset_at_ms = Some(2_000);
+        assert_eq!(schedule.counts_from_ms(), 2_000);
+        schedule.clock_reset_at_ms = Some(3);
+        assert_eq!(schedule.counts_from_ms(), 7);
+    }
+
+    #[test]
+    fn every_trigger_kind_round_trips_its_stored_form() {
+        let stored = serde_json::json!([
+            {"kind": "hourly", "minute": 15},
+            {"kind": "daily", "time": "09:43"},
+            {"kind": "weekdays", "time": "08:30"},
+            {"kind": "weekly", "weekday": "friday", "time": "17:00"},
+            {"kind": "once", "at": "2026-11-06T15:00"},
+            {"kind": "cron", "expr": "*/15 9-17 * * 1-5"}
+        ]);
+        let triggers: Vec<ScheduleTrigger> = serde_json::from_value(stored.clone()).unwrap();
+        let kinds: Vec<_> = triggers.iter().map(ScheduleTrigger::kind).collect();
+        assert_eq!(
+            kinds,
+            vec!["hourly", "daily", "weekdays", "weekly", "once", "cron"]
+        );
+        assert_eq!(serde_json::to_value(&triggers).unwrap(), stored);
+    }
+
+    #[test]
+    fn an_hourly_minute_that_is_not_a_small_number_never_names_a_time() {
+        let schedules = decode(serde_json::json!([
+            {"id": "sch_big", "trigger": {"kind": "hourly", "minute": 300}},
+            {"id": "sch_text", "trigger": {"kind": "hourly", "minute": "15"}}
+        ]));
+        assert!(schedules
+            .iter()
+            .all(|schedule| schedule.trigger == ScheduleTrigger::Unknown));
     }
 
     #[test]
