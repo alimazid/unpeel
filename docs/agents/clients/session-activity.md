@@ -288,8 +288,11 @@ in the recently-finished group). The Finished body is still taken from
 `completion_messages`, so the reply reaches the Super Agent. A Worker that
 only the screen tier speaks for never produces a Finished edge; the end of
 its turn is sent as a screen-detected finished notice instead. The user is
-notified when the Super Agent itself finishes a turn or needs input, as for
-any agent, and once per wait when a Worker's prompt has gone unanswered for
+notified when the Super Agent itself finishes a turn or needs input — its
+Finished edge is delivered as always eligible (`requiresNotifyWhenDone:
+false`, `supervisor::route_edge`), so it notifies even with "notify when
+done" off for that Session — and once per wait when a Worker's prompt has
+gone unanswered for
 `supervisor_escalate_minutes` (default 5): the Host then delivers that
 Worker's "needs input" with "Waiting for your input for 5 min; the Super
 Agent has not answered." Once the Super Agent is stopped, or cleared, its

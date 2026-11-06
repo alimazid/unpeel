@@ -479,8 +479,8 @@ fn transfer_moves_the_inbox_to_the_resumed_id_and_drops_its_claim() {
     assert!(!fresh.redelivery());
 
     // Nothing to move, or onto itself: nothing happens.
-    store.transfer("missing", "new").unwrap();
-    store.transfer("new", "new").unwrap();
+    assert!(!store.transfer("missing", "new").unwrap());
+    assert!(!store.transfer("new", "new").unwrap());
     assert_eq!(pending_summaries(&store, "new"), ["r1", "r2"]);
 }
 
@@ -631,8 +631,8 @@ fn remove_deletes_the_inbox() {
 #[test]
 fn removing_or_moving_a_session_without_an_inbox_leaves_nothing_behind() {
     let (_tmp, store) = store();
-    store.remove("never").unwrap();
-    store.transfer("never", "other").unwrap();
+    assert!(!store.remove("never").unwrap());
+    assert!(!store.transfer("never", "other").unwrap());
     // Not even a lock file: every removal and Resume passes through here.
     assert!(!store.root.exists(), "{:?}", store.root);
 }

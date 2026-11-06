@@ -205,8 +205,9 @@ pub fn on_session_replaced(old_id: &str, replacement_id: Option<&str>) -> Result
     // The Inbox follows its Session: it lives outside the session dir that
     // Resume tears down.
     let inbox = transfer_inbox(&crate::session_inbox::Store::home(), old_id, replacement_id);
+    let inbox_moved = inbox.as_ref().is_ok_and(|moved| *moved);
     let outcome = match (outcome, inbox) {
-        (Ok(changed), Ok(())) => Ok(changed),
+        (Ok(changed), Ok(_)) => Ok(changed),
         (outcome, inbox) => Err([outcome.err(), inbox.err()]
             .into_iter()
             .flatten()
@@ -215,7 +216,10 @@ pub fn on_session_replaced(old_id: &str, replacement_id: Option<&str>) -> Result
     };
     // A partial failure may still have changed something: announce both.
     let (mark_moved, markers_changed) = match &outcome {
-        Ok(changed) => (changed.mark_moved, changed.markers_changed > 0),
+        Ok(changed) => (
+            changed.mark_moved,
+            changed.markers_changed > 0 || inbox_moved,
+        ),
         Err(_) => (true, true),
     };
     if mark_moved {
@@ -261,12 +265,13 @@ pub(crate) fn on_session_replaced_at(
 }
 
 /// Resume moves the Inbox to the new id (dropping any in-flight claim);
-/// removal deletes it. A same-id Reload keeps it where it is.
+/// removal deletes it. A same-id Reload keeps it where it is. `true` when
+/// an Inbox moved or was removed.
 fn transfer_inbox(
     store: &crate::session_inbox::Store,
     old_id: &str,
     replacement_id: Option<&str>,
-) -> Result<(), String> {
+) -> Result<bool, String> {
     let moved = match replacement_id {
         Some(new_id) => store.transfer(old_id, new_id),
         None => store.remove(old_id),
@@ -837,17 +842,19 @@ mod tests {
         let store = crate::session_inbox::Store::at(tmp.path().join("session-inboxes"));
         store.enqueue("old", inbox_report("r0"), 1).unwrap();
 
-        transfer_inbox(&store, "old", Some("old")).unwrap();
+        // `true` when an Inbox moved or went, so the caller announces it
+        // even for an ordinary Session (no Router mark, no Worker markers).
+        assert!(!transfer_inbox(&store, "old", Some("old")).unwrap());
         assert_eq!(pending(&store, "old"), ["r0"], "a same-id Reload keeps it");
 
-        transfer_inbox(&store, "old", Some("new")).unwrap();
+        assert!(transfer_inbox(&store, "old", Some("new")).unwrap());
         assert!(pending(&store, "old").is_empty());
         assert_eq!(pending(&store, "new"), ["r0"]);
 
-        transfer_inbox(&store, "new", None).unwrap();
+        assert!(transfer_inbox(&store, "new", None).unwrap());
         assert!(store.inbox_ids().is_empty());
         // Nothing queued: nothing to move or remove.
-        transfer_inbox(&store, "never", Some("other")).unwrap();
-        transfer_inbox(&store, "never", None).unwrap();
+        assert!(!transfer_inbox(&store, "never", Some("other")).unwrap());
+        assert!(!transfer_inbox(&store, "never", None).unwrap());
     }
 }

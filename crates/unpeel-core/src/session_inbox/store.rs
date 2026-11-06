@@ -329,27 +329,29 @@ impl Store {
 
     /// Resume gave the session a new id: its Inbox follows, merged into
     /// anything already queued for the new id. An in-flight claim is dropped,
-    /// so the next paste is a fresh batch.
-    pub fn transfer(&self, old: &str, new: &str) -> Result<()> {
+    /// so the next paste is a fresh batch. `true` when an Inbox moved.
+    pub fn transfer(&self, old: &str, new: &str) -> Result<bool> {
         let (source, target) = (self.dir(old)?, self.dir(new)?);
         // Nothing queued under the old id: not even a lock file is made.
         if old == new || !source.is_dir() {
-            return Ok(());
+            return Ok(false);
         }
         let _locks = self.lock_pair(old, new)?;
         if !source.is_dir() {
-            return Ok(());
+            return Ok(false);
         }
         remove_if_present(&source.join(INFLIGHT_FILE))?;
         remove_if_present(&source.join(MISSING_SINCE_FILE))?;
         remove_if_present(&source.join(HOLD_FILE))?;
         if !target.exists() {
-            return fs::rename(&source, &target).map_err(|error| io_error(&source, error));
+            fs::rename(&source, &target).map_err(|error| io_error(&source, error))?;
+            return Ok(true);
         }
         for sub in [PENDING_DIR, DELIVERED_DIR] {
             merge_items(&source.join(sub), &target, sub)?;
         }
-        fs::remove_dir_all(&source).map_err(|error| io_error(&source, error))
+        fs::remove_dir_all(&source).map_err(|error| io_error(&source, error))?;
+        Ok(true)
     }
 
     /// Remove the Inboxes of sessions that have been gone (not in
@@ -404,18 +406,18 @@ impl Store {
         }
     }
 
-    /// The session is gone for good: so is its Inbox.
-    pub fn remove(&self, session_id: &str) -> Result<()> {
+    /// The session is gone for good: so is its Inbox. `true` when one was
+    /// removed.
+    pub fn remove(&self, session_id: &str) -> Result<bool> {
         let dir = self.dir(session_id)?;
         if !dir.exists() {
-            return Ok(());
+            return Ok(false);
         }
         let _lock = self.lock(session_id)?;
         match fs::remove_dir_all(&dir) {
-            Err(error) if error.kind() != std::io::ErrorKind::NotFound => {
-                Err(io_error(&dir, error))
-            }
-            _ => Ok(()),
+            Ok(()) => Ok(true),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(false),
+            Err(error) => Err(io_error(&dir, error)),
         }
     }
 
