@@ -103,8 +103,8 @@ pub fn action_docs() -> Vec<Value> {
             "name": "schedules_list",
             "description": "List the workspace's Scheduled Tasks, read-only: each task's id, \
         name, projectID, presetID, trigger, enabled, nextRun (null when paused or nothing is \
-        due) and lastRun (its status, times, late marker and snippet). Only the user creates, \
-        edits, runs or removes tasks.",
+        due) and lastRun (the Run in progress, else the latest: its status, times, late marker \
+        and snippet). Only the user creates, edits, runs or removes tasks.",
             "inputSchema": { "type": "object", "properties": {}, "additionalProperties": false },
         }),
         json!({
