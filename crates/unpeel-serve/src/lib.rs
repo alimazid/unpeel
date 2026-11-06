@@ -39,6 +39,7 @@ pub mod runtime_presentation;
 pub mod service;
 pub mod service_install;
 pub mod sessions;
+pub mod supervisor; // Fork-only
 mod tracelog;
 
 pub use driver::HostRuntime;

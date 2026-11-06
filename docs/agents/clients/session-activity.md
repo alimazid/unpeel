@@ -246,6 +246,60 @@ and the Stop/Remove confirmations happen inline in the row that started them:
 `editingSessionSurface` and `confirmingSessionSurface` name that surface, so
 the same Session's other row never mounts a second editor or dismiss monitor.
 
+Fork-only: **the Super Agent** (the Router; MCP side and Host verbs in
+`docs/agents/sessions-mcp.md`). The session menu (PROJECTS and AGENTS rows)
+offers Make Super Agent on a running Session whose runtime declares the
+`super_agent` capability (Claude Code today), Stop Being Super
+Agent on the Super Agent (stopped or not), and Hand to Super Agent on any
+other running agent Session while a Super Agent exists and the Session is not
+already its Worker (`SuperAgentMenu`, the Host's rules; each item also needs
+the Host to advertise its `session.super_agent.*` operation). The verbs are
+Host operations (`RemoteHostRuntime.HostOperation.superAgentSet/Clear/
+HandOver`), so they act on a remote Host the same way. The Host publishes
+`superAgent` and `superAgentRouterID` on every session summary; the app
+renders only those:
+- **Badge.** `SuperAgentBadge` (`ChromeIcon.orchestrator`, status only, like
+  the pin) sits next to the pin in the Super Agent's PROJECTS row and in the
+  trailing slot of its activity row (`TitlebarActivityMenuRow`: AGENTS, and
+  the dropdowns whenever they list it), where it replaces the pin glyph.
+- **Always listed.** The Super Agent rides the same slice as pinned sessions
+  (`WorkspaceActivityMenuSlice.pinned`, `alwaysListedSessions`), so AGENTS
+  lists it while it is idle and read, after the activity groups; the titlebar
+  and menu-bar dropdowns do not.
+- **Worker nesting.** In AGENTS only, the Super Agent's **running** Workers
+  are listed indented one level under its row, whatever their Project
+  (`SuperAgentNesting`, `ActivityMenuList.entries(…, workers:, nestsWorkers:
+  true)`, `ActivityMenuRowStyle.nested()`). A nested Worker leaves the group
+  it would be in and keeps that group's look (blocked, working, finished,
+  pinned or idle); idle Workers in no group come from the slice's `workers`
+  and are listed nowhere else. A stopped Worker, or one whose Super Agent is
+  not listed, is not nested. One level deep: a Super Agent is never a Worker.
+  The bell and menu-bar dropdowns list Workers flat, as ordinary sessions.
+
+A Worker's activity is still published like any session's, but its
+lifecycle goes to the Super Agent, not the user (`unpeel-serve`
+`supervisor/worker_alerts.rs`, called from `driver.rs`'s rescan delivery
+loop): while the Super Agent runs, a Worker's NeedsInput, Finished, Exited
+and Started edges become notices in the Super Agent's Inbox and skip
+`deliver_notification`, so neither "needs input" nor "agent finished" — nor
+"Notify when any agent finishes" — fires for a Worker, and the edge marks
+the row read instead of unread (an unread Worker would otherwise keep itself
+in the recently-finished group). The Finished body is still taken from
+`completion_messages`, so the reply reaches the Super Agent. A Worker that
+only the screen tier speaks for never produces a Finished edge; the end of
+its turn is sent as a screen-detected finished notice instead. The user is
+notified when the Super Agent itself finishes a turn or needs input — its
+Finished edge is delivered as always eligible (`requiresNotifyWhenDone:
+false`, `supervisor::route_edge`), so it notifies even with "notify when
+done" off for that Session — and once per wait when a Worker's prompt has
+gone unanswered for
+`supervisor_escalate_minutes` (default 5): the Host then delivers that
+Worker's "needs input" with "Waiting for your input for 5 min; the Super
+Agent has not answered." Once the Super Agent is stopped, or cleared, its
+Workers' edges notify the user as before. Known gap: the app's own
+background-workspace attention banners (`WorkspacePool.swift`) still see a
+Worker's attention in a workspace that is not selected.
+
 ### Escape cancellation and hook delivery
 
 Claude documents that Escape interrupts a response or tool call and that its

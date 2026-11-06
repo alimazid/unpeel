@@ -58,7 +58,9 @@ pub fn deliver_sanitized_text(
     deliver_sanitized_text_with_timeout(session_id, sanitized, submit, None)
 }
 
-fn deliver_sanitized_text_with_timeout(
+/// Fork-only `pub`: the Host supervisor pastes off its tick thread with a
+/// socket timeout (`None` blocks like `deliver_sanitized_text`).
+pub fn deliver_sanitized_text_with_timeout(
     session_id: &str,
     sanitized: &str,
     submit: bool,

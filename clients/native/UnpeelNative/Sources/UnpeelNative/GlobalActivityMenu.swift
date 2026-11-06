@@ -23,15 +23,25 @@ struct WorkspaceActivityMenuSession: Equatable {
     let status: String
     /// Latest App alert when it is this Session's newest activity.
     let alertBody: String?
+    /// Fork-only: not stopped. Only a running Worker is nested under the
+    /// Super Agent in AGENTS.
+    var isLive: Bool = true
+    /// Fork-only: the Session is the workspace's Super Agent (the Router).
+    var superAgent: Bool = false
+    /// Fork-only: the Super Agent this Session works for (a Worker).
+    var superAgentRouterID: String? = nil
 }
 
 struct WorkspaceActivityMenuSlice: Equatable {
     var jobs: [WorkspaceActivityMenuSession] = []
     var blockers: [WorkspaceActivityMenuSession] = []
     var finished: [WorkspaceActivityMenuSession] = []
-    /// Fork-only: pinned sessions in none of the groups above, so the
-    /// AGENTS section always shows them.
+    /// Fork-only: pinned sessions and the Super Agent in none of the groups
+    /// above, so the AGENTS section always shows them.
     var pinned: [WorkspaceActivityMenuSession] = []
+    /// Fork-only: running Workers in none of the groups above. AGENTS lists
+    /// them under the Super Agent, and nowhere else.
+    var workers: [WorkspaceActivityMenuSession] = []
 
     init() {}
 
@@ -72,7 +82,10 @@ struct WorkspaceActivityMenuSlice: Equatable {
                 command: summary.command,
                 projectPath: projectPath(summary.projectID),
                 status: Self.statusLabel(summary),
-                alertBody: summary.latestAlertBody
+                alertBody: summary.latestAlertBody,
+                isLive: summary.status == .running,
+                superAgent: summary.superAgent,
+                superAgentRouterID: summary.superAgentRouterID
             )
             if summary.status == .running, summary.activity == .blocked {
                 blockers.append(item)
@@ -81,8 +94,10 @@ struct WorkspaceActivityMenuSlice: Equatable {
                 jobs.append(item)
             } else if summary.unread {
                 finished.append(item)
-            } else if summary.pinned {
+            } else if summary.pinned || summary.superAgent {
                 pinned.append(item)
+            } else if summary.status == .running, summary.superAgentRouterID != nil {
+                workers.append(item)
             }
         }
     }
@@ -102,13 +117,17 @@ struct WorkspaceActivityMenuSlice: Equatable {
                 command: session.presentationCommand,
                 projectPath: projectName(session.projectID),
                 status: statusLabel(session),
-                alertBody: alertBody(session)
+                alertBody: alertBody(session),
+                isLive: session.isLive,
+                superAgent: session.superAgent,
+                superAgentRouterID: session.superAgentRouterID
             )
         }
         jobs = activity.jobs.map(item)
         blockers = activity.blockers.map(item)
         finished = activity.finished.map(item)
         pinned = activity.pinned.map(item)
+        workers = activity.workers.map(item)
     }
 
     /// Fork-only: Session id → the id of the first node that lists it,
@@ -126,6 +145,37 @@ struct WorkspaceActivityMenuSlice: Equatable {
         }
         collect(nodes)
         return result
+    }
+
+    /// Fork-only: the sessions the AGENTS section lists whatever their
+    /// activity — pinned ones and the Super Agent — in sidebar order.
+    static func alwaysListedSessions(
+        in nodes: [ProjectNode],
+        isPinned: (_ sessionID: String, _ projectID: String) -> Bool
+    ) -> [SessionEntry] {
+        sessions(in: nodes) { session, projectID in
+            session.superAgent || isPinned(session.id, projectID)
+        }
+    }
+
+    /// Fork-only: the running Workers, in sidebar order — candidates for
+    /// `workers`.
+    static func runningWorkers(in nodes: [ProjectNode]) -> [SessionEntry] {
+        sessions(in: nodes) { session, _ in
+            session.isLive && !session.superAgent && session.superAgentRouterID != nil
+        }
+    }
+
+    /// Fork-only: every session `included` accepts (with the id of the node
+    /// listing it), walking the sidebar tree in render order.
+    private static func sessions(
+        in nodes: [ProjectNode],
+        where included: (_ session: SessionEntry, _ projectID: String) -> Bool
+    ) -> [SessionEntry] {
+        nodes.flatMap { node in
+            node.sessions.filter { included($0, node.id) }
+                + sessions(in: node.worktrees, where: included)
+        }
     }
 
     private static func title(_ raw: String, fallback: String) -> String {
@@ -163,6 +213,9 @@ struct GlobalActivityMenuSessions: Equatable {
     /// Fork-only: shown by the AGENTS section only, so the counts below —
     /// which size the dropdowns — leave it out.
     var pinned: [GlobalActivityMenuItem] = []
+    /// Fork-only: idle Workers, listed under the Super Agent in AGENTS only;
+    /// left out of the counts too.
+    var workers: [GlobalActivityMenuItem] = []
 
     static let empty = GlobalActivityMenuSessions()
 
@@ -194,6 +247,7 @@ struct GlobalActivityMenuSessions: Equatable {
             jobs.append(contentsOf: wrap(slice.jobs))
             finished.append(contentsOf: wrap(slice.finished))
             pinned.append(contentsOf: wrap(slice.pinned))
+            workers.append(contentsOf: wrap(slice.workers))
         }
     }
 
@@ -220,6 +274,7 @@ struct GlobalActivityMenuSessions: Equatable {
         jobs = wrap(slice.jobs)
         finished = wrap(slice.finished)
         pinned = wrap(slice.pinned)
+        workers = wrap(slice.workers)
     }
 
     var sectionCount: Int {
@@ -320,7 +375,8 @@ final class GlobalActivityMenuModel: ObservableObject {
             allSessions: Array(store.displaySessionsByID.values),
             jobs: store.activeJobSessions,
             finished: store.unreadJobSessions,
-            pinned: store.pinnedActivitySessions
+            pinned: store.pinnedActivitySessions,
+            workers: WorkspaceActivityMenuSlice.runningWorkers(in: displayNodes)
         )
         let sidebarProjectIDs = WorkspaceActivityMenuSlice.sessionProjectIDs(
             in: displayNodes

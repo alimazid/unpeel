@@ -205,6 +205,8 @@ mod tests {
             activity_at: 1,
             group_id: "project".into(),
             detected_local_urls: Vec::new(),
+            is_worker: false,
+            is_router: false,
         }
     }
 

@@ -42,6 +42,11 @@ It deliberately exposes an allowlist, not arbitrary JSON paths:
 | `browser_default_access` | string | `on`, `ask`, `off` | absent `on`; malformed `off` |
 | `mcp_nonchild_write_access` | string | `ask`, `allow`, `deny` | `ask` |
 | `theme` | string | `system`, `light`, `dark` | `system` |
+| `supervisor_*` (fork-only, nine Super Agent keys) | number or boolean | each key's menu, range or flag (`unpeel settings --help`) | the key's default |
+
+Fork-only: the `supervisor_*` keys' value sets and defaults live in
+`unpeel_core::supervision::SupervisorSetting`, which the supervisor reads
+through too, so `set` accepts exactly what the Host honors.
 
 Browser access reads use `BrowserAccess::from_state_str` semantics and fail
 closed on malformed/non-string state. A nested experimental edit creates the

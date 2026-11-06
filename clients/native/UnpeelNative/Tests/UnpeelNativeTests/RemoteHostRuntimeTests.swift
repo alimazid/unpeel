@@ -251,6 +251,26 @@ final class RemoteHostRuntimeTests: XCTestCase {
         XCTAssertFalse(RemoteHostRuntime.snapshotContentEqual(base, alerted))
     }
 
+    func testContentEqualityNoticesSuperAgentChanges() {
+        // Stop Being Super Agent changes nothing else a quiet row renders;
+        // a snapshot judged equal kept the badge and the nested Worker.
+        let marked = makeSnapshot(sessions: [
+            makeSession(id: "router", superAgent: true),
+            makeSession(id: "worker", superAgentRouterID: "router"),
+        ])
+        let cleared = makeSnapshot(sessions: [
+            makeSession(id: "router"),
+            makeSession(id: "worker"),
+        ])
+        let freedOnly = makeSnapshot(sessions: [
+            makeSession(id: "router", superAgent: true),
+            makeSession(id: "worker"),
+        ])
+
+        XCTAssertFalse(RemoteHostRuntime.snapshotContentEqual(marked, cleared))
+        XCTAssertFalse(RemoteHostRuntime.snapshotContentEqual(marked, freedOnly))
+    }
+
     func testContentEqualityNoticesWorkspaceSettingsChanges() {
         let first = makeSnapshot(workspaceSettings: makeWorkspaceSettings(menuAttention: true))
         let second = makeSnapshot(workspaceSettings: makeWorkspaceSettings(menuAttention: false))
@@ -357,6 +377,52 @@ final class RemoteHostRuntimeTests: XCTestCase {
         runtime.releaseUnreadHold("session")
         await waitUntil { await backend.effectCalls == [.markRead(sessionID: "session")] }
         runtime.disconnect()
+    }
+
+    /// Fork-only: each Super Agent verb posts only when the Host advertises
+    /// its own operation; the others fail without reaching the backend.
+    func testEachSuperAgentVerbPostsOnlyWhenAdvertised() async throws {
+        let verbs: [(operation: String, call: String)] = [
+            (RemoteHostRuntime.HostOperation.superAgentSet, "super-agent-set:session"),
+            (RemoteHostRuntime.HostOperation.superAgentClear, "super-agent-clear:session"),
+            (RemoteHostRuntime.HostOperation.superAgentHandOver, "super-agent-hand-over:session"),
+        ]
+        for advertised in verbs {
+            let backend = ControlledRemoteBackend()
+            let runtime = makeRuntime(backend: backend)
+            runtime.connectSSH(target: "ssh://host", expectedHostID: "host")
+            await waitUntil { await backend.bootstrapCount == 1 }
+            await backend.resolveBootstrap(.success(makeSnapshot(
+                capabilities: [
+                    "host.bootstrap", "session.input.write", "session.output.read",
+                    advertised.operation,
+                ],
+                sessions: [makeSession(id: "session")]
+            )))
+            await waitUntil { runtime.connectionState == .connected(name: "Host") }
+
+            var failed: [String] = []
+            for verb in verbs {
+                do {
+                    switch verb.operation {
+                    case RemoteHostRuntime.HostOperation.superAgentSet:
+                        try await runtime.setSuperAgent("session")
+                    case RemoteHostRuntime.HostOperation.superAgentClear:
+                        try await runtime.clearSuperAgent("session")
+                    default:
+                        try await runtime.handOverToSuperAgent("session")
+                    }
+                } catch let error as RemoteHostVerbError {
+                    XCTAssertFalse(error.outcomeIsUnknown, "an unadvertised verb is never sent")
+                    failed.append(verb.operation)
+                }
+            }
+
+            let calls = await backend.organizationCalls
+            XCTAssertEqual(calls, [advertised.call])
+            XCTAssertEqual(failed, verbs.map(\.operation).filter { $0 != advertised.operation })
+            runtime.disconnect()
+        }
     }
 
     func testGroupPinUsesDedicatedCapabilityAndOrganizationEffect() async throws {
@@ -3175,7 +3241,9 @@ final class RemoteHostRuntimeTests: XCTestCase {
         worktreePath: String? = nil,
         worktreeBranch: String? = nil,
         latestAlertBody: String? = nil,
-        latestAlertAt: Int64? = nil
+        latestAlertAt: Int64? = nil,
+        superAgent: Bool = false,
+        superAgentRouterID: String? = nil
     ) -> RemoteSessionSummary {
         RemoteSessionSummary(
             id: id,
@@ -3194,7 +3262,9 @@ final class RemoteHostRuntimeTests: XCTestCase {
             worktreeBranch: worktreeBranch,
             lastOutputPreview: preview,
             latestAlertBody: latestAlertBody,
-            latestAlertAtUnixMs: latestAlertAt
+            latestAlertAtUnixMs: latestAlertAt,
+            superAgent: superAgent,
+            superAgentRouterID: superAgentRouterID
         )
     }
 
@@ -3512,6 +3582,21 @@ private actor ControlledRemoteBackend: NativeRemoteBackendProtocol {
     func markUnread(sessionID: String) async throws -> NativeRemoteEffectReceipt {
         organizationCalls.append("unread:\(sessionID)")
         return NativeRemoteEffectReceipt(requestID: 906)
+    }
+
+    func setSuperAgent(sessionID: String) async throws -> NativeRemoteEffectReceipt {
+        organizationCalls.append("super-agent-set:\(sessionID)")
+        return NativeRemoteEffectReceipt(requestID: 916)
+    }
+
+    func clearSuperAgent(sessionID: String) async throws -> NativeRemoteEffectReceipt {
+        organizationCalls.append("super-agent-clear:\(sessionID)")
+        return NativeRemoteEffectReceipt(requestID: 917)
+    }
+
+    func handOverToSuperAgent(sessionID: String) async throws -> NativeRemoteEffectReceipt {
+        organizationCalls.append("super-agent-hand-over:\(sessionID)")
+        return NativeRemoteEffectReceipt(requestID: 918)
     }
 
     func stopSession(sessionID: String) async throws -> NativeRemoteEffectReceipt {
