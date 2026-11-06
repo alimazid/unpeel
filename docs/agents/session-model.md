@@ -149,6 +149,14 @@ termination output is drained first. Never signal an unverified process group.
   Terminal** remains the distinct maintenance/recovery action for replacing a
   healthy live Host. Replacement paths retain the existing
   metadata/reference transfer rules. Remove prunes all shared references. See Resume recipes below.
+- When a Session's launch command exits, the startup script writes its exit
+  status (`0`, the command's code, or 128 + signal) to
+  `<session dir>/startup-exit` — a temporary file renamed into place — before
+  it execs the fallback login shell; `session_host::read_startup_exit` reads
+  it. A launch clears a stale record first and refuses to start if it cannot.
+  Commands typed later in the fallback shell and Resume Agent's in-place
+  relaunch are not recorded, and the manifest's `exit_code` stays the PTY
+  child's (the fallback shell's).
 
 ### Recent ordering (sidebar + shared ⌘K/^K contract)
 
