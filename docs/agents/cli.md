@@ -92,20 +92,42 @@ delete. Native convergence, if chosen, is a separate product change.
 
 ```text
 unpeel schedules [list] [--json]
-unpeel schedules add <name> --project <id|name> --preset <id|label>
-                     (--once <YYYY-MM-DDTHH:MM[:SS]> | --daily <HH:MM[:SS]>) [--no-notify]
-unpeel schedules run|history|rm <id|name>
+unpeel schedules add <name> --project <id|name> --preset <id|label> <trigger> [--no-notify]
+unpeel schedules edit <id|name> [--name …] [--project …] [--preset …] [<trigger>] [--notify|--no-notify]
+unpeel schedules pause|resume|run|history|rm <id|name>
+
+<trigger>: --hourly <minute> | --daily <HH:MM[:SS]> | --weekdays <HH:MM[:SS]>
+         | --weekly <day> <HH:MM[:SS]> | --once <YYYY-MM-DDTHH:MM[:SS]>
+         | --cron '<min> <hour> <day> <month> <weekday>'
 ```
 
-`add` and `rm` edit the raw `schedules` array through `app_state::edit`
-(unknown entries and fields pass through); the workspace worker re-reads it
-every rescan and fires due tasks itself (`unpeel_serve::schedules`). `run`
-(Run now) goes to the live worker over the owner-only `/_unpeel/schedules`
-control path, which refuses while a Run is in progress, so it needs a running
-Host. `list` and `history` read the per-task clock and Run log under
-`<UNPEEL_HOME>/schedules/<id>/` (`unpeel_core::schedule_store`). `add`,
-`run` and `rm` refuse inside a Session, the detection `unpeel send` uses.
+`add`, `edit`, `pause`, `resume` and `rm` edit the raw `schedules` array
+through `app_state::edit` (unknown entries and fields pass through; an edit
+goes through `unpeel_core::schedules::apply_edit`); the workspace worker
+re-reads it every rescan and fires due tasks itself
+(`unpeel_serve::schedules`). Every Trigger is stored in its canonical form
+(times without zero seconds, a weekday's full lowercase name, a cron
+expression single-spaced) after `trigger::Trigger::check`, the save-time
+check any writer must run: it refuses out-of-range values, a past Once, and
+a cron expression that is not exactly 5 fields or never comes due. Pause is
+`enabled: false`; Resume, and a new Trigger, stamp `clock_reset_at_ms`, and
+the due rule counts only occurrences after it, so nothing missed while
+paused runs. `run` (Run now) goes to the live worker over the owner-only
+`/_unpeel/schedules` control path, which refuses while a Run is in
+progress, so it needs a running Host. `list` and `history` read the
+per-task clock and Run log under `<UNPEEL_HOME>/schedules/<id>/`
+(`unpeel_core::schedule_store`); `list`'s next run is
+`trigger::next_run`, the instant the Host publishes. Every verb but `list`
+and `history` refuses inside a Session, the detection `unpeel send` uses.
 `rm` deletes the task and its history; its Run Sessions stay.
+
+Triggers read the local wall clock (`unpeel_serve::schedules::clock`):
+`system_zone()` resolves the zone on every call (`TZ`, else the
+`/etc/localtime` link), so travel takes effect on the next sweep. A time a
+spring-forward change skips comes due when the change ends; a repeated
+time fires once, on its first pass — for every kind, Hourly and cron
+included. Occurrences are compared as local date-times, so after a
+westward trip the same local time does not fire twice.
 
 ### Unpeel Link enrollment
 
