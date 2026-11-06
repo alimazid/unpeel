@@ -95,6 +95,7 @@ printed only when the check fails.
 | `cli` | headless verbs, including live agent-only restart vs stopped terminal Resume |
 | `browser_spawn` | Browser MCP engine launch from a Session |
 | `ctrlc_fallback` | Ctrl-C into a fresh preset Session lands in the fallback shell |
+| `startup_exit` | a launch command's exit status (0, 3, 128 + signal, a quit agent) lands in `startup-exit` before the fallback shell |
 | `pty_core_*` | the shared PTY core: parity, adoption, in-place handoff |
 | `serve_install` | `unpeel serve install|uninstall|status` unit rendering (shim-tested) |
 | `state_bus` | cross-frontend sync: pings land immediately, writes announce |
