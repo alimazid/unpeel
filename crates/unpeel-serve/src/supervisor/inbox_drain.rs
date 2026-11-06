@@ -767,6 +767,7 @@ mod tests {
             group_id: "p".into(),
             detected_local_urls: Vec::new(),
             is_worker: false,
+            is_router: false,
         }
     }
 
