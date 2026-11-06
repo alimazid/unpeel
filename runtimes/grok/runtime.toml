@@ -42,6 +42,10 @@ escape_cancels_turn = true
 anchor_start_event_to_output = false
 attention_clears_on_output = false
 
+# The arguments that turn off this runtime's approval prompts.
+[approvals]
+bypass_flags = ["--always-approve"]
+
 [integration]
 summary = "Writes Unpeel's hook file ~/.grok/hooks/unpeel.json."
 legacy_evidence = ["hooks/grok-hook.sh"]

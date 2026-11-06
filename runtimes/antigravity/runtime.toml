@@ -45,5 +45,9 @@ label = "agy --dangerously-skip-permissions"
 command = "agy --dangerously-skip-permissions"
 quick_launch = false
 
+# The arguments that turn off this runtime's approval prompts.
+[approvals]
+bypass_flags = ["--dangerously-skip-permissions"]
+
 [integration]
 summary = "Adds the unpeel MCP server to Antigravity's global MCP config, ~/.gemini/config/mcp_config.json."

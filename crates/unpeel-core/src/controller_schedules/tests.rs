@@ -231,3 +231,51 @@ fn every_preset_row_says_whether_it_is_an_agent_preset() {
         ]
     );
 }
+
+/// The Host says which presets turn off their agent's approval prompts,
+/// from each runtime's own declared flags: a Controller only warns.
+#[test]
+fn every_preset_row_says_whether_it_bypasses_approvals() {
+    let mut presets = vec![
+        json!({"id": "claude", "command": "claude --dangerously-skip-permissions"}),
+        json!({"id": "claude-mode", "command": "claude --permission-mode bypassPermissions"}),
+        json!({"id": "claude-eq", "command": "claude --permission-mode=bypassPermissions"}),
+        json!({"id": "claude-plan", "command": "claude --permission-mode plan"}),
+        json!({"id": "codex", "command": "/opt/bin/codex --dangerously-bypass-approvals-and-sandbox"}),
+        json!({"id": "gemini-y", "command": "gemini -y"}),
+        json!({"id": "cursor", "command": "cursor-agent --force"}),
+        // A flag another runtime reads that way means nothing here.
+        json!({"id": "claude-force", "command": "claude --force"}),
+        json!({"id": "plain", "command": "claude"}),
+        json!({"id": "script", "command": "./deploy.sh --yolo"}),
+        json!({"id": "flag-as-head", "command": "--yolo"}),
+        json!({"id": "no-command"}),
+    ];
+    mark_agent_presets(&mut presets);
+    let flags: Vec<_> = presets
+        .iter()
+        .map(|row| {
+            (
+                row["id"].as_str().unwrap(),
+                row["bypassesApprovals"].as_bool(),
+            )
+        })
+        .collect();
+    assert_eq!(
+        flags,
+        vec![
+            ("claude", Some(true)),
+            ("claude-mode", Some(true)),
+            ("claude-eq", Some(true)),
+            ("claude-plan", Some(false)),
+            ("codex", Some(true)),
+            ("gemini-y", Some(true)),
+            ("cursor", Some(true)),
+            ("claude-force", Some(false)),
+            ("plain", Some(false)),
+            ("script", Some(false)),
+            ("flag-as-head", Some(false)),
+            ("no-command", Some(false)),
+        ]
+    );
+}

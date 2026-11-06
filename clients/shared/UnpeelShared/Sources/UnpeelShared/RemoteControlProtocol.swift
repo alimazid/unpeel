@@ -545,6 +545,11 @@ public struct RemotePresetSummary: Codable, Equatable, Identifiable, Sendable {
     /// Agent Preset, the only kind that takes a task's instructions. Nil on
     /// an older Host: read it as not one; never classify the command here.
     public let agentPreset: Bool?
+    /// Fork-only: Scheduled Tasks. The Host's word on whether this preset
+    /// turns off its agent's approval prompts (a flag its runtime declares),
+    /// so a task's Runs ask no one. Nil on an older Host: no warning; never
+    /// parse the command's flags here.
+    public let bypassesApprovals: Bool?
 
     public init(
         id: String,
@@ -557,9 +562,11 @@ public struct RemotePresetSummary: Codable, Equatable, Identifiable, Sendable {
         tintColorHex: Int? = nil,
         projectID: String? = nil,
         pluginID: String? = nil,
-        agentPreset: Bool? = nil
+        agentPreset: Bool? = nil,
+        bypassesApprovals: Bool? = nil
     ) {
         self.agentPreset = agentPreset
+        self.bypassesApprovals = bypassesApprovals
         self.id = id
         self.pluginID = pluginID
         self.projectID = projectID

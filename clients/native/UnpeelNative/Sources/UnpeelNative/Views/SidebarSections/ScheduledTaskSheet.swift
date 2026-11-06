@@ -153,7 +153,7 @@ struct ScheduledTaskSheet: View {
                             .lineLimit(1)
                             .truncationMode(.middle)
                     }
-                    if let warning = ScheduledTaskForm.bypassWarning(for: preset?.command) {
+                    if let warning = ScheduledTaskForm.bypassWarning(for: preset) {
                         Label(warning, systemImage: "exclamationmark.triangle.fill")
                             .font(.system(size: 11))
                             .foregroundStyle(Theme.attention)

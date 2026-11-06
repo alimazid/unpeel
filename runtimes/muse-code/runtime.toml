@@ -35,6 +35,10 @@ completion_reliable = true
 attention_reliable = true
 escape_cancels_turn = true
 
+# The arguments that turn off this runtime's approval prompts.
+[approvals]
+bypass_flags = ["--yolo"]
+
 [integration]
 summary = "Stages and registers the unpeel plugin with `muse plugins install`; the plugin carries the hooks and the MCP server."
 legacy_evidence = ["hooks/muse-plugin.installed"]

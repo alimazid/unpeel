@@ -1378,7 +1378,12 @@
     {
       "field": "presets[].agentPreset",
       "required": false,
-      "note": "Fork-only: Scheduled Tasks. On every preset row: whether the preset is an Agent Preset (its command starts a runtime that declares a readiness signal), the only kind that takes a task's instructions. Controllers show the Instructions field only when it is true and never classify a command themselves; absent (an older Host) reads as false."
+      "note": "Fork-only: Scheduled Tasks. On every preset row: whether the preset is an Agent Preset (its command starts a runtime that shows a readiness signal at launch: a [screen] idle prompt or its own program status), the only kind that takes a task's instructions. Controllers show the Instructions field only when it is true and never classify a command themselves; absent (an older Host) reads as false."
+    },
+    {
+      "field": "presets[].bypassesApprovals",
+      "required": false,
+      "note": "Fork-only: Scheduled Tasks. On every preset row: whether the preset's command passes one of its runtime's declared approval-bypass flags (runtimes/<slug>/runtime.toml [approvals]), so its Runs act with no one asked. Controllers warn from this field alone and never parse a command's flags; absent (an older Host) reads as false."
     }
   ]
 }

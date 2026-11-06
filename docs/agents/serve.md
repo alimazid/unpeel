@@ -309,9 +309,12 @@ with a folder, an enabled preset, instructions only on an Agent Preset), and
 Run now through the driver (the same request `unpeel schedules run` sends
 over `/_unpeel/schedules`). A process without a worker (the SSH fallback
 gateway) leaves the four ids out of its descriptor and answers 503. Every
-bootstrap preset row carries `agentPreset`
+bootstrap preset row carries `agentPreset` and `bypassesApprovals`
 (`controller_schedules::mark_agent_presets`), so a Controller shows a task's
-Instructions field only where the Host would accept them.
+Instructions field only where the Host would accept them, and warns about a
+preset that turns off its agent's approval prompts from the runtime's own
+declared flags (`[approvals]` in its `runtime.toml`), never by parsing the
+command itself.
 
 Session rows carry two additive fields on a Run Session (`spawned_by`
 `schedule:<id>`), from both builders (`sessions.rs` `mobile_snapshot` and

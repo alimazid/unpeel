@@ -99,6 +99,10 @@ def check_bootstrap(case, phone, local):
         case.check(f"{name} flags each preset's Agent Preset kind",
                    flags.get("claude") is True and flags.get("ok") is False
                    and flags.get("slow") is False, json.dumps(flags))
+        bypass = {p.get("id"): p.get("bypassesApprovals") for p in boot.get("presets", [])}
+        case.check(f"{name} says which presets turn off their agent's approvals",
+                   bypass.get("unattended") is True and bypass.get("claude") is False
+                   and bypass.get("ok") is False, json.dumps(bypass))
 
 
 def check_create(case, home, phone):
@@ -230,6 +234,8 @@ def body(case):
     home.preset(label="ok", command="true", preset_id="ok")
     home.preset(label="slow", command="sleep 25", preset_id="slow")
     home.preset(label="Claude", command="claude", preset_id="claude")
+    home.preset(label="Unattended", command="claude --dangerously-skip-permissions",
+                preset_id="unattended")
     token = home.pair_device()
     home.reserve_mobile_port()
     service = case.serve(env={"TZ": ZONE})

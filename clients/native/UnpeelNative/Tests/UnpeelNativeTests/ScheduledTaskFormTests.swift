@@ -50,31 +50,22 @@ struct ScheduledTaskFormTests {
     // MARK: Approval-bypass warning
 
     @Test
-    func aKnownApprovalBypassFlagIsNamedInOneLine() {
-        let flagged = [
-            ("claude --dangerously-skip-permissions", "--dangerously-skip-permissions"),
-            ("codex --dangerously-bypass-approvals-and-sandbox", "--dangerously-bypass-approvals-and-sandbox"),
-            ("gemini --yolo", "--yolo"),
-            ("gemini -y", "-y"),
-            ("/usr/local/bin/cursor-agent --force", "--force"),
-            ("grok --always-approve", "--always-approve"),
-            ("claude --permission-mode bypassPermissions", "--permission-mode bypassPermissions"),
-            ("claude --permission-mode=bypassPermissions", "--permission-mode=bypassPermissions"),
-            ("gemini --approval-mode yolo", "--approval-mode yolo"),
-        ]
-        for (command, flag) in flagged {
-            #expect(ScheduledTaskForm.bypassFlag(in: command) == flag, "\(command)")
-            let warning = ScheduledTaskForm.bypassWarning(for: command)
-            #expect(warning?.contains(flag) == true, "\(command)")
-            #expect(warning?.contains("\n") == false, "one line")
-        }
-        // Whole tokens only, and generic flags only where they mean bypass.
-        for command in [
-            "rsync --force-delete ./a ./b", "git push --force", "claude --yolo-mode-docs",
-            "tail -y", "claude --permission-mode plan", "claude", "",
-        ] {
-            #expect(ScheduledTaskForm.bypassFlag(in: command) == nil, "\(command)")
-        }
+    func theApprovalBypassWarningFollowsTheHostAlone() {
+        let flagged = RemotePresetSummary(
+            id: "yolo", label: "yolo", command: "gemini --yolo", bypassesApprovals: true
+        )
+        let warning = ScheduledTaskForm.bypassWarning(for: flagged)
+        #expect(warning?.contains("approval prompts") == true)
+        #expect(warning?.contains("\n") == false, "one line")
+        // The command is never read: only the Host's verdict counts, and an
+        // older Host that says nothing gets no warning.
+        let unflagged = RemotePresetSummary(
+            id: "plain", label: "plain", command: "claude --dangerously-skip-permissions",
+            bypassesApprovals: false
+        )
+        let older = RemotePresetSummary(id: "old", label: "old", command: "gemini --yolo")
+        #expect(ScheduledTaskForm.bypassWarning(for: unflagged) == nil)
+        #expect(ScheduledTaskForm.bypassWarning(for: older) == nil)
         #expect(ScheduledTaskForm.bypassWarning(for: nil) == nil)
     }
 

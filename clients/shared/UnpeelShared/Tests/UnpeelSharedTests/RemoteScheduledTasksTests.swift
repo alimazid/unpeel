@@ -226,13 +226,14 @@ struct RemoteScheduledTasksTests {
 
         let body = #"""
         {"protocolVersion":1,"folders":[],"projects":[],"sessions":[],"capturedAtUnixMs":1,"presets":[
-          {"id":"claude","label":"Claude","command":"claude","enabled":true,"quickLaunch":false,"isDefault":false,"agentPreset":true},
-          {"id":"ok","label":"OK","command":"true","enabled":true,"quickLaunch":false,"isDefault":false,"agentPreset":false},
+          {"id":"claude","label":"Claude","command":"claude","enabled":true,"quickLaunch":false,"isDefault":false,"agentPreset":true,"bypassesApprovals":true},
+          {"id":"ok","label":"OK","command":"true","enabled":true,"quickLaunch":false,"isDefault":false,"agentPreset":false,"bypassesApprovals":false},
           {"id":"old","label":"Old","command":"claude","enabled":true,"quickLaunch":false,"isDefault":false}
         ]}
         """#
         let snapshot = try JSONDecoder().decode(RemoteBootstrapSnapshot.self, from: Data(body.utf8))
         #expect(snapshot.presets.map(\.agentPreset) == [true, false, nil])
+        #expect(snapshot.presets.map(\.bypassesApprovals) == [true, false, nil])
     }
 
     @Test func bootstrapCarriesTheSchedulesRevision() throws {

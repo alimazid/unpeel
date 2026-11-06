@@ -58,18 +58,37 @@ pub struct Failure(pub u16, pub String);
 
 /// Every bootstrap preset row says whether it is an Agent Preset (one that
 /// starts an agent Unpeel can tell is ready), so a Controller shows a
-/// task's Instructions field only where the Host would accept them; it
-/// never classifies a command itself.
+/// task's Instructions field only where the Host would accept them, and
+/// whether it turns off its agent's approval prompts (`bypassesApprovals`),
+/// so a Controller can warn that its Runs ask no one. A Controller never
+/// classifies a command itself.
 pub fn mark_agent_presets(presets: &mut [Value]) {
     for preset in presets {
-        let agent = preset
-            .get("command")
-            .and_then(Value::as_str)
-            .is_some_and(crate::agent_readiness::is_agent_command);
+        let command = preset.get("command").and_then(Value::as_str);
+        let agent = command.is_some_and(crate::agent_readiness::is_agent_command);
+        let bypasses = command.is_some_and(bypasses_approvals);
         if let Some(row) = preset.as_object_mut() {
             row.insert("agentPreset".into(), Value::Bool(agent));
+            row.insert("bypassesApprovals".into(), Value::Bool(bypasses));
         }
     }
+}
+
+/// Whether `command` passes one of its runtime's own approval-bypass flags
+/// (`[approvals]` in `runtimes/<slug>/runtime.toml`). A command no runtime
+/// claims bypasses nothing Unpeel knows of.
+fn bypasses_approvals(command: &str) -> bool {
+    let head = crate::integrations::command_head(command);
+    let Some(runtime) = crate::runtime_catalog::builtin_runtime_catalog()
+        .by_command_alias_for_current_platform(head)
+    else {
+        return false;
+    };
+    let arguments: Vec<&str> = command.split_whitespace().skip(1).collect();
+    runtime.approvals.bypass_flags.iter().any(|flag| {
+        let words: Vec<&str> = flag.split_whitespace().collect();
+        !words.is_empty() && arguments.windows(words.len()).any(|window| window == words)
+    })
 }
 
 /// The routes, for `controller_api::route_uncached`. Any other method or

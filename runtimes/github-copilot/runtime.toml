@@ -34,6 +34,10 @@ fallback = "none"
 completion_reliable = true
 attention_reliable = true
 
+# The arguments that turn off this runtime's approval prompts.
+[approvals]
+bypass_flags = ["--allow-all-tools"]
+
 [integration]
 summary = "Installs the shared reporter; Copilot reads hooks per repository (unpeel integrations install github-copilot --project DIR)."
 legacy_evidence = ["hooks/copilot-hook.sh"]

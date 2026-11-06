@@ -208,47 +208,13 @@ enum ScheduledTaskForm {
 
     // MARK: Approval-bypass warning
 
-    /// Flags that turn off an agent's approval prompts, as whole argv
-    /// tokens; a generic flag counts only for the agent that reads it so.
-    private static let bypassFlags: [(flag: String, onlyFor: Set<String>?)] = [
-        ("--dangerously-skip-permissions", nil),
-        ("--dangerously-bypass-approvals-and-sandbox", nil),
-        ("--yolo", nil),
-        ("--always-approve", nil),
-        ("--allow-all-tools", nil),
-        ("--force", ["cursor-agent"]),
-        ("-y", ["gemini"]),
-    ]
-    /// `--option value` / `--option=value` pairs that do the same.
-    private static let bypassOptions: [(option: String, value: String)] = [
-        ("--permission-mode", "bypassPermissions"),
-        ("--approval-mode", "yolo"),
-    ]
-
-    /// The approval-bypass flag `command` passes, as written.
-    static func bypassFlag(in command: String) -> String? {
-        let tokens = command.split(whereSeparator: \.isWhitespace).map(String.init)
-        guard let head = tokens.first.map({ ($0 as NSString).lastPathComponent }) else { return nil }
-        let arguments = tokens.dropFirst()
-        if let match = bypassFlags.first(where: { entry in
-            arguments.contains(entry.flag) && (entry.onlyFor?.contains(head) ?? true)
-        }) {
-            return match.flag
-        }
-        for (index, token) in zip(arguments.indices, arguments) {
-            for (option, value) in bypassOptions {
-                if token == "\(option)=\(value)" { return token }
-                if token == option, arguments.indices.contains(index + 1), arguments[index + 1] == value {
-                    return "\(option) \(value)"
-                }
-            }
-        }
-        return nil
-    }
-
-    static func bypassWarning(for command: String?) -> String? {
-        guard let command, let flag = bypassFlag(in: command) else { return nil }
-        return "This preset runs with \(flag): each Run acts on its own, with your permissions, and asks no one first."
+    /// One line when the Host says the preset turns off its agent's approval
+    /// prompts (from the runtime's own declared flags); the app never
+    /// parses a command's flags itself.
+    static func bypassWarning(for preset: RemotePresetSummary?) -> String? {
+        guard preset?.bypassesApprovals == true else { return nil }
+        return "This preset turns off its agent's approval prompts: each Run acts on its own, "
+            + "with your permissions, and asks no one first."
     }
 
     // MARK: Saving
