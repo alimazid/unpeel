@@ -7,7 +7,7 @@
 //  link — as a section below PROJECTS. Pinned sessions follow, so they
 //  never drop out of it. Unlike the bell (which stays, across every
 //  workspace), it lists the current workspace only, and its rows carry the
-//  PROJECTS session menu (`AgentsSessionRow`).
+//  PROJECTS session menu (`AgentsSessionRow`) and selection chip.
 //
 
 import SwiftUI
@@ -51,6 +51,11 @@ struct AgentsSectionPanel: View {
             showsWorkspaceName: false,
             wrapRow: { [store] item, style, row in
                 AnyView(AgentsSessionRowHost(store: store, item: item, style: style, row: row))
+            },
+            // The PROJECTS per-id token: a selection change repaints only
+            // the old and new chips, never the rows or an open menu.
+            selectionState: { [store] item in
+                store.sessionSelection.rowState(for: item.session.sessionID)
             }
         )
         .padding(.horizontal, 6)

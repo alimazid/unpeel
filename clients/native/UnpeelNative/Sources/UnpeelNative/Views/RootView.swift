@@ -851,6 +851,9 @@ struct ActivityMenuList: View {
     /// Fork-only: the AGENTS section wraps each row (session context menu,
     /// inline rename and confirmations). The dropdowns keep the bare row.
     var wrapRow: ((GlobalActivityMenuItem, ActivityMenuRowStyle, AnyView) -> AnyView)? = nil
+    /// Fork-only: the AGENTS section highlights the selected Session with
+    /// the PROJECTS selection chip. The dropdowns show no selection.
+    var selectionState: ((GlobalActivityMenuItem) -> SessionSelectionRowState?)? = nil
 
     private var rowCount: Int { jobs.count + blockers.count + finished.count + pinned.count }
 
@@ -966,7 +969,8 @@ struct ActivityMenuList: View {
             unread: style.unread,
             working: style.working,
             blocked: style.blocked,
-            pinned: style.pinned
+            pinned: style.pinned,
+            selectionState: selectionState?(item)
         ) {
             onSelect(item)
         }
@@ -1046,6 +1050,9 @@ private struct TitlebarActivityMenuRow: View {
     /// Fork-only: an idle pinned row in the AGENTS section — the CLI logo
     /// (left) and the sidebar's pin glyph (right).
     var pinned = false
+    /// Fork-only: the AGENTS row's per-id selection token. When present the
+    /// PROJECTS paint draws both the selection chip and the hover fill.
+    var selectionState: SessionSelectionRowState? = nil
     let onSelect: () -> Void
 
     @State private var hovering = false
@@ -1133,10 +1140,18 @@ private struct TitlebarActivityMenuRow: View {
             .padding(.vertical, 6)
             .frame(maxWidth: .infinity, alignment: .leading)
             .contentShape(Rectangle())
-            .background(
-                RoundedRectangle(cornerRadius: 7, style: .continuous)
-                    .fill(hovering ? Theme.hoverRow : .clear)
-            )
+            .background {
+                if let selectionState {
+                    SessionRowSelectionBackground(
+                        state: selectionState,
+                        fallbackIsSelected: false,
+                        isHovering: hovering
+                    )
+                } else {
+                    RoundedRectangle(cornerRadius: 7, style: .continuous)
+                        .fill(hovering ? Theme.hoverRow : .clear)
+                }
+            }
         }
         .buttonStyle(.plain)
         .compatFocusEffectDisabled()
