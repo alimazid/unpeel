@@ -106,7 +106,7 @@ def check_advertised(case, controller):
     status, boot = controller.get("/mobile/bootstrap")
     capabilities = (boot.get("hostProtocol") or {}).get("capabilities") or []
     case.check("bootstrap advertises both schedules capabilities",
-               status == 200 and "schedules" in capabilities and "schedules.runs" in capabilities,
+               status == 200 and "schedule.list" in capabilities and "schedule.runs" in capabilities,
                json.dumps(capabilities)[:400])
     case.check("bootstrap carries a schedules revision",
                isinstance(boot.get("schedulesRevision"), str), json.dumps(boot)[:200])

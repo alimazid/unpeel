@@ -1,8 +1,8 @@
 """Scheduled Tasks over the `unpeel` MCP `workspace` tool, read-only.
 
 From inside a Session (`unpeel mcp`, the same dispatcher an agent's MCP
-server runs), `schedules_list` shows the task with its next run and last
-Run and `schedule_runs` reads its Runs newest first, both from the files
+server runs), `list_schedules` shows the task with its next run and last
+Run and `list_schedule_runs` reads its Runs newest first, both from the files
 the Host publishes on disk. Help documents both; there is no write action,
 `unpeel schedules add` still refuses inside a Session, and even under the
 Create & remove role an agent cannot close the task's Run Session (the
@@ -50,28 +50,28 @@ def run_now_done(case, service, home, task_id):
 
 def check_list(case, service, home, task_id, inside, last_run_id):
     def listed():
-        answer = as_json(cli(home, "mcp", "workspace", "schedules_list", env=inside)) or {}
+        answer = as_json(cli(home, "mcp", "workspace", "list_schedules", env=inside)) or {}
         return next((t for t in answer.get("schedules", []) if t.get("id") == task_id), {})
 
     task = service.wait_for(lambda: listed().get("nextRun") and listed(), timeout=30) or listed()
-    case.check("schedules_list shows the task's definition",
+    case.check("list_schedules shows the task's definition",
                task.get("name") == "Briefing" and task.get("projectID") == "p"
                and task.get("presetID") == "ok" and task.get("enabled") is True
                and task.get("trigger") == {"kind": "daily", "time": "09:30"}, json.dumps(task))
     next_run = task.get("nextRun") or {}
-    case.check("schedules_list shows the next run the Host published",
+    case.check("list_schedules shows the next run the Host published",
                str(next_run.get("at", "")).endswith("T09:30") and isinstance(next_run.get("atMs"), int),
                json.dumps(next_run))
     last = task.get("lastRun") or {}
-    case.check("schedules_list shows the last Run's status",
+    case.check("list_schedules shows the last Run's status",
                last.get("runID") == last_run_id and last.get("status") == "done", json.dumps(last))
 
 
 def check_runs(case, home, task_id, inside, first, second):
-    answer = as_json(cli(home, "mcp", "workspace", "schedule_runs", f"schedule_id={task_id}",
+    answer = as_json(cli(home, "mcp", "workspace", "list_schedule_runs", f"schedule_id={task_id}",
                          env=inside)) or {}
     runs = answer.get("runs", [])
-    case.check("schedule_runs reads the task's Runs newest first",
+    case.check("list_schedule_runs reads the task's Runs newest first",
                answer.get("scheduleID") == task_id
                and [r.get("runID") for r in runs] == [second["run_id"], first["run_id"]],
                json.dumps(answer)[:600])
@@ -82,21 +82,21 @@ def check_runs(case, home, task_id, inside, first, second):
                    for r in runs), json.dumps(runs)[:600])
     case.check("a Run names its Session", bool(runs) and runs[0].get("sessionID") == second["session_id"],
                json.dumps(runs[:1]))
-    limited = as_json(cli(home, "mcp", "workspace", "schedule_runs", f"schedule_id={task_id}",
+    limited = as_json(cli(home, "mcp", "workspace", "list_schedule_runs", f"schedule_id={task_id}",
                           "limit=1", env=inside)) or {}
     case.check("limit caps the Runs",
                [r.get("runID") for r in limited.get("runs", [])] == [second["run_id"]],
                json.dumps(limited)[:300])
-    unknown = cli(home, "mcp", "workspace", "schedule_runs", "schedule_id=sch_nope", env=inside)
-    case.check("an unknown task points at schedules_list",
-               unknown.returncode != 0 and "schedules_list" in unknown.stderr, unknown.stderr)
+    unknown = cli(home, "mcp", "workspace", "list_schedule_runs", "schedule_id=sch_nope", env=inside)
+    case.check("an unknown task points at list_schedules",
+               unknown.returncode != 0 and "list_schedules" in unknown.stderr, unknown.stderr)
 
 
 def check_read_only(case, home, inside):
     shown = cli(home, "mcp", "workspace", "help", env=inside)
     case.check("help documents both actions",
-               shown.returncode == 0 and "### schedules_list" in shown.stdout
-               and "### schedule_runs" in shown.stdout, shown.stdout[-600:])
+               shown.returncode == 0 and "### list_schedules" in shown.stdout
+               and "### list_schedule_runs" in shown.stdout, shown.stdout[-600:])
     for action in ("schedules_add", "schedule_run", "schedules_rm"):
         refused = cli(home, "mcp", "workspace", action, env=inside)
         case.check(f"there is no {action} action",

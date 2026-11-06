@@ -1612,10 +1612,10 @@ impl RemoteSessionBackend {
                 &["path", "offset"],
             ),
             // Fork-only: Scheduled Tasks' read routes.
-            "schedules" => ("GET", "schedules", "/mobile/schedules", &[]),
+            "schedules" => ("GET", "schedule.list", "/mobile/schedules", &[]),
             "scheduleRuns" => (
                 "GET",
-                "schedules.runs",
+                "schedule.runs",
                 "/mobile/schedules/runs",
                 &["scheduleID", "limit"],
             ),
@@ -3976,10 +3976,10 @@ fn validate_output_options(
 /// with their capability and route; their bodies are JSON as given.
 fn schedule_write_route(operation: &str) -> Option<(&'static str, &'static str)> {
     match operation {
-        "createSchedule" => Some(("schedules.create", "/mobile/schedules")),
-        "editSchedule" => Some(("schedules.edit", "/mobile/schedules/edit")),
-        "deleteSchedule" => Some(("schedules.delete", "/mobile/schedules/delete")),
-        "runSchedule" => Some(("schedules.run", "/mobile/schedules/run")),
+        "createSchedule" => Some(("schedule.create", "/mobile/schedules")),
+        "editSchedule" => Some(("schedule.edit", "/mobile/schedules/edit")),
+        "deleteSchedule" => Some(("schedule.delete", "/mobile/schedules/delete")),
+        "runSchedule" => Some(("schedule.run", "/mobile/schedules/run")),
         _ => None,
     }
 }
@@ -7863,7 +7863,7 @@ mod tests {
             bootstrap_json(
                 Some("host-1"),
                 HOST_PROTOCOL_MAJOR,
-                Some(&[BOOTSTRAP_CAPABILITY, "schedules", "schedules.runs"]),
+                Some(&[BOOTSTRAP_CAPABILITY, "schedule.list", "schedule.runs"]),
             ),
         );
         let list = br#"{"revision":"1","schedules":[]}"#.to_vec();
@@ -7932,14 +7932,14 @@ mod tests {
     #[test]
     fn schedule_writes_send_their_json_body_behind_their_capabilities() {
         let writes = [
-            ("createSchedule", "schedules.create", "/mobile/schedules"),
-            ("editSchedule", "schedules.edit", "/mobile/schedules/edit"),
+            ("createSchedule", "schedule.create", "/mobile/schedules"),
+            ("editSchedule", "schedule.edit", "/mobile/schedules/edit"),
             (
                 "deleteSchedule",
-                "schedules.delete",
+                "schedule.delete",
                 "/mobile/schedules/delete",
             ),
-            ("runSchedule", "schedules.run", "/mobile/schedules/run"),
+            ("runSchedule", "schedule.run", "/mobile/schedules/run"),
         ];
         let connection = ScriptedConnection::new();
         let generation = connection.generation(1);
@@ -7996,7 +7996,7 @@ mod tests {
             bootstrap_json(
                 Some("host-1"),
                 HOST_PROTOCOL_MAJOR,
-                Some(&[BOOTSTRAP_CAPABILITY, "schedules"]),
+                Some(&[BOOTSTRAP_CAPABILITY, "schedule.list"]),
             ),
         );
         let backend = RemoteSessionBackend::new(connection.clone());

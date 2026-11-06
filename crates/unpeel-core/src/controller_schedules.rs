@@ -31,17 +31,17 @@ pub use write::{
 };
 
 /// `GET /mobile/schedules`.
-pub const LIST_CAPABILITY: &str = "schedules";
+pub const LIST_CAPABILITY: &str = "schedule.list";
 /// `GET /mobile/schedules/runs`.
-pub const RUNS_CAPABILITY: &str = "schedules.runs";
+pub const RUNS_CAPABILITY: &str = "schedule.runs";
 /// `POST /mobile/schedules`.
-pub const CREATE_CAPABILITY: &str = "schedules.create";
+pub const CREATE_CAPABILITY: &str = "schedule.create";
 /// `POST /mobile/schedules/edit`, pause and resume included.
-pub const EDIT_CAPABILITY: &str = "schedules.edit";
+pub const EDIT_CAPABILITY: &str = "schedule.edit";
 /// `POST /mobile/schedules/delete`.
-pub const DELETE_CAPABILITY: &str = "schedules.delete";
+pub const DELETE_CAPABILITY: &str = "schedule.delete";
 /// `POST /mobile/schedules/run`: Run now.
-pub const RUN_CAPABILITY: &str = "schedules.run";
+pub const RUN_CAPABILITY: &str = "schedule.run";
 /// The write routes, served only where a [`ScheduleHost`] is installed.
 pub const WRITE_CAPABILITIES: [&str; 4] = [
     CREATE_CAPABILITY,

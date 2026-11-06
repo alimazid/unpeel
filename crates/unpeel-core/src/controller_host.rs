@@ -2743,7 +2743,7 @@ mod tests {
         assert!(protocol.supports("session.output.read"));
         // Fork-only: no workspace worker runs in this process, so the
         // Scheduled Task writes are not offered; the reads are.
-        assert!(protocol.supports("schedules") && protocol.supports("schedules.runs"));
+        assert!(protocol.supports("schedule.list") && protocol.supports("schedule.runs"));
         for write in crate::controller_schedules::WRITE_CAPABILITIES {
             assert!(!protocol.supports(write), "{write}");
         }

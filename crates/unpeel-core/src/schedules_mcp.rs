@@ -20,9 +20,9 @@ use crate::schedule_store;
 use crate::schedules;
 
 /// The `workspace` actions this module answers.
-pub const SCHEDULES_ACTIONS: &[&str] = &["schedules_list", "schedule_runs"];
+pub const SCHEDULES_ACTIONS: &[&str] = &["list_schedules", "list_schedule_runs"];
 
-/// Runs `schedule_runs` returns when the caller names no `limit`: enough
+/// Runs `list_schedule_runs` returns when the caller names no `limit`: enough
 /// to see a pattern, small enough to keep an agent's context lean.
 pub const RUNS_DEFAULT_LIMIT: usize = 10;
 
@@ -44,8 +44,8 @@ fn answer_at(
     root: &Path,
 ) -> Result<String, String> {
     let body = match action {
-        "schedules_list" => controller_schedules::list_at(state, root),
-        "schedule_runs" => runs_at(arguments, state, root)?,
+        "list_schedules" => controller_schedules::list_at(state, root),
+        "list_schedule_runs" => runs_at(arguments, state, root)?,
         _ => {
             return Err(format!(
                 "Unknown Scheduled Tasks action: {action}. Valid: {}.",
@@ -63,9 +63,9 @@ fn runs_at(arguments: &Value, state: &Value, root: &Path) -> Result<Value, Strin
         .and_then(Value::as_str)
         .map(str::trim)
         .filter(|id| !id.is_empty())
-        .ok_or("Missing required parameter: schedule_id (a task id from schedules_list).")?;
+        .ok_or("Missing required parameter: schedule_id (a task id from list_schedules).")?;
     let unknown = || {
-        format!("No Scheduled Task has id '{schedule_id}'. Use schedules_list for the task ids.")
+        format!("No Scheduled Task has id '{schedule_id}'. Use list_schedules for the task ids.")
     };
     if !schedules::is_valid_id(schedule_id) {
         return Err(unknown());
@@ -100,7 +100,7 @@ fn limit_word(limit: Option<&Value>) -> Result<String, String> {
 pub fn action_docs() -> Vec<Value> {
     vec![
         json!({
-            "name": "schedules_list",
+            "name": "list_schedules",
             "description": "List the workspace's Scheduled Tasks, read-only: each task's id, \
         name, projectID, presetID, trigger, enabled, nextRun (null when paused or nothing is \
         due) and lastRun (the Run in progress, else the latest: its status, times, late marker \
@@ -108,7 +108,7 @@ pub fn action_docs() -> Vec<Value> {
             "inputSchema": { "type": "object", "properties": {}, "additionalProperties": false },
         }),
         json!({
-            "name": "schedule_runs",
+            "name": "list_schedule_runs",
             "description": format!("Read one Scheduled Task's Run history, newest first: each \
         Run's status (running, needs_you, done, failed, failed_to_start, skipped; others may \
         appear), scheduledFor (null for Run now), startedAtMs and endedAtMs, late (started over \
@@ -117,7 +117,7 @@ pub fn action_docs() -> Vec<Value> {
             "inputSchema": {
                 "type": "object",
                 "properties": {
-                    "schedule_id": { "type": "string", "description": "Task id from schedules_list" },
+                    "schedule_id": { "type": "string", "description": "Task id from list_schedules" },
                     "limit": { "type": "integer", "description": format!("Most Runs to return (default {RUNS_DEFAULT_LIMIT})") },
                 },
                 "required": ["schedule_id"],
@@ -173,7 +173,7 @@ mod tests {
     fn the_list_is_the_hosts_list_route_body() {
         let expected = samples()["responses"]["list"]["schedules"].clone();
         with_root(&[], |state, root| {
-            let listed = answer("schedules_list", json!({}), state, root).expect("listed");
+            let listed = answer("list_schedules", json!({}), state, root).expect("listed");
             assert_eq!(listed["schedules"], expected);
             assert_eq!(listed["revision"].as_str().map(str::len), Some(16));
         });
@@ -186,12 +186,12 @@ mod tests {
         let one = samples["responses"]["limitedRuns"]["body"].clone();
         with_root(&[], |state, root| {
             let id = json!({ "schedule_id": "sch_daily" });
-            assert_eq!(answer("schedule_runs", id, state, root), Ok(all));
+            assert_eq!(answer("list_schedule_runs", id, state, root), Ok(all));
             // `unpeel mcp … limit=1` passes a number; a JSON client may pass a string.
             for limit in [json!(1), json!("1")] {
                 let arguments = json!({ "schedule_id": " sch_daily ", "limit": limit });
                 assert_eq!(
-                    answer("schedule_runs", arguments, state, root),
+                    answer("list_schedule_runs", arguments, state, root),
                     Ok(one.clone())
                 );
             }
@@ -205,7 +205,7 @@ mod tests {
             .collect();
         with_root(&[("sch_cron", lines)], |state, root| {
             let answered = answer(
-                "schedule_runs",
+                "list_schedule_runs",
                 json!({ "schedule_id": "sch_cron" }),
                 state,
                 root,
@@ -228,11 +228,11 @@ mod tests {
     fn a_bad_runs_request_says_what_to_pass() {
         with_root(&[], |state, root| {
             let refused = |arguments: Value| {
-                answer("schedule_runs", arguments, state, root).expect_err("refused")
+                answer("list_schedule_runs", arguments, state, root).expect_err("refused")
             };
             assert!(refused(json!({})).contains("schedule_id"));
-            assert!(refused(json!({ "schedule_id": "sch_gone" })).contains("schedules_list"));
-            assert!(refused(json!({ "schedule_id": "../etc" })).contains("schedules_list"));
+            assert!(refused(json!({ "schedule_id": "sch_gone" })).contains("list_schedules"));
+            assert!(refused(json!({ "schedule_id": "../etc" })).contains("list_schedules"));
             for limit in [json!(0), json!(-1), json!("many"), json!(1.5), json!(true)] {
                 let message = refused(json!({ "schedule_id": "sch_daily", "limit": limit }));
                 assert!(message.contains("limit"), "{message}");

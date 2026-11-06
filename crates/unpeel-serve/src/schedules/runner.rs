@@ -451,7 +451,10 @@ impl Scheduler {
                     schedule_id,
                     run,
                     plan,
-                } => self.start(schedule_id, run, plan, hook_port, events),
+                } => match schedules.iter().find(|schedule| schedule.id == schedule_id) {
+                    Some(schedule) => self.start(schedule, run, plan, hook_port, events),
+                    None => self.warn(&schedule_id, "no longer defined".into(), events),
+                },
                 Action::Record { schedule_id, run } => {
                     let run = self.with_screen_reply(run, schedules, &schedule_id);
                     match self.store(&schedule_id).and_then(|s| s.append_run(&run)) {
@@ -476,12 +479,13 @@ impl Scheduler {
 
     fn start(
         &mut self,
-        schedule_id: String,
+        schedule: &Schedule,
         run: ScheduleRun,
         plan: LaunchPlan,
         hook_port: Option<u16>,
         events: &mut Vec<SweepEvent>,
     ) {
+        let schedule_id = schedule.id.clone();
         let session_id = uuid::Uuid::new_v4().to_string().to_lowercase();
         let run = ScheduleRun {
             session_id: Some(session_id.clone()),
@@ -494,7 +498,7 @@ impl Scheduler {
         let agent = plan.agent;
         let instructions = plan.instructions.clone();
         let request = SpawnRequest {
-            spawned_by: format!("{}{schedule_id}", unpeel_core::schedules::SPAWNED_BY_PREFIX),
+            spawned_by: schedule.spawned_by(),
             schedule_id: schedule_id.clone(),
             run_id: run.run_id.clone(),
             session_id: session_id.clone(),

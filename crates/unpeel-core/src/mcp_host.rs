@@ -1841,8 +1841,8 @@ fn workspace_tool_definition() -> Value {
                 "branch": { "type": "string", "description": "create_worktree: branch" },
                 "name": { "type": "string", "description": "create_worktree: folder name" },
                 "base_ref": { "type": "string", "description": "create_worktree: base ref" },
-                "schedule_id": { "type": "string", "description": "schedule_runs: task id" },
-                "limit": { "type": "integer", "description": "schedule_runs: most Runs" },
+                "schedule_id": { "type": "string", "description": "list_schedule_runs: task id" },
+                "limit": { "type": "integer", "description": "list_schedule_runs: most Runs" },
                 "help_for": { "type": "string", "description": "help: docs for one action" }
             },
             "required": ["action"],
@@ -5153,18 +5153,18 @@ mod tests {
         let help = run_tool("workspace", &json!({ "action": "help" })).expect("workspace help");
         for expected in [
             "### list_presets",
-            "### schedules_list",
-            "### schedule_runs",
+            "### list_schedules",
+            "### list_schedule_runs",
         ] {
             assert!(help.contains(expected), "workspace help missing {expected}");
         }
         let one = run_tool(
             "workspace",
-            &json!({ "action": "help", "help_for": "schedule_runs" }),
+            &json!({ "action": "help", "help_for": "list_schedule_runs" }),
         )
         .expect("scoped workspace help");
-        assert!(one.contains("### schedule_runs") && one.contains("schedule_id"));
-        assert!(!one.contains("### schedules_list") && !one.contains("### list_presets"));
+        assert!(one.contains("### list_schedule_runs") && one.contains("schedule_id"));
+        assert!(!one.contains("### list_schedules") && !one.contains("### list_presets"));
 
         // Read-only (decision Q8): the two reads are the only schedule
         // actions advertised, and a write spelling is an unknown action.
@@ -5176,7 +5176,7 @@ mod tests {
             .filter_map(Value::as_str)
             .filter(|action| action.contains("schedule"))
             .collect();
-        assert_eq!(scheduled, ["schedules_list", "schedule_runs"]);
+        assert_eq!(scheduled, ["list_schedules", "list_schedule_runs"]);
         for write in [
             "schedules_add",
             "schedule_edit",

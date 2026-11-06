@@ -279,11 +279,11 @@ stopped session <id> past the keep limit`).
 `unpeel_core::controller_schedules` serves two read routes from the core
 router, so `/mobile`, the local gateway and SSH answer alike, to paired
 devices and owner transports only: `GET /mobile/schedules` (capability
-`schedules`: every task with its next run and latest Run — the Run in
+`schedule.list`: every task with its next run and latest Run — the Run in
 progress if there is one, else the newest outcome, `schedules::current_run`,
 the same Run the worker follows, so an occurrence skipped behind a live Run
 never hides it) and `GET
-/mobile/schedules/runs?scheduleID=<id>[&limit=<n>]` (`schedules.runs`: the
+/mobile/schedules/runs?scheduleID=<id>[&limit=<n>]` (`schedule.runs`: the
 history, newest first). Both read the disk, never the scheduler: definitions
 from `app-state.json`, the next run from the `clock.json` the worker
 publishes and the Runs from `runs.jsonl`. Bootstrap's `schedulesRevision`
@@ -295,10 +295,10 @@ Swift DTOs. The Mac app's SCHEDULED section (`ScheduledSectionModel`) is the
 reader.
 
 The user's writes are core routes too, all `POST`, camelCase bodies with
-the Trigger in its stored shape: `/mobile/schedules` (`schedules.create`),
-`/mobile/schedules/edit` (`schedules.edit`; pause and resume are `enabled`),
-`/mobile/schedules/delete` (`schedules.delete`: the task and its history,
-never its Run Sessions) and `/mobile/schedules/run` (`schedules.run`: Run
+the Trigger in its stored shape: `/mobile/schedules` (`schedule.create`),
+`/mobile/schedules/edit` (`schedule.edit`; pause and resume are `enabled`),
+`/mobile/schedules/delete` (`schedule.delete`: the task and its history,
+never its Run Sessions) and `/mobile/schedules/run` (`schedule.run`: Run
 now, 409 while a Run is in progress). They edit `app-state.json` raw under
 its flock and announce, like `unpeel schedules`, and are replay-protected.
 Every refusal of the schedules routes answers `{"error": <message>, "code":

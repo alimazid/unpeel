@@ -1,12 +1,12 @@
 //! Fork-only: Scheduled Tasks. The Controller write routes, the user's only
 //! (decision Q8: PairedDevice / OwnerTransport principals):
 //!
-//! - `POST /mobile/schedules` (`schedules.create`): a new task.
-//! - `POST /mobile/schedules/edit` (`schedules.edit`): change any field;
+//! - `POST /mobile/schedules` (`schedule.create`): a new task.
+//! - `POST /mobile/schedules/edit` (`schedule.edit`): change any field;
 //!   pausing and resuming are `enabled`.
-//! - `POST /mobile/schedules/delete` (`schedules.delete`): the task and its
+//! - `POST /mobile/schedules/delete` (`schedule.delete`): the task and its
 //!   history; its Run Sessions stay where they are.
-//! - `POST /mobile/schedules/run` (`schedules.run`): Run now, refused (409)
+//! - `POST /mobile/schedules/run` (`schedule.run`): Run now, refused (409)
 //!   while a Run of the task is in progress.
 //!
 //! Bodies are camelCase (`scheduleID`, `projectID`, `presetID`,

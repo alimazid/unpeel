@@ -17,7 +17,7 @@ The Host keeps and fires Scheduled Tasks. Each workspace worker evaluates
 its own workspace's tasks against the local wall clock from its existing
 tick and starts Runs itself. Definitions live in `app-state.json` under the
 flock and state-bus rules; the app and the phone reach them only through an
-additive, advertised `schedules` Host capability, the same for local and
+additive, advertised `schedule.*` Host capabilities, the same for local and
 remote Hosts. The app never runs a timer.
 
 Notifications stay where they are today, in the app. While the app is quit a

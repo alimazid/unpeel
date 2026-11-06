@@ -38,20 +38,20 @@ public enum RemoteControlProtocol {
     public static let appsOpenCapability = "apps.open"
     /// Fork-only: Scheduled Tasks. `GET /mobile/schedules` lists every task
     /// with its next run and latest Run (`RemoteSchedulesList`).
-    public static let schedulesCapability = "schedules"
+    public static let schedulesCapability = "schedule.list"
     /// Fork-only: `GET /mobile/schedules/runs`, one task's Run history
     /// (`RemoteScheduleRunHistory`).
-    public static let scheduleRunsCapability = "schedules.runs"
+    public static let scheduleRunsCapability = "schedule.runs"
     /// Fork-only: the user's Scheduled Task writes, all `POST`:
     /// `/mobile/schedules` (`RemoteScheduleCreate`), `/mobile/schedules/edit`
     /// (`RemoteScheduleEdit`, pause and resume included),
     /// `/mobile/schedules/delete` and `/mobile/schedules/run`
     /// (`RemoteScheduleTarget`; Run now answers 409 while a Run is in
     /// progress).
-    public static let schedulesCreateCapability = "schedules.create"
-    public static let schedulesEditCapability = "schedules.edit"
-    public static let schedulesDeleteCapability = "schedules.delete"
-    public static let schedulesRunCapability = "schedules.run"
+    public static let schedulesCreateCapability = "schedule.create"
+    public static let schedulesEditCapability = "schedule.edit"
+    public static let schedulesDeleteCapability = "schedule.delete"
+    public static let schedulesRunCapability = "schedule.run"
 }
 
 /// Additive Host-level capability contract carried by bootstrap.

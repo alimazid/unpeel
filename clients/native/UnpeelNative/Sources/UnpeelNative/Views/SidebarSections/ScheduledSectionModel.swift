@@ -64,7 +64,7 @@ final class ScheduledSectionModel: ObservableObject {
         /// Connecting, or the first read is in flight.
         case loading
         case ready
-        /// The Host does not advertise `schedules`.
+        /// The Host does not advertise `schedule.list`.
         case unsupported
         /// The last read failed; the rows from before it stay.
         case failed(String)

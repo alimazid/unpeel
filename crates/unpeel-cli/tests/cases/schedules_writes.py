@@ -25,7 +25,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from harness import host_certificate_pin, mobile_port, mobile_request, run, run_cli  # noqa: E402
 
 ZONE = "America/New_York"
-WRITES = ["schedules.create", "schedules.edit", "schedules.delete", "schedules.run"]
+WRITES = ["schedule.create", "schedule.edit", "schedule.delete", "schedule.run"]
 
 
 class LocalSocket:
