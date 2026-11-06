@@ -14289,19 +14289,12 @@ final class UnpeelStore: ObservableObject {
         }
     }
 
-    /// Fork-only: pinned sessions in sidebar order, for the AGENTS section.
+    /// Fork-only: pinned sessions and the Super Agent in sidebar order, for
+    /// the AGENTS section.
     var pinnedActivitySessions: [SessionEntry] {
-        var result: [SessionEntry] = []
-        func collect(_ nodes: [ProjectNode]) {
-            for node in nodes {
-                result.append(contentsOf: node.sessions.filter {
-                    isPinned(sessionID: $0.id, projectID: node.id)
-                })
-                collect(node.worktrees)
-            }
+        WorkspaceActivityMenuSlice.alwaysListedSessions(in: displayNodes) {
+            isPinned(sessionID: $0, projectID: $1)
         }
-        collect(displayNodes)
-        return result
     }
 
     /// Project path for the terminal-header breadcrumb. Worktrees keep their

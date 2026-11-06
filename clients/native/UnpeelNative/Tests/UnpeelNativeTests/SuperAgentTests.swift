@@ -120,7 +120,111 @@ struct SuperAgentTests {
         #expect(SuperAgentMenu.routerID(in: [summary("a")]) == nil)
     }
 
+    // MARK: - AGENTS
+
+    @Test
+    func theSuperAgentIsAlwaysListedLikeAPinnedSession() {
+        let plain = entry("plain")
+        let router = entry("router", superAgent: true)
+        let pinned = entry("pinned")
+        let nested = projectNode(id: "group", sessions: [pinned])
+        let root = projectNode(sessions: [plain, router], worktrees: [nested])
+
+        let listed = WorkspaceActivityMenuSlice.alwaysListedSessions(in: [root]) { id, project in
+            id == "pinned" && project == "group"
+        }
+
+        // Sidebar order: the Router's project, then the group under it.
+        #expect(listed.map(\.id) == ["router", "pinned"])
+    }
+
+    @Test
+    func anIdleSuperAgentDoesNotChangeTheBellCounts() {
+        let working = entry("working", status: .busy)
+        let router = entry("router", superAgent: true)
+        let slice = localSlice(sessions: [working, router], jobs: [working])
+
+        let agents = GlobalActivityMenuSessions(currentWorkspace: slice, key: "local:a", row: nil)
+        let bell = GlobalActivityMenuSessions(
+            workspaces: [workspace("local:a")], foregroundKey: "local:a",
+            foreground: slice, cachedSlice: { _ in nil }
+        )
+
+        #expect(agents.pinned.map(\.session.sessionID) == ["router"])
+        #expect(agents.pinned.map(\.session.superAgent) == [true])
+        for menu in [agents, bell] {
+            #expect(menu.sectionCount == 1)
+            #expect(menu.rowCount == 1)
+        }
+    }
+
+    @Test
+    func aWorkingSuperAgentIsListedOnceWithTheWork() {
+        let router = entry("router", status: .busy, superAgent: true)
+        let slice = localSlice(sessions: [router], jobs: [router])
+
+        #expect(slice.jobs.map(\.sessionID) == ["router"])
+        #expect(slice.jobs.map(\.superAgent) == [true])
+        #expect(slice.pinned.isEmpty)
+    }
+
+    @Test
+    func remoteSliceAlwaysListsAnIdleSuperAgent() {
+        let slice = WorkspaceActivityMenuSlice(snapshot: snapshot([
+            summary("plain"),
+            summary("router", superAgent: true),
+            summary("worker", routerID: "router"),
+        ]))
+
+        #expect(slice.pinned.map(\.sessionID) == ["router"])
+        #expect(slice.jobs.isEmpty && slice.blockers.isEmpty && slice.finished.isEmpty)
+    }
+
     // MARK: - Fixtures
+
+    private func localSlice(
+        sessions: [SessionEntry], jobs: [SessionEntry]
+    ) -> WorkspaceActivityMenuSlice {
+        let nodes = [projectNode(sessions: sessions)]
+        let activity = ActivityMenuSessions(
+            nodes: nodes,
+            allSessions: sessions,
+            jobs: jobs,
+            finished: [],
+            pinned: WorkspaceActivityMenuSlice.alwaysListedSessions(in: nodes) { _, _ in false }
+        )
+        return WorkspaceActivityMenuSlice(
+            local: activity,
+            projectName: { $0 },
+            projectID: { $0.projectID },
+            statusLabel: { _ in "Idle" },
+            alertBody: { _ in nil }
+        )
+    }
+
+    private func projectNode(
+        id: String = "project",
+        sessions: [SessionEntry],
+        worktrees: [ProjectNode] = []
+    ) -> ProjectNode {
+        ProjectNode(
+            project: Project(
+                id: id, name: id, path: "/tmp/\(id)", parentProjectID: nil,
+                sortOrder: 0, isFolder: nil, worktreeBranch: nil,
+                workspacesEnabled: nil, mcpBlocked: nil
+            ),
+            sessions: sessions,
+            worktrees: worktrees
+        )
+    }
+
+    private func workspace(_ key: String) -> WorkspaceListRowModel {
+        WorkspaceListRowModel(
+            id: key, name: key, detail: "", icon: "", badge: nil,
+            home: "/tmp/\(key)", tint: .blue,
+            kind: .local(record: nil, isDefault: true, isCurrentInstance: true, isRunning: true)
+        )
+    }
 
     private func menu(_ session: SessionEntry, routerID: String?) -> SuperAgentMenu {
         SuperAgentMenu(session: session, routerID: routerID, supports: { _ in true })

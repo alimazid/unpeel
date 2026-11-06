@@ -33,8 +33,8 @@ struct WorkspaceActivityMenuSlice: Equatable {
     var jobs: [WorkspaceActivityMenuSession] = []
     var blockers: [WorkspaceActivityMenuSession] = []
     var finished: [WorkspaceActivityMenuSession] = []
-    /// Fork-only: pinned sessions in none of the groups above, so the
-    /// AGENTS section always shows them.
+    /// Fork-only: pinned sessions and the Super Agent in none of the groups
+    /// above, so the AGENTS section always shows them.
     var pinned: [WorkspaceActivityMenuSession] = []
 
     init() {}
@@ -87,7 +87,7 @@ struct WorkspaceActivityMenuSlice: Equatable {
                 jobs.append(item)
             } else if summary.unread {
                 finished.append(item)
-            } else if summary.pinned {
+            } else if summary.pinned || summary.superAgent {
                 pinned.append(item)
             }
         }
@@ -129,6 +129,25 @@ struct WorkspaceActivityMenuSlice: Equatable {
                 for session in node.sessions where result[session.id] == nil {
                     result[session.id] = node.id
                 }
+                collect(node.worktrees)
+            }
+        }
+        collect(nodes)
+        return result
+    }
+
+    /// Fork-only: the sessions the AGENTS section lists whatever their
+    /// activity — pinned ones and the Super Agent — in sidebar order.
+    static func alwaysListedSessions(
+        in nodes: [ProjectNode],
+        isPinned: (_ sessionID: String, _ projectID: String) -> Bool
+    ) -> [SessionEntry] {
+        var result: [SessionEntry] = []
+        func collect(_ nodes: [ProjectNode]) {
+            for node in nodes {
+                result.append(contentsOf: node.sessions.filter {
+                    $0.superAgent || isPinned($0.id, node.id)
+                })
                 collect(node.worktrees)
             }
         }
