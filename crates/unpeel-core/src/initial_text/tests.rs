@@ -17,12 +17,6 @@ fn every_outcome_is_recorded_for_the_caller_to_observe() {
             Some("screen"),
         ),
         (
-            InitialTextWhen::Attached,
-            InitialTextOutcome::Delivered { signal: None },
-            "delivered",
-            None,
-        ),
-        (
             InitialTextWhen::AgentReady,
             InitialTextOutcome::ReadinessTimeout,
             "readiness_timeout",
@@ -35,7 +29,7 @@ fn every_outcome_is_recorded_for_the_caller_to_observe() {
             None,
         ),
         (
-            InitialTextWhen::Attached,
+            InitialTextWhen::AgentReady,
             InitialTextOutcome::HostNotReady("Timed out waiting for session host".into()),
             "host_not_ready",
             None,
@@ -57,6 +51,15 @@ fn every_outcome_is_recorded_for_the_caller_to_observe() {
         assert_eq!(recorded["at"], 1234);
         assert_eq!(recorded.get("error").is_some(), outcome.error().is_some());
     }
+}
+
+/// `attached` types the text as `session.create` always has: no
+/// `initial-text.json` and no announce, only an `agentReady` wait (whose
+/// outcome a Controller cannot see otherwise) is recorded.
+#[test]
+fn only_a_wait_for_the_agent_is_recorded() {
+    assert!(is_recorded(InitialTextWhen::AgentReady));
+    assert!(!is_recorded(InitialTextWhen::Attached));
 }
 
 #[test]

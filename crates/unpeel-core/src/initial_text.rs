@@ -79,9 +79,10 @@ impl InitialTextOutcome {
 }
 
 /// Type `text` into a freshly created Session once `when` allows, blocking
-/// the calling thread (up to the readiness timeout), and record the outcome
-/// in the Session's `initial-text.json` for whoever started it. Empty text
-/// types nothing and records nothing, as it always has.
+/// the calling thread (up to the readiness timeout). A wait for the agent
+/// records its outcome in the Session's `initial-text.json` for whoever
+/// started it; `attached` records nothing. Empty text types nothing and
+/// records nothing, as it always has.
 pub fn deliver(
     session_id: &str,
     text: &str,
@@ -184,9 +185,20 @@ fn agent_ready_timeout_from(test_host: Option<&str>, override_ms: Option<&str>) 
         .unwrap_or(AGENT_READY_TIMEOUT)
 }
 
+/// Whether a delivery leaves `initial-text.json` (and announces it). Only
+/// a wait for the agent does: its outcome is otherwise invisible to the
+/// Controller that asked. `attached` types as `session.create` always has,
+/// with no marker.
+fn is_recorded(when: InitialTextWhen) -> bool {
+    when == InitialTextWhen::AgentReady
+}
+
 /// Best-effort: a Session removed mid-wait has no directory to record into,
 /// and a failed write must not change what was (or wasn't) typed.
 fn record(session_id: &str, when: InitialTextWhen, outcome: Option<&InitialTextOutcome>) {
+    if !is_recorded(when) {
+        return;
+    }
     let dir = crate::session_host::session_dir(session_id);
     match record_in(&dir, when, outcome, crate::state::current_timestamp_ms()) {
         Ok(()) => crate::state_bus::announce(crate::state_bus::Change::SessionMarkers, None),

@@ -13,7 +13,8 @@ clock) when it became ready and every byte it received:
   recorded as a readiness timeout.
 
 A fourth fake `claude` created without the field shows today's default:
-the text is typed as soon as the Session's socket exists, before the prompt.
+the text is typed as soon as the Session's socket exists, before the prompt,
+and no outcome is recorded, exactly as before the field existed.
 """
 
 import json
@@ -179,10 +180,9 @@ def body(case):
         ready = first(entries, "ready")
         case.check("default (attached): the text is typed as soon as the socket exists",
                    bool(typed) and (ready is None or typed["t"] < ready["t"]), str(entries))
-        case.check("default (attached): the outcome is delivered with no readiness tier",
-                   outcome(home, attached).get("state") == "delivered"
-                   and outcome(home, attached).get("when") == "attached"
-                   and "signal" not in outcome(home, attached), str(outcome(home, attached)))
+        case.check("default (attached): no outcome is recorded, as before the field",
+                   not os.path.exists(home.path("app-sessions", attached, "initial-text.json")),
+                   str(outcome(home, attached)))
 
         timed_out = service.wait_for(
             lambda: outcome(home, never).get("state") == "readiness_timeout",

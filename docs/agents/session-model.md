@@ -164,9 +164,10 @@ termination output is drained first. Never signal an unverified process group.
   runtime's `[screen]` idle prompt (`agent_readiness`, read from the
   manifest and Session dir, so it holds whoever owns notifications). A
   Running Session with no activity is never ready. After 120 s nothing is
-  typed. The outcome lands in `<session dir>/initial-text.json` (`state`:
-  `waiting`, `delivered` with its `signal`, `readiness_timeout`, `exited`,
-  `host_not_ready`, `delivery_failed`).
+  typed. An `agentReady` wait's outcome lands in
+  `<session dir>/initial-text.json` (`state`: `waiting`, `delivered` with
+  its `signal`, `readiness_timeout`, `exited`, `host_not_ready`,
+  `delivery_failed`); `attached` records nothing, as before the field.
 - A Scheduled Task with instructions runs its Agent Preset as typed and
   types them through the same `agentReady` wait
   (`unpeel_serve::schedules::agent_run`). Its Run line records the phase —
