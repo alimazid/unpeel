@@ -1,14 +1,17 @@
-//! Fork-only: Scheduled Tasks in the `workspace` MCP tool, read-only:
-//! only the user changes Scheduled Tasks, and reads are open in Unpeel.
+//! Fork-only: Scheduled Tasks in the `workspace` MCP tool.
 //!
-//! An agent lists the workspace's tasks and reads one task's Run history;
-//! creating, editing, running and removing tasks stays the user's, so there
-//! is no write action here (and `unpeel schedules` refuses its mutating
-//! verbs inside a Session). The answers are the Host's `GET
+//! Any Session lists the workspace's tasks and reads one task's Run
+//! history; reads are open in Unpeel. The answers are the Host's `GET
 //! /mobile/schedules` and `GET /mobile/schedules/runs` bodies
 //! (`controller_schedules`, pinned by `protocol/schedules-samples-v1.json`),
-//! read from disk: the MCP server is a core process and never reaches the
-//! workspace worker, which publishes each task's next run and Runs there.
+//! read from disk: the worker publishes each task's next run and Runs
+//! there, so the reads work with or without it.
+//!
+//! Creating, editing, pausing, resuming, running and removing tasks is the
+//! user's, and the Super Agent's on their behalf ([`write`]): those
+//! actions go to the live worker's write routes, and every other Session
+//! is refused (as `unpeel schedules` refuses its mutating verbs inside any
+//! Session but the Super Agent's).
 
 use std::collections::HashMap;
 use std::path::Path;
@@ -19,20 +22,53 @@ use crate::controller_schedules;
 use crate::schedule_store;
 use crate::schedules;
 
-/// The `workspace` actions this module answers.
-pub const SCHEDULES_ACTIONS: &[&str] = &["list_schedules", "list_schedule_runs"];
+mod write;
+
+/// The `workspace` actions this module answers: the reads, then the Super
+/// Agent's writes.
+pub const SCHEDULES_ACTIONS: &[&str] = &[
+    "list_schedules",
+    "list_schedule_runs",
+    "create_schedule",
+    "edit_schedule",
+    "delete_schedule",
+    "run_schedule",
+];
 
 /// Runs `list_schedule_runs` returns when the caller names no `limit`: enough
 /// to see a pattern, small enough to keep an agent's context lean.
 pub const RUNS_DEFAULT_LIMIT: usize = 10;
 
-/// Answer one of [`SCHEDULES_ACTIONS`] from this workspace's
-/// `app-state.json` and per-task files. The caller has passed the Sessions
-/// gate; reads need no role.
+/// Answer one of [`SCHEDULES_ACTIONS`] for the calling Session, which has
+/// passed the Sessions gate. Reads come from this workspace's
+/// `app-state.json` and per-task files and need no role; writes are the
+/// Super Agent's and go to this workspace's Host worker.
 pub fn run_action(action: &str, arguments: &Value) -> Result<String, String> {
     let state = crate::app_state::load()
         .map_err(|error| format!("Could not read Scheduled Tasks: {error}"))?;
+    if write::WRITE_ACTIONS.contains(&action) {
+        let caller = crate::mcp_host::self_session_id();
+        let answered = write::answer(action, arguments, caller.as_deref(), &state, &post_to_host)?;
+        return render(&answered);
+    }
     answer_at(action, arguments, &state, &schedule_store::schedules_root())
+}
+
+/// One write route request to this workspace's running Host worker.
+fn post_to_host(path: &str, body: &Value) -> Result<(u16, Value), String> {
+    if !crate::supervision::host_worker_running() {
+        return Err(
+            "Scheduled Tasks change only while this workspace's Host service runs (`unpeel \
+serve`); nothing was changed."
+                .into(),
+        );
+    }
+    crate::local_host_call::post(&crate::app_paths::unpeel_home(), path, body)
+}
+
+fn render(body: &Value) -> Result<String, String> {
+    serde_json::to_string_pretty(body)
+        .map_err(|error| format!("Failed to encode Scheduled Tasks: {error}"))
 }
 
 /// [`run_action`] over `state` (the raw app-state) and the per-task files
@@ -53,8 +89,7 @@ fn answer_at(
             ))
         }
     };
-    serde_json::to_string_pretty(&body)
-        .map_err(|error| format!("Failed to encode Scheduled Tasks: {error}"))
+    render(&body)
 }
 
 fn runs_at(arguments: &Value, state: &Value, root: &Path) -> Result<Value, String> {
@@ -98,13 +133,13 @@ fn limit_word(limit: Option<&Value>) -> Result<String, String> {
 
 /// Per-action docs for `{"action":"help"}`.
 pub fn action_docs() -> Vec<Value> {
-    vec![
+    let mut docs = vec![
         json!({
             "name": "list_schedules",
             "description": "List the workspace's Scheduled Tasks, read-only: each task's id, \
         name, projectID, presetID, trigger, enabled, nextRun (null when paused or nothing is \
         due) and lastRun (the Run in progress, else the latest: its status, times, late marker \
-        and snippet). Only the user creates, edits, runs or removes tasks.",
+        and snippet). Only the user and the Super Agent change tasks.",
             "inputSchema": { "type": "object", "properties": {}, "additionalProperties": false },
         }),
         json!({
@@ -124,6 +159,116 @@ pub fn action_docs() -> Vec<Value> {
                 "additionalProperties": false,
             },
         }),
+    ];
+    docs.extend(write_docs());
+    docs
+}
+
+/// The `workspace` schema properties the write actions add (`name`,
+/// `project_id` and `schedule_id` are shared). Detail lives in help.
+pub(crate) fn schema_properties() -> Vec<(&'static str, Value)> {
+    vec![
+        (
+            "preset",
+            json!({ "type": "string", "description": "*_schedule: preset id or label" }),
+        ),
+        (
+            "trigger",
+            json!({ "type": "object", "description": "*_schedule: when it runs; see help" }),
+        ),
+        (
+            "instructions",
+            json!({ "type": "string", "description": "*_schedule: typed into the agent" }),
+        ),
+        (
+            "enabled",
+            json!({ "type": "boolean", "description": "*_schedule: false pauses" }),
+        ),
+        (
+            "notify_when_done",
+            json!({ "type": "boolean", "description": "*_schedule: notify the user" }),
+        ),
+    ]
+}
+
+/// Help for the Super Agent's write actions.
+fn write_docs() -> Vec<Value> {
+    let text = |description: &str| json!({ "type": "string", "description": description });
+    let flag = |description: &str| json!({ "type": "boolean", "description": description });
+    let task = || text("Task id from list_schedules");
+    let doc = |name: &str, description: String, properties: Value, required: &[&str]| {
+        json!({
+            "name": name,
+            "description": description,
+            "inputSchema": {
+                "type": "object",
+                "properties": properties,
+                "required": required,
+                "additionalProperties": false,
+            },
+        })
+    };
+    let trigger = json!({ "type": "object", "description": "One of {kind:\"hourly\",minute:0-59}, \
+        {kind:\"daily\"|\"weekdays\",time:\"HH:MM\"}, {kind:\"weekly\",weekday:\"monday\"…\"sunday\",\
+        time:\"HH:MM\"}, {kind:\"once\",at:\"YYYY-MM-DDTHH:MM\"}, {kind:\"cron\",expr:\"<min> <hour> \
+        <day> <month> <weekday>\"}, on the Host's local wall clock" });
+    let limit = schedules::save::instructions_limit();
+    vec![
+        doc(
+            "create_schedule",
+            format!(
+                "Super Agent only. Add a Scheduled Task for the user: each time its trigger \
+        comes due the Host starts a new Session from preset in project_id and, for an Agent Preset \
+        (list_presets agent_preset: true), types instructions once the agent is ready (up to \
+        {limit}). Returns {{schedule}}, the list_schedules row. Needs the Host service running. A \
+        refusal ends with its code: project_missing, preset_missing, not_agent_preset, \
+        instructions_too_large, invalid_trigger, trigger_in_past, host_unavailable."
+            ),
+            json!({
+                "name": text("Task name"),
+                "project_id": text("Project its Runs start in (workspace list_projects)"),
+                "preset": text("Preset id or label (workspace list_presets), as sessions create"),
+                "trigger": trigger.clone(),
+                "instructions": text("Agent Presets only: what each Run types"),
+                "enabled": flag("Default true; false saves it paused"),
+                "notify_when_done": flag("Notify the user when a Run is done (default true)"),
+            }),
+            &["name", "project_id", "preset", "trigger"],
+        ),
+        doc(
+            "edit_schedule",
+            "Super Agent only. Change only the fields given. enabled=false pauses the task; \
+        enabled=true resumes it counting from now, so times missed while paused never run (a new \
+        trigger restarts its clock too). instructions=\"\" removes them. Returns {schedule}."
+                .into(),
+            json!({
+                "schedule_id": task(),
+                "name": text("New name"),
+                "project_id": text("New Project"),
+                "preset": text("New preset id or label, in the task's Project"),
+                "trigger": trigger,
+                "instructions": text("New instructions; empty removes them"),
+                "enabled": flag("false pauses, true resumes"),
+                "notify_when_done": flag("Notify the user when a Run is done"),
+            }),
+            &["schedule_id"],
+        ),
+        doc(
+            "delete_schedule",
+            "Super Agent only. Remove a task and its Run history; its Run Sessions stay. \
+        Returns {scheduleID, deleted}. Remove only what the user asked to remove."
+                .into(),
+            json!({ "schedule_id": task() }),
+            &["schedule_id"],
+        ),
+        doc(
+            "run_schedule",
+            "Super Agent only. Start a Run now: {scheduleID, runID}. Refused (run_in_progress) \
+        while a Run of the task is in progress. Read its outcome later with list_schedule_runs."
+                .into(),
+            json!({ "schedule_id": task() }),
+            &["schedule_id"],
+        ),
     ]
 }
 

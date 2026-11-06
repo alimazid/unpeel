@@ -288,13 +288,18 @@ history, newest first). Both read the disk, never the scheduler: definitions
 from `app-state.json`, the next run from the `clock.json` the worker
 publishes and the Runs from `runs.jsonl`. Bootstrap's `schedulesRevision`
 moves whenever either route would answer differently, and the worker pings
-the state bus (`schedules`) when a sweep starts or records a Run, so
-Controllers reread on the refresh they already have instead of polling.
+the state bus (`schedules`) when a sweep starts or records a Run or saves a
+task's clock (its next run moved: a new task, an edit, a resume;
+`SweepEvent::Published`), so Controllers reread on the refresh they already
+have instead of polling, and a list read between a write and that sweep is
+corrected.
 `protocol/schedules-samples-v1.json` pins both bodies for the Host and the
 Swift DTOs. The Mac app's SCHEDULED section (`ScheduledSectionModel`) is the
 reader.
 
-The user's writes are core routes too, all `POST`, camelCase bodies with
+The user's writes (and the Super Agent's, which the MCP server sends over
+the local socket after checking the caller is the Router; see
+`sessions-mcp.md`) are core routes too, all `POST`, camelCase bodies with
 the Trigger in its stored shape: `/mobile/schedules` (`schedule.create`),
 `/mobile/schedules/edit` (`schedule.edit`; pause and resume are `enabled`),
 `/mobile/schedules/delete` (`schedule.delete`: the task and its history,
@@ -313,8 +318,11 @@ from the `ScheduleHost` the workspace worker installs at start
 (`schedules::host::WorkerHost`): `trigger::for_save` on the Host's clock (a
 task saved enabled must come due; resuming re-checks), the create catalog
 its Runs resolve against (a Project with a folder, an enabled preset,
-instructions only on an Agent Preset), and Run now through the driver (the same request `unpeel schedules run` sends
-over `/_unpeel/schedules`). A process without a worker (the SSH fallback
+instructions only on an Agent Preset), Run now through the driver (the same request `unpeel schedules run` sends
+over `/_unpeel/schedules`), and a saved task's next run: a create or edit
+answers with `trigger::published_next_run` on the Host's clock, the value
+the worker's next sweep writes to `clock.json`, rather than the disk's
+(none yet, or an older Trigger's). A process without a worker (the SSH fallback
 gateway) leaves the four ids out of its descriptor and answers 503. Every
 bootstrap preset row carries `agentPreset` and `bypassesApprovals`
 (`controller_schedules::mark_agent_presets`), so a Controller shows a task's

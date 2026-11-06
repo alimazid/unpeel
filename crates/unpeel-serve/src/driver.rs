@@ -1137,8 +1137,9 @@ impl HostRuntime {
         let events = self
             .schedules
             .sweep(&schedules, &catalog, &activity, hook_port, &now);
-        // Run events reach Controllers through the schedules projection;
-        // the ping only says "re-read it now" (one per sweep).
+        // Run events and a moved next run reach Controllers through the
+        // schedules projection; the ping only says "re-read it now" (one
+        // per sweep).
         if events
             .iter()
             .any(|event| !matches!(event, crate::schedules::SweepEvent::Warning(_)))
@@ -1196,6 +1197,8 @@ impl HostRuntime {
                     self.notify_run(schedule, &run, previous, now_ms());
                 }
             }
+            // Its ping is the sweep's one announce, above.
+            crate::schedules::SweepEvent::Published { .. } => {}
             crate::schedules::SweepEvent::Warning(warning) => {
                 emitted.push(ServeEvent::Warning(warning))
             }

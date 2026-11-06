@@ -140,7 +140,9 @@ progress, so it needs a running Host. `list` and `history` read the
 per-task clock and Run log under `<UNPEEL_HOME>/schedules/<id>/`
 (`unpeel_core::schedule_store`); `list`'s next run is
 `trigger::next_run`, the instant the Host publishes. Every verb but `list`
-and `history` refuses inside a Session, the detection `unpeel send` uses.
+and `history` refuses inside a Session, the detection `unpeel send` uses,
+except the Super Agent's (`supervision::is_router`): it changes tasks for
+the user, here or through the MCP `workspace` writes.
 `rm` deletes the task and its history; its Run Sessions stay.
 
 Triggers read the local wall clock (`unpeel_serve::schedules::clock`):

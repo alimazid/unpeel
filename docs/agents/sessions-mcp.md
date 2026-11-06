@@ -106,17 +106,20 @@ Advertised ownership (old mixed `sessions` spellings remain decode-only):
   target.
 - `workspace`: `list_presets`, `list_projects`, `create_worktree`,
   `list_worktrees`, the fork-only Scheduled Tasks reads `list_schedules` and
-  `list_schedule_runs`, plus the fork-only Super Agent group actions
-  `create_group`, `rename_group`, `remove_group` and `move_session` (Super
-  Agent, below). Worktree creation remains opt-in and never launches a
-  Session. All of them are answered by the MCP host itself from this home's
-  `app-state.json` and git (`crates/unpeel-core/src/workspace_tools.rs`,
-  `supervision_groups.rs`, fork-only); no app or Host route is involved:
+  `list_schedule_runs` and the Super Agent's writes `create_schedule`,
+  `edit_schedule`, `delete_schedule` and `run_schedule`, plus the fork-only
+  Super Agent group actions `create_group`, `rename_group`, `remove_group`
+  and `move_session` (Super Agent, below). Worktree creation remains opt-in
+  and never launches a Session. All of them but the schedule writes are
+  answered by the MCP host itself from this home's `app-state.json` and git
+  (`crates/unpeel-core/src/workspace_tools.rs`, `supervision_groups.rs`,
+  fork-only); no app or Host route is involved:
   - `list_presets` uses the same filter `sessions create` resolves `preset`
     against (`workspace_tools::usable_presets`): enabled, global or scoped to
     the project, project-scoped first; a group or worktree id gets its root
     Project's presets too. Each row: `id`, `label`, `command`,
-    `project_id` (null = global), `quick_launch`.
+    `project_id` (null = global), `quick_launch`, and `agent_preset` (an
+    Agent Preset, the only kind a Scheduled Task's instructions go to).
   - `list_projects` (open to every caller) lists every Project in sidebar
     tree order: `{id, name, path, kind: root|group|worktree, parent_id?,
     worktree_branch?, sidebar}`. A group's `path` is its checkout's folder;
@@ -137,14 +140,29 @@ Advertised ownership (old mixed `sessions` spellings remain decode-only):
     (`main: true`), a registration git no longer knows is `missing: true`.
   - `create_worktree` and `list_worktrees` keep `require_worktree_access`
     (`mcp_worktree_access`, off by default; the Router passes it).
-  - `list_schedules` and `list_schedule_runs` are read-only: they answer the
-    `GET /mobile/schedules` and `GET /mobile/schedules/runs` bodies
-    (`protocol/schedules-samples-v1.json`) from `app-state.json` and the
-    per-task files on disk, so they work on any Host. `list_schedule_runs`
-    returns the newest 10 Runs unless `limit` says otherwise. Agents cannot
-    create, edit, run or remove tasks, and the existing `spawned_by` rule
-    keeps a task's Run Sessions out of `sessions close` even under Create &
-    remove.
+  - `list_schedules` and `list_schedule_runs` are open to every Session:
+    they answer the `GET /mobile/schedules` and `GET /mobile/schedules/runs`
+    bodies (`protocol/schedules-samples-v1.json`) from `app-state.json` and
+    the per-task files on disk, so they work on any Host.
+    `list_schedule_runs` returns the newest 10 Runs unless `limit` says
+    otherwise.
+  - `create_schedule {name, project_id, preset, trigger, instructions?,
+    enabled?, notify_when_done?}`, `edit_schedule {schedule_id, …any of
+    those}` (pause and resume are `enabled`; `instructions=""` removes
+    them), `delete_schedule {schedule_id}` and `run_schedule {schedule_id}`
+    are the Super Agent's alone (`schedules_mcp/write.rs`): any other caller
+    is refused before anything is sent, as are `unpeel schedules`' mutating
+    verbs inside any other Session. Each is one request to the workspace
+    worker's own write route (`POST /mobile/schedules[/edit|/delete|/run]`,
+    `serve.md`) over its owner-only local socket (`local_host_call.rs`), so
+    the Host checks the Trigger on its clock against its catalog, owns Run
+    now's overlap rule and answers with the route's body; a refusal comes
+    back as its message and `(code: …)`. `preset` resolves like `sessions
+    create` (id, then label, in the task's Project, project-scoped first);
+    `trigger` is the stored shape (`{"kind":"daily","time":"09:30"}`, or
+    that object as JSON text). With no worker running a write is refused and
+    nothing changes. The existing `spawned_by` rule keeps a task's Run
+    Sessions out of `sessions close` even under Create & remove.
 - `artifacts`: `add_to_gallery` for a caller-owned image artifact.
 
 Session creation and closing remain user-only, except under the Create &
@@ -244,7 +262,7 @@ other session** (reworked 2026-08-31):
   - `clear`: a no-op for any Session but the Router. The mark is nulled (never removed: app-state refuses a write that drops a top-level key), every Worker marker is removed (running and stopped Workers become the user's ordinary Sessions; a later Router does not take them back), and the Router's undelivered instructions are dropped. Removing the Router's Session clears the mark and frees its Workers the same way (`supervision::on_session_replaced(old, None)`, which also deletes its Inbox).
   - `hand_over`: a running catalog agent that is not the Router. It gets a marker with `origin: "handed_over"` and a waking `task` item asking it to summarise its conversation into one `sessions report` to the Router (queued as kind `handover`). A Hand-over is the user's free slot: it is accepted at `supervisor_max_children` running Workers (one over the limit) and refused with 409 past that.
   - Resume (a replacement id) moves the mark, rewrites every Worker marker and renames the Inbox directory to the new id (`supervision::on_session_replaced`, delegated from `session_ops::rewrite_shared_session_references`), then queues the instructions again. A same-id Reload changes nothing. A user restart of a Worker tears its session dir down with the marker, so it is the user's.
-  - Being the Router implies Create & remove (`supervision::grant_override`; its writes to any Session skip the Ask prompt, app-wide Deny still applies) and `mcp_worktree_access`. Bootstrap session summaries carry `superAgent: bool` and, from a Worker marker, `superAgentRouterID` (both builders: `controller_host.rs` and `unpeel-serve` `mobile_snapshot`); older Controllers ignore them.
+  - Being the Router implies Create & remove (`supervision::grant_override`; its writes to any Session skip the Ask prompt, app-wide Deny still applies), `mcp_worktree_access`, and the Scheduled Task writes (`workspace create_schedule` … `run_schedule`, above; `supervision::is_router`). Bootstrap session summaries carry `superAgent: bool` and, from a Worker marker, `superAgentRouterID` (both builders: `controller_host.rs` and `unpeel-serve` `mobile_snapshot`); older Controllers ignore them.
 - **The Inbox (fork-only, `session_inbox.rs`, `supervision_mcp/inbox.rs`, `unpeel-serve/src/supervisor/inbox_*.rs`).** While a Host worker runs, `sessions report` to any Session queues into the target's Inbox instead of typing: `<UNPEEL_HOME>/session-inboxes/<id>/` (`pending/`, `delivered/`, `inflight.json`, `hold.json`, `router-touch`; locks under `.locks/`), outside the session dir so Resume cannot destroy it. The result says `{queued, item_id, pending, delivery}`, `delivery` being `when_idle` or `held:<reason>`; status `done`/`blocked` or `questions` wake the target, `update`/`progress` ride along with the next wake batch, and `submit` is ignored. Without a Host worker `report` pastes at once (`queued: false`, `delivery: immediate_legacy`). Caps: 200 pending items or 2 MiB ("inbox full"); delivered history 200 items / 24 h; an Inbox whose session has had no manifest for 10 minutes is collected.
   - Delivery (`inbox_rules.rs`, a pure truth table): only a wake item starts a paste, and the paste carries everything pending, oldest first, as one bracketed paste — `[unpeel inbox for id:<target> · batch <id> · N items · channel: terminal]` … `[end of inbox batch <id>]`, each item headed `[message|notice from id:<sender>, channel: terminal, via: inbox, kind: …]` (only `id:host` notices come from Unpeel; sender text that imitates a header is quoted with `│`; an item over 1 500 characters is cut with a pointer to `sessions inbox item_id=…`; a batch is at most 12 000). It needs a running, idle target that an agent owns: idle by its program's own report, or by hooks or a `done`/`error` report while a runtime is in the foreground, is confident; the screen tier, or nothing with a runtime in front, is a best guess (`supervisor_inbox_low_confidence`, default on); with no runtime in front it holds `no_agent_authority`. It also needs no select menu, mode 2004 set, no app-wide Deny, 3 s of screen quiet (10 s for a best guess), 2 s since the newest item (at most 30 s after the oldest), no draft on the input line (suggested input is left out, so a proposed reply appearing there is not a draft), and at most `supervisor_max_deliveries_per_hour` (60). Pasting runs off the tick thread, one paste in flight per target. A paste counts as delivered when the target's `UserPromptSubmit` hook or 7501 Busy edge follows it; otherwise it is pasted again after 30 s marked `(redelivery)` (same batch id), and after its third paste it counts as delivered. A best-guess paste counts at once. A draft that holds items for 120 s alerts the user.
   - `sessions inbox` is the target's own pull mode, refused for anyone else's Inbox: no parameters lists pending headers, the last 20 delivered and `hold` (the current hold reason, e.g. `busy`, `no_agent_authority`, `ride_along`, `quiet`, `draft`, `unconfirmed`, `policy_deny`); `item_id` reads one item in full; `ack_through` marks every pending item up to that one consumed, so it is never pasted. A plain shell (`cat`) is held `no_agent_authority` and drains only by pulling.

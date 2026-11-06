@@ -359,6 +359,8 @@ pub(crate) fn preset_listing(state: &Value, project_id: &str) -> Value {
                 "command": preset.command,
                 "project_id": preset.project_id,
                 "quick_launch": preset.quick_launch,
+                // Fork-only: Scheduled Tasks type instructions only into one.
+                "agent_preset": crate::agent_readiness::is_agent_command(&preset.command),
             })
         })
         .collect();

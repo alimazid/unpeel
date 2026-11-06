@@ -472,6 +472,57 @@ fn a_task_whose_clock_cannot_be_saved_starts_nothing() {
     });
 }
 
+/// A next run that moved (a new task, an edited Trigger) is told to
+/// Controllers once the clock holds it, and an unchanged clock tells
+/// nothing: the worker pings the state bus on this event.
+#[test]
+fn a_saved_clock_is_published_once() {
+    with_scheduler(Recording::default(), |scheduler, _| {
+        let published = |events: &[SweepEvent]| {
+            events
+                .iter()
+                .filter(|event| matches!(event, SweepEvent::Published { schedule_id } if schedule_id == "sch_1"))
+                .count()
+        };
+        let mut task = schedule(ScheduleTrigger::Daily {
+            time: "09:30".into(),
+        });
+        assert_eq!(
+            published(&sweep(scheduler, &[task.clone()], &now(9, 0, 0))),
+            1
+        );
+        assert_eq!(
+            published(&sweep(scheduler, &[task.clone()], &now(9, 0, 1))),
+            0
+        );
+        task.trigger = ScheduleTrigger::Daily {
+            time: "17:00".into(),
+        };
+        task.clock_reset_at_ms = Some(clock::epoch_ms(&now(9, 0, 2)));
+        assert_eq!(
+            published(&sweep(scheduler, &[task.clone()], &now(9, 0, 2))),
+            1
+        );
+        let clock = TaskStore::open(root_of(scheduler), "sch_1")
+            .unwrap()
+            .clock()
+            .unwrap();
+        assert_eq!(clock.next_occurrence.as_deref(), Some("2026-11-06T17:00"));
+        // What a write route answers before this sweep is what it published.
+        let zone = now(9, 0, 2).time_zone().clone();
+        let before_the_sweep = ScheduleClock {
+            next_occurrence: Some("2026-11-06T09:30".into()),
+            ..clock.clone()
+        };
+        assert_eq!(
+            crate::schedules::trigger::published_next_run(&task, &before_the_sweep, &zone),
+            clock
+                .next_occurrence
+                .map(|at| (at, clock.next_occurrence_ms))
+        );
+    });
+}
+
 #[test]
 fn a_damaged_clock_restarts_from_now_and_never_refires() {
     with_scheduler(Recording::default(), |scheduler, effects| {

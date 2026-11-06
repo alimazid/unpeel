@@ -95,6 +95,11 @@ pub enum SweepEvent {
         run: ScheduleRun,
         previous: Option<RunStatus>,
     },
+    /// The task's clock changed on disk (its next run, its latest Run), so
+    /// a Controller that read the list before this sweep reads it again.
+    Published {
+        schedule_id: String,
+    },
     Warning(String),
 }
 
@@ -442,10 +447,12 @@ impl Scheduler {
         for action in actions {
             match action {
                 Action::SaveClock { schedule_id, clock } => {
-                    if let Err(error) = self.store(&schedule_id).and_then(|s| s.save_clock(&clock))
-                    {
-                        held.insert(schedule_id.clone());
-                        self.warn(&schedule_id, format!("saving its clock: {error}"), events);
+                    match self.store(&schedule_id).and_then(|s| s.save_clock(&clock)) {
+                        Ok(()) => events.push(SweepEvent::Published { schedule_id }),
+                        Err(error) => {
+                            held.insert(schedule_id.clone());
+                            self.warn(&schedule_id, format!("saving its clock: {error}"), events);
+                        }
                     }
                 }
                 Action::Start { schedule_id, .. }

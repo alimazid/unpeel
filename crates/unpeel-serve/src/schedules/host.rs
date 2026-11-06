@@ -9,9 +9,9 @@ use std::sync::{mpsc, Arc};
 use std::time::Duration;
 
 use unpeel_core::controller_api::{HostCreatePreset, HostCreateProject};
-use unpeel_core::controller_schedules::{RunNowRefusal, ScheduleHost};
+use unpeel_core::controller_schedules::{NextRun, RunNowRefusal, ScheduleHost};
 use unpeel_core::schedules::save::{SaveHost, TriggerRefusal};
-use unpeel_core::schedules::ScheduleTrigger;
+use unpeel_core::schedules::{Schedule, ScheduleClock, ScheduleTrigger};
 
 use super::{clock, trigger};
 use crate::local_gateway::LocalControlRequest;
@@ -49,6 +49,12 @@ impl SaveHost for WorkerHost {
 }
 
 impl ScheduleHost for WorkerHost {
+    fn next_run(&self, schedule: &Schedule, clock_state: &ScheduleClock) -> Option<NextRun> {
+        let now = clock::now();
+        trigger::published_next_run(schedule, clock_state, now.time_zone())
+            .map(|(at, at_ms)| NextRun { at, at_ms })
+    }
+
     fn run_now(&self, schedule_id: &str) -> Result<String, RunNowRefusal> {
         let (reply, answer) = mpsc::sync_channel(1);
         let request = LocalControlRequest::RunScheduleNow {

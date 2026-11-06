@@ -140,7 +140,20 @@ pub(crate) fn grant_override(
 
 /// Being the Router implies `mcp_worktree_access` for that one Session.
 pub(crate) fn router_has_worktree_access(state: &Value, caller_id: Option<&str>) -> bool {
+    is_router_in(state, caller_id)
+}
+
+/// Whether `caller_id` is the Session marked Router in `state`. No caller,
+/// or no mark, is never the Router.
+pub(crate) fn is_router_in(state: &Value, caller_id: Option<&str>) -> bool {
     caller_id.is_some_and(|caller| router_id_in(state).as_deref() == Some(caller))
+}
+
+/// [`is_router_in`] against this workspace's app-state, re-read per call so
+/// a mark made or cleared by any frontend applies at once.
+pub fn is_router(caller_id: Option<&str>) -> bool {
+    caller_id.is_some()
+        && crate::app_state::load().is_ok_and(|state| is_router_in(&state, caller_id))
 }
 
 /// The MCP activity status of a running Session the Host has not published

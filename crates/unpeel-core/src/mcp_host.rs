@@ -933,7 +933,7 @@ fn run_workspace_action(action: &str, arguments: &Value) -> Result<String, Strin
         return Ok(workspace_help(optional_trimmed_str(arguments, "help_for")));
     }
     if crate::schedules_mcp::SCHEDULES_ACTIONS.contains(&action) {
-        // Read-only, like presets: open to any Session past the gate.
+        // Reads open to any Session past the gate; writes the Super Agent's.
         sessions_gate()?;
         return crate::schedules_mcp::run_action(action, arguments);
     }
@@ -1832,8 +1832,8 @@ fn base_workspace_tool_definition() -> Value {
     json!({
         "name": WORKSPACE_TOOL,
         "description": "Read workspace launch presets, manage Unpeel worktrees without \
-    creating sessions, and read Scheduled Tasks and their Runs (read-only). \
-    {\"action\":\"help\"} returns full per-action docs.",
+    creating sessions, and read Scheduled Tasks and their Runs (the Super Agent also changes \
+    them). {\"action\":\"help\"} returns full per-action docs.",
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -1842,7 +1842,7 @@ fn base_workspace_tool_definition() -> Value {
                 "branch": { "type": "string", "description": "create_worktree: branch" },
                 "name": { "type": "string", "description": "create_worktree: folder name" },
                 "base_ref": { "type": "string", "description": "create_worktree: base ref" },
-                "schedule_id": { "type": "string", "description": "list_schedule_runs: task id" },
+                "schedule_id": { "type": "string", "description": "Scheduled Task id (list_schedules)" },
                 "limit": { "type": "integer", "description": "list_schedule_runs: most Runs" },
                 "help_for": { "type": "string", "description": "help: docs for one action" }
             },
@@ -5187,7 +5187,7 @@ mod tests {
     }
 
     #[test]
-    fn workspace_reads_scheduled_tasks_and_changes_none() {
+    fn workspace_reads_scheduled_tasks_and_documents_the_super_agents_writes() {
         let help = run_tool("workspace", &json!({ "action": "help" })).expect("workspace help");
         for expected in [
             "### list_presets",
@@ -5204,8 +5204,16 @@ mod tests {
         assert!(one.contains("### list_schedule_runs") && one.contains("schedule_id"));
         assert!(!one.contains("### list_schedules") && !one.contains("### list_presets"));
 
-        // Read-only (agents never change Scheduled Tasks): the two reads are the only schedule
-        // actions advertised, and a write spelling is an unknown action.
+        // The two reads, then the Super Agent's four writes (refused for every other Session:
+        // `schedules_mcp::write`); any other spelling is an unknown action.
+        for expected in [
+            "### create_schedule",
+            "### edit_schedule",
+            "### delete_schedule",
+            "### run_schedule",
+        ] {
+            assert!(help.contains(expected), "workspace help missing {expected}");
+        }
         let definition = workspace_tool_definition();
         let scheduled: Vec<&str> = definition["inputSchema"]["properties"]["action"]["enum"]
             .as_array()
@@ -5214,7 +5222,29 @@ mod tests {
             .filter_map(Value::as_str)
             .filter(|action| action.contains("schedule"))
             .collect();
-        assert_eq!(scheduled, ["list_schedules", "list_schedule_runs"]);
+        assert_eq!(
+            scheduled,
+            [
+                "list_schedules",
+                "list_schedule_runs",
+                "create_schedule",
+                "edit_schedule",
+                "delete_schedule",
+                "run_schedule",
+            ]
+        );
+        for property in [
+            "preset",
+            "trigger",
+            "instructions",
+            "enabled",
+            "notify_when_done",
+        ] {
+            assert!(
+                definition["inputSchema"]["properties"][property].is_object(),
+                "workspace schema missing {property}"
+            );
+        }
         for write in [
             "schedules_add",
             "schedule_edit",

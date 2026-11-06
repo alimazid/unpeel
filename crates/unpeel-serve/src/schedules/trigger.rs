@@ -247,6 +247,20 @@ pub fn next_run(
     )
 }
 
+/// The next occurrence exactly as the scheduler publishes it in the task's
+/// clock (`next_occurrence`, `next_occurrence_ms`): its local date-time and
+/// its instant on `zone`, when that has one. `None` while it is paused or
+/// never fires.
+pub fn published_next_run(
+    schedule: &Schedule,
+    clock_state: &ScheduleClock,
+    zone: &TimeZone,
+) -> Option<(String, Option<u64>)> {
+    let trigger = Trigger::parse(&schedule.trigger).filter(|_| schedule.enabled)?;
+    let next = trigger.next_after(counts_from(schedule, clock_state, zone)?)?;
+    Some((clock::format_datetime(next), clock::due_ms(next, zone)))
+}
+
 /// The latest `time` on one of `days` at or before `now`; a week back is
 /// always far enough.
 fn latest_on(days: Days, time: Time, now: DateTime) -> Option<DateTime> {
