@@ -1141,6 +1141,9 @@ final class UnpeelStore: ObservableObject {
     private var initialScanPending = false
     private let startupPresentationCache = StartupPresentationCache(home: LaunchConfig.unpeelDir)
     private var lastStartupPresentation: StartupPresentation?
+    /// Fork-only: Scheduled Tasks. The Run Sessions the Host last called
+    /// superseded (startup cache), so the disk seed hides them as well.
+    private var seedSupersededRunIDs: Set<String> = []
     /// Final combined pin + regular order being previewed by an in-flight
     /// desktop session drag. This deliberately never reaches UserDefaults or
     /// session-order.json; a successful drop commits it once, while a
@@ -2003,6 +2006,7 @@ final class UnpeelStore: ObservableObject {
         sessionsByID = sessions
         pinnedByProject = saved.pins
         unreadSessionIDs = saved.unreadIDs
+        seedSupersededRunIDs = saved.supersededRunIDs ?? []
         restorePersistedSessionSelection()
         // hasCompletedScan deliberately stays false: cached status is only
         // presentation, never input to lifecycle edge/notification detection.
@@ -2021,7 +2025,8 @@ final class UnpeelStore: ObservableObject {
         let value = StartupPresentation(
             home: Self.currentInstanceNormalizedHome(), hostID: localHostID,
             nodes: nodes, pins: pins,
-            unreadIDs: Set(summaries.filter(\.unread).map(\.id))
+            unreadIDs: Set(summaries.filter(\.unread).map(\.id)),
+            supersededRunIDs: Set(summaries.filter(\.superseded).map(\.id))
         )
         guard value != lastStartupPresentation else { return }
         lastStartupPresentation = value
@@ -6716,6 +6721,9 @@ final class UnpeelStore: ObservableObject {
                 sessions.append(snapshot)
             }
         }
+        // Fork-only: Scheduled Tasks. Mark the scan's Run Sessions with the
+        // Host's last verdict; a superseded one stays indexed, not listed.
+        sessions = ScheduledRunListing.seeding(sessions, supersededRunIDs: seedSupersededRunIDs)
 
         var byProject: [String: [SessionEntry]] = [:]
         // A project-override marker files the session under another project
@@ -6723,7 +6731,7 @@ final class UnpeelStore: ObservableObject {
         // the target still exists; a stale marker falls back to the manifest
         // project instead of orphaning the row.
         let knownProjectIDs = Set(projects.map(\.id))
-        for s in sessions {
+        for s in sessions where ScheduledRunListing.isListed(s) {
             let key = s.projectOverrideID.flatMap {
                 knownProjectIDs.contains($0) ? $0 : nil
             } ?? s.projectID
@@ -14787,9 +14795,15 @@ final class UnpeelStore: ObservableObject {
         var visibleInactiveIDs = Set<String>()
         var inactiveRank = 0
         for block in inactive {
+            // Fork-only: Run Sessions take no slot and stay listed, as on
+            // the Host (their keep limit is per task).
+            let takesSlot = block.contains(where: ScheduledRunListing.takesStoppedSlot)
             let isInsideInactivePreview = hostAlreadyWindowed
+                || !takesSlot
                 || inactiveRank < sidebarVisibleSessionLimit
-            inactiveRank += 1
+            if takesSlot {
+                inactiveRank += 1
+            }
             if isInsideInactivePreview || inactiveBlockMustStayVisible(block) {
                 visibleInactiveIDs.formUnion(block.map(\.id))
             }
@@ -15676,7 +15690,10 @@ extension UnpeelStore {
         for (index, summary) in snapshot.sessions.enumerated() {
             guard finalSessionIndex[summary.id] == index else { continue }
             entries.append(Self.sessionEntry(fromRemote: summary))
-            if knownProjectIDs.contains(summary.projectID) {
+            // Fork-only: a superseded Run stays in `entries` (openable by id
+            // from SCHEDULED) but no Project lists it.
+            if knownProjectIDs.contains(summary.projectID),
+               ScheduledRunListing.isListed(summary) {
                 orderByProject[summary.projectID, default: []].append(summary.id)
             }
         }
@@ -15787,10 +15804,9 @@ extension UnpeelStore {
         // Build the tree with the exact local algorithm: top-level projects,
         // inline child folders (worktrees + groups), sessions in Host order
         // (bootstrap row order IS the Host's committed order).
-        var byProject: [String: [SessionEntry]] = [:]
-        for entry in entries where knownProjectIDs.contains(entry.projectID) {
-            byProject[entry.projectID, default: []].append(entry)
-        }
+        let byProject = ScheduledRunListing.sessionsByProject(
+            entries, knownProjectIDs: knownProjectIDs
+        )
         // A committed-but-unconfirmed reorder holds its order until the
         // snapshot itself carries it (or the hold expires) — drop the hold
         // as soon as the Host's natural order matches, so the Host stays
@@ -16086,6 +16102,7 @@ extension UnpeelStore {
         entry.worktreePath = summary.worktreePath
         entry.worktreeBranch = summary.worktreeBranch
         entry.cwd = summary.cwd
+        entry.scheduledRun = ScheduledRunListing.mark(summary)
         return entry
     }
 

@@ -294,6 +294,20 @@ Controllers reread on the refresh they already have instead of polling.
 Swift DTOs. The Mac app's SCHEDULED section (`ScheduledSectionModel`) is the
 reader; Run now still goes over the owner-only `/_unpeel/schedules` path.
 
+Session rows carry two additive fields on a Run Session (`spawned_by`
+`schedule:<id>`), from both builders (`sessions.rs` `mobile_snapshot` and
+`controller_host.rs` `DiskCatalog`): `scheduleID` (the task; the app's clock
+badge) and `superseded`. A Run Session is superseded when it is not the
+Session of its task's `current_run` (Q32); a pinned Run never is, and a task
+with no Run log supersedes nothing (`schedules::run_sessions`). Once the
+logged Session is gone, the task's newest Run Session stands in: Resume
+replaces a Session under a new id but keeps its `spawned_by` and
+`created_at`. Controllers
+hide a superseded row from every Project listing (PROJECTS, AGENTS, ⌘K, the
+phone's sidebar and bell) but keep it openable by id, which is how the
+SCHEDULED section reaches older Runs. Run Sessions take no slot in either
+builder's stopped window; Run retention bounds them per task.
+
 ### Browser engine install (`serve.json.browserEngine`)
 
 At start the worker spawns one `browser-engine-install` thread that runs

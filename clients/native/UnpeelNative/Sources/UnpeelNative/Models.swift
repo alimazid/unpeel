@@ -1139,6 +1139,10 @@ struct SessionEntry: Codable, Identifiable, Hashable, Sendable {
     /// the pane's cwd (`UnpeelStore.paneWorkingDirectory`); nil on rows from
     /// older Hosts, which fall back to the project path.
     var cwd: String? = nil
+    /// Fork-only: Scheduled Tasks. Set on a Run Session (`ScheduledRunListing`):
+    /// its task, for the clock badge, and whether a Project lists it. Optional
+    /// so a startup cache written before it still decodes.
+    var scheduledRun: ScheduledRunMark? = nil
 
     var isLive: Bool { status != .exited }
     var isAttachable: Bool { status != .starting && status != .exited }

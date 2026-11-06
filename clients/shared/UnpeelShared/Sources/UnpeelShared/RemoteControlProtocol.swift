@@ -721,6 +721,15 @@ public struct RemoteSessionSummary: Codable, Equatable, Identifiable, Sendable {
     /// actually runs, before any OSC 7 report arrives. Additive; absent on
     /// older Hosts ⇒ nil (fall back to the project path).
     public let cwd: String?
+    /// Fork-only: Scheduled Tasks (Q32). The task this Session is a Run of
+    /// (the clock badge keys off it); nil for every other Session and on
+    /// older Hosts.
+    public let scheduleID: String?
+    /// Fork-only: the Host's verdict that this Run is not its task's latest
+    /// (the Session of the task's current Run). Every Project listing hides a
+    /// superseded row; it stays openable by id from the task's Runs. Absent ⇒
+    /// false.
+    public let superseded: Bool
 
     public init(
         id: String,
@@ -757,7 +766,9 @@ public struct RemoteSessionSummary: Codable, Equatable, Identifiable, Sendable {
         phoneFitSinceUnixMs: Int64? = nil,
         latestAlertBody: String? = nil,
         latestAlertAtUnixMs: Int64? = nil,
-        cwd: String? = nil
+        cwd: String? = nil,
+        scheduleID: String? = nil,
+        superseded: Bool = false
     ) {
         self.id = id
         self.projectID = projectID
@@ -794,6 +805,8 @@ public struct RemoteSessionSummary: Codable, Equatable, Identifiable, Sendable {
         self.latestAlertBody = latestAlertBody
         self.latestAlertAtUnixMs = latestAlertAtUnixMs
         self.cwd = cwd
+        self.scheduleID = scheduleID
+        self.superseded = superseded
     }
 
     // Custom decode so the newer fields are optional on the wire — a Mac that
@@ -812,6 +825,7 @@ public struct RemoteSessionSummary: Codable, Equatable, Identifiable, Sendable {
         case latestAlertBody, latestAlertAtUnixMs
         case cwd
         case activitySource
+        case scheduleID, superseded
     }
 
     public init(from decoder: Decoder) throws {
@@ -853,6 +867,8 @@ public struct RemoteSessionSummary: Codable, Equatable, Identifiable, Sendable {
         latestAlertBody = try c.decodeIfPresent(String.self, forKey: .latestAlertBody)
         latestAlertAtUnixMs = try c.decodeIfPresent(Int64.self, forKey: .latestAlertAtUnixMs)
         cwd = try c.decodeIfPresent(String.self, forKey: .cwd)
+        scheduleID = try c.decodeIfPresent(String.self, forKey: .scheduleID)
+        superseded = try c.decodeIfPresent(Bool.self, forKey: .superseded) ?? false
     }
 }
 

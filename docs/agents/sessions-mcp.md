@@ -93,8 +93,16 @@ Advertised ownership (old mixed `sessions` spellings remain decode-only):
   Follow-up operations validate it so a replacement foreground process cannot
   be mistaken for the same agent. `session_id` remains a weaker compatibility
   target.
-- `workspace`: `list_presets`, `create_worktree`, `list_worktrees`.
-  Worktree creation remains opt-in and never launches a Session.
+- `workspace`: `list_presets`, `create_worktree`, `list_worktrees`,
+  `schedules_list`, `schedule_runs`. Worktree creation remains opt-in and
+  never launches a Session. The two Scheduled Tasks actions are read-only
+  (fork-only): they answer the `GET /mobile/schedules` and
+  `GET /mobile/schedules/runs` bodies (`protocol/schedules-samples-v1.json`)
+  from `app-state.json` and the per-task files on disk, so they work on any
+  Host. `schedule_runs` returns the newest 10 Runs unless `limit` says
+  otherwise. Agents cannot create, edit, run or remove tasks, and the
+  existing `spawned_by` rule keeps a task's Run Sessions out of `sessions
+  close` even under Create & remove.
 - `artifacts`: `add_to_gallery` for a caller-owned image artifact.
 
 Session creation and closing remain user-only. Stale start/delegate/close tool
