@@ -101,8 +101,9 @@ struct ScheduledTaskMenu: View {
     }
 }
 
-/// Delete's inline confirmation: the question over what stays, Cancel and
-/// Delete. Esc or a click anywhere else cancels.
+/// Delete's inline confirmation, in the task row's own height so the list
+/// never jumps: the question, Cancel and Delete. Esc or a click anywhere
+/// else cancels. Its Run Sessions stay (said in the tooltip).
 struct ScheduledDeleteConfirmRow: View {
     let title: String
     let onConfirm: () -> Void
@@ -110,17 +111,12 @@ struct ScheduledDeleteConfirmRow: View {
 
     var body: some View {
         HStack(alignment: .center, spacing: 8) {
-            VStack(alignment: .leading, spacing: 1) {
-                Text("Delete “\(title)”?")
-                    .font(.system(size: 13))
-                    .foregroundStyle(Theme.foreground)
-                    .lineLimit(1)
-                    .truncationMode(.tail)
-                Text("Its Run Sessions stay.")
-                    .font(.system(size: 11))
-                    .foregroundStyle(Theme.mutedForeground)
-                    .lineLimit(1)
-            }
+            Text("Delete “\(title)”?")
+                .font(.system(size: 13))
+                .foregroundStyle(Theme.foreground)
+                .lineLimit(1)
+                .truncationMode(.tail)
+                .help("Deletes the task and its history. Its Run Sessions stay.")
             Spacer(minLength: 4)
             HStack(spacing: 7) {
                 ConfirmPillButton(label: "Cancel", destructive: false, action: onCancel)
@@ -129,7 +125,7 @@ struct ScheduledDeleteConfirmRow: View {
             .fixedSize()
         }
         .padding(.horizontal, 8)
-        .padding(.vertical, 6)
+        .frame(height: Theme.sessionRowHeight)
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(
             RoundedRectangle(cornerRadius: 7, style: .continuous)

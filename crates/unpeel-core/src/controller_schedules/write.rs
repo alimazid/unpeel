@@ -88,8 +88,17 @@ fn current_host() -> Option<Arc<dyn ScheduleHost>> {
         .clone()
 }
 
-/// The write routes, for `controller_schedules::route`.
+/// The write routes, for `controller_schedules::route`. Every other request
+/// passes through the router here, so it leaves before anything is read.
 pub(super) fn route(request: &ControllerRequest) -> Option<(u16, Value)> {
+    let is_write = request.method == "POST"
+        && matches!(
+            request.path.as_str(),
+            CREATE_PATH | EDIT_PATH | DELETE_PATH | RUN_PATH
+        );
+    if !is_write {
+        return None;
+    }
     let host = current_host();
     answer(request, host.as_deref(), &Workspace::current(), now_ms())
 }
