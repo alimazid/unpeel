@@ -3454,6 +3454,11 @@ extension RemoteHostRuntime {
         static let markRead = "session.mark_read"
         /// Fork-only: the user's explicit "Mark as Unread".
         static let markUnread = "session.mark_unread"
+        /// Fork-only: Make Super Agent / Stop Being Super Agent / Hand to
+        /// Super Agent.
+        static let superAgentSet = "session.super_agent.set"
+        static let superAgentClear = "session.super_agent.clear"
+        static let superAgentHandOver = "session.super_agent.hand_over"
         static let stop = "session.stop"
         static let remove = "session.remove"
         static let restart = "session.restart"
