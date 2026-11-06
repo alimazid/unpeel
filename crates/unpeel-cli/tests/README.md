@@ -97,6 +97,7 @@ printed only when the check fails.
 | `ctrlc_fallback` | Ctrl-C into a fresh preset Session lands in the fallback shell |
 | `startup_exit` | a launch command's exit status (0, 3, 128 + signal, a quit agent) lands in `startup-exit` before the fallback shell |
 | `schedules` | Scheduled Tasks on script presets: Run now records done / failed with the exit code, a Once task fires on its own with no app and disables itself, overlap is skipped, verbs refuse inside a Session |
+| `schedules_routes` | Scheduled Tasks over `/mobile`: bootstrap advertises `schedules` / `schedules.runs` and a moving `schedulesRevision`; the list shows next run and last Run, history is newest first; a recorded Run pings the state bus (`schedules`); both routes read the files on disk |
 | `pty_core_*` | the shared PTY core: parity, adoption, in-place handoff |
 | `serve_install` | `unpeel serve install|uninstall|status` unit rendering (shim-tested) |
 | `state_bus` | cross-frontend sync: pings land immediately, writes announce |

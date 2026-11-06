@@ -36,8 +36,11 @@ pub mod browser_mcp;
 pub mod controller_api;
 #[cfg(feature = "native-host")]
 pub mod controller_host;
+// Fork-only: Scheduled Tasks.
 #[cfg(feature = "controller-core")]
 pub mod controller_protocol;
+#[cfg(feature = "native-host")]
+pub mod controller_schedules;
 #[cfg(feature = "native-host")]
 pub mod desktop_session;
 #[cfg(feature = "native-host")]
@@ -104,11 +107,11 @@ pub mod program_status;
 #[cfg(feature = "native-host")]
 pub mod pty_core;
 #[cfg(feature = "native-host")]
-pub mod screen_activity;
-#[cfg(feature = "native-host")]
 pub mod schedule_store;
 #[cfg(feature = "controller-core")]
 pub mod schedules;
+#[cfg(feature = "native-host")]
+pub mod screen_activity;
 
 pub mod relay_connection;
 #[cfg(feature = "native-host")]

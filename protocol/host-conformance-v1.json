@@ -1195,6 +1195,48 @@
         "native": 400,
         "tui": 400
       }
+    },
+    {
+      "id": "schedules.list",
+      "method": "GET",
+      "path": "/mobile/schedules",
+      "expected": {
+        "native": 200,
+        "tui": 200
+      }
+    },
+    {
+      "id": "schedules.runs.missing-id",
+      "method": "GET",
+      "path": "/mobile/schedules/runs",
+      "expected": {
+        "native": 400,
+        "tui": 400
+      }
+    },
+    {
+      "id": "schedules.runs.invalid-id",
+      "method": "GET",
+      "path": "/mobile/schedules/runs",
+      "query": {
+        "scheduleID": "../app-state"
+      },
+      "expected": {
+        "native": 400,
+        "tui": 400
+      }
+    },
+    {
+      "id": "schedules.runs.unknown",
+      "method": "GET",
+      "path": "/mobile/schedules/runs",
+      "query": {
+        "scheduleID": "conformance-unknown"
+      },
+      "expected": {
+        "native": 404,
+        "tui": 404
+      }
     }
   ],
   "additiveBootstrapFields": [
@@ -1236,6 +1278,11 @@
         "id": "<string>"
       },
       "note": "Present only when the Host detects it runs inside a Box (kind box). Additive/optional; no policy in 0.5.0."
+    },
+    {
+      "field": "schedulesRevision",
+      "required": false,
+      "note": "Fork-only: Scheduled Tasks. Opaque; changes whenever GET /mobile/schedules or a task's GET /mobile/schedules/runs would answer differently. Controllers refetch the schedules routes when it moves instead of polling them. Absent on Hosts without the schedules capability."
     }
   ]
 }

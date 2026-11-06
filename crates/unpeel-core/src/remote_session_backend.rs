@@ -462,6 +462,11 @@ pub struct RemoteBootstrapSnapshot {
     pub host_device_kind: Option<String>,
     #[serde(default)]
     pub host_device_model: Option<String>,
+    /// Fork-only: Scheduled Tasks. Moves whenever the `schedules` routes
+    /// would answer differently, so the native section refetches them on
+    /// the bootstrap refresh it already rides (no timer of its own).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub schedules_revision: Option<String>,
 }
 
 impl RemoteBootstrapSnapshot {
@@ -1593,6 +1598,14 @@ impl RemoteSessionBackend {
                 "filesystem.file.read",
                 "/mobile/files/read",
                 &["path", "offset"],
+            ),
+            // Fork-only: Scheduled Tasks' read routes.
+            "schedules" => ("GET", "schedules", "/mobile/schedules", &[]),
+            "scheduleRuns" => (
+                "GET",
+                "schedules.runs",
+                "/mobile/schedules/runs",
+                &["scheduleID", "limit"],
             ),
             _ => {
                 return Err(effect_failure(
@@ -7707,5 +7720,106 @@ mod tests {
             RemoteSessionBackendError::InvalidOutputOptions(_)
         ));
         assert!(connection.calls().is_empty());
+    }
+
+    // Fork-only: Scheduled Tasks.
+    #[test]
+    fn bootstrap_carries_the_schedules_revision_to_the_controller() {
+        let connection = ScriptedConnection::new();
+        let generation = connection.generation(1);
+        let mut body = bootstrap_json(
+            Some("host-1"),
+            HOST_PROTOCOL_MAJOR,
+            Some(&[BOOTSTRAP_CAPABILITY]),
+        );
+        body["schedulesRevision"] = json!("00ff00ff00ff00ff");
+        add_bootstrap(&connection, generation, body);
+        let snapshot = RemoteSessionBackend::new(connection)
+            .bootstrap()
+            .expect("bootstrap decodes")
+            .snapshot;
+        assert_eq!(
+            snapshot.schedules_revision.as_deref(),
+            Some("00ff00ff00ff00ff")
+        );
+        // The bridge hands Swift the typed snapshot, not the raw body.
+        let forwarded = serde_json::to_value(&snapshot).unwrap();
+        assert_eq!(forwarded["schedulesRevision"], "00ff00ff00ff00ff");
+    }
+
+    #[test]
+    fn schedule_reads_are_resource_operations_behind_their_capabilities() {
+        let connection = ScriptedConnection::new();
+        let generation = connection.generation(1);
+        add_bootstrap(
+            &connection,
+            generation,
+            bootstrap_json(
+                Some("host-1"),
+                HOST_PROTOCOL_MAJOR,
+                Some(&[BOOTSTRAP_CAPABILITY, "schedules", "schedules.runs"]),
+            ),
+        );
+        let list = br#"{"revision":"1","schedules":[]}"#.to_vec();
+        connection.push(reply_step(
+            expected_read(generation, "/mobile/schedules", vec![]),
+            generation,
+            200,
+            list.clone(),
+        ));
+        let runs = br#"{"scheduleID":"sch_1","runs":[]}"#.to_vec();
+        connection.push(reply_step(
+            expected_read(
+                generation,
+                "/mobile/schedules/runs",
+                vec![
+                    ("scheduleID".to_owned(), "sch_1".to_owned()),
+                    ("limit".to_owned(), "10".to_owned()),
+                ],
+            ),
+            generation,
+            200,
+            runs.clone(),
+        ));
+        let backend = RemoteSessionBackend::new(connection.clone());
+        backend.bootstrap().unwrap();
+        assert_eq!(
+            backend.resource_request("schedules", &HashMap::new(), Vec::new()),
+            Ok(list)
+        );
+        let query = HashMap::from([
+            ("scheduleID".to_owned(), "sch_1".to_owned()),
+            ("limit".to_owned(), "10".to_owned()),
+        ]);
+        assert_eq!(
+            backend.resource_request("scheduleRuns", &query, Vec::new()),
+            Ok(runs)
+        );
+        assert_eq!(connection.remaining(), 0);
+    }
+
+    #[test]
+    fn schedule_reads_need_the_host_to_advertise_them() {
+        let connection = ScriptedConnection::new();
+        let generation = connection.generation(1);
+        add_bootstrap(
+            &connection,
+            generation,
+            bootstrap_json(
+                Some("host-1"),
+                HOST_PROTOCOL_MAJOR,
+                Some(&[BOOTSTRAP_CAPABILITY]),
+            ),
+        );
+        let backend = RemoteSessionBackend::new(connection.clone());
+        backend.bootstrap().unwrap();
+        assert!(backend
+            .resource_request("schedules", &HashMap::new(), Vec::new())
+            .is_err());
+        assert_eq!(
+            connection.calls().len(),
+            1,
+            "only the bootstrap reached the Host"
+        );
     }
 }
