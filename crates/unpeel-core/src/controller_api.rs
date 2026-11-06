@@ -479,6 +479,28 @@ fn principal_can_create_session(principal: &ControllerPrincipal) -> bool {
     }
 }
 
+/// The enabled preset `preset_id` names for a launch in `project_id`: the
+/// project's own row first, then the global one. Every Host-side launch by
+/// preset id (`session.create`, Scheduled Task Runs) resolves through here.
+pub fn find_host_preset<'a>(
+    presets: &'a [HostCreatePreset],
+    preset_id: &str,
+    project_id: &str,
+) -> Option<&'a HostCreatePreset> {
+    presets
+        .iter()
+        .find(|preset| {
+            preset.id == preset_id
+                && preset.enabled
+                && preset.project_id.as_deref() == Some(project_id)
+        })
+        .or_else(|| {
+            presets.iter().find(|preset| {
+                preset.id == preset_id && preset.enabled && preset.project_id.is_none()
+            })
+        })
+}
+
 fn resolve_host_create(
     body: &Value,
     context: &HostCreateContext,
@@ -558,20 +580,8 @@ fn resolve_host_create(
         // Prefer a project-scoped row if a legacy catalog happens to contain
         // the same id globally too. Either way, preset selection wins over an
         // explicit command in the wire request, matching shipped clients.
-        let preset = context
-            .presets
-            .iter()
-            .find(|preset| {
-                preset.id == preset_id
-                    && preset.enabled
-                    && preset.project_id.as_deref() == Some(project_id.as_str())
-            })
-            .or_else(|| {
-                context.presets.iter().find(|preset| {
-                    preset.id == preset_id && preset.enabled && preset.project_id.is_none()
-                })
-            })
-            .ok_or_else(|| {
+        let preset =
+            find_host_preset(&context.presets, preset_id, &project_id).ok_or_else(|| {
                 ControllerApiError::new(400, format!("unknown preset id: {preset_id}"))
             })?;
         if preset.command.len() > MAX_CREATE_COMMAND_BYTES || preset.command.contains('\0') {

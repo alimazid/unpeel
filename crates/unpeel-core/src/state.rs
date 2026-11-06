@@ -905,6 +905,13 @@ pub struct AppState {
     /// Shared knob for the app, the TUI, and every session host.
     #[serde(default)]
     pub session_title_mode: SessionTitleMode,
+    /// Scheduled Tasks (`crate::schedules`). Decoded entry by entry: a task
+    /// this build cannot read is dropped or never fires, and never costs the
+    /// rest of the document. Never write this back through a typed
+    /// `AppState`: an unknown Trigger's fields do not survive the round trip,
+    /// so every writer edits the raw map (`app_state::edit`).
+    #[serde(default, deserialize_with = "crate::schedules::deserialize_schedules")]
+    pub schedules: Vec<crate::schedules::Schedule>,
 }
 
 /// IDs of built-in global presets in preferred display order.
@@ -974,6 +981,7 @@ impl Default for AppState {
             auto_stop_archive_minutes: None,
             sidebar_stopped_limit: None,
             session_title_mode: SessionTitleMode::default(),
+            schedules: Vec::new(),
         }
     }
 }
@@ -1465,6 +1473,43 @@ mod tests {
         // Round trips.
         let back: McpGrant = serde_json::from_str(&json).unwrap();
         assert_eq!(back, grant);
+    }
+
+    #[test]
+    fn app_state_without_schedules_has_no_tasks() {
+        let absent: AppState = serde_json::from_str("{}").unwrap();
+        assert!(absent.schedules.is_empty());
+    }
+
+    /// `sessions::load_app_state` keeps only projects when the strict parse
+    /// fails, so a damaged or newer task must never fail the document.
+    #[test]
+    fn a_damaged_or_newer_schedule_never_costs_the_rest_of_the_state() {
+        let state: AppState = serde_json::from_value(serde_json::json!({
+            "presets": [{"id": "ok", "label": "ok", "command": "true", "project_id": null}],
+            "schedules": [
+                {"id": "sch_future", "name": "Later", "trigger": {"kind": "every_full_moon"}},
+                {"id": "sch_daily", "trigger": {"kind": "daily", "time": "09:43"}},
+                {"name": "no id"},
+                {"id": "sch_broken", "created_at_ms": "yesterday"}
+            ]
+        }))
+        .expect("the document decodes");
+        assert_eq!(state.presets.len(), 1);
+        let triggers: Vec<_> = state
+            .schedules
+            .iter()
+            .map(|schedule| (schedule.id.as_str(), schedule.trigger.kind()))
+            .collect();
+        assert_eq!(triggers, vec![("sch_future", "unknown"), ("sch_daily", "daily")]);
+
+        let not_a_list: AppState = serde_json::from_value(serde_json::json!({
+            "presets": [{"id": "ok", "label": "ok", "command": "true", "project_id": null}],
+            "schedules": {"sch_1": {}}
+        }))
+        .expect("the document decodes");
+        assert_eq!(not_a_list.presets.len(), 1);
+        assert!(not_a_list.schedules.is_empty());
     }
 
     #[test]

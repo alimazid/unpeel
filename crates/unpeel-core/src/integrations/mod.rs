@@ -246,6 +246,8 @@ pub fn configure_host_command(
         shell_prelude.push(format!("unset {APP_ACCENT_ENV}"));
     }
 
+    export_schedule_run(launch, cmd, shell_prelude);
+
     if let Some(port) = launch.hook_port {
         let port_value = port.to_string();
         // Hook scripts persist the last lifecycle event into the session dir
@@ -264,6 +266,32 @@ pub fn configure_host_command(
     }
 
     Ok(())
+}
+
+/// A Run Session names its Scheduled Task and Run; any other Session clears
+/// both, so a Session started from inside a Run never claims to be one.
+fn export_schedule_run(
+    launch: &SessionHostLaunch,
+    cmd: &mut CommandBuilder,
+    shell_prelude: &mut Vec<String>,
+) {
+    use crate::schedules::{SCHEDULE_ID_ENV, SCHEDULE_RUN_ID_ENV};
+    match &launch.schedule_run {
+        Some(run) => {
+            cmd.env(SCHEDULE_ID_ENV, &run.schedule_id);
+            cmd.env(SCHEDULE_RUN_ID_ENV, &run.run_id);
+            shell_prelude.push(format!(
+                "export {SCHEDULE_ID_ENV}={} {SCHEDULE_RUN_ID_ENV}={}",
+                shared::shell_quote(&run.schedule_id),
+                shared::shell_quote(&run.run_id),
+            ));
+        }
+        None => {
+            cmd.env_remove(SCHEDULE_ID_ENV);
+            cmd.env_remove(SCHEDULE_RUN_ID_ENV);
+            shell_prelude.push(format!("unset {SCHEDULE_ID_ENV} {SCHEDULE_RUN_ID_ENV}"));
+        }
+    }
 }
 
 fn normalize_app_accent(value: &str) -> Option<String> {
@@ -629,6 +657,64 @@ mod tests {
             "export PATH={}:\"$PATH\"",
             shared::shell_quote(&apps_bin)
         )));
+    }
+
+    /// A Scheduled Task's Run Session learns its task and Run through the
+    /// child environment and the prelude command launches see.
+    #[test]
+    fn a_run_session_exports_its_schedule_and_run() {
+        let launch: SessionHostLaunch = serde_json::from_value(serde_json::json!({
+            "session": {
+                "id": "run-session",
+                "project_id": "test-project",
+                "label": "test",
+                "command": "true"
+            },
+            "cwd": "/tmp",
+            "dark_mode": null,
+            "schedule_run": {"schedule_id": "sch_1", "run_id": "run_9"}
+        }))
+        .expect("launch fixture");
+        let mut cmd = CommandBuilder::new("true");
+        let mut prelude = Vec::new();
+        configure_host_command(&launch, &mut cmd, &mut prelude).expect("configure");
+        assert_eq!(
+            cmd.get_env(crate::schedules::SCHEDULE_ID_ENV),
+            Some(std::ffi::OsStr::new("sch_1"))
+        );
+        assert_eq!(
+            cmd.get_env(crate::schedules::SCHEDULE_RUN_ID_ENV),
+            Some(std::ffi::OsStr::new("run_9"))
+        );
+        assert!(prelude
+            .join("\n")
+            .contains("export UNPEEL_SCHEDULE_ID='sch_1' UNPEEL_SCHEDULE_RUN_ID='run_9'"));
+    }
+
+    /// `unpeel new` from inside a Run Session must not inherit the Run.
+    #[test]
+    fn any_other_session_clears_an_inherited_schedule() {
+        let launch: SessionHostLaunch = serde_json::from_value(serde_json::json!({
+            "session": {
+                "id": "nested-session",
+                "project_id": "test-project",
+                "label": "test",
+                "command": "true"
+            },
+            "cwd": "/tmp",
+            "dark_mode": null
+        }))
+        .expect("launch fixture");
+        let mut cmd = CommandBuilder::new("true");
+        cmd.env(crate::schedules::SCHEDULE_ID_ENV, "sch_parent");
+        cmd.env(crate::schedules::SCHEDULE_RUN_ID_ENV, "run_parent");
+        let mut prelude = Vec::new();
+        configure_host_command(&launch, &mut cmd, &mut prelude).expect("configure");
+        assert_eq!(cmd.get_env(crate::schedules::SCHEDULE_ID_ENV), None);
+        assert_eq!(cmd.get_env(crate::schedules::SCHEDULE_RUN_ID_ENV), None);
+        assert!(prelude
+            .join("\n")
+            .contains("unset UNPEEL_SCHEDULE_ID UNPEEL_SCHEDULE_RUN_ID"));
     }
 
     /// A launched agent command reaches the PTY untouched: no provider
