@@ -83,7 +83,7 @@ pub(super) fn at_home<T>(body: impl FnOnce(&Home) -> T) -> T {
         inbox: Store::home(),
         worktrees: crate::supervision_worktrees::Ledger::home(),
         facts: &facts,
-        now_ms: now_ms(),
+        now_ms: crate::supervision::now_ms(),
     })
 }
 
@@ -97,7 +97,7 @@ pub(super) fn at_home_without_facts<T>(body: impl FnOnce(&Home) -> T) -> T {
         inbox: Store::home(),
         worktrees: crate::supervision_worktrees::Ledger::home(),
         facts: &no_facts,
-        now_ms: now_ms(),
+        now_ms: crate::supervision::now_ms(),
     })
 }
 
@@ -129,12 +129,6 @@ fn project_ids(state: &Value) -> HashSet<String> {
         .flatten()
         .filter_map(|project| project.get("id")?.as_str().map(str::to_string))
         .collect()
-}
-
-pub(super) fn now_ms() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map_or(0, |elapsed| elapsed.as_millis() as u64)
 }
 
 /// Longest `role` or `task` label kept.
@@ -501,7 +495,7 @@ impl WorkerPlan {
     /// announce it.
     pub(crate) fn after_spawn(&self, session_id: &str, result: Value) -> Value {
         let result = at_home(|home| self.record_at(home, session_id, result));
-        crate::state_bus::announce(crate::state_bus::Change::SessionMarkers, None);
+        crate::supervision::announce_markers();
         result
     }
 

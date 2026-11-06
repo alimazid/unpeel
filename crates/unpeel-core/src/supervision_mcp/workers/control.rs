@@ -13,7 +13,7 @@ pub(crate) fn stop_action(args: &Value) -> Result<String, String> {
     let caller = crate::mcp_host::self_session_id()
         .ok_or("sessions stop needs to know the calling session; run it inside a session.")?;
     let stopped = at_home(|home| stop_at(home, &caller, args, &crate::session_ops::stop_session))?;
-    crate::state_bus::announce(crate::state_bus::Change::SessionMarkers, None);
+    crate::supervision::announce_markers();
     serde_json::to_string_pretty(&stopped).map_err(|e| format!("Failed to encode stop: {e}"))
 }
 
@@ -94,7 +94,7 @@ pub(crate) fn route_close(
     };
     let closed = at_home(|home| close_at(home, &closing, &crate::session_ops::remove_session))?;
     if closed.is_ok() {
-        crate::state_bus::announce(crate::state_bus::Change::SessionMarkers, None);
+        crate::supervision::announce_markers();
     }
     Some(closed)
 }
@@ -169,7 +169,7 @@ fn touch(home: &Home, worker: &str) -> bool {
 /// the Router wrote to one of its Workers, and announce the stamp.
 pub(crate) fn note_write(caller: &str, target: &str) {
     if super::at_home_without_facts(|home| note_write_at(home, caller, target)) {
-        crate::state_bus::announce(crate::state_bus::Change::SessionMarkers, None);
+        crate::supervision::announce_markers();
     }
 }
 

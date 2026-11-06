@@ -695,7 +695,7 @@ impl HostIo for HostTerminal {
     }
 
     fn announce(&self) {
-        unpeel_core::state_bus::announce(unpeel_core::state_bus::Change::SessionMarkers, None);
+        unpeel_core::supervision::announce_markers();
     }
 }
 

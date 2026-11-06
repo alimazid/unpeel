@@ -174,11 +174,8 @@ impl Home {
         if kept.len() == order.len() {
             return Ok(());
         }
-        let body = serde_json::to_vec_pretty(&kept).map_err(|error| error.to_string())?;
-        let tmp = path.with_extension("json.tmp");
-        std::fs::write(&tmp, body).map_err(|error| format!("write {}: {error}", tmp.display()))?;
-        std::fs::rename(&tmp, &path)
-            .map_err(|error| format!("rename {}: {error}", tmp.display()))?;
+        let body = serde_json::to_string_pretty(&kept).map_err(|error| error.to_string())?;
+        crate::hook_assets::write_file_atomic(&path, &body, "project order")?;
         if self.shared {
             crate::state_bus::announce(
                 crate::state_bus::Change::Order,
@@ -363,19 +360,31 @@ working for you."
     let launched_in = manifest_project(&dir)
         .ok_or_else(|| format!("Session '{session_id}' has no launch manifest yet."))?;
     if target == launched_in {
-        clear_filed_project(&dir)?;
+        refile(home, session_id, None)?;
     } else {
         check_move_target(&home.state()?, &launched_in, target)
             .map_err(|error| format!("Can't move '{session_id}' to '{target}': {error}"))?;
-        file_project(&dir, target)?;
-    }
-    if home.shared {
-        crate::state_bus::announce(
-            crate::state_bus::Change::SessionMarkers,
-            crate::session_ops::own_listener_port_public(),
-        );
+        refile(home, session_id, Some(target))?;
     }
     Ok(json!({ "session_id": session_id, "project_id": target }))
+}
+
+/// File the Worker under `target`, or (`None`) back under its launch
+/// Project. The real home uses `session_ops`' own marker writers, which
+/// announce; a test home writes the same `{project_id, moved_at}` marker
+/// under its own root.
+fn refile(home: &Home, session_id: &str, target: Option<&str>) -> Result<(), String> {
+    if home.shared {
+        return match target {
+            Some(target) => crate::session_ops::set_project_override(session_id, target),
+            None => crate::session_ops::clear_project_override(session_id),
+        };
+    }
+    let dir = home.sessions_root().join(session_id);
+    match target {
+        Some(target) => file_project(&dir, target),
+        None => clear_filed_project(&dir),
+    }
 }
 
 /// The Host's rule (`controller_host::validate_session_project_target`),
@@ -399,18 +408,14 @@ fn check_move_target(state: &Value, launched_in: &str, target: &str) -> Result<(
         .map_err(|error| format!("{error}. Call workspace list_projects for the targets."))
 }
 
-/// Write `project-override.json` like `session_ops::set_project_override`:
-/// same-dir temp + rename, the desktop's `{project_id, moved_at}` shape.
+/// `session_ops::set_project_override`'s marker, under a test home.
 fn file_project(dir: &Path, project_id: &str) -> Result<(), String> {
-    let moved_at = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map_or(0, |elapsed| elapsed.as_millis() as u64);
-    let body = serde_json::to_vec(&json!({ "project_id": project_id, "moved_at": moved_at }))
-        .map_err(|error| error.to_string())?;
-    let tmp = dir.join(".project-override.json.tmp");
-    std::fs::write(&tmp, body).map_err(|error| format!("write {}: {error}", tmp.display()))?;
-    std::fs::rename(&tmp, dir.join(crate::session_ops::PROJECT_OVERRIDE_MARKER))
-        .map_err(|error| format!("rename {}: {error}", tmp.display()))
+    let body = json!({ "project_id": project_id, "moved_at": crate::supervision::now_ms() });
+    crate::hook_assets::write_file_atomic(
+        &dir.join(crate::session_ops::PROJECT_OVERRIDE_MARKER),
+        &body.to_string(),
+        "project override",
+    )
 }
 
 /// Back to the launch Project: no marker. Absent is not an error.

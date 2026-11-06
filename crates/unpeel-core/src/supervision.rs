@@ -422,11 +422,8 @@ pub(crate) fn write_worker_marker_in(
     if !dir.is_dir() {
         return Err(format!("no session dir {}", dir.display()));
     }
-    let tmp = dir.join(".supervision.json.tmp");
-    let body = serde_json::to_vec(marker).map_err(|e| e.to_string())?;
-    std::fs::write(&tmp, body).map_err(|e| format!("write {}: {e}", tmp.display()))?;
-    std::fs::rename(&tmp, dir.join(WORKER_MARKER_FILE))
-        .map_err(|e| format!("rename {}: {e}", tmp.display()))
+    let body = serde_json::to_string(marker).map_err(|e| e.to_string())?;
+    crate::hook_assets::write_file_atomic(&dir.join(WORKER_MARKER_FILE), &body, "Worker marker")
 }
 
 /// `Ok(true)` when a marker was removed.
@@ -458,9 +455,11 @@ pub(crate) fn workers_of_in(sessions_root: &std::path::Path, router_id: &str) ->
     workers
 }
 
-/// No in-process channel follows a marker write, so the announce includes
-/// this process (port `None`), as `session_ops::mark_unread` does.
-fn announce_markers() {
+/// Session markers or an Inbox changed on disk. No in-process channel
+/// follows such a write, so the announce includes this process (port
+/// `None`), as `session_ops::mark_unread` does. Every Super Agent write
+/// announces through this.
+pub fn announce_markers() {
     crate::state_bus::announce(crate::state_bus::Change::SessionMarkers, None);
 }
 
@@ -473,7 +472,8 @@ pub(crate) fn valid_session_id(id: &str) -> bool {
     !id.trim().is_empty() && !id.contains('/') && !id.contains('\\') && !id.contains("..")
 }
 
-fn now_ms() -> u64 {
+/// Wall-clock unix ms, the time base of every Super Agent record.
+pub fn now_ms() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map_or(0, |elapsed| elapsed.as_millis() as u64)
