@@ -79,10 +79,13 @@ pub enum SweepEvent {
         run_id: String,
         session_id: String,
     },
+    /// A Run line was appended: `run` as recorded, and `previous` the
+    /// Run's status before it (`None` for a Run this line begins), so the
+    /// worker can tell a status entered from one recorded again.
     Recorded {
         schedule_id: String,
-        run_id: String,
-        status: RunStatus,
+        run: ScheduleRun,
+        previous: Option<RunStatus>,
     },
     Warning(String),
 }
@@ -209,8 +212,13 @@ impl Scheduler {
             }
         }
         self.forget_settled_deliveries(&tasks);
+        let before = tasks
+            .iter()
+            .filter_map(|task| task.latest_run.as_ref())
+            .map(|run| (run.run_id.clone(), run.status))
+            .collect::<HashMap<_, _>>();
         let actions = step::step(&tasks, now, &mut new_run_id);
-        self.perform(actions, schedules, hook_port, &mut events);
+        self.perform(actions, schedules, &before, hook_port, &mut events);
         events
     }
 
@@ -382,10 +390,12 @@ impl Scheduler {
         }
     }
 
+    /// `before` is each task's latest Run status as this sweep found it.
     fn perform(
         &mut self,
         actions: Vec<Action>,
         schedules: &[Schedule],
+        before: &HashMap<String, RunStatus>,
         hook_port: Option<u16>,
         events: &mut Vec<SweepEvent>,
     ) {
@@ -414,9 +424,9 @@ impl Scheduler {
                     let run = self.with_screen_reply(run, schedules, &schedule_id);
                     match self.store(&schedule_id).and_then(|s| s.append_run(&run)) {
                         Ok(()) => events.push(SweepEvent::Recorded {
+                            previous: before.get(&run.run_id).copied(),
                             schedule_id,
-                            run_id: run.run_id,
-                            status: run.status,
+                            run,
                         }),
                         Err(error) => {
                             self.warn(&schedule_id, format!("recording a Run: {error}"), events)
@@ -859,6 +869,62 @@ mod tests {
             let run = store.current_run().expect("a Run");
             assert_eq!(run.status, RunStatus::Failed);
             assert!(run.reason.unwrap().contains("unpeel-host exited with 1"));
+        });
+    }
+
+    /// The Run lines a sweep recorded, with each Run's status before them.
+    fn recorded(events: &[SweepEvent]) -> Vec<(RunStatus, Option<RunStatus>)> {
+        events
+            .iter()
+            .filter_map(|event| match event {
+                SweepEvent::Recorded { run, previous, .. } => Some((run.status, *previous)),
+                _ => None,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn a_recorded_line_says_what_the_run_was_before_it() {
+        with_scheduler(Recording::default(), |scheduler, effects| {
+            let tasks = [schedule(ScheduleTrigger::Daily {
+                time: "09:00".into(),
+            })];
+            sweep(scheduler, &tasks, &now(9, 0, 0));
+            settle(effects, 1);
+            let session_id = effects.spawned.lock().unwrap()[0].0.session_id.clone();
+            effects
+                .seen
+                .lock()
+                .unwrap()
+                .insert(session_id.clone(), (SessionSeen::Live, Some(0)));
+            let events = sweep(scheduler, &tasks, &now(9, 0, 1));
+            assert_eq!(
+                recorded(&events),
+                vec![(RunStatus::Done, Some(RunStatus::Running))]
+            );
+            let line = events.iter().find_map(|event| match event {
+                SweepEvent::Recorded { run, .. } => Some(run.clone()),
+                _ => None,
+            });
+            assert_eq!(
+                line.and_then(|run| run.session_id),
+                Some(session_id),
+                "the event carries the line as recorded"
+            );
+        });
+    }
+
+    #[test]
+    fn a_run_that_cannot_launch_is_recorded_with_no_status_before_it() {
+        with_scheduler(Recording::default(), |scheduler, _| {
+            let tasks = [Schedule {
+                preset_id: "gone".into(),
+                ..schedule(ScheduleTrigger::Daily {
+                    time: "09:00".into(),
+                })
+            }];
+            let events = sweep(scheduler, &tasks, &now(9, 0, 0));
+            assert_eq!(recorded(&events), vec![(RunStatus::Failed, None)]);
         });
     }
 

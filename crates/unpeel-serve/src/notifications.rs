@@ -47,6 +47,20 @@ pub struct NotificationRequest<'a> {
     pub requires_notify_when_done: bool,
     pub send_desktop: bool,
     pub suppress_device_ids: HashSet<String>,
+    /// Fork-only: Scheduled Tasks. Set when the notice concerns a Run, of
+    /// a Run Session or of a Run with no Session at all (`session_id`
+    /// empty: it never launched).
+    pub run: Option<RunContext<'a>>,
+}
+
+/// Fork-only: which Scheduled Task a notice is about.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct RunContext<'a> {
+    pub schedule_id: &'a str,
+    /// For a finished turn: the task's "Notify when done", which decides
+    /// in place of the app's global setting. Absent on the wire otherwise,
+    /// and from older Hosts.
+    pub notify_when_done: Option<bool>,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -62,18 +76,23 @@ pub fn deliver(adapters: &PlatformAdapterHub, request: NotificationRequest<'_>) 
     }
     let mut suppressed = request.suppress_device_ids.into_iter().collect::<Vec<_>>();
     suppressed.sort();
-    let response = adapters.call(
-        "notification.deliver",
-        json!({
-            "sessionID": request.session_id,
-            "title": request.title,
-            "body": request.body.unwrap_or_else(|| request.kind.default_body()),
-            "kind": request.kind.wire(),
-            "requiresNotifyWhenDone": request.requires_notify_when_done,
-            "sendDesktop": request.send_desktop,
-            "suppressDeviceIDs": suppressed,
-        }),
-    );
+    let mut body = json!({
+        "sessionID": request.session_id,
+        "title": request.title,
+        "body": request.body.unwrap_or_else(|| request.kind.default_body()),
+        "kind": request.kind.wire(),
+        "requiresNotifyWhenDone": request.requires_notify_when_done,
+        "sendDesktop": request.send_desktop,
+        "suppressDeviceIDs": suppressed,
+    });
+    if let (Some(run), Some(fields)) = (request.run, body.as_object_mut()) {
+        // Additive: an app that predates Scheduled Tasks ignores both.
+        fields.insert("scheduleID".into(), run.schedule_id.into());
+        if let Some(notify) = run.notify_when_done {
+            fields.insert("runNotifyWhenDone".into(), notify.into());
+        }
+    }
+    let response = adapters.call("notification.deliver", body);
     match response {
         Ok(response) if response.status == 200 => DeliveryOutcome {
             mac_observed: response
@@ -109,8 +128,9 @@ mod tests {
     use super::*;
     use crate::platform_adapter::{PlatformAdapterRegistration, PLATFORM_ADAPTER_VERSION};
 
-    #[test]
-    fn delivery_is_bounded_sorted_and_returns_mac_observation() {
+    /// Deliver `request` to a one-shot adapter that answers
+    /// `macObserved: true`; returns the outcome and the callback envelope.
+    fn capture(request: NotificationRequest<'_>) -> (DeliveryOutcome, serde_json::Value) {
         let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
         let port = listener.local_addr().unwrap().port();
         let captured = Arc::new(Mutex::new(Vec::new()));
@@ -163,28 +183,86 @@ mod tests {
         )
         .unwrap();
 
-        let outcome = deliver(
-            &hub,
-            NotificationRequest {
-                session_id: "session-1",
-                title: "Research",
-                kind: NotificationKind::Done,
-                body: None,
-                requires_notify_when_done: true,
-                send_desktop: true,
-                suppress_device_ids: HashSet::from(["z-phone".into(), "a-phone".into()]),
-            },
-        );
+        let outcome = deliver(&hub, request);
         server.join().unwrap();
+        let envelope = serde_json::from_slice(&captured.lock().unwrap()).unwrap();
+        (outcome, envelope)
+    }
+
+    fn session_request(kind: NotificationKind) -> NotificationRequest<'static> {
+        NotificationRequest {
+            session_id: "session-1",
+            title: "Research",
+            kind,
+            body: None,
+            requires_notify_when_done: kind == NotificationKind::Done,
+            send_desktop: true,
+            suppress_device_ids: HashSet::new(),
+            run: None,
+        }
+    }
+
+    #[test]
+    fn delivery_is_bounded_sorted_and_returns_mac_observation() {
+        let (outcome, envelope) = capture(NotificationRequest {
+            suppress_device_ids: HashSet::from(["z-phone".into(), "a-phone".into()]),
+            ..session_request(NotificationKind::Done)
+        });
         assert!(outcome.mac_observed);
-        let envelope: serde_json::Value =
-            serde_json::from_slice(&captured.lock().unwrap()).unwrap();
         assert_eq!(envelope["operation"], "notification.deliver");
         assert_eq!(envelope["request"]["body"], "Finished");
         assert_eq!(
             envelope["request"]["suppressDeviceIDs"],
             json!(["a-phone", "z-phone"])
         );
+    }
+
+    #[test]
+    fn an_ordinary_session_says_nothing_about_scheduled_tasks() {
+        let (_, envelope) = capture(session_request(NotificationKind::Done));
+        let request = envelope["request"].as_object().unwrap();
+        assert!(!request.contains_key("scheduleID"), "{request:?}");
+        assert!(!request.contains_key("runNotifyWhenDone"), "{request:?}");
+    }
+
+    #[test]
+    fn a_run_names_its_task_and_carries_the_tasks_notify_when_done() {
+        for notify in [true, false] {
+            let (_, envelope) = capture(NotificationRequest {
+                run: Some(RunContext {
+                    schedule_id: "sch_1",
+                    notify_when_done: Some(notify),
+                }),
+                ..session_request(NotificationKind::Done)
+            });
+            assert_eq!(envelope["request"]["scheduleID"], "sch_1");
+            assert_eq!(envelope["request"]["runNotifyWhenDone"], notify);
+            assert_eq!(envelope["request"]["requiresNotifyWhenDone"], true);
+        }
+    }
+
+    #[test]
+    fn a_run_without_a_session_sends_an_empty_session_id() {
+        let (_, envelope) = capture(NotificationRequest {
+            session_id: "",
+            title: "Morning report",
+            kind: NotificationKind::Alert,
+            body: Some("Failed: the preset ok no longer exists"),
+            requires_notify_when_done: false,
+            send_desktop: true,
+            suppress_device_ids: HashSet::new(),
+            run: Some(RunContext {
+                schedule_id: "sch_1",
+                notify_when_done: None,
+            }),
+        });
+        let request = envelope["request"].as_object().unwrap();
+        assert_eq!(request["sessionID"], "");
+        assert_eq!(request["scheduleID"], "sch_1");
+        assert_eq!(request["kind"], "alert");
+        assert_eq!(request["body"], "Failed: the preset ok no longer exists");
+        // Only a finished Run's eligibility is the task's to decide.
+        assert!(!request.contains_key("runNotifyWhenDone"), "{request:?}");
     }
 
     #[test]
@@ -199,6 +277,7 @@ mod tests {
                 requires_notify_when_done: false,
                 send_desktop: true,
                 suppress_device_ids: HashSet::new(),
+                run: None,
             },
         );
         assert_eq!(outcome, DeliveryOutcome::default());
