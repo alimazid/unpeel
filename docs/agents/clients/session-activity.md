@@ -248,7 +248,8 @@ the same Session's other row never mounts a second editor or dismiss monitor.
 
 Fork-only: **the Super Agent** (the Router; MCP side and Host verbs in
 `docs/agents/sessions-mcp.md`). The session menu (PROJECTS and AGENTS rows)
-offers Make Super Agent on a running Claude Code Session, Stop Being Super
+offers Make Super Agent on a running Session whose runtime declares the
+`super_agent` capability (Claude Code today), Stop Being Super
 Agent on the Super Agent (stopped or not), and Hand to Super Agent on any
 other running agent Session while a Super Agent exists and the Session is not
 already its Worker (`SuperAgentMenu`, the Host's rules; each item also needs

@@ -301,6 +301,9 @@ pub enum RuntimeCapability {
     /// (`OSC 0/2`) the Host may adopt as the live session label. Static
     /// branding/cwd titles do not qualify; leave this capability off.
     SemanticTerminalTitle,
+    /// Fork-only: a Session running this runtime may be made the workspace's
+    /// Super Agent (the Router). The Host and the Mac menu read only this.
+    SuperAgent,
 }
 
 impl RuntimeCapability {
@@ -315,6 +318,7 @@ impl RuntimeCapability {
             Self::Transcript => "transcript",
             Self::NotifyWhenDone => "notify_when_done",
             Self::SemanticTerminalTitle => "semantic_terminal_title",
+            Self::SuperAgent => "super_agent", // Fork-only
         }
     }
 
@@ -322,6 +326,8 @@ impl RuntimeCapability {
         match self {
             // Purely declarative: the Host's title scanner is provider-neutral.
             Self::Transcript | Self::SemanticTerminalTitle => false,
+            Self::SuperAgent => false, // Fork-only: the supervisor is provider-neutral
+
             Self::LifecycleHooks
             | Self::Resume
             | Self::RestartAgent

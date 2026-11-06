@@ -10,11 +10,8 @@
 
 use std::path::Path;
 
-use crate::runtime_catalog::RuntimeDescriptor;
+use crate::runtime_catalog::{RuntimeCapability, RuntimeDescriptor};
 use crate::session_inbox::{ItemKind, NewItem, Priority, Sender, Store};
-
-/// The catalog id of the one runtime that may be the Router.
-pub const CLAUDE_CODE_RUNTIME_ID: &str = "com.anthropic.claude-code";
 
 /// What a verb needs to know about one Session, read from its manifest by
 /// the real-home wrappers.
@@ -29,11 +26,15 @@ pub struct SessionFacts {
 }
 
 impl SessionFacts {
-    /// Claude Code by observation, or — when nothing is observed — by the
-    /// catalog match on the launch command. The same rule the Mac menu uses.
-    pub fn is_claude_code(&self) -> bool {
-        self.runtime()
-            .is_some_and(|runtime| runtime.id == CLAUDE_CODE_RUNTIME_ID)
+    /// Its runtime declares the `super_agent` capability in its package, by
+    /// observation or — when nothing is observed — by the catalog match on
+    /// the launch command. The same rule the Mac menu uses.
+    pub fn can_be_super_agent(&self) -> bool {
+        self.runtime().is_some_and(|runtime| {
+            runtime
+                .capabilities
+                .contains(&RuntimeCapability::SuperAgent)
+        })
     }
 
     /// Any catalog agent runtime, by the same observed-first rule.
@@ -58,7 +59,7 @@ pub enum VerbError {
     InvalidId,
     UnknownSession,
     NotRunning,
-    NotClaudeCode,
+    CannotBeSuperAgent,
     NotAnAgent,
     NoRouter,
     IsTheRouter,
@@ -78,7 +79,7 @@ impl VerbError {
             | VerbError::NoRouter
             | VerbError::IsTheRouter
             | VerbError::WorkerLimit(_) => 409,
-            VerbError::NotClaudeCode | VerbError::NotAnAgent => 422,
+            VerbError::CannotBeSuperAgent | VerbError::NotAnAgent => 422,
             VerbError::Failed(_) => 500,
         }
     }
@@ -90,7 +91,7 @@ impl std::fmt::Display for VerbError {
             VerbError::InvalidId => "invalid session id",
             VerbError::UnknownSession => "unknown session",
             VerbError::NotRunning => "the session is not running",
-            VerbError::NotClaudeCode => "only a Claude Code session can be the Super Agent",
+            VerbError::CannotBeSuperAgent => "this session's agent cannot be the Super Agent",
             VerbError::NotAnAgent => "only an agent session can be handed to the Super Agent",
             VerbError::NoRouter => "this workspace has no Super Agent",
             VerbError::IsTheRouter => "this session is the Super Agent",
@@ -223,7 +224,8 @@ fn announce(outcome: &Result<VerbOutcome, VerbError>) {
     }
 }
 
-/// `session.super_agent.set`: make a running Claude Code Session the Router.
+/// `session.super_agent.set`: make a running Session whose runtime declares
+/// `super_agent` (Claude Code today) the Router.
 /// A previous Router's Workers move with the mark, and the new Router is
 /// told what it took over. Idempotent for the current Router.
 pub(crate) fn set_at(ctx: &Ctx, session_id: &str) -> Result<VerbOutcome, VerbError> {
@@ -231,8 +233,8 @@ pub(crate) fn set_at(ctx: &Ctx, session_id: &str) -> Result<VerbOutcome, VerbErr
     if !facts.running {
         return Err(VerbError::NotRunning);
     }
-    if !facts.is_claude_code() {
-        return Err(VerbError::NotClaudeCode);
+    if !facts.can_be_super_agent() {
+        return Err(VerbError::CannotBeSuperAgent);
     }
     if current_router(ctx)?.as_deref() == Some(session_id) {
         return Ok(VerbOutcome::default());

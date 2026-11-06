@@ -19,7 +19,7 @@ pub use config::{config_from_state, load_config, SupervisorConfig};
 mod controller;
 pub use controller::{
     clear_super_agent, hand_over_to_super_agent, set_super_agent, with_summary_fields,
-    SessionFacts, VerbError, VerbOutcome, CLAUDE_CODE_RUNTIME_ID,
+    SessionFacts, VerbError, VerbOutcome,
 };
 
 /// App-state key holding the Router mark.

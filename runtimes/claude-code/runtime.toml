@@ -7,7 +7,7 @@ adapter = "builtin:claude"
 legacy_order = 0
 platforms = ["macos", "linux"]
 supports_quick_launch = true
-capabilities = ["lifecycle_hooks", "resume", "restart_agent", "mcp_sessions", "mcp_browser", "mcp_computer", "transcript", "notify_when_done", "semantic_terminal_title"]
+capabilities = ["lifecycle_hooks", "resume", "restart_agent", "mcp_sessions", "mcp_browser", "mcp_computer", "transcript", "notify_when_done", "semantic_terminal_title", "super_agent"]
 
 [display]
 tint = "#D97757"
