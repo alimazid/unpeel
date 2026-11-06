@@ -87,6 +87,16 @@ Advertised ownership (old mixed `sessions` spellings remain decode-only):
   `inbox` and `stop` (Super Agent, below). This domain reports
   terminal/container state only; `inspect` no
   longer smuggles in provider transcript or agent identity.
+  - Suggested input: `read_screen` and `inspect`'s screen tail bracket text
+    the program drew faint (SGR 2) from the cursor onward on the cursor's row
+    as `⟪suggested: …⟫`, with a `suggested_input="…"` header line saying
+    nobody typed it. That is how an input box shows a proposed reply or a
+    placeholder (Claude Code's prompt suggestion); typed input is drawn in
+    the normal pen. Plain text would show the two identically. The Host
+    finds the span while rendering the snapshot
+    (`TerminalViewportSnapshot::suggested_input`, a byte range into one row;
+    style runs carry `faint`), and `screen_read.rs` renders it.
+    `wait_for_text` matches the unmarked rows.
 - `agents`: `list`, `get`, `read_transcript`, `wait`. Every action targets one
   explicit recognized occurrence; the unreleased group-wide wait and summary
   actions were removed. `list` returns an occurrence-bound `agent_ref`

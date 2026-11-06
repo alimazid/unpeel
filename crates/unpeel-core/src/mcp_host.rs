@@ -10,6 +10,7 @@
 //! (`~/.unpeel/app-sessions/<id>/session.sock`); no running desktop app is
 //! required beyond the hosts themselves.
 
+use crate::screen_read;
 use crate::session_host::{self, HostedSessionManifest, HostedSessionState, SessionHostCommand};
 use crate::session_input::sanitize_paste_text;
 #[cfg(test)]
@@ -2084,7 +2085,8 @@ pub(crate) fn legacy_sessions_tool_definitions() -> Vec<Value> {
             "name": "inspect_session",
             "description": "Compact first look at one session: metadata, current screen tail, \
         tiny Claude/Codex transcript tail when available, and the next recommended tool. \
-        Prefer this over read_screen/read_transcript when you are orienting and want low context.",
+        Prefer this over read_screen/read_transcript when you are orienting and want low context. \
+        Suggested input is marked as in read_screen.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -2099,7 +2101,11 @@ pub(crate) fn legacy_sessions_tool_definitions() -> Vec<Value> {
             "description": "Read the current rendered terminal screen of a session \
         (what a human looking at it sees, including TUI dialogs and permission prompts). \
         Use after inspect_session when you need more current UI detail; pass a small rows \
-        value for minimal context. Use scroll_offset_rows to look back into scrollback.",
+        value for minimal context. Use scroll_offset_rows to look back into scrollback. \
+        Text the program drew dimmed at the cursor (a proposed reply or placeholder in an \
+        input box, e.g. Claude Code's prompt suggestion) is shown as ⟪suggested: …⟫ with a \
+        suggested_input header line: nobody typed it, so never report it as the user's reply \
+        or press Enter on it.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -2937,7 +2943,10 @@ fn tool_inspect_session(args: &Value) -> Result<String, String> {
             vec!["unavailable: older host cannot serve screen snapshots".to_string()]
         }
         Ok(snapshot) => {
-            let text = snapshot_screen_text(&snapshot);
+            if let Some(note) = screen_read::suggested_input_note(&snapshot) {
+                out.push(note);
+            }
+            let text = screen_read::screen_text(&snapshot);
             compact_tail_lines(&text, INSPECT_SCREEN_ROWS as usize)
         }
         Err(error) => vec![format!("unavailable: {}", compact_one_line(&error, 180))],
@@ -2977,15 +2986,19 @@ serve screen snapshots. Use read_output for this session, or restart it from Unp
         ));
     }
 
-    let body = snapshot_screen_text(&snapshot);
+    let body = screen_read::screen_text(&snapshot);
+    let note = screen_read::suggested_input_note(&snapshot)
+        .map(|note| format!("{note}\n"))
+        .unwrap_or_default();
     Ok(format!(
-        "screen {}x{} cursor=({},{}) scrollback_rows={} scroll_offset={}\n{}\n{}",
+        "screen {}x{} cursor=({},{}) scrollback_rows={} scroll_offset={}\n{}{}\n{}",
         snapshot.cols,
         snapshot.rows,
         snapshot.cursor_row,
         snapshot.cursor_col,
         snapshot.scrollback_rows,
         snapshot.scroll_offset_rows,
+        note,
         "-".repeat(40),
         body.trim_end(),
     ))
@@ -3175,8 +3188,9 @@ fn compact_tail_lines(text: &str, max_lines: usize) -> Vec<String> {
     lines[start..].to_vec()
 }
 
-/// Render a viewport snapshot to the plain-text screen form shared by
-/// read_screen and wait_for_text (right-trimmed rows, newline-joined).
+/// Render a viewport snapshot to plain screen text (right-trimmed rows,
+/// newline-joined) for wait_for_text; the reads use `screen_read`, which
+/// also marks suggested input.
 fn snapshot_screen_text(snapshot: &crate::terminal_viewport::TerminalViewportSnapshot) -> String {
     let mut body = String::new();
     for row in &snapshot.viewport_rows {
