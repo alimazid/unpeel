@@ -88,25 +88,64 @@ pub fn deliver(
     mode: InitialTextSubmitMode,
     when: InitialTextWhen,
 ) -> InitialTextOutcome {
-    if text.len() > MAX_INITIAL_TEXT_BYTES {
-        return InitialTextOutcome::DeliveryFailed("initial text too large".into());
-    }
     if text.is_empty() {
         return InitialTextOutcome::Delivered { signal: None };
     }
+    deliver_with(session_id, when, text.len(), || {
+        crate::session_ops::deliver_initial_text(session_id, text, mode)
+    })
+}
+
+/// Type `prompt` into a freshly launched agent once it is ready, the way
+/// Unpeel types every prompt into an agent (`session_input::deliver_prompt`:
+/// one bracketed paste, a settle, then Enter), so several lines arrive as
+/// one submission. Same budget and `initial-text.json` record as
+/// [`deliver`] with [`InitialTextWhen::AgentReady`]; also returns the
+/// wall-clock ms typing began, the moment the agent's turn can start.
+pub fn prompt_when_ready(session_id: &str, prompt: &str) -> (InitialTextOutcome, Option<u64>) {
+    let mut typed_at = None;
+    let outcome = deliver_with(
+        session_id,
+        InitialTextWhen::AgentReady,
+        prompt.len(),
+        || {
+            typed_at = Some(crate::state::current_timestamp_ms());
+            crate::session_input::deliver_prompt(session_id, prompt)
+        },
+    );
+    let typed_at = typed_at.filter(|_| outcome.typed());
+    (outcome, typed_at)
+}
+
+/// Wait for a freshly launched agent's first readiness signal within the
+/// same budget, typing nothing and recording nothing.
+pub fn wait_for_agent(session_id: &str) -> ReadinessWait {
+    crate::agent_readiness::wait_for_agent_ready(session_id, Instant::now() + agent_ready_timeout())
+}
+
+/// The cap, the one readiness budget, the wait `when` asks for, `type_text`,
+/// and the recorded outcome.
+fn deliver_with(
+    session_id: &str,
+    when: InitialTextWhen,
+    len: usize,
+    type_text: impl FnOnce() -> Result<(), String>,
+) -> InitialTextOutcome {
+    if len > MAX_INITIAL_TEXT_BYTES {
+        return InitialTextOutcome::DeliveryFailed("initial text too large".into());
+    }
     // One readiness budget from launch, covering the socket wait too.
     let ready_deadline = Instant::now() + agent_ready_timeout();
-    let outcome = attach_then_type(session_id, text, mode, when, ready_deadline);
+    let outcome = attach_then_type(session_id, when, ready_deadline, type_text);
     record(session_id, when, Some(&outcome));
     outcome
 }
 
 fn attach_then_type(
     session_id: &str,
-    text: &str,
-    mode: InitialTextSubmitMode,
     when: InitialTextWhen,
     ready_deadline: Instant,
+    type_text: impl FnOnce() -> Result<(), String>,
 ) -> InitialTextOutcome {
     if let Err(error) = crate::session_host::wait_until_ready(session_id, HOST_ATTACH_TIMEOUT) {
         return InitialTextOutcome::HostNotReady(error);
@@ -122,7 +161,7 @@ fn attach_then_type(
             }
         }
     };
-    match crate::session_ops::deliver_initial_text(session_id, text, mode) {
+    match type_text() {
         Ok(()) => InitialTextOutcome::Delivered { signal },
         Err(error) => InitialTextOutcome::DeliveryFailed(error),
     }

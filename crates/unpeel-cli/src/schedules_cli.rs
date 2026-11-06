@@ -16,9 +16,9 @@ use unpeel_serve::schedules::trigger::{self, Trigger};
 pub const HELP: &str = "\
 usage: unpeel schedules [list] [--json]
        unpeel schedules add <name> --project <id|name> --preset <id|label>
-                            <trigger> [--no-notify] [--json]
+                            <trigger> [--instructions <text>] [--no-notify] [--json]
        unpeel schedules edit <id|name> [--name <name>] [--project <id|name>]
-                             [--preset <id|label>] [<trigger>]
+                             [--preset <id|label>] [<trigger>] [--instructions <text>]
                              [--notify | --no-notify] [--json]
        unpeel schedules pause|resume <id|name>
        unpeel schedules run <id|name> [--json]
@@ -43,7 +43,13 @@ was down runs once when it is back. `pause` stops a task firing; `resume`
 restarts its clock from now, so times that passed while it was paused never
 run (a new Trigger counts from the edit the same way). `run` starts a Run
 now. Only the user changes tasks: add, edit, pause, resume, run and rm
-refuse inside a Session.";
+refuse inside a Session.
+
+--instructions is for an Agent Preset (one that starts an agent Unpeel can
+tell is ready): each Run launches it as typed, types the instructions once
+the agent is ready, and follows it to done or needs you. Up to 256 KiB.
+`edit --instructions ''` removes them. An Agent Preset task without
+instructions is done once its agent is ready.";
 
 /// Most characters a task name keeps.
 const MAX_NAME_CHARS: usize = 200;
@@ -55,7 +61,15 @@ struct Args {
 }
 
 const VALUE_FLAGS: &[&str] = &[
-    "project", "preset", "name", "hourly", "daily", "weekdays", "once", "cron",
+    "project",
+    "preset",
+    "name",
+    "hourly",
+    "daily",
+    "weekdays",
+    "once",
+    "cron",
+    "instructions",
 ];
 /// `--weekly <day> <time>`, kept as one `"<day> <time>"` value.
 const WEEKLY: &str = "weekly";
@@ -172,7 +186,7 @@ fn list(json: bool) -> Result<(), String> {
 fn schedule_json(schedule: &Schedule) -> Value {
     let store = TaskStore::for_schedule(&schedule.id).ok();
     let clock_state = store.as_ref().and_then(|store| store.clock().ok());
-    let latest = store.as_ref().and_then(TaskStore::latest_run);
+    let latest = store.as_ref().and_then(TaskStore::current_run);
     let next = trigger::next_run(
         schedule,
         &clock_state.unwrap_or_default(),
@@ -184,6 +198,7 @@ fn schedule_json(schedule: &Schedule) -> Value {
         "name": schedule.name,
         "project_id": schedule.project_id,
         "preset_id": schedule.preset_id,
+        "instructions": schedule.instructions,
         "trigger": schedule.trigger,
         "enabled": schedule.enabled,
         "notify_when_done": schedule.notify_when_done,
@@ -220,6 +235,9 @@ fn run_line(run: &ScheduleRun) -> String {
         run.status.word(),
         run.scheduled_for.as_deref().unwrap_or("run now")
     );
+    if let Some(phase) = run.phase.filter(|_| run.status.is_in_progress()) {
+        line.push_str(&format!("  ({})", phase.word()));
+    }
     if run.late {
         line.push_str("  late");
     }
@@ -237,6 +255,9 @@ fn run_line(run: &ScheduleRun) -> String {
     }
     if let Some(reason) = &run.reason {
         line.push_str(&format!("  ({reason})"));
+    }
+    if let Some(snippet) = &run.snippet {
+        line.push_str(&format!("\n    {snippet}"));
     }
     line
 }
@@ -257,9 +278,10 @@ fn add(args: &Args, json: bool) -> Result<(), String> {
     })?;
     let notify = notify_flag(args)?.unwrap_or(true);
     let project_id = resolve_project(required(args, "project")?)?;
-    let preset_id = resolve_preset(required(args, "preset")?, &project_id)?;
+    let (preset_id, preset_command) = resolve_preset(required(args, "preset")?, &project_id)?;
+    let instructions = add_instructions(args, &preset_id, &preset_command)?;
     let id = format!("sch_{}", uuid::Uuid::new_v4());
-    let entry = json!({
+    let mut entry = json!({
         "id": id,
         "name": name,
         "project_id": project_id,
@@ -269,6 +291,9 @@ fn add(args: &Args, json: bool) -> Result<(), String> {
         "notify_when_done": notify,
         "created_at_ms": clock::epoch_ms(&clock::now()),
     });
+    if let Some(instructions) = instructions {
+        entry["instructions"] = Value::String(instructions);
+    }
     unpeel_core::app_state::edit(|state| {
         schedules_mut(state)?.push(entry.clone());
         Ok(())
@@ -313,6 +338,33 @@ fn notify_flag(args: &Args) -> Result<Option<bool>, String> {
         (true, true) => Err("give --notify or --no-notify, not both".into()),
         (on, off) => Ok((on || off).then_some(on)),
     }
+}
+
+/// `--instructions`: only an Agent Preset takes them (ADR 0005), and no more
+/// than a create may type.
+fn add_instructions(args: &Args, preset_id: &str, command: &str) -> Result<Option<String>, String> {
+    let Some(text) = args.values.get("instructions") else {
+        return Ok(None);
+    };
+    if text.trim().is_empty() {
+        return Err("--instructions cannot be empty".into());
+    }
+    checked_instructions(text, preset_id, command).map(Some)
+}
+
+/// The rules every writer of instructions applies: an Agent Preset, at most
+/// 256 KiB.
+fn checked_instructions(text: &str, preset_id: &str, command: &str) -> Result<String, String> {
+    if text.len() > unpeel_core::initial_text::MAX_INITIAL_TEXT_BYTES {
+        return Err("--instructions are longer than 256 KiB".into());
+    }
+    if !unpeel_core::agent_readiness::is_agent_command(command) {
+        return Err(format!(
+            "the preset {preset_id} is not an Agent Preset: its command ({command}) does not \
+             start an agent Unpeel can tell is ready, so it cannot take --instructions"
+        ));
+    }
+    Ok(text.to_string())
 }
 
 /// The Trigger the flags give, in its stored form, after the save-time
@@ -413,10 +465,10 @@ fn resolve_project(selector: &str) -> Result<String, String> {
 }
 
 /// An enabled preset by id, then by unique label: the Project's own and the
-/// global ones, the catalog a Run resolves against.
-fn resolve_preset(selector: &str, project_id: &str) -> Result<String, String> {
+/// global ones, the catalog a Run resolves against. Its id and command.
+fn resolve_preset(selector: &str, project_id: &str) -> Result<(String, String), String> {
     let state = unpeel_serve::sessions::load_app_state();
-    let mut presets: Vec<(String, String)> = state
+    let mut stored: Vec<_> = state
         .iter()
         .flat_map(|state| &state.presets)
         .filter(|preset| {
@@ -426,23 +478,40 @@ fn resolve_preset(selector: &str, project_id: &str) -> Result<String, String> {
                     .as_deref()
                     .is_none_or(|id| id == project_id)
         })
-        .map(|preset| (preset.id.clone(), preset.label.clone()))
+        .collect();
+    // The Project's own preset comes first, as when a Run resolves it.
+    stored.sort_by_key(|preset| preset.project_id.is_none());
+    // (id, label, command)
+    let mut presets: Vec<(String, String, String)> = stored
+        .into_iter()
+        .map(|preset| {
+            (
+                preset.id.clone(),
+                preset.label.clone(),
+                preset.command.clone(),
+            )
+        })
         .collect();
     if let Some(overlay) = unpeel_serve::overlay::load() {
         presets.extend(
-            overlay
-                .presets
-                .iter()
-                .map(|(label, _)| (format!("overlay-{label}"), label.clone())),
+            overlay.presets.iter().map(|(label, command)| {
+                (format!("overlay-{label}"), label.clone(), command.clone())
+            }),
         );
     }
-    pick(
+    let id = pick(
         "preset",
         selector,
         presets
             .iter()
-            .map(|(id, label)| (id.as_str(), label.as_str())),
-    )
+            .map(|(id, label, _)| (id.as_str(), label.as_str())),
+    )?;
+    let command = presets
+        .iter()
+        .find(|(candidate, _, _)| *candidate == id)
+        .map(|(_, _, command)| command.clone())
+        .unwrap_or_default();
+    Ok((id, command))
 }
 
 /// The id `selector` names: an exact id first, then a unique name.
@@ -487,7 +556,7 @@ fn edit(args: &Args, json: bool) -> Result<(), String> {
         .map(|selector| resolve_project(selector))
         .transpose()?;
     let in_project = project_id.as_deref().unwrap_or(&schedule.project_id);
-    let preset_id = match args.values.get("preset") {
+    let preset = match args.values.get("preset") {
         Some(selector) => Some(resolve_preset(selector, in_project)?),
         None => {
             if project_id.is_some() && resolve_preset(&schedule.preset_id, in_project).is_err() {
@@ -499,6 +568,7 @@ fn edit(args: &Args, json: bool) -> Result<(), String> {
             None
         }
     };
+    let instructions = edit_instructions(args, &schedule, preset.as_ref(), in_project)?;
     let change = ScheduleEdit {
         name: args
             .values
@@ -506,14 +576,16 @@ fn edit(args: &Args, json: bool) -> Result<(), String> {
             .map(|name| task_name(name))
             .transpose()?,
         project_id,
-        preset_id,
+        preset_id: preset.map(|(id, _)| id),
         trigger: trigger_flags(args)?,
         enabled: None,
         notify_when_done: notify_flag(args)?,
+        instructions,
     };
     if change == ScheduleEdit::default() {
         return Err(format!(
-            "nothing to change: give --name, --project, --preset, a Trigger, --notify or --no-notify\n\n{HELP}"
+            "nothing to change: give --name, --project, --preset, a Trigger, --instructions, \
+             --notify or --no-notify\n\n{HELP}"
         ));
     }
     let edited = save_edit(&schedule.id, &change)?;
@@ -530,6 +602,37 @@ fn edit(args: &Args, json: bool) -> Result<(), String> {
         );
     }
     Ok(())
+}
+
+/// `edit --instructions`: new text is checked against the preset the task
+/// will have (add's rules), an empty value removes them, and a new preset
+/// that cannot take the instructions the task keeps is refused.
+fn edit_instructions(
+    args: &Args,
+    schedule: &Schedule,
+    new_preset: Option<&(String, String)>,
+    in_project: &str,
+) -> Result<Option<Option<String>>, String> {
+    let given = args.values.get("instructions");
+    if given.is_some_and(|text| text.trim().is_empty()) {
+        return Ok(Some(None));
+    }
+    let kept = schedule
+        .instructions
+        .as_deref()
+        .filter(|text| !text.trim().is_empty() && new_preset.is_some());
+    let Some(text) = given.map(String::as_str).or(kept) else {
+        return Ok(None);
+    };
+    let (preset_id, command) = match new_preset {
+        Some(preset) => preset.clone(),
+        None => resolve_preset(&schedule.preset_id, in_project)?,
+    };
+    checked_instructions(text, &preset_id, &command).map_err(|error| match given {
+        Some(_) => error,
+        None => format!("{error}; the task has instructions: remove them with --instructions ''"),
+    })?;
+    Ok(given.map(|text| Some(text.clone())))
 }
 
 fn pause(args: &Args) -> Result<(), String> {

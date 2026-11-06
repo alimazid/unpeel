@@ -48,6 +48,7 @@ fn task(trigger: ScheduleTrigger, created: u64) -> TaskState {
             name: "Night".into(),
             project_id: "p".into(),
             preset_id: "ok".into(),
+            instructions: None,
             trigger,
             enabled: true,
             notify_when_done: true,
@@ -65,6 +66,8 @@ fn task(trigger: ScheduleTrigger, created: u64) -> TaskState {
             cwd: "/tmp".into(),
             worktree_path: None,
             worktree_branch: None,
+            agent: false,
+            instructions: None,
         }),
     }
 }

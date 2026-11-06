@@ -1096,10 +1096,10 @@ impl HostRuntime {
         }
     }
 
-    /// Once per rescan: remove stopped Sessions past their group's keep limit.
     /// Step the Scheduled Tasks against the wall clock. Definitions are
     /// re-read from `app-state.json` every sweep, so an edit takes effect on
-    /// the next one; a file that will not read changes nothing.
+    /// the next one; a file that will not read changes nothing. A Run that
+    /// starts stops its task's earlier idle Run Sessions (`run_sessions.rs`).
     fn sweep_schedules(&mut self, emitted: &mut Vec<ServeEvent>) {
         let schedules = match unpeel_core::schedule_store::load_schedules() {
             Ok(schedules) => schedules,
@@ -1113,10 +1113,16 @@ impl HostRuntime {
             return;
         }
         let (projects, presets) = crate::mobile::create_catalog(&self.snapshot).unwrap_or_default();
+        let activity = self.run_activity();
         let now = crate::schedules::clock::now();
-        let events =
-            self.schedules
-                .sweep(&schedules, &projects, &presets, Some(self.hook_port), &now);
+        let events = self.schedules.sweep(
+            &schedules,
+            &projects,
+            &presets,
+            &activity,
+            Some(self.hook_port),
+            &now,
+        );
         // Run events reach Controllers through the schedules projection;
         // the ping only says "re-read it now" (one per sweep).
         if events
@@ -1134,10 +1140,19 @@ impl HostRuntime {
                     schedule_id,
                     run_id,
                     session_id,
-                } => crate::tracelog::trace(
-                    "host-worker",
-                    &format!("schedule {schedule_id} started Run {run_id} in session {session_id}"),
-                ),
+                } => {
+                    crate::tracelog::trace(
+                        "host-worker",
+                        &format!(
+                            "schedule {schedule_id} started Run {run_id} in session {session_id}"
+                        ),
+                    );
+                    crate::run_sessions::stop_superseded(
+                        &self.model.rows,
+                        &schedule_id,
+                        &session_id,
+                    );
+                }
                 crate::schedules::SweepEvent::Recorded {
                     schedule_id,
                     run_id,
@@ -1153,6 +1168,27 @@ impl HostRuntime {
         }
     }
 
+    /// Agent Runs follow the rows this worker rebuilt in its last rescan,
+    /// which it rebuilds whoever owns notification edges: they never wait
+    /// on rescan's own "finished" rule, which skips screen-tier edges.
+    fn run_activity(&self) -> HashMap<String, crate::schedules::agent_run::AgentActivity> {
+        self.model
+            .rows
+            .iter()
+            .filter(|row| row.running)
+            .map(|row| {
+                let activity = crate::schedules::agent_run::AgentActivity::from_row(
+                    row,
+                    row.completed_at(&self.engine),
+                    self.completion_messages.last_reply(&row.id),
+                );
+                (row.id.clone(), activity)
+            })
+            .collect()
+    }
+
+    /// Once per rescan: remove stopped Sessions past their group's keep
+    /// limit, and Run Sessions past their task's (`run_sessions.rs`).
     fn sweep_retention(&mut self, emitted: &mut Vec<ServeEvent>) {
         for event in self.retention.step(&self.model.expired, now_ms()) {
             match event {

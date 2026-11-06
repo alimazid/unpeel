@@ -389,6 +389,7 @@ mod tests {
             name: "Night".into(),
             project_id: "p".into(),
             preset_id: "ok".into(),
+            instructions: None,
             trigger: ScheduleTrigger::Daily {
                 time: "02:30".into(),
             },

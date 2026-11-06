@@ -38,6 +38,12 @@ pub struct Schedule {
     pub project_id: String,
     #[serde(default)]
     pub preset_id: String,
+    /// What a Run types into the agent once it is ready (ADR 0005). Only a
+    /// task on an Agent Preset has them, at most
+    /// `initial_text::MAX_INITIAL_TEXT_BYTES`; a task without them runs its
+    /// preset like a script, finished by its command's exit.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub instructions: Option<String>,
     #[serde(default, deserialize_with = "deserialize_trigger")]
     pub trigger: ScheduleTrigger,
     #[serde(default = "default_true")]
@@ -117,6 +123,9 @@ pub struct ScheduleEdit {
     pub trigger: Option<ScheduleTrigger>,
     pub enabled: Option<bool>,
     pub notify_when_done: Option<bool>,
+    /// `Some(Some(text))` sets the instructions, `Some(None)` removes them.
+    /// The writer checks the task's preset takes them.
+    pub instructions: Option<Option<String>>,
 }
 
 /// `entry`, a task as stored in `app-state.json`, with `edit` applied.
@@ -156,6 +165,15 @@ pub fn apply_edit(
     }
     if let Some(notify) = edit.notify_when_done {
         edited.insert("notify_when_done".into(), Value::Bool(notify));
+    }
+    match &edit.instructions {
+        Some(Some(text)) => {
+            edited.insert("instructions".into(), Value::String(text.clone()));
+        }
+        Some(None) => {
+            edited.remove("instructions");
+        }
+        None => {}
     }
     if restart {
         edited.insert("clock_reset_at_ms".into(), Value::from(now_ms));
@@ -274,6 +292,41 @@ pub struct ScheduleRun {
     pub reason: Option<String>,
     #[serde(default)]
     pub snippet: Option<String>,
+    /// Where an agent Run (a task with instructions) is in its lifecycle;
+    /// `None` for a script Run. Kept on its finished line too, so a
+    /// `needs_you` Run says whether the agent ever started working.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub phase: Option<RunPhase>,
+    /// When an agent Run's instructions were typed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prompted_at_ms: Option<u64>,
+}
+
+/// An agent Run's lifecycle: `launching` (its Session starting),
+/// `waiting_ready` (for the agent's first readiness signal), `prompted`
+/// (instructions typed, no working signal yet), `working`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RunPhase {
+    Launching,
+    WaitingReady,
+    Prompted,
+    Working,
+    /// A phase this build does not know.
+    #[serde(other)]
+    Unknown,
+}
+
+impl RunPhase {
+    pub fn word(self) -> &'static str {
+        match self {
+            Self::Launching => "launching",
+            Self::WaitingReady => "waiting_ready",
+            Self::Prompted => "prompted",
+            Self::Working => "working",
+            Self::Unknown => "unknown",
+        }
+    }
 }
 
 /// Each Run's latest line, in the order the Runs first appeared (oldest
@@ -290,6 +343,31 @@ pub fn fold_runs(lines: impl IntoIterator<Item = ScheduleRun>) -> Vec<ScheduleRu
         }
     }
     runs
+}
+
+/// The Run that speaks for a task (its "latest Run"), from its folded Runs:
+/// the one in progress, if any — an occurrence skipped behind it never
+/// takes its place, so the Host keeps following it, it keeps blocking the
+/// next occurrence and Run now, and Controllers keep showing it — else the
+/// newest outcome (when it ended, or started), the later Run on a tie. A
+/// Run that says nothing of its time counts as new as the Runs before it.
+pub fn current_run(runs: &[ScheduleRun]) -> Option<&ScheduleRun> {
+    if let Some(live) = runs.iter().rev().find(|run| run.status.is_in_progress()) {
+        return Some(live);
+    }
+    let mut newest: Option<(u64, &ScheduleRun)> = None;
+    let mut latest_seen = 0;
+    for run in runs {
+        let at = run
+            .ended_at_ms
+            .or(run.started_at_ms)
+            .unwrap_or(latest_seen);
+        latest_seen = latest_seen.max(at);
+        if newest.is_none_or(|(best, _)| at >= best) {
+            newest = Some((at, run));
+        }
+    }
+    newest.map(|(_, run)| run)
 }
 
 /// A task's `clock.json`: the last occurrence the Host fired (the due rule's
@@ -337,6 +415,7 @@ mod tests {
                 name: "Morning".into(),
                 project_id: "p".into(),
                 preset_id: "ok".into(),
+                instructions: None,
                 trigger: ScheduleTrigger::Daily {
                     time: "09:43".into()
                 },
@@ -405,6 +484,35 @@ mod tests {
         expected.insert("preset_id".into(), "other".into());
         expected.insert("notify_when_done".into(), false.into());
         assert_eq!(edited, expected, "unknown fields pass through");
+    }
+
+    #[test]
+    fn an_edit_sets_or_removes_instructions_and_otherwise_keeps_them() {
+        let set = ScheduleEdit {
+            instructions: Some(Some("brief me".into())),
+            ..ScheduleEdit::default()
+        };
+        let edited = apply_edit(&stored_entry(), &set, 1_000);
+        assert_eq!(edited.get("instructions"), Some(&"brief me".into()));
+        assert_eq!(edited.get("clock_reset_at_ms"), None, "the clock is kept");
+
+        let remove = ScheduleEdit {
+            instructions: Some(None),
+            ..ScheduleEdit::default()
+        };
+        assert_eq!(
+            apply_edit(&edited, &remove, 1_000).get("instructions"),
+            None
+        );
+
+        let rename = ScheduleEdit {
+            name: Some("Evening".into()),
+            ..ScheduleEdit::default()
+        };
+        assert_eq!(
+            apply_edit(&edited, &rename, 1_000).get("instructions"),
+            Some(&"brief me".into())
+        );
     }
 
     #[test]
@@ -524,6 +632,72 @@ mod tests {
         assert!(schedules_from_value(None).is_empty());
     }
 
+    fn run_at(
+        run_id: &str,
+        status: RunStatus,
+        started: Option<u64>,
+        ended: Option<u64>,
+    ) -> ScheduleRun {
+        ScheduleRun {
+            run_id: run_id.into(),
+            scheduled_for: None,
+            started_at_ms: started,
+            ended_at_ms: ended,
+            status,
+            late: false,
+            session_id: None,
+            exit_code: None,
+            reason: None,
+            snippet: None,
+            phase: None,
+            prompted_at_ms: None,
+        }
+    }
+
+    #[test]
+    fn the_run_in_progress_speaks_for_its_task_over_a_skipped_one_behind_it() {
+        let live = run_at("run_live", RunStatus::Running, Some(10), None);
+        let skipped = run_at("run_skipped", RunStatus::Skipped, None, Some(20));
+        let runs = vec![live.clone(), skipped.clone()];
+        assert_eq!(current_run(&runs), Some(&live));
+
+        let waiting = ScheduleRun {
+            status: RunStatus::NeedsYou,
+            ..live.clone()
+        };
+        assert_eq!(
+            current_run(&[waiting.clone(), skipped.clone()]),
+            Some(&waiting)
+        );
+
+        // Once it finishes, the newest outcome is the task's latest Run,
+        // whatever order the log first saw them in.
+        let finished = ScheduleRun {
+            status: RunStatus::Done,
+            ended_at_ms: Some(30),
+            ..live
+        };
+        assert_eq!(
+            current_run(&[finished.clone(), skipped.clone()]),
+            Some(&finished)
+        );
+        let earlier = ScheduleRun {
+            ended_at_ms: Some(15),
+            ..finished
+        };
+        assert_eq!(
+            current_run(&[earlier.clone(), skipped.clone()]),
+            Some(&skipped)
+        );
+        // A line that says nothing of its time reads at its place in the log.
+        let timeless = run_at("run_from_disk", RunStatus::Skipped, None, None);
+        assert_eq!(
+            current_run(&[earlier, timeless.clone()]),
+            Some(&timeless)
+        );
+        assert_eq!(current_run(&[]), None);
+    }
+
     #[test]
     fn a_later_line_supersedes_its_run_in_first_seen_order() {
         let line = |run_id: &str, status: RunStatus| ScheduleRun {
@@ -537,6 +711,8 @@ mod tests {
             exit_code: None,
             reason: None,
             snippet: None,
+            phase: None,
+            prompted_at_ms: None,
         };
         let folded = fold_runs([
             line("run_a", RunStatus::Running),
@@ -552,6 +728,46 @@ mod tests {
             statuses,
             vec![("run_a", RunStatus::Done), ("run_b", RunStatus::Skipped)]
         );
+    }
+
+    #[test]
+    fn a_task_on_an_agent_preset_carries_its_instructions() {
+        let schedules = decode(serde_json::json!([
+            {"id": "sch_agent", "preset_id": "claude", "instructions": "run the briefing"},
+            {"id": "sch_script", "preset_id": "ok"}
+        ]));
+        assert_eq!(
+            schedules[0].instructions.as_deref(),
+            Some("run the briefing")
+        );
+        assert_eq!(schedules[1].instructions, None);
+        let written = serde_json::to_value(&schedules[1]).unwrap();
+        assert!(
+            written.get("instructions").is_none(),
+            "a script task writes no instructions key: {written}"
+        );
+    }
+
+    #[test]
+    fn an_agent_runs_phase_round_trips_and_a_newer_one_keeps_the_line() {
+        let line: ScheduleRun = serde_json::from_value(serde_json::json!({
+            "run_id": "run_a", "status": "running", "phase": "prompted",
+            "prompted_at_ms": 42
+        }))
+        .unwrap();
+        assert_eq!(line.phase, Some(RunPhase::Prompted));
+        assert_eq!(line.prompted_at_ms, Some(42));
+        let script: ScheduleRun =
+            serde_json::from_value(serde_json::json!({"run_id": "run_b", "status": "done"}))
+                .unwrap();
+        assert_eq!((script.phase, script.prompted_at_ms), (None, None));
+        let written = serde_json::to_value(&script).unwrap();
+        assert!(written.get("phase").is_none(), "{written}");
+        let newer: ScheduleRun = serde_json::from_value(
+            serde_json::json!({"run_id": "run_c", "status": "running", "phase": "thinking"}),
+        )
+        .unwrap();
+        assert_eq!(newer.phase, Some(RunPhase::Unknown));
     }
 
     #[test]

@@ -92,14 +92,24 @@ delete. Native convergence, if chosen, is a separate product change.
 
 ```text
 unpeel schedules [list] [--json]
-unpeel schedules add <name> --project <id|name> --preset <id|label> <trigger> [--no-notify]
-unpeel schedules edit <id|name> [--name …] [--project …] [--preset …] [<trigger>] [--notify|--no-notify]
+unpeel schedules add <name> --project <id|name> --preset <id|label> <trigger>
+                     [--instructions <text>] [--no-notify]
+unpeel schedules edit <id|name> [--name …] [--project …] [--preset …] [<trigger>]
+                      [--instructions <text>] [--notify|--no-notify]
 unpeel schedules pause|resume|run|history|rm <id|name>
 
 <trigger>: --hourly <minute> | --daily <HH:MM[:SS]> | --weekdays <HH:MM[:SS]>
          | --weekly <day> <HH:MM[:SS]> | --once <YYYY-MM-DDTHH:MM[:SS]>
          | --cron '<min> <hour> <day> <month> <weekday>'
 ```
+
+`--instructions` is accepted only for an Agent Preset — a preset whose command
+names a catalog runtime declaring a readiness signal (hooks, program status,
+or a `[screen]` idle prompt; `agent_readiness::is_agent_command`) — and capped
+at 256 KiB; any other preset is refused with the reason. `edit` checks new
+instructions against the preset the task will have, removes them with
+`--instructions ''`, and refuses a new preset that cannot take the
+instructions the task keeps.
 
 `add`, `edit`, `pause`, `resume` and `rm` edit the raw `schedules` array
 through `app_state::edit` (unknown entries and fields pass through; an edit

@@ -12,8 +12,9 @@
 //! still in progress is recorded as skipped.
 
 use jiff::Zoned;
-use unpeel_core::schedules::{RunStatus, Schedule, ScheduleClock, ScheduleRun};
+use unpeel_core::schedules::{RunPhase, RunStatus, Schedule, ScheduleClock, ScheduleRun};
 
+use super::agent_run::{self, AgentObservation};
 use super::clock;
 use super::trigger::Trigger;
 
@@ -30,6 +31,12 @@ pub struct LaunchPlan {
     pub cwd: String,
     pub worktree_path: Option<String>,
     pub worktree_branch: Option<String>,
+    /// The preset is an Agent Preset: the Run follows the agent lifecycle
+    /// (`agent_run`) instead of its command's exit.
+    pub agent: bool,
+    /// Typed into the agent once it is ready; `Some` only when `agent`.
+    /// Without them the Run is done once the agent is ready.
+    pub instructions: Option<String>,
 }
 
 /// What the Host sees of a running Run's Session.
@@ -49,6 +56,8 @@ pub enum RunObservation {
     Missing,
     /// The Session could not be started.
     SpawnFailed(String),
+    /// An agent Run's Session is up and its command has not exited.
+    Agent(AgentObservation),
 }
 
 /// One task as the step sees it.
@@ -112,7 +121,13 @@ impl LatestRun {
         self.status.is_some_and(RunStatus::is_in_progress)
     }
 
+    /// A Run in progress stays the latest until its own next line: a Run
+    /// skipped behind it never takes its place (`schedules::current_run`).
     fn update(&mut self, run: &ScheduleRun) {
+        let behind = self.in_progress() && self.id.as_deref() != Some(run.run_id.as_str());
+        if behind && run.status == RunStatus::Skipped {
+            return;
+        }
         self.id = Some(run.run_id.clone());
         self.status = Some(run.status);
     }
@@ -220,8 +235,12 @@ fn step_task(
     actions.extend(runs);
 }
 
-/// The running Run's final line, once its Session says how it ended.
+/// The Run's next line, once its Session says how it ended (a script Run)
+/// or where its agent is (an agent Run, `agent_run`).
 fn finish(run: &ScheduleRun, observation: &RunObservation, now_ms: u64) -> Option<ScheduleRun> {
+    if run.phase.is_some() && run.status.is_in_progress() {
+        return agent_run::advance(run, observation, now_ms);
+    }
     if run.status != RunStatus::Running {
         return None;
     }
@@ -232,22 +251,11 @@ fn finish(run: &ScheduleRun, observation: &RunObservation, now_ms: u64) -> Optio
             Some(*code),
             Some(format!("the command exited with status {code}")),
         ),
-        RunObservation::Ended => (
-            RunStatus::Failed,
-            None,
-            Some("the Session ended before its command reported an exit status".to_string()),
-        ),
-        RunObservation::Missing => (
-            RunStatus::Failed,
-            None,
-            Some("the Run's Session no longer exists".to_string()),
-        ),
-        RunObservation::SpawnFailed(error) => (
-            RunStatus::Failed,
-            None,
-            Some(format!("the Session could not start: {error}")),
-        ),
-        RunObservation::Idle | RunObservation::Launching | RunObservation::Live => return None,
+        RunObservation::Idle
+        | RunObservation::Launching
+        | RunObservation::Live
+        | RunObservation::Agent(_) => return None,
+        lost => (RunStatus::Failed, None, session_lost(lost)),
     };
     Some(ScheduleRun {
         status,
@@ -256,6 +264,22 @@ fn finish(run: &ScheduleRun, observation: &RunObservation, now_ms: u64) -> Optio
         ended_at_ms: Some(now_ms),
         ..run.clone()
     })
+}
+
+/// Why a Run whose Session went away failed; `None` while it is still there.
+pub(super) fn session_lost(observation: &RunObservation) -> Option<String> {
+    match observation {
+        RunObservation::Ended => {
+            Some("the Session ended before its command reported an exit status".to_string())
+        }
+        RunObservation::Missing => Some("the Run's Session no longer exists".to_string()),
+        RunObservation::SpawnFailed(error) => Some(format!("the Session could not start: {error}")),
+        RunObservation::Idle
+        | RunObservation::Launching
+        | RunObservation::Live
+        | RunObservation::Exited(_)
+        | RunObservation::Agent(_) => None,
+    }
 }
 
 /// Start the Run, or record it failed when it cannot start (the Project or
@@ -278,11 +302,16 @@ fn launch(
         exit_code: None,
         reason: None,
         snippet: None,
+        phase: None,
+        prompted_at_ms: None,
     };
     match &task.launch {
         Ok(plan) => Action::Start {
             schedule_id: task.schedule.id.clone(),
-            run,
+            run: ScheduleRun {
+                phase: plan.agent.then_some(RunPhase::Launching),
+                ..run
+            },
             plan: plan.clone(),
         },
         Err(reason) => record(
@@ -314,6 +343,8 @@ fn skipped(
         exit_code: None,
         reason: Some(reason.to_string()),
         snippet: None,
+        phase: None,
+        prompted_at_ms: None,
     }
 }
 
@@ -355,6 +386,8 @@ mod tests {
             cwd: "/tmp".into(),
             worktree_path: None,
             worktree_branch: None,
+            agent: false,
+            instructions: None,
         }
     }
 
@@ -365,6 +398,7 @@ mod tests {
                 name: "Morning".into(),
                 project_id: "p".into(),
                 preset_id: "ok".into(),
+                instructions: None,
                 trigger,
                 enabled: true,
                 notify_when_done: true,
@@ -404,6 +438,8 @@ mod tests {
             exit_code: None,
             reason: None,
             snippet: None,
+            phase: None,
+            prompted_at_ms: None,
         });
         task.observation = observation;
         task
@@ -579,6 +615,24 @@ mod tests {
             Some("2026-11-06T09:00"),
             "a skipped occurrence is spent"
         );
+    }
+
+    /// The live Run stays the task's latest Run behind a skip: it is what
+    /// the clock publishes, and what blocks a Run now in the same step.
+    #[test]
+    fn a_skip_never_replaces_the_run_in_progress() {
+        let mut busy = running(
+            fired_at(daily("09:00"), "2026-11-05T09:00"),
+            RunObservation::Live,
+        );
+        busy.run_now = Some("run_asked".into());
+        let actions = run_step(&[busy], &now(6, 9, 0, 0));
+        assert!(started(&actions).is_empty(), "{actions:?}");
+        let skipped: Vec<_> = recorded(&actions).iter().map(|run| run.status).collect();
+        assert_eq!(skipped, vec![RunStatus::Skipped, RunStatus::Skipped]);
+        let clock = saved(&actions)[0];
+        assert_eq!(clock.last_run_id.as_deref(), Some("run_prev"));
+        assert_eq!(clock.last_run_status, Some(RunStatus::Running));
     }
 
     #[test]

@@ -48,6 +48,15 @@
           "preset_id": "ok",
           "trigger": { "kind": "cron", "expr": "*/15 9-17 * * 1-5" },
           "created_at_ms": 1793100000000
+        },
+        {
+          "id": "sch_overlap",
+          "name": "Nightly report",
+          "project_id": "p",
+          "preset_id": "claude",
+          "instructions": "write the nightly report",
+          "trigger": { "kind": "daily", "time": "22:00" },
+          "created_at_ms": 1793000000000
         }
       ]
     },
@@ -63,6 +72,13 @@
         "last_occurrence": "2026-11-06T15:00",
         "next_occurrence": "2026-11-07T15:00",
         "next_occurrence_ms": 1794081600000
+      },
+      "sch_overlap": {
+        "last_occurrence": "2026-11-06T22:00",
+        "next_occurrence": "2026-11-07T22:00",
+        "next_occurrence_ms": 1794106800000,
+        "last_run_id": "run_overnight",
+        "last_run_status": "needs_you"
       }
     },
     "runs": {
@@ -127,6 +143,34 @@
           "session_id": null,
           "exit_code": null,
           "reason": "preset backup is gone",
+          "snippet": null
+        }
+      ],
+      "sch_overlap": [
+        {
+          "run_id": "run_overnight",
+          "scheduled_for": "2026-11-05T22:00",
+          "started_at_ms": 1793934000000,
+          "ended_at_ms": null,
+          "status": "needs_you",
+          "late": false,
+          "session_id": "9a1c2b3d-4e5f-4a6b-8c7d-0e1f2a3b4c5d",
+          "exit_code": null,
+          "reason": "the agent is waiting for an answer",
+          "snippet": null,
+          "phase": "working",
+          "prompted_at_ms": 1793934004000
+        },
+        {
+          "run_id": "run_behind",
+          "scheduled_for": "2026-11-06T22:00",
+          "started_at_ms": null,
+          "ended_at_ms": 1794020420000,
+          "status": "skipped",
+          "late": false,
+          "session_id": null,
+          "exit_code": null,
+          "reason": "the previous Run was still in progress",
           "snippet": null
         }
       ]
@@ -217,6 +261,29 @@
           "createdAtMs": 1793100000000,
           "nextRun": null,
           "lastRun": null
+        },
+        {
+          "id": "sch_overlap",
+          "name": "Nightly report",
+          "projectID": "p",
+          "presetID": "claude",
+          "trigger": { "kind": "daily", "time": "22:00" },
+          "enabled": true,
+          "notifyWhenDone": true,
+          "createdAtMs": 1793000000000,
+          "nextRun": { "at": "2026-11-07T22:00", "atMs": 1794106800000 },
+          "lastRun": {
+            "runID": "run_overnight",
+            "scheduledFor": "2026-11-05T22:00",
+            "startedAtMs": 1793934000000,
+            "endedAtMs": null,
+            "status": "needs_you",
+            "late": false,
+            "sessionID": "9a1c2b3d-4e5f-4a6b-8c7d-0e1f2a3b4c5d",
+            "exitCode": null,
+            "reason": "the agent is waiting for an answer",
+            "snippet": null
+          }
         }
       ]
     },

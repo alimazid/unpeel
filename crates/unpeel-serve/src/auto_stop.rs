@@ -381,6 +381,7 @@ mod tests {
             activity_at: 1_000,
             group_id: "p".into(),
             detected_local_urls: Vec::new(),
+            spawned_by: None,
         };
         let now = 90_000_000_000;
         let mut sweeper = Sweeper::starting_at(now);
@@ -458,6 +459,7 @@ mod tests {
             activity_at,
             group_id: "p".into(),
             detected_local_urls: Vec::new(),
+            spawned_by: None,
         }
     }
 
@@ -489,6 +491,25 @@ mod tests {
             now,
         );
         assert_eq!(due, Some("unseen".to_string()));
+    }
+
+    /// A Scheduled Task's latest Run Session stays live after its Run, and
+    /// auto-stop still applies to it like any other idle Session.
+    #[test]
+    fn an_idle_latest_run_session_stops_after_the_cutoff() {
+        let now = 90_000_000_000;
+        let started = now - 3 * 60 * 60_000;
+        let mut row = idle_row("latest-run", started);
+        row.spawned_by = Some("schedule:sch_1".into());
+        let mut sweeper = Sweeper::starting_at(started);
+        sweeper.step(std::slice::from_ref(&row), &HashSet::new(), 60, started);
+        let (due, skips) = sweeper.next_due(
+            std::slice::from_ref(&row),
+            &HashSet::new(),
+            60 * 60_000,
+            now,
+        );
+        assert_eq!(due, Some("latest-run".to_string()), "skips: {skips:?}");
     }
 
     /// Unread ATTENTION still blocks, with its own reason: the Session is
