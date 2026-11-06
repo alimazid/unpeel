@@ -42,6 +42,16 @@ public enum RemoteControlProtocol {
     /// Fork-only: `GET /mobile/schedules/runs`, one task's Run history
     /// (`RemoteScheduleRunHistory`).
     public static let scheduleRunsCapability = "schedules.runs"
+    /// Fork-only: the user's Scheduled Task writes, all `POST`:
+    /// `/mobile/schedules` (`RemoteScheduleCreate`), `/mobile/schedules/edit`
+    /// (`RemoteScheduleEdit`, pause and resume included),
+    /// `/mobile/schedules/delete` and `/mobile/schedules/run`
+    /// (`RemoteScheduleTarget`; Run now answers 409 while a Run is in
+    /// progress).
+    public static let schedulesCreateCapability = "schedules.create"
+    public static let schedulesEditCapability = "schedules.edit"
+    public static let schedulesDeleteCapability = "schedules.delete"
+    public static let schedulesRunCapability = "schedules.run"
 }
 
 /// Additive Host-level capability contract carried by bootstrap.
@@ -531,6 +541,10 @@ public struct RemotePresetSummary: Codable, Equatable, Identifiable, Sendable {
     /// The CLI's brand tint (0xRRGGBB), Mac-resolved like the session
     /// spinner color. Nil = older Mac / no brand color.
     public let tintColorHex: Int?
+    /// Fork-only: Scheduled Tasks. The Host's word on whether this is an
+    /// Agent Preset, the only kind that takes a task's instructions. Nil on
+    /// an older Host: read it as not one; never classify the command here.
+    public let agentPreset: Bool?
 
     public init(
         id: String,
@@ -542,8 +556,10 @@ public struct RemotePresetSummary: Codable, Equatable, Identifiable, Sendable {
         isDefault: Bool = false,
         tintColorHex: Int? = nil,
         projectID: String? = nil,
-        pluginID: String? = nil
+        pluginID: String? = nil,
+        agentPreset: Bool? = nil
     ) {
+        self.agentPreset = agentPreset
         self.id = id
         self.pluginID = pluginID
         self.projectID = projectID
