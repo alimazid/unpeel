@@ -21,10 +21,7 @@ pub const RUN_SESSIONS_KEPT_PER_TASK: usize = 5;
 
 /// The task a Run Session belongs to; `None` for every other Session.
 pub fn schedule_id(row: &SessionRow) -> Option<&str> {
-    row.spawned_by
-        .as_deref()
-        .and_then(|spawned_by| spawned_by.strip_prefix(unpeel_core::schedules::SPAWNED_BY_PREFIX))
-        .filter(|id| !id.is_empty())
+    unpeel_core::schedules::run_sessions::schedule_id(row.spawned_by.as_deref())
 }
 
 pub fn is_run_session(row: &SessionRow) -> bool {
