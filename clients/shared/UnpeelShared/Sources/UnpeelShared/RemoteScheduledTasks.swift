@@ -38,6 +38,9 @@ public struct RemoteScheduledTask: Decodable, Equatable, Sendable, Identifiable 
     public let enabled: Bool
     public let notifyWhenDone: Bool
     public let createdAtMs: Int64
+    /// What each Run types into the agent; only an Agent Preset task has
+    /// them.
+    public let instructions: String?
     /// When the Host fires it next; nil while disabled, before the Host has
     /// stepped a new task, or for a Trigger it cannot fire.
     public let nextRun: NextRun?
@@ -64,9 +67,11 @@ public struct RemoteScheduledTask: Decodable, Equatable, Sendable, Identifiable 
         enabled: Bool = true,
         notifyWhenDone: Bool = true,
         createdAtMs: Int64 = 0,
+        instructions: String? = nil,
         nextRun: NextRun? = nil,
         lastRun: RemoteScheduleRun? = nil
     ) {
+        self.instructions = instructions
         self.id = id
         self.name = name
         self.projectID = projectID
@@ -80,7 +85,8 @@ public struct RemoteScheduledTask: Decodable, Equatable, Sendable, Identifiable 
     }
 
     private enum CodingKeys: String, CodingKey {
-        case id, name, projectID, presetID, trigger, enabled, notifyWhenDone, createdAtMs, nextRun, lastRun
+        case id, name, projectID, presetID, trigger, enabled, notifyWhenDone, createdAtMs, instructions
+        case nextRun, lastRun
     }
 
     /// Only the id is required; the rest falls back the way the Host's own
@@ -96,14 +102,16 @@ public struct RemoteScheduledTask: Decodable, Equatable, Sendable, Identifiable 
         enabled = try container.decodeIfPresent(Bool.self, forKey: .enabled) ?? true
         notifyWhenDone = try container.decodeIfPresent(Bool.self, forKey: .notifyWhenDone) ?? true
         createdAtMs = try container.decodeIfPresent(Int64.self, forKey: .createdAtMs) ?? 0
+        instructions = try? container.decodeIfPresent(String.self, forKey: .instructions)
         nextRun = try? container.decodeIfPresent(NextRun.self, forKey: .nextRun)
         lastRun = try? container.decodeIfPresent(RemoteScheduleRun.self, forKey: .lastRun)
     }
 }
 
 /// When a task comes due. `kind` is an open set (`once`, `daily`, … and
-/// `unknown` for one the Host cannot fire); the fields a kind uses are set.
-public struct RemoteScheduleTrigger: Decodable, Equatable, Sendable {
+/// `unknown` for one the Host cannot fire); the fields a kind uses are set,
+/// and only those are encoded, the stored shape a write sends back.
+public struct RemoteScheduleTrigger: Codable, Hashable, Sendable {
     public let kind: String
     /// `HH:MM[:SS]` for time-of-day kinds.
     public let time: String?

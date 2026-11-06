@@ -1237,6 +1237,97 @@
         "native": 404,
         "tui": 404
       }
+    },
+    {
+      "id": "schedules.create.no-name",
+      "method": "POST",
+      "path": "/mobile/schedules",
+      "body": {},
+      "expected": {
+        "native": 400,
+        "tui": 400
+      }
+    },
+    {
+      "id": "schedules.create.no-trigger",
+      "method": "POST",
+      "path": "/mobile/schedules",
+      "body": {
+        "name": "Conformance"
+      },
+      "expected": {
+        "native": 400,
+        "tui": 400
+      }
+    },
+    {
+      "id": "schedules.edit.missing-id",
+      "method": "POST",
+      "path": "/mobile/schedules/edit",
+      "body": {
+        "name": "Conformance"
+      },
+      "expected": {
+        "native": 400,
+        "tui": 400
+      }
+    },
+    {
+      "id": "schedules.edit.unknown",
+      "method": "POST",
+      "path": "/mobile/schedules/edit",
+      "body": {
+        "scheduleID": "conformance-unknown",
+        "name": "Conformance"
+      },
+      "expected": {
+        "native": 404,
+        "tui": 404
+      }
+    },
+    {
+      "id": "schedules.delete.missing-id",
+      "method": "POST",
+      "path": "/mobile/schedules/delete",
+      "body": {},
+      "expected": {
+        "native": 400,
+        "tui": 400
+      }
+    },
+    {
+      "id": "schedules.delete.unknown",
+      "method": "POST",
+      "path": "/mobile/schedules/delete",
+      "body": {
+        "scheduleID": "conformance-unknown"
+      },
+      "expected": {
+        "native": 404,
+        "tui": 404
+      }
+    },
+    {
+      "id": "schedules.run.missing-id",
+      "method": "POST",
+      "path": "/mobile/schedules/run",
+      "body": {},
+      "expected": {
+        "native": 400,
+        "tui": 400
+      }
+    },
+    {
+      "id": "schedules.run.unknown",
+      "method": "POST",
+      "path": "/mobile/schedules/run",
+      "body": {
+        "scheduleID": "conformance-unknown"
+      },
+      "expected": {
+        "native": 404,
+        "tui": 404
+      }
     }
   ],
   "additiveBootstrapFields": [
@@ -1283,6 +1374,11 @@
       "field": "schedulesRevision",
       "required": false,
       "note": "Fork-only: Scheduled Tasks. Opaque; changes whenever GET /mobile/schedules or a task's GET /mobile/schedules/runs would answer differently. Controllers refetch the schedules routes when it moves instead of polling them. Absent on Hosts without the schedules capability."
+    },
+    {
+      "field": "presets[].agentPreset",
+      "required": false,
+      "note": "Fork-only: Scheduled Tasks. On every preset row: whether the preset is an Agent Preset (its command starts a runtime that declares a readiness signal), the only kind that takes a task's instructions. Controllers show the Instructions field only when it is true and never classify a command themselves; absent (an older Host) reads as false."
     }
   ]
 }

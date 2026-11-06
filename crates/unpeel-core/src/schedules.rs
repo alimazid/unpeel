@@ -23,6 +23,8 @@ pub const SCHEDULE_ID_ENV: &str = "UNPEEL_SCHEDULE_ID";
 pub const SCHEDULE_RUN_ID_ENV: &str = "UNPEEL_SCHEDULE_RUN_ID";
 /// Longest task or Run id a reader accepts as a path component.
 pub const MAX_ID_LEN: usize = 128;
+/// Most characters a task name keeps.
+pub const MAX_NAME_CHARS: usize = 200;
 
 fn default_true() -> bool {
     true
@@ -181,6 +183,19 @@ pub fn apply_edit(
         edited.insert("clock_reset_at_ms".into(), Value::from(now_ms));
     }
     edited
+}
+
+/// A task name as every writer saves it: trimmed, without control
+/// characters, at most [`MAX_NAME_CHARS`].
+pub fn task_name(raw: &str) -> Result<String, String> {
+    let name = raw.trim();
+    if name.is_empty() {
+        return Err("a task needs a name".into());
+    }
+    if name.chars().any(char::is_control) {
+        return Err("a task name cannot contain control characters".into());
+    }
+    Ok(name.chars().take(MAX_NAME_CHARS).collect())
 }
 
 fn deserialize_trigger<'de, D>(deserializer: D) -> Result<ScheduleTrigger, D::Error>

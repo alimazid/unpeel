@@ -2191,6 +2191,8 @@ pub(crate) fn mobile_snapshot_with_runs(
         &mut presets,
         &mut create_presets,
     );
+    // Fork-only: Scheduled Tasks.
+    unpeel_core::controller_schedules::mark_agent_presets(&mut presets);
     workspace_settings["availableAgents"] = agents;
     workspace_settings["mcpShimPath"] =
         serde_json::json!(unpeel_core::integrations::install::mcp_shim_path().to_string_lossy());

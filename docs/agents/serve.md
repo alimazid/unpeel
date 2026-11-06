@@ -292,7 +292,26 @@ the state bus (`schedules`) when a sweep starts or records a Run, so
 Controllers reread on the refresh they already have instead of polling.
 `protocol/schedules-samples-v1.json` pins both bodies for the Host and the
 Swift DTOs. The Mac app's SCHEDULED section (`ScheduledSectionModel`) is the
-reader; Run now still goes over the owner-only `/_unpeel/schedules` path.
+reader.
+
+The user's writes are core routes too, all `POST`, camelCase bodies with
+the Trigger in its stored shape: `/mobile/schedules` (`schedules.create`),
+`/mobile/schedules/edit` (`schedules.edit`; pause and resume are `enabled`),
+`/mobile/schedules/delete` (`schedules.delete`: the task and its history,
+never its Run Sessions) and `/mobile/schedules/run` (`schedules.run`: Run
+now, 409 while a Run is in progress). They edit `app-state.json` raw under
+its flock and announce, like `unpeel schedules`, and are replay-protected.
+What they cannot do from the disk comes from the `ScheduleHost` the
+workspace worker installs at start (`schedules::host::WorkerHost`):
+`trigger::for_save` on the Host's clock (a task saved enabled must come due;
+resuming re-checks), the create catalog its Runs resolve against (a Project
+with a folder, an enabled preset, instructions only on an Agent Preset), and
+Run now through the driver (the same request `unpeel schedules run` sends
+over `/_unpeel/schedules`). A process without a worker (the SSH fallback
+gateway) leaves the four ids out of its descriptor and answers 503. Every
+bootstrap preset row carries `agentPreset`
+(`controller_schedules::mark_agent_presets`), so a Controller shows a task's
+Instructions field only where the Host would accept them.
 
 Session rows carry two additive fields on a Run Session (`spawned_by`
 `schedule:<id>`), from both builders (`sessions.rs` `mobile_snapshot` and

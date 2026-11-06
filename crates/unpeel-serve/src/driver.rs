@@ -732,6 +732,12 @@ impl HostRuntime {
         );
         computer.decorate_workspace_settings(&mut initial_snapshot.bootstrap);
         let snapshot = Arc::new(Mutex::new(initial_snapshot));
+        // Fork-only: Scheduled Tasks. Controllers' writes (every transport)
+        // check Triggers and start Runs now through this worker.
+        crate::schedules::host::WorkerHost::install(
+            Arc::clone(&snapshot),
+            local_control_tx.clone(),
+        );
         let (mark_read_tx, mark_read_rx) = mpsc::channel();
         let local_gateway = LocalGatewayServer::start(
             &home,

@@ -357,6 +357,8 @@ impl DiskCatalog {
             &mut wire_presets,
             &mut create_presets,
         );
+        // Fork-only: Scheduled Tasks.
+        crate::controller_schedules::mark_agent_presets(&mut wire_presets);
         let activity_log =
             crate::activity_log::ActivityLogStore::load_default().unwrap_or_default();
         let mut sessions = Vec::new();
@@ -1769,6 +1771,13 @@ fn disk_protocol() -> HostProtocolDescriptor {
                 | "session.output.subscribe"
         )
     });
+    // Fork-only: Scheduled Tasks. Writes need the workspace worker (its
+    // Trigger check and Run now); a gateway without one never offers them.
+    if !crate::controller_schedules::has_host() {
+        protocol.capabilities.retain(|capability| {
+            !crate::controller_schedules::WRITE_CAPABILITIES.contains(&capability.as_str())
+        });
+    }
     protocol
 }
 
@@ -2726,6 +2735,12 @@ mod tests {
         assert!(protocol.supports("host.bootstrap"));
         assert!(protocol.supports("session.create"));
         assert!(protocol.supports("session.output.read"));
+        // Fork-only: no workspace worker runs in this process, so the
+        // Scheduled Task writes are not offered; the reads are.
+        assert!(protocol.supports("schedules") && protocol.supports("schedules.runs"));
+        for write in crate::controller_schedules::WRITE_CAPABILITIES {
+            assert!(!protocol.supports(write), "{write}");
+        }
     }
 
     #[test]

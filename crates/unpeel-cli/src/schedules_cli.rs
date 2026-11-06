@@ -51,9 +51,6 @@ the agent is ready, and follows it to done or needs you. Up to 256 KiB.
 `edit --instructions ''` removes them. An Agent Preset task without
 instructions is done once its agent is ready.";
 
-/// Most characters a task name keeps.
-const MAX_NAME_CHARS: usize = 200;
-
 struct Args {
     positional: Vec<String>,
     values: std::collections::HashMap<String, String>,
@@ -313,20 +310,9 @@ fn add(args: &Args, json: bool) -> Result<(), String> {
 
 fn add_name(args: &Args) -> Result<String, String> {
     match args.positional.as_slice() {
-        [_, name] => task_name(name),
+        [_, name] => schedules::task_name(name),
         _ => Err(format!("unpeel schedules add needs one name\n\n{HELP}")),
     }
-}
-
-fn task_name(raw: &str) -> Result<String, String> {
-    let name = raw.trim();
-    if name.is_empty() {
-        return Err("a task needs a name".into());
-    }
-    if name.chars().any(char::is_control) {
-        return Err("a task name cannot contain control characters".into());
-    }
-    Ok(name.chars().take(MAX_NAME_CHARS).collect())
 }
 
 /// `--notify` or `--no-notify`, if either is given.
@@ -573,7 +559,7 @@ fn edit(args: &Args, json: bool) -> Result<(), String> {
         name: args
             .values
             .get("name")
-            .map(|name| task_name(name))
+            .map(|name| schedules::task_name(name))
             .transpose()?,
         project_id,
         preset_id: preset.map(|(id, _)| id),

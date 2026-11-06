@@ -1001,6 +1001,12 @@ fn replay_protected(request: &ControllerRequest) -> bool {
             | ("POST", "/mobile/mark-read")
             | ("POST", "/mobile/mark-unread")
             | ("POST", "/mobile/artifact-delete")
+            // Fork-only: Scheduled Tasks' writes; a replayed create must
+            // not save a second task, nor a replayed Run now start a Run.
+            | ("POST", "/mobile/schedules")
+            | ("POST", "/mobile/schedules/edit")
+            | ("POST", "/mobile/schedules/delete")
+            | ("POST", "/mobile/schedules/run")
     )
 }
 

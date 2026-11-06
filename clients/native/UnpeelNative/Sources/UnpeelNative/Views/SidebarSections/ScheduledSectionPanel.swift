@@ -4,10 +4,11 @@
 //
 //  Fork-only: Scheduled Tasks. SCHEDULED: the selected Host's Scheduled
 //  Tasks below AGENTS. A row shows the task's name, its next run and the
-//  last Run's dot; clicking it expands its recent Runs, and clicking a Run
-//  opens its Session while the Host keeps it. Read-only here: tasks come
-//  from `unpeel schedules`. Local and remote Hosts render the same way;
-//  only `store.remoteHostRuntime` knows which one it is.
+//  last Run's dot; its chevron expands its recent Runs, a click on the row
+//  opens the edit sheet, and its context menu has Run now, Pause/Resume,
+//  Duplicate and Delete (confirmed inline). Clicking a Run opens its
+//  Session while the Host keeps it. Local and remote Hosts render the same
+//  way; only `store.remoteHostRuntime` knows which one it is.
 //
 
 import SwiftUI
@@ -39,6 +40,10 @@ struct ScheduledSectionPanel: View {
                         ScheduledSectionNotice(text: message)
                     }
                 }
+                if let actionError = model.actionError {
+                    ScheduledSectionNotice(text: actionError)
+                        .accessibilityLabel("Scheduled Task error: \(actionError)")
+                }
             }
             .padding(.horizontal, 6)
             .padding(.bottom, 4)
@@ -62,7 +67,10 @@ struct ScheduledSectionPanel: View {
     private var emptyText: String {
         switch model.availability {
         case .loading: return "Loading Scheduled Tasks…"
-        case .ready: return "No Scheduled Tasks. Add one with unpeel schedules add."
+        case .ready:
+            return model.writes.create
+                ? "No Scheduled Tasks. Add one with +."
+                : "No Scheduled Tasks. Add one with unpeel schedules add."
         case .unsupported: return "This Host can't show Scheduled Tasks. Update Unpeel on the Host."
         case .failed(let message): return message
         }
@@ -72,7 +80,7 @@ struct ScheduledSectionPanel: View {
     private func itemView(_ item: ScheduledSectionItem) -> some View {
         switch item {
         case .task(let row):
-            ScheduledTaskRowView(row: row) { model.toggleExpanded(row.id) }
+            taskRow(row)
         case .run(let row):
             ScheduledRunRowView(row: row) { sessionID in
                 store.revealSessionInCurrentScope(sessionID)
@@ -83,57 +91,31 @@ struct ScheduledSectionPanel: View {
             ScheduledRunNotice(text: "No Runs yet")
         }
     }
+
+    @ViewBuilder
+    private func taskRow(_ row: ScheduledTaskRow) -> some View {
+        let task = model.tasks.first { $0.id == row.id }
+        if model.confirmingDeleteTaskID == row.id {
+            ScheduledDeleteConfirmRow(title: row.title) {
+                model.confirmDelete(row.id, writer: store.remoteHostRuntime)
+            } onCancel: {
+                model.cancelDelete()
+            }
+        } else {
+            ScheduledTaskRowView(
+                row: row,
+                canEdit: model.writes.edit && task != nil,
+                onToggle: { model.toggleExpanded(row.id) },
+                onOpen: { if let task { model.openEditor(for: task) } }
+            )
+            .contextMenu {
+                if let task { ScheduledTaskMenu(task: task, writes: model.writes, model: model, writer: store.remoteHostRuntime) }
+            }
+        }
+    }
 }
 
 // MARK: - Rows
-
-private struct ScheduledTaskRowView: View {
-    let row: ScheduledTaskRow
-    let onToggle: () -> Void
-    @State private var hovering = false
-
-    var body: some View {
-        Button(action: onToggle) {
-            HStack(spacing: 6) {
-                ChevronGlyph(glyph: "›", size: 17)
-                    .foregroundStyle(Theme.mutedForeground)
-                    .opacity(0.6)
-                    .rotationEffect(.degrees(row.isExpanded ? 90 : 0))
-                    .animation(.easeInOut(duration: 0.15), value: row.isExpanded)
-                    .frame(width: 11, height: 18)
-                ScheduledRunDot(indicator: row.indicator)
-                Text(row.title)
-                    .font(Theme.rowLabelFont)
-                    .foregroundStyle(Theme.foreground)
-                    .lineLimit(1)
-                    .truncationMode(.tail)
-                Spacer(minLength: 6)
-                Text(row.nextRunText)
-                    .font(.system(size: 11))
-                    .foregroundStyle(Theme.mutedForeground)
-                    .lineLimit(1)
-            }
-            .padding(.horizontal, 8)
-            .frame(height: Theme.sessionRowHeight)
-            .contentShape(Rectangle())
-            .background(
-                RoundedRectangle(cornerRadius: 6, style: .continuous)
-                    .fill(hovering ? Theme.hoverRow : .clear)
-            )
-        }
-        .buttonStyle(.plain)
-        .onHover { hovering = $0 }
-        .accessibilityLabel(accessibilityLabel)
-        .help(row.isExpanded ? "Hide recent Runs" : "Show recent Runs")
-    }
-
-    private var accessibilityLabel: String {
-        var parts = ["Scheduled Task \(row.title)", "next run \(row.nextRunText)"]
-        if let lastRunText = row.lastRunText { parts.append("last Run \(lastRunText)") }
-        parts.append(row.isExpanded ? "expanded" : "collapsed")
-        return parts.joined(separator: ", ")
-    }
-}
 
 private struct ScheduledRunRowView: View {
     let row: ScheduledRunRow
@@ -208,7 +190,7 @@ private struct ScheduledRunRowView: View {
 
 /// The last Run's status at a glance; a spinner while it runs. A task that
 /// has never run keeps the slot empty so names stay aligned.
-private struct ScheduledRunDot: View {
+struct ScheduledRunDot: View {
     let indicator: ScheduledRunIndicator?
 
     var body: some View {
@@ -241,7 +223,7 @@ private struct ScheduledRunDot: View {
     }
 }
 
-private struct ScheduledSectionNotice: View {
+struct ScheduledSectionNotice: View {
     let text: String
 
     var body: some View {
@@ -254,7 +236,7 @@ private struct ScheduledSectionNotice: View {
     }
 }
 
-private struct ScheduledRunNotice: View {
+struct ScheduledRunNotice: View {
     let text: String
 
     var body: some View {

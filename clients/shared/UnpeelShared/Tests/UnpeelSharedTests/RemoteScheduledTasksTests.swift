@@ -115,6 +115,14 @@ struct RemoteScheduledTasksTests {
             "schedules.runs.missing-id": 400,
             "schedules.runs.invalid-id": 400,
             "schedules.runs.unknown": 404,
+            "schedules.create.no-name": 400,
+            "schedules.create.no-trigger": 400,
+            "schedules.edit.missing-id": 400,
+            "schedules.edit.unknown": 404,
+            "schedules.delete.missing-id": 400,
+            "schedules.delete.unknown": 404,
+            "schedules.run.missing-id": 400,
+            "schedules.run.unknown": 404,
         ])
         let unknown = try #require(cases.first { $0["id"] as? String == "schedules.runs.unknown" })
         #expect(unknown["query"] as? [String: String]
@@ -129,6 +137,104 @@ struct RemoteScheduledTasksTests {
         #expect(fields.contains { $0["field"] as? String == "schedulesRevision" && $0["required"] as? Bool == false })
     }
 
+    /// The write side: the ledger names each write's route, and the bodies
+    /// the Mac sends are the ones the conformance cases send.
+    @Test func theWritesMatchTheHostsLedgerAndConformanceBodies() throws {
+        let ledger = try fixtureJSON("host-capabilities-v1.json")
+        let capabilities = try #require(ledger["capabilities"] as? [[String: Any]])
+        let routes = [
+            RemoteControlProtocol.schedulesCreateCapability: "/mobile/schedules",
+            RemoteControlProtocol.schedulesEditCapability: "/mobile/schedules/edit",
+            RemoteControlProtocol.schedulesDeleteCapability: "/mobile/schedules/delete",
+            RemoteControlProtocol.schedulesRunCapability: "/mobile/schedules/run",
+        ]
+        for (id, path) in routes {
+            let entry = try #require(capabilities.first { $0["id"] as? String == id }, "\(id)")
+            #expect(entry["method"] as? String == "POST" && entry["path"] as? String == path, "\(id)")
+        }
+
+        let conformance = try fixtureJSON("host-conformance-v1.json")
+        let cases = try #require(conformance["cases"] as? [[String: Any]])
+        func body(_ id: String) throws -> [String: AnyHashable] {
+            let item = try #require(cases.first { $0["id"] as? String == id }, "\(id)")
+            return try #require(item["body"] as? [String: AnyHashable], "\(id)")
+        }
+        #expect(try encoded(RemoteScheduleTarget(scheduleID: "conformance-unknown"))
+            == body("schedules.run.unknown"))
+        #expect(try encoded(RemoteScheduleTarget(scheduleID: "conformance-unknown"))
+            == body("schedules.delete.unknown"))
+        #expect(try encoded(RemoteScheduleEdit(scheduleID: "conformance-unknown", name: "Conformance"))
+            == body("schedules.edit.unknown"))
+    }
+
+    @Test func aCreateCarriesEveryFieldAndATriggerOnlyItsOwn() throws {
+        let create = RemoteScheduleCreate(
+            name: "Morning", projectID: "p", presetID: "claude",
+            trigger: RemoteScheduleTrigger(kind: "weekly", time: "17:00", weekday: "friday"),
+            instructions: "brief me", enabled: true, notifyWhenDone: false
+        )
+        #expect(try encoded(create) == [
+            "name": "Morning", "projectID": "p", "presetID": "claude",
+            "trigger": ["kind": "weekly", "time": "17:00", "weekday": "friday"] as [String: AnyHashable],
+            "instructions": "brief me", "enabled": true, "notifyWhenDone": false,
+        ])
+        let script = RemoteScheduleCreate(
+            name: "Backup", projectID: "p", presetID: "ok",
+            trigger: RemoteScheduleTrigger(kind: "hourly", minute: 5),
+            instructions: nil, enabled: true, notifyWhenDone: true
+        )
+        let body = try encoded(script)
+        #expect(body["instructions"] == nil, "a script task sends no instructions")
+        #expect(body["trigger"] == AnyHashable(["kind": "hourly", "minute": 5] as [String: AnyHashable]))
+    }
+
+    /// An edit sends only what changed; empty instructions remove them.
+    @Test func anEditSendsOnlyWhatChanged() throws {
+        #expect(try encoded(RemoteScheduleEdit(scheduleID: "sch_1", enabled: false))
+            == ["scheduleID": "sch_1", "enabled": false])
+        #expect(try encoded(RemoteScheduleEdit(scheduleID: "sch_1", instructions: ""))
+            == ["scheduleID": "sch_1", "instructions": ""])
+        let moved = RemoteScheduleEdit(
+            scheduleID: "sch_1", projectID: "q", presetID: "ok",
+            trigger: RemoteScheduleTrigger(kind: "once", at: "2026-11-07T08:00"), notifyWhenDone: true
+        )
+        #expect(try encoded(moved) == [
+            "scheduleID": "sch_1", "projectID": "q", "presetID": "ok",
+            "trigger": ["kind": "once", "at": "2026-11-07T08:00"] as [String: AnyHashable],
+            "notifyWhenDone": true,
+        ])
+    }
+
+    @Test func theWriteAnswersDecode() throws {
+        let saved = try JSONDecoder().decode(
+            RemoteScheduleSaved.self,
+            from: Data(#"{"schedule":{"id":"sch_1","name":"Morning","instructions":"brief me"}}"#.utf8)
+        )
+        #expect(saved.schedule.id == "sch_1" && saved.schedule.instructions == "brief me")
+        let started = try JSONDecoder().decode(
+            RemoteScheduleRunStarted.self, from: Data(#"{"scheduleID":"sch_1","runID":"run_9"}"#.utf8)
+        )
+        #expect(started.runID == "run_9")
+    }
+
+    @Test func aTasksInstructionsAndEachPresetsAgentFlagDecode() throws {
+        let list = try JSONDecoder().decode(
+            RemoteSchedulesList.self, from: try sampleData(["responses", "list"])
+        )
+        #expect(list.schedules.first { $0.id == "sch_overlap" }?.instructions == "write the nightly report")
+        #expect(list.schedules.first { $0.id == "sch_daily" }?.instructions == nil)
+
+        let body = #"""
+        {"protocolVersion":1,"folders":[],"projects":[],"sessions":[],"capturedAtUnixMs":1,"presets":[
+          {"id":"claude","label":"Claude","command":"claude","enabled":true,"quickLaunch":false,"isDefault":false,"agentPreset":true},
+          {"id":"ok","label":"OK","command":"true","enabled":true,"quickLaunch":false,"isDefault":false,"agentPreset":false},
+          {"id":"old","label":"Old","command":"claude","enabled":true,"quickLaunch":false,"isDefault":false}
+        ]}
+        """#
+        let snapshot = try JSONDecoder().decode(RemoteBootstrapSnapshot.self, from: Data(body.utf8))
+        #expect(snapshot.presets.map(\.agentPreset) == [true, false, nil])
+    }
+
     @Test func bootstrapCarriesTheSchedulesRevision() throws {
         let body = #"{"protocolVersion":1,"folders":[],"projects":[],"presets":[],"sessions":[],"capturedAtUnixMs":1,"schedulesRevision":"abc"}"#
         let snapshot = try JSONDecoder().decode(RemoteBootstrapSnapshot.self, from: Data(body.utf8))
@@ -138,6 +244,12 @@ struct RemoteScheduledTasksTests {
     }
 
     // MARK: - Fixtures
+
+    /// A request body as the Host reads it.
+    private func encoded(_ value: some Encodable) throws -> [String: AnyHashable] {
+        let data = try JSONEncoder().encode(value)
+        return try #require(JSONSerialization.jsonObject(with: data) as? [String: AnyHashable])
+    }
 
     private func sampleData(_ path: [String]) throws -> Data {
         var value: Any = try fixtureJSON("schedules-samples-v1.json")
