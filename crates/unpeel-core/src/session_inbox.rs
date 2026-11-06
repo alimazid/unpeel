@@ -26,6 +26,7 @@ const ITEM_VERSION: u32 = 1;
 const PENDING_DIR: &str = "pending";
 const DELIVERED_DIR: &str = "delivered";
 const LOCKS_DIR: &str = ".locks";
+const INFLIGHT_FILE: &str = "inflight.json";
 const MAX_ID_BYTES: usize = 128;
 
 /// Stored text per item (summary + body); the rest is cut at enqueue.
@@ -149,6 +150,33 @@ pub struct Listing {
     pub delivered: Vec<ItemHeader>,
 }
 
+/// Everything pending at claim time, pasted as one: wake and ride-along
+/// items alike, FIFO.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Batch {
+    pub session_id: String,
+    pub batch_id: String,
+    /// 1 on the first paste; higher means this batch was claimed before and
+    /// never completed, so it may already have reached the target.
+    pub attempt: u32,
+    pub items: Vec<InboxItem>,
+}
+
+impl Batch {
+    pub fn redelivery(&self) -> bool {
+        self.attempt > 1
+    }
+}
+
+/// `inflight.json`: the claim a paste is working from.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct Claim {
+    batch_id: String,
+    item_ids: Vec<String>,
+    claimed_at: u64,
+    attempt: u32,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum InboxError {
     /// The pending caps are reached ("inbox full").
@@ -226,10 +254,9 @@ impl Store {
             )));
         };
         for victim in &replaced {
-            let path = pending_dir.join(format!("{victim}.json"));
-            fs::remove_file(&path).map_err(|error| io_error(&path, error))?;
+            remove_if_present(&pending_dir.join(file_name(victim)))?;
         }
-        write_bytes(&pending_dir, &item.id, &bytes)?;
+        write_bytes(&pending_dir, &file_name(&item.id), &bytes)?;
         Ok(Enqueued {
             item_id: item.id,
             pending: pending.len() + 1 - replaced.len(),
@@ -237,6 +264,90 @@ impl Store {
             duplicate: false,
             replaced,
         })
+    }
+
+    /// Whether anything pending should start a delivery: ride-along items
+    /// only ever go out with a wake batch (or by pull).
+    pub fn has_wake_pending(&self, session_id: &str) -> bool {
+        let Ok(dir) = self.dir(session_id) else {
+            return false;
+        };
+        read_items(&dir.join(PENDING_DIR)).iter().any(|item| {
+            item.priority == Priority::Wake
+                && !dir.join(DELIVERED_DIR).join(file_name(&item.id)).exists()
+        })
+    }
+
+    /// Claim everything pending for one paste. An earlier claim that was
+    /// never completed or released is the same batch again (same id, same
+    /// items, a higher attempt), so the target can skip a batch it has
+    /// already handled; items queued since wait for the next batch.
+    pub fn claim_batch(&self, session_id: &str, now_ms: u64) -> Result<Option<Batch>> {
+        let dir = self.dir(session_id)?;
+        let _lock = self.lock(session_id)?;
+        let pending = settled_pending(&dir)?;
+        if pending.is_empty() {
+            remove_if_present(&dir.join(INFLIGHT_FILE))?;
+            return Ok(None);
+        }
+        let reclaimed = read_claim(&dir).and_then(|claim| {
+            let items: Vec<InboxItem> = pending
+                .iter()
+                .filter(|item| claim.item_ids.contains(&item.id))
+                .cloned()
+                .collect();
+            (!items.is_empty()).then(|| {
+                let claim = Claim {
+                    item_ids: items.iter().map(|item| item.id.clone()).collect(),
+                    attempt: claim.attempt.saturating_add(1),
+                    ..claim
+                };
+                (claim, items)
+            })
+        });
+        let (claim, items) = reclaimed.unwrap_or_else(|| {
+            let claim = Claim {
+                batch_id: short_uuid(),
+                item_ids: pending.iter().map(|item| item.id.clone()).collect(),
+                claimed_at: now_ms,
+                attempt: 1,
+            };
+            (claim, pending)
+        });
+        write_claim(&dir, &claim)?;
+        Ok(Some(Batch {
+            session_id: session_id.to_owned(),
+            batch_id: claim.batch_id,
+            attempt: claim.attempt,
+            items,
+        }))
+    }
+
+    /// The paste of `batch_id` reached the target: its items move to
+    /// `delivered/`. `false` when that batch is no longer the claim.
+    pub fn complete(&self, session_id: &str, batch_id: &str, now_ms: u64) -> Result<bool> {
+        let dir = self.dir(session_id)?;
+        let _lock = self.lock(session_id)?;
+        let Some(claim) = read_claim(&dir).filter(|claim| claim.batch_id == batch_id) else {
+            return Ok(false);
+        };
+        for item_id in &claim.item_ids {
+            mark_delivered(&dir, item_id, now_ms)?;
+        }
+        remove_if_present(&dir.join(INFLIGHT_FILE))?;
+        Ok(true)
+    }
+
+    /// The paste of `batch_id` failed: drop the claim so the next one is a
+    /// fresh batch. `false` when that batch is no longer the claim.
+    pub fn release(&self, session_id: &str, batch_id: &str) -> Result<bool> {
+        let dir = self.dir(session_id)?;
+        let _lock = self.lock(session_id)?;
+        if read_claim(&dir).is_none_or(|claim| claim.batch_id != batch_id) {
+            return Ok(false);
+        }
+        remove_if_present(&dir.join(INFLIGHT_FILE))?;
+        Ok(true)
     }
 
     pub fn list(&self, session_id: &str) -> Result<Listing> {
@@ -258,7 +369,7 @@ impl Store {
         }
         Ok([PENDING_DIR, DELIVERED_DIR]
             .iter()
-            .find_map(|sub| read_item(&dir.join(sub).join(format!("{item_id}.json")))))
+            .find_map(|sub| read_item(&dir.join(sub).join(file_name(item_id)))))
     }
 
     fn dir(&self, session_id: &str) -> Result<PathBuf> {
@@ -408,7 +519,7 @@ fn dedupe_item_id(key: &str) -> String {
 fn item_exists(dir: &Path, item_id: &str) -> bool {
     [PENDING_DIR, DELIVERED_DIR]
         .iter()
-        .any(|sub| dir.join(sub).join(format!("{item_id}.json")).exists())
+        .any(|sub| dir.join(sub).join(file_name(item_id)).exists())
 }
 
 /// Session and item ids become path components: one plain name, never a
@@ -467,10 +578,63 @@ fn read_sized(dir: &Path) -> Vec<(InboxItem, u64)> {
             read_item(&entry.path()).map(|item| (item, size))
         })
         .collect();
+    // Pending items have no `delivered_at`; a batch delivered together keeps
+    // its FIFO order.
     items.sort_by(|(a, _), (b, _)| {
-        (a.delivered_at.unwrap_or(a.at), &a.id).cmp(&(b.delivered_at.unwrap_or(b.at), &b.id))
+        (a.delivered_at, a.at, &a.id).cmp(&(b.delivered_at, b.at, &b.id))
     });
     items
+}
+
+fn file_name(item_id: &str) -> String {
+    format!("{item_id}.json")
+}
+
+/// Pending items, minus any a crash left behind after their delivered copy
+/// was written (that leftover pending copy is removed).
+fn settled_pending(dir: &Path) -> Result<Vec<InboxItem>> {
+    let mut pending = Vec::new();
+    for item in read_items(&dir.join(PENDING_DIR)) {
+        if dir.join(DELIVERED_DIR).join(file_name(&item.id)).exists() {
+            remove_if_present(&dir.join(PENDING_DIR).join(file_name(&item.id)))?;
+        } else {
+            pending.push(item);
+        }
+    }
+    Ok(pending)
+}
+
+/// Move one pending item to `delivered/`, stamped: the delivered copy is
+/// written first, so a crash in between leaves it in both places, which
+/// reads as delivered. A missing item (acked, replaced) is skipped.
+fn mark_delivered(dir: &Path, item_id: &str, now_ms: u64) -> Result<()> {
+    let pending_path = dir.join(PENDING_DIR).join(file_name(item_id));
+    let Some(item) = read_item(&pending_path) else {
+        return Ok(());
+    };
+    let delivered = InboxItem {
+        delivered_at: Some(now_ms),
+        ..item
+    };
+    write_item(&dir.join(DELIVERED_DIR), &delivered)?;
+    remove_if_present(&pending_path)
+}
+
+fn read_claim(dir: &Path) -> Option<Claim> {
+    let raw = fs::read(dir.join(INFLIGHT_FILE)).ok()?;
+    serde_json::from_slice(&raw).ok()
+}
+
+fn write_claim(dir: &Path, claim: &Claim) -> Result<()> {
+    let bytes = serde_json::to_vec(claim).map_err(|error| InboxError::Io(error.to_string()))?;
+    write_bytes(dir, INFLIGHT_FILE, &bytes)
+}
+
+fn remove_if_present(path: &Path) -> Result<()> {
+    match fs::remove_file(path) {
+        Err(error) if error.kind() != std::io::ErrorKind::NotFound => Err(io_error(path, error)),
+        _ => Ok(()),
+    }
 }
 
 /// One item; its id is always the file stem, whatever the content says.
@@ -490,15 +654,15 @@ fn read_item(path: &Path) -> Option<InboxItem> {
 /// fsync of the directory so the rename itself survives a crash.
 fn write_item(dir: &Path, item: &InboxItem) -> Result<()> {
     let bytes = serde_json::to_vec(item).map_err(|error| InboxError::Io(error.to_string()))?;
-    write_bytes(dir, &item.id, &bytes)
+    write_bytes(dir, &file_name(&item.id), &bytes)
 }
 
-fn write_bytes(dir: &Path, item_id: &str, bytes: &[u8]) -> Result<()> {
+fn write_bytes(dir: &Path, name: &str, bytes: &[u8]) -> Result<()> {
     fs::create_dir_all(dir).map_err(|error| io_error(dir, error))?;
     let tmp = dir.join(format!(".tmp-{}", short_uuid()));
     let written = fs::File::create(&tmp)
         .and_then(|mut file| file.write_all(bytes).and_then(|()| file.sync_all()))
-        .and_then(|()| fs::rename(&tmp, dir.join(format!("{item_id}.json"))));
+        .and_then(|()| fs::rename(&tmp, dir.join(name)));
     if let Err(error) = written {
         let _ = fs::remove_file(&tmp);
         return Err(io_error(dir, error));
@@ -787,5 +951,108 @@ mod tests {
             .map(|entry| entry.metadata().unwrap().len())
             .sum();
         assert!(bytes <= MAX_PENDING_BYTES, "{bytes}");
+    }
+
+    fn progress(from: &str, summary: &str) -> NewItem {
+        NewItem {
+            priority: Priority::RideAlong,
+            status: Some("progress".into()),
+            ..report(from, summary)
+        }
+    }
+
+    fn summaries(items: &[InboxItem]) -> Vec<&str> {
+        items.iter().map(|item| item.summary.as_str()).collect()
+    }
+
+    #[test]
+    fn only_a_wake_item_is_wake_pending_but_a_claim_carries_everything() {
+        let (_tmp, store) = store();
+        assert!(!store.has_wake_pending("router"));
+        assert!(store.claim_batch("router", 1).unwrap().is_none());
+
+        store.enqueue("router", progress("w1", "p1"), 1).unwrap();
+        assert!(!store.has_wake_pending("router"));
+        store.enqueue("router", report("w1", "r1"), 2).unwrap();
+        assert!(store.has_wake_pending("router"));
+        store.enqueue("router", progress("w2", "p2"), 3).unwrap();
+
+        let batch = store.claim_batch("router", 10).unwrap().unwrap();
+        assert_eq!(batch.session_id, "router");
+        assert_eq!(summaries(&batch.items), ["p1", "r1", "p2"]);
+        assert!(!batch.redelivery());
+    }
+
+    #[test]
+    fn an_uncompleted_claim_is_redelivered_under_the_same_batch_id() {
+        let (_tmp, store) = store();
+        store.enqueue("router", report("w1", "r1"), 1).unwrap();
+        store.enqueue("router", report("w2", "r2"), 2).unwrap();
+        // The Host pastes, then crashes before completing.
+        let first = store.claim_batch("router", 10).unwrap().unwrap();
+        store.enqueue("router", report("w3", "r3"), 11).unwrap();
+
+        let again = store.claim_batch("router", 20).unwrap().unwrap();
+        assert_eq!(again.batch_id, first.batch_id);
+        assert_eq!(again.attempt, 2);
+        assert!(again.redelivery());
+        // A redelivery is the same batch: later items wait for the next one.
+        assert_eq!(summaries(&again.items), ["r1", "r2"]);
+
+        assert!(!store.complete("router", "not-the-batch", 30).unwrap());
+        assert!(store.complete("router", &again.batch_id, 30).unwrap());
+        let listing = store.list("router").unwrap();
+        let pending: Vec<&str> = listing.pending.iter().map(|h| h.summary.as_str()).collect();
+        let delivered: Vec<&str> = listing
+            .delivered
+            .iter()
+            .map(|h| h.summary.as_str())
+            .collect();
+        assert_eq!(pending, ["r3"]);
+        assert_eq!(delivered, ["r2", "r1"], "newest first");
+        assert_eq!(listing.delivered[0].delivered_at, Some(30));
+        // Delivered items stay readable by id.
+        assert!(store.item("router", &first.items[0].id).unwrap().is_some());
+
+        let next = store.claim_batch("router", 40).unwrap().unwrap();
+        assert_ne!(next.batch_id, first.batch_id);
+        assert!(!next.redelivery());
+        assert_eq!(summaries(&next.items), ["r3"]);
+        // A stale completion changes nothing.
+        assert!(!store.complete("router", &first.batch_id, 50).unwrap());
+        assert_eq!(store.list("router").unwrap().pending.len(), 1);
+    }
+
+    #[test]
+    fn a_released_claim_is_claimed_afresh_with_the_items_since() {
+        let (_tmp, store) = store();
+        store.enqueue("router", report("w1", "r1"), 1).unwrap();
+        let first = store.claim_batch("router", 2).unwrap().unwrap();
+        store.enqueue("router", report("w1", "r2"), 3).unwrap();
+        assert!(!store.release("router", "other").unwrap());
+        assert!(store.release("router", &first.batch_id).unwrap());
+
+        let fresh = store.claim_batch("router", 4).unwrap().unwrap();
+        assert_ne!(fresh.batch_id, first.batch_id);
+        assert!(!fresh.redelivery());
+        assert_eq!(summaries(&fresh.items), ["r1", "r2"]);
+    }
+
+    #[test]
+    fn an_item_left_in_both_pending_and_delivered_counts_as_delivered() {
+        let (_tmp, store) = store();
+        let queued = store.enqueue("router", report("w1", "r1"), 1).unwrap();
+        let batch = store.claim_batch("router", 2).unwrap().unwrap();
+        assert!(store.complete("router", &batch.batch_id, 3).unwrap());
+        // A crash between the delivered write and the pending removal.
+        let name = format!("{}.json", queued.item_id);
+        std::fs::copy(
+            store.root.join("router/delivered").join(&name),
+            store.root.join("router/pending").join(&name),
+        )
+        .unwrap();
+        assert!(!store.has_wake_pending("router"));
+        assert!(store.claim_batch("router", 4).unwrap().is_none());
+        assert!(!store.root.join("router/pending").join(&name).exists());
     }
 }
