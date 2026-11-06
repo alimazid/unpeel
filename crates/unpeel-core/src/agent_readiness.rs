@@ -10,6 +10,11 @@
 //! - the runtime's declared `[screen]` idle prompt on the parsed viewport
 //!   (`manifest.screen_activity`).
 //!
+//! The screen tier is the weakest: a program can draw its prompt a moment
+//! before it reads input (Claude Code does, then reports idle itself), and
+//! text typed in that moment is lost. So a screen verdict counts only once it
+//! has held for [`SCREEN_SETTLE`]; a program or hook report wins at once.
+//!
 //! Every input is a file the PTY core or the hook script writes itself, so
 //! the answer does not depend on which process owns Controllers or
 //! notifications, and any thread can ask. A Running Session with none of these
@@ -206,6 +211,11 @@ pub enum ReadinessObservation {
 
 const POLL_INTERVAL: Duration = Duration::from_millis(100);
 
+/// How long the screen tier must keep showing the idle prompt before it
+/// counts as ready, so a program or hook report that follows the drawn
+/// prompt gets to speak first.
+pub const SCREEN_SETTLE: Duration = Duration::from_millis(1500);
+
 /// Block until `session_id` is ready, exits, or `deadline` passes. Callers
 /// own the thread; nothing here writes to the Session.
 pub fn wait_for_agent_ready(session_id: &str, deadline: Instant) -> ReadinessWait {
@@ -214,6 +224,7 @@ pub fn wait_for_agent_ready(session_id: &str, deadline: Instant) -> ReadinessWai
         || observe(crate::session_host::load_manifest(session_id), &session_dir),
         deadline,
         POLL_INTERVAL,
+        SCREEN_SETTLE,
     )
 }
 
@@ -235,19 +246,30 @@ pub fn observe(
 }
 
 /// The wait loop over an injected observer. Always observes at least once,
-/// so evidence already present at the deadline still counts.
+/// so evidence already present at the deadline still counts. A screen
+/// verdict must hold for `screen_settle` (any lapse restarts it), unless the
+/// deadline comes first.
 pub fn wait_with(
     mut observe: impl FnMut() -> ReadinessObservation,
     deadline: Instant,
     poll: Duration,
+    screen_settle: Duration,
 ) -> ReadinessWait {
+    let mut screen_since: Option<Instant> = None;
     loop {
-        match observe() {
+        let observation = observe();
+        let now = Instant::now();
+        match observation {
+            ReadinessObservation::Ready(ReadinessSignal::Screen) => {
+                let since = *screen_since.get_or_insert(now);
+                if now.duration_since(since) >= screen_settle || now >= deadline {
+                    return ReadinessWait::Ready(ReadinessSignal::Screen);
+                }
+            }
             ReadinessObservation::Ready(signal) => return ReadinessWait::Ready(signal),
             ReadinessObservation::Ended => return ReadinessWait::Exited,
-            ReadinessObservation::NotYet => {}
+            ReadinessObservation::NotYet => screen_since = None,
         }
-        let now = Instant::now();
         if now >= deadline {
             return ReadinessWait::TimedOut;
         }

@@ -210,12 +210,22 @@ fn the_wait_returns_the_first_signal_and_stops_on_exit() {
     ]
     .into_iter();
     assert_eq!(
-        wait_with(|| looks.next().unwrap(), far, Duration::from_millis(1)),
+        wait_with(
+            || looks.next().unwrap(),
+            far,
+            Duration::from_millis(1),
+            Duration::ZERO
+        ),
         ReadinessWait::Ready(ReadinessSignal::Screen)
     );
     let mut looks = vec![ReadinessObservation::NotYet, ReadinessObservation::Ended].into_iter();
     assert_eq!(
-        wait_with(|| looks.next().unwrap(), far, Duration::from_millis(1)),
+        wait_with(
+            || looks.next().unwrap(),
+            far,
+            Duration::from_millis(1),
+            Duration::ZERO
+        ),
         ReadinessWait::Exited
     );
 }
@@ -231,6 +241,7 @@ fn the_wait_times_out_when_nothing_says_ready() {
         },
         started + Duration::from_millis(60),
         Duration::from_millis(10),
+        Duration::ZERO,
     );
     assert_eq!(outcome, ReadinessWait::TimedOut);
     assert!(started.elapsed() >= Duration::from_millis(60));
@@ -241,8 +252,84 @@ fn the_wait_times_out_when_nothing_says_ready() {
             || ReadinessObservation::Ready(ReadinessSignal::Program),
             started,
             Duration::from_millis(10),
+            Duration::ZERO,
         ),
         ReadinessWait::Ready(ReadinessSignal::Program)
+    );
+}
+
+#[test]
+fn a_program_report_during_the_screen_settle_wins() {
+    // Claude Code draws its prompt box before it reads input; its own idle
+    // report follows a moment later and is the one to type on.
+    let far = Instant::now() + Duration::from_secs(5);
+    let mut looks = vec![
+        ReadinessObservation::Ready(ReadinessSignal::Screen),
+        ReadinessObservation::Ready(ReadinessSignal::Screen),
+        ReadinessObservation::Ready(ReadinessSignal::Program),
+    ]
+    .into_iter();
+    assert_eq!(
+        wait_with(
+            || looks.next().unwrap(),
+            far,
+            Duration::from_millis(1),
+            Duration::from_secs(5),
+        ),
+        ReadinessWait::Ready(ReadinessSignal::Program)
+    );
+}
+
+#[test]
+fn a_screen_verdict_counts_once_it_has_held_for_the_settle() {
+    let started = Instant::now();
+    let settle = Duration::from_millis(40);
+    let outcome = wait_with(
+        || ReadinessObservation::Ready(ReadinessSignal::Screen),
+        started + Duration::from_secs(5),
+        Duration::from_millis(5),
+        settle,
+    );
+    assert_eq!(outcome, ReadinessWait::Ready(ReadinessSignal::Screen));
+    assert!(started.elapsed() >= settle);
+}
+
+#[test]
+fn a_screen_verdict_that_lapses_restarts_the_settle() {
+    let started = Instant::now();
+    let settle = Duration::from_millis(40);
+    let mut looks = 0;
+    let mut lapsed_at = None;
+    let outcome = wait_with(
+        || {
+            looks += 1;
+            if looks == 3 {
+                lapsed_at = Some(Instant::now());
+                ReadinessObservation::NotYet
+            } else {
+                ReadinessObservation::Ready(ReadinessSignal::Screen)
+            }
+        },
+        started + Duration::from_secs(5),
+        Duration::from_millis(5),
+        settle,
+    );
+    assert_eq!(outcome, ReadinessWait::Ready(ReadinessSignal::Screen));
+    let lapsed_at = lapsed_at.expect("the screen verdict lapsed once");
+    assert!(lapsed_at.elapsed() >= settle);
+}
+
+#[test]
+fn an_unsettled_screen_verdict_at_the_deadline_still_counts() {
+    let started = Instant::now();
+    assert_eq!(
+        wait_with(
+            || ReadinessObservation::Ready(ReadinessSignal::Screen),
+            started + Duration::from_millis(30),
+            Duration::from_millis(5),
+            Duration::from_secs(10),
+        ),
+        ReadinessWait::Ready(ReadinessSignal::Screen)
     );
 }
 
