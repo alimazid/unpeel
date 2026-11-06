@@ -1958,6 +1958,7 @@ pub fn mobile_snapshot(
     }
 
     let mut sessions = Vec::new();
+    let router_id = unpeel_core::supervision::router_id(); // Fork-only
     for item in &model.items {
         let SidebarItem::Session(i) = item else {
             continue;
@@ -1973,7 +1974,10 @@ pub fn mobile_snapshot(
                     .find(|entry| entry.session_id == row.id)
             })
             .filter(|entry| entry.kind == unpeel_core::activity_log::ActivityLogKind::Alert);
-        sessions.push(session_summary(row, unread, latest_alert));
+        let summary = session_summary(row, unread, latest_alert);
+        // Fork-only: `superAgent` / `superAgentRouterID`.
+        let summary = unpeel_core::supervision::with_summary_fields(summary, router_id.as_deref());
+        sessions.push(summary);
     }
 
     let app_state = load_app_state();
