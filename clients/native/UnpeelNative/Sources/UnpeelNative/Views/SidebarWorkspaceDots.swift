@@ -1468,15 +1468,14 @@ enum SidebarListContentBuilder {
         )
 
         var summariesByID: [String: RemoteSessionSummary] = [:]
-        var entriesByProject: [String: [SessionEntry]] = [:]
         for summary in snapshot.sessions {
             summariesByID[summary.id] = summary
-            if knownProjectIDs.contains(summary.projectID) {
-                entriesByProject[summary.projectID, default: []].append(
-                    UnpeelStore.sessionEntry(fromRemote: summary)
-                )
-            }
         }
+        // Fork-only: superseded Runs leave the page like they leave PROJECTS.
+        let entriesByProject = ScheduledRunListing.sessionsByProject(
+            snapshot.sessions.map(UnpeelStore.sessionEntry(fromRemote:)),
+            knownProjectIDs: knownProjectIDs
+        )
 
         var childrenOf: [String: [Project]] = [:]
         var topLevel: [Project] = []

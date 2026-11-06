@@ -15,6 +15,7 @@ use std::fs::{self, OpenOptions};
 use std::io::Write;
 use std::path::{Path, PathBuf};
 
+use crate::schedules::run_sessions::{LatestRunSessions, RunSessionRow};
 use crate::schedules::{self, Schedule, ScheduleClock, ScheduleRun};
 
 /// Runs a task keeps once its log is compacted.
@@ -135,6 +136,40 @@ impl TaskStore {
             .map_err(|error| format!("create {}: {error}", self.dir.display()))?;
         crate::app_state::lock_exclusive(&self.dir.join(RUNS_FILE))
     }
+}
+
+/// Each named task's latest Run Session (Q32, `schedules::run_sessions`):
+/// the Session of its current Run. A task without a Run log is left out.
+/// Both Host session-row builders read it, so they agree with the worker on
+/// which Run is the task's.
+pub fn latest_run_sessions<'a>(task_ids: impl IntoIterator<Item = &'a str>) -> LatestRunSessions {
+    latest_run_sessions_in(&schedules_root(), task_ids)
+}
+
+/// Each task's latest Run Session as the Host's `rows` see it
+/// (`run_sessions::resolve_latest`): what both session-row builders publish
+/// from.
+pub fn latest_run_sessions_of(rows: &[RunSessionRow<'_>]) -> LatestRunSessions {
+    let logged = latest_run_sessions(
+        rows.iter()
+            .filter_map(|row| schedules::run_sessions::schedule_id(row.spawned_by)),
+    );
+    schedules::run_sessions::resolve_latest(logged, rows)
+}
+
+/// [`latest_run_sessions`] under an explicit root (tests).
+pub fn latest_run_sessions_in<'a>(
+    root: &Path,
+    task_ids: impl IntoIterator<Item = &'a str>,
+) -> LatestRunSessions {
+    let tasks: std::collections::BTreeSet<&str> = task_ids.into_iter().collect();
+    tasks
+        .into_iter()
+        .filter_map(|task| {
+            let current = TaskStore::open(root, task).ok()?.current_run()?;
+            Some((task.to_string(), current.session_id))
+        })
+        .collect()
 }
 
 fn parse_runs(raw: &[u8]) -> Vec<ScheduleRun> {
@@ -303,6 +338,73 @@ mod tests {
             let ids: Vec<_> = store.runs().into_iter().map(|r| r.run_id).collect();
             assert_eq!(ids, vec!["run_1", "run_2"]);
         });
+    }
+
+    /// Q32: a task's latest Run Session is the Session of its current Run;
+    /// a task with no Run log is left out, and so is an id with no store.
+    #[test]
+    fn each_tasks_latest_run_session_is_its_current_runs() {
+        let root = std::env::temp_dir().join(format!("unpeel-sched-{}", uuid::Uuid::new_v4()));
+        let append = |task: &str, line: ScheduleRun| {
+            TaskStore::open(&root, task)
+                .and_then(|store| store.append_run(&line))
+                .expect("append");
+        };
+        let with_session = |run_id: &str, status, session: &str, ended| ScheduleRun {
+            session_id: Some(session.into()),
+            ended_at_ms: ended,
+            ..run(run_id, status)
+        };
+        append(
+            "sch_a",
+            with_session("run_1", RunStatus::Done, "a-1", Some(10)),
+        );
+        append(
+            "sch_a",
+            with_session("run_2", RunStatus::Done, "a-2", Some(20)),
+        );
+        // In progress outranks a newer outcome.
+        append(
+            "sch_b",
+            with_session("run_1", RunStatus::NeedsYou, "b-1", None),
+        );
+        append(
+            "sch_b",
+            with_session("run_2", RunStatus::Done, "b-2", Some(50)),
+        );
+        append(
+            "sch_c",
+            with_session("run_1", RunStatus::Done, "c-1", Some(10)),
+        );
+        append(
+            "sch_c",
+            ScheduleRun {
+                ended_at_ms: Some(20),
+                ..run("run_2", RunStatus::FailedToStart)
+            },
+        );
+
+        let latest = latest_run_sessions_in(
+            &root,
+            [
+                "sch_a",
+                "sch_b",
+                "sch_a",
+                "sch_c",
+                "sch_never_ran",
+                "../escape",
+            ],
+        );
+        let _ = fs::remove_dir_all(&root);
+
+        assert_eq!(
+            latest,
+            LatestRunSessions::from([
+                ("sch_a".to_string(), Some("a-2".to_string())),
+                ("sch_b".to_string(), Some("b-1".to_string())),
+                ("sch_c".to_string(), None),
+            ])
+        );
     }
 
     #[test]

@@ -740,7 +740,7 @@ public final class RemotePreviewStore {
     public var bellBlockedSessions: [RemoteSessionSummary] {
         Self.uniquedActivitySessions(
             snapshot.sessions.filter {
-                $0.supportsIOSSessionAPI
+                $0.isListedInIOSSidebar
                     && $0.status == .running
                     && ($0.activity == .blocked
                         || sessionNeedsMcpApprovalAttention($0.id))
@@ -756,7 +756,7 @@ public final class RemotePreviewStore {
         let blockerIDs = Set(bellBlockedSessions.map(\.id))
         return Self.uniquedActivitySessions(
             snapshot.sessions.filter {
-                $0.supportsIOSSessionAPI
+                $0.isListedInIOSSidebar
                     && $0.status == .running
                     && $0.activity == .working
                     && !blockerIDs.contains($0.id)
@@ -784,7 +784,7 @@ public final class RemotePreviewStore {
         })
         return Self.uniquedActivitySessions(
             snapshot.sessions.filter {
-                $0.supportsIOSSessionAPI
+                $0.isListedInIOSSidebar
                     && $0.id != selectedSessionID
                     && !reservedIDs.contains($0.id)
             }
@@ -1940,6 +1940,11 @@ extension RemoteSessionSummary {
     /// showed. Kept as a property because call sites read as intent
     /// ("listable session"), and a future gate would slot back in here.
     var supportsIOSSessionAPI: Bool { true }
+
+    /// Fork-only: Scheduled Tasks (Q32). Rows the sidebar, its count and the
+    /// bell list: a superseded Run (the Host's `superseded`) is in none of
+    /// them, though its id still opens like any other Session's.
+    var isListedInIOSSidebar: Bool { supportsIOSSessionAPI && !superseded }
 
     /// The runtime this session was launched as. Stable launch binding
     /// (provider id, then command), never live observation: a runtime
