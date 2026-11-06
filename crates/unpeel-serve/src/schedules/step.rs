@@ -28,6 +28,8 @@ pub struct LaunchPlan {
     pub preset_id: String,
     pub command: String,
     pub cwd: String,
+    pub worktree_path: Option<String>,
+    pub worktree_branch: Option<String>,
 }
 
 /// What the Host sees of a running Run's Session.
@@ -356,6 +358,8 @@ mod tests {
             preset_id: "ok".into(),
             command: "true".into(),
             cwd: "/tmp".into(),
+            worktree_path: None,
+            worktree_branch: None,
         }
     }
 

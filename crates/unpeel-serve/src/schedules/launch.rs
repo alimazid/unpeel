@@ -1,0 +1,140 @@
+//! Where a task's Run starts: its Project's directory and its preset's
+//! command as typed, resolved against the Host's create catalog by the same
+//! rules as `session.create`. A reason comes back when it cannot start.
+
+use unpeel_core::controller_api::{find_host_preset, HostCreatePreset, HostCreateProject};
+use unpeel_core::schedules::Schedule;
+
+use super::step::LaunchPlan;
+
+pub fn resolve(
+    schedule: &Schedule,
+    projects: &[HostCreateProject],
+    presets: &[HostCreatePreset],
+) -> Result<LaunchPlan, String> {
+    let project = projects
+        .iter()
+        .find(|project| project.id == schedule.project_id)
+        .ok_or_else(|| format!("the Project {} no longer exists", schedule.project_id))?;
+    let cwd = project
+        .worktree_path
+        .clone()
+        .unwrap_or_else(|| project.path.clone());
+    if cwd.trim().is_empty() {
+        return Err(format!(
+            "the Project {} has no folder to run in",
+            schedule.project_id
+        ));
+    }
+    let preset =
+        find_host_preset(presets, &schedule.preset_id, &schedule.project_id).ok_or_else(|| {
+            format!(
+                "the preset {} no longer exists or is disabled",
+                schedule.preset_id
+            )
+        })?;
+    Ok(LaunchPlan {
+        project_id: project.id.clone(),
+        preset_id: preset.id.clone(),
+        command: preset.command.clone(),
+        cwd,
+        worktree_path: project.worktree_path.clone(),
+        worktree_branch: project.worktree_branch.clone(),
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use unpeel_core::schedules::ScheduleTrigger;
+
+    fn schedule(project_id: &str, preset_id: &str) -> Schedule {
+        Schedule {
+            id: "sch_1".into(),
+            name: "Morning".into(),
+            project_id: project_id.into(),
+            preset_id: preset_id.into(),
+            trigger: ScheduleTrigger::Unknown,
+            enabled: true,
+            notify_when_done: true,
+            created_at_ms: 0,
+        }
+    }
+
+    fn project(id: &str, path: &str) -> HostCreateProject {
+        HostCreateProject {
+            id: id.into(),
+            path: path.into(),
+            is_folder: false,
+            worktree_path: None,
+            worktree_branch: None,
+        }
+    }
+
+    fn preset(id: &str, command: &str, project_id: Option<&str>) -> HostCreatePreset {
+        HostCreatePreset {
+            id: id.into(),
+            command: command.into(),
+            enabled: true,
+            project_id: project_id.map(str::to_owned),
+        }
+    }
+
+    #[test]
+    fn a_run_starts_the_presets_command_in_the_projects_folder() {
+        let plan = resolve(
+            &schedule("p", "ok"),
+            &[project("p", "/work")],
+            &[
+                preset("ok", "echo global", None),
+                preset("ok", "echo mine", Some("p")),
+            ],
+        )
+        .expect("launchable");
+        assert_eq!(plan.command, "echo mine", "the Project's own preset wins");
+        assert_eq!(plan.cwd, "/work");
+        assert_eq!(plan.preset_id, "ok");
+    }
+
+    #[test]
+    fn a_worktree_project_runs_in_its_worktree() {
+        let mut worktree = project("w", "/repo-feature");
+        worktree.worktree_path = Some("/repo-feature".into());
+        worktree.worktree_branch = Some("feature".into());
+        let plan = resolve(
+            &schedule("w", "ok"),
+            &[worktree],
+            &[preset("ok", "true", None)],
+        )
+        .expect("launchable");
+        assert_eq!(plan.cwd, "/repo-feature");
+        assert_eq!(plan.worktree_branch.as_deref(), Some("feature"));
+    }
+
+    #[test]
+    fn a_missing_project_or_preset_is_the_reason_it_cannot_start() {
+        let presets = [preset("ok", "true", None)];
+        let gone = resolve(&schedule("gone", "ok"), &[project("p", "/work")], &presets);
+        assert_eq!(gone, Err("the Project gone no longer exists".into()));
+
+        let folder = resolve(&schedule("f", "ok"), &[project("f", " ")], &presets);
+        assert!(folder.unwrap_err().contains("no folder"));
+
+        let deleted = resolve(
+            &schedule("p", "deleted"),
+            &[project("p", "/work")],
+            &presets,
+        );
+        assert_eq!(
+            deleted,
+            Err("the preset deleted no longer exists or is disabled".into())
+        );
+
+        let mut disabled = preset("ok", "true", None);
+        disabled.enabled = false;
+        assert!(resolve(&schedule("p", "ok"), &[project("p", "/work")], &[disabled]).is_err());
+
+        let elsewhere = preset("ok", "true", Some("other"));
+        assert!(resolve(&schedule("p", "ok"), &[project("p", "/work")], &[elsewhere]).is_err());
+    }
+}
