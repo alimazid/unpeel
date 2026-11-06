@@ -3606,6 +3606,38 @@ extension RemoteHostRuntime {
         }
     }
 
+    /// Fork-only: Make Super Agent. The Session becomes the workspace's
+    /// Router in place; a previous Router's Workers move to it.
+    func setSuperAgent(_ sessionID: String) async throws {
+        try await performOrganizationVerb(
+            capability: HostOperation.superAgentSet,
+            operation: "make Super Agent"
+        ) { backend in
+            _ = try await backend.setSuperAgent(sessionID: sessionID)
+        }
+    }
+
+    /// Fork-only: Stop Being Super Agent. Its Workers become the user's.
+    func clearSuperAgent(_ sessionID: String) async throws {
+        try await performOrganizationVerb(
+            capability: HostOperation.superAgentClear,
+            operation: "stop being Super Agent"
+        ) { backend in
+            _ = try await backend.clearSuperAgent(sessionID: sessionID)
+        }
+    }
+
+    /// Fork-only: Hand to Super Agent. The Session becomes the Router's
+    /// Worker and briefs it.
+    func handOverToSuperAgent(_ sessionID: String) async throws {
+        try await performOrganizationVerb(
+            capability: HostOperation.superAgentHandOver,
+            operation: "hand to Super Agent"
+        ) { backend in
+            _ = try await backend.handOverToSuperAgent(sessionID: sessionID)
+        }
+    }
+
     func setSessionPinned(_ sessionID: String, pinned: Bool) async throws {
         try await performOrganizationVerb(
             capability: HostOperation.pinSet,
