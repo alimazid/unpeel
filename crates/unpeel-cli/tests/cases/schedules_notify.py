@@ -11,6 +11,9 @@ and records every callback. Covered:
 * its question is the Session's own needs-input notice, once;
 * an agent that shows no working signal after its instructions needs you:
   a Run notice, and the Run Session is unread;
+* an agent only its screen follows (no integration, no OSC 7501) is done
+  with the reply its screen shows, and since the screen tier sends no
+  Finished edge, the Run's done notice comes once, by the task's setting;
 * a script Run that finished (no Finished edge exists for it) notifies with
   the task's setting either way, and is unread; a bare Agent Preset Run
   likewise;
@@ -50,12 +53,22 @@ def report(state, msg=None):
     if msg:
         pairs += ":msg=" + base64.b64encode(msg.encode()).decode()
     os.write(1, ("\x1b]7501;" + pairs + "\x1b\\").encode())
+def screen(text):
+    os.write(1, ("\x1b[2J\x1b[H" + text.replace("\n", "\r\n")).encode())
 os.write(1, b"\x1b[?2004h")
 os.write(1, b"HOOK_FIXTURE_PROCESS_STARTED\r\n")
 time.sleep(1.5)
-report("idle")
-def submit():
-    if KIND == "program":
+if KIND == "screen":
+    screen("Claude Code\n\n✻ Welcome back\n────\n❯\n────\n  ? for shortcuts")
+else:
+    report("idle")
+def submit(text):
+    if KIND == "screen":
+        asked = text.decode("utf-8", "replace")
+        screen("Claude Code\n\n❯ " + asked + "\n\n✻ Filing… (3s · esc to interrupt)\n────\n❯\n────")
+        time.sleep(2)
+        screen("Claude Code\n\n❯ " + asked + "\n\n⏺ Notes filed.\n\n────\n❯\n────\n  ? for shortcuts")
+    elif KIND == "program":
         report("working", "Reading the calendar")
         time.sleep(2)
         report("done", "Briefing sent to the team")
@@ -87,7 +100,7 @@ while True:
         text, composer, pending = composer + pending[:enter], b"", pending[enter + 1:]
         # A second Enter on an empty composer submits nothing, as in a real agent.
         if text.strip():
-            submit()
+            submit(text)
 '''
 
 
@@ -361,6 +374,21 @@ def check_agent_runs(case, service, home, adapter):
     case.check("no working signal: the Run Session is unread",
                bool(service.wait_for(lambda: unread(home, session_id), timeout=15)))
 
+    filed = add(case, home, "Filed", "screen", "--instructions", "file the notes")
+    seen = run_now(case, service, home, "Filed", filed, ("done", "failed", "failed_to_start",
+                                                          "needs_you"))
+    session_id = seen.get("session_id") or ""
+    case.check("screen-only agent: the Run is done with the reply its screen shows",
+               seen.get("status") == "done" and seen.get("snippet") == "Notes filed.",
+               json.dumps(seen))
+    sent = service.wait_for(lambda: adapter.deliveries(sessionID=session_id), timeout=15) or []
+    service.read_for(2)
+    sent = adapter.deliveries(sessionID=session_id)
+    case.check("screen-only agent: no Finished edge, so one Run notice with the task's setting",
+               [(n.get("kind"), n.get("scheduleID"), n.get("runNotifyWhenDone"),
+                 n.get("requiresNotifyWhenDone"), n.get("title"), n.get("body")) for n in sent]
+               == [("done", filed, True, True, "Filed", "Notes filed.")], json.dumps(sent))
+
     bare = add(case, home, "Bare", "program")
     ready = run_now(case, service, home, "Bare", bare, ("done", "failed", "failed_to_start"))
     session_id = ready.get("session_id") or ""
@@ -376,7 +404,7 @@ def body(case):
     home.preset(label="ok", command="true", preset_id="ok")
     home.preset(label="three", command="/bin/sh -c 'exit 3'", preset_id="three")
     home.preset(label="doomed", command="true", preset_id="doomed")
-    for kind in ("program", "question", "silent"):
+    for kind in ("program", "question", "silent", "screen"):
         home.preset(label=kind, command=write_fake(home, kind), preset_id=kind)
     service = case.serve(env={
         "HOME": home.root,

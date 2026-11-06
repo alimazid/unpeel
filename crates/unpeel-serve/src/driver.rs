@@ -1200,15 +1200,16 @@ impl HostRuntime {
             .rows
             .iter()
             .filter(|row| row.running)
-            .map(|row| {
-                let activity = crate::schedules::agent_run::AgentActivity::from_row(
-                    row,
-                    row.completed_at(&self.engine),
-                    self.completion_messages.last_reply(&row.id),
-                );
-                (row.id.clone(), activity)
-            })
+            .map(|row| (row.id.clone(), self.agent_activity(row)))
             .collect()
+    }
+
+    fn agent_activity(&self, row: &SessionRow) -> crate::schedules::agent_run::AgentActivity {
+        crate::schedules::agent_run::AgentActivity::from_row(
+            row,
+            row.completed_at(&self.engine),
+            self.completion_messages.last_reply(&row.id),
+        )
     }
 
     /// Once per rescan: remove stopped Sessions past their group's keep
@@ -2146,14 +2147,8 @@ impl HostRuntime {
         now: u64,
     ) {
         let session_id = run.session_id.as_deref();
-        let session_asks = session_id.is_some_and(|id| {
-            self.model
-                .rows
-                .iter()
-                .any(|row| row.id == id && row.status == Status::Attention)
-        });
-        let Some(notice) =
-            crate::schedules::notice::for_recorded(schedule, run, previous, session_asks)
+        let edges = self.run_session_edges(run);
+        let Some(notice) = crate::schedules::notice::for_recorded(schedule, run, previous, edges)
         else {
             return;
         };
@@ -2166,6 +2161,25 @@ impl HostRuntime {
             self.unread_ids.remove(session_id);
         } else {
             self.unread_ids.insert(session_id.to_string());
+        }
+    }
+
+    /// What a Run's Session reports through its own edges, from the rows
+    /// this rescan built (the ones the Run was stepped against).
+    fn run_session_edges(
+        &self,
+        run: &unpeel_core::schedules::ScheduleRun,
+    ) -> crate::schedules::notice::SessionEdges {
+        let row = run
+            .session_id
+            .as_deref()
+            .and_then(|id| self.model.rows.iter().find(|row| row.id == id));
+        let Some(row) = row else {
+            return crate::schedules::notice::SessionEdges::default();
+        };
+        crate::schedules::notice::SessionEdges {
+            asks: row.status == Status::Attention,
+            finished_turn: crate::schedules::notice::finished_turn(run, &self.agent_activity(row)),
         }
     }
 
