@@ -3714,7 +3714,9 @@ extension SessionRowView {
 
 /// Selection updates terminate here. Live rows observe their per-id token in
 /// this background-only leaf; snapshot/drag rows use the fixed fallback.
-private struct SessionRowSelectionBackground: View {
+/// Fork-only: also behind the sidebar AGENTS rows, so their selection reads
+/// exactly as PROJECTS does.
+struct SessionRowSelectionBackground: View {
     let state: SessionSelectionRowState?
     let fallbackIsSelected: Bool
     let isHovering: Bool
