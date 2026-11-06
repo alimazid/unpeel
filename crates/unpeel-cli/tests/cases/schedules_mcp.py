@@ -1,10 +1,11 @@
-"""Scheduled Tasks over the `unpeel` MCP `workspace` tool, read-only.
+"""Scheduled Tasks over the `unpeel` MCP `workspace` tool, read by any Session.
 
 From inside a Session (`unpeel mcp`, the same dispatcher an agent's MCP
 server runs), `list_schedules` shows the task with its next run and last
 Run and `list_schedule_runs` reads its Runs newest first, both from the files
-the Host publishes on disk. Help documents both; there is no write action,
-`unpeel schedules add` still refuses inside a Session, and even under the
+the Host publishes on disk. Help documents both; the write actions are the
+Super Agent's alone (`super_agent_schedules`), so this Session is refused
+them, `unpeel schedules add` still refuses inside it, and even under the
 Create & remove role an agent cannot close the task's Run Session (the
 `spawned_by` rule: it was not created by the caller).
 """
@@ -97,10 +98,10 @@ def check_read_only(case, home, inside):
     case.check("help documents both actions",
                shown.returncode == 0 and "### list_schedules" in shown.stdout
                and "### list_schedule_runs" in shown.stdout, shown.stdout[-600:])
-    for action in ("schedules_add", "schedule_run", "schedules_rm"):
+    for action in ("create_schedule", "edit_schedule", "delete_schedule", "run_schedule"):
         refused = cli(home, "mcp", "workspace", action, env=inside)
-        case.check(f"there is no {action} action",
-                   refused.returncode != 0 and "Unknown workspace action" in refused.stderr,
+        case.check(f"{action} is the Super Agent's alone",
+                   refused.returncode != 0 and "Only the Super Agent" in refused.stderr,
                    refused.stderr)
     added = cli(home, "schedules", "add", "Agent's", "--project", "p", "--preset", "ok",
                 "--daily", "10:00", env=inside)

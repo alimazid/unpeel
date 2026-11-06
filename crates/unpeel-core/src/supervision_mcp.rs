@@ -78,7 +78,11 @@ pub(crate) fn extend_schema(tool: &str, definition: Value) -> Value {
 fn extra_properties(tool: &str) -> Vec<(&'static str, Value)> {
     match tool {
         "sessions" => [inbox::schema_properties(), workers::schema_properties()].concat(),
-        "workspace" => crate::supervision_groups::schema_properties(),
+        "workspace" => [
+            crate::supervision_groups::schema_properties(),
+            crate::schedules_mcp::schema_properties(),
+        ]
+        .concat(),
         _ => Vec::new(),
     }
 }

@@ -3,9 +3,10 @@
 //! Definitions are edited in `app-state.json` under the flock, and
 //! announced, like `unpeel presets`; the workspace Host re-reads them every
 //! sweep. Run now goes through the live Host, which owns the "a Run is in
-//! progress" rule. Creating, running and removing tasks is the user's:
-//! those verbs refuse inside a Session (the same detection `unpeel send`
-//! uses).
+//! progress" rule. Creating, running and removing tasks is the user's, and
+//! the Super Agent's on their behalf: those verbs refuse inside any other
+//! Session (the same detection `unpeel send` uses), as the MCP `workspace`
+//! writes do.
 
 use serde_json::{json, Value};
 use unpeel_core::schedule_store::TaskStore;
@@ -46,8 +47,8 @@ when the change ends, and a repeated time runs once. The Host fires it while
 was down runs once when it is back. `pause` stops a task firing; `resume`
 restarts its clock from now, so times that passed while it was paused never
 run (a new Trigger counts from the edit the same way). `run` starts a Run
-now. Only the user changes tasks: add, edit, pause, resume, run and rm
-refuse inside a Session.
+now. Only the user changes tasks, and the Super Agent for them: add, edit,
+pause, resume, run and rm refuse inside any other Session.
 
 --instructions is for an Agent Preset (one that starts an agent Unpeel can
 tell is ready): each Run launches it as typed, types the instructions once
@@ -143,9 +144,11 @@ pub fn run(args: &[String]) -> Result<i32, String> {
 }
 
 fn refuse_inside_session(verb: &str) -> Result<(), String> {
-    if crate::mcp_cli::inside_session() {
+    let caller = unpeel_core::mcp_host::self_session_id();
+    if caller.is_some() && !unpeel_core::supervision::is_router(caller.as_deref()) {
         return Err(format!(
-            "unpeel schedules {verb}: Scheduled Tasks are changed by the user, not from inside a Session"
+            "unpeel schedules {verb}: Scheduled Tasks are changed by the user (or the Super \
+             Agent), not from inside a Session"
         ));
     }
     Ok(())

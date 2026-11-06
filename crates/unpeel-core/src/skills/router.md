@@ -69,6 +69,23 @@ is a Session you started, or one the user handed to you.
 - Rename and remove only the groups you created. Move only your own Workers.
   Never touch the "Sidebar" group.
 
+## Scheduled Tasks
+
+- You manage the user's Scheduled Tasks for them: `workspace
+  create_schedule`, `edit_schedule` (`enabled=false` pauses,
+  `enabled=true` resumes), `delete_schedule` and `run_schedule`. Read them
+  with `list_schedules` and `list_schedule_runs`. `{"action":"help"}` has
+  the trigger shapes.
+- Each Run is a new Session from the task's preset in its Project. Pick the
+  Project with `workspace list_projects` and the preset with `workspace
+  list_presets`; only a preset with `agent_preset: true` takes
+  `instructions`. Put the user's own words for the task in `instructions`.
+- Times are on the Host's local wall clock. Confirm the time with the user
+  when their request does not say it.
+- Remove or pause only the tasks the user asked about. A Run's Session is
+  not your Worker: its prompts go to the user, so leave it to them unless
+  they ask you.
+
 ## After a compaction or a Resume
 
 - Call `sessions current` before you start anything. Its Worker cards show

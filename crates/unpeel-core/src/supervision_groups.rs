@@ -43,7 +43,7 @@ pub(crate) fn schema_properties() -> Vec<(&'static str, Value)> {
     vec![
         (
             "name",
-            json!({ "type": "string", "description": "create_worktree: folder name; create_group/rename_group: group name" }),
+            json!({ "type": "string", "description": "create_worktree: folder; create_group/rename_group: group; *_schedule: task name" }),
         ),
         (
             "session_id",

@@ -78,6 +78,9 @@ pub mod initial_text;
 pub mod integrations;
 #[cfg(feature = "native-host")]
 pub mod license;
+// Fork-only: a request to this workspace's own Host worker.
+#[cfg(feature = "native-host")]
+mod local_host_call;
 #[cfg(feature = "native-host")]
 pub mod local_urls;
 #[cfg(feature = "native-host")]

@@ -76,8 +76,8 @@ fn the_preset_listing_names_each_presets_launch_fields() {
         json!({
             "project_id": "p",
             "presets": [
-                { "id": "mine", "label": "Tests", "command": "cargo test", "project_id": "p", "quick_launch": false },
-                { "id": "claude", "label": "Claude", "command": "claude", "project_id": null, "quick_launch": true },
+                { "id": "mine", "label": "Tests", "command": "cargo test", "project_id": "p", "quick_launch": false, "agent_preset": false },
+                { "id": "claude", "label": "Claude", "command": "claude", "project_id": null, "quick_launch": true, "agent_preset": true },
             ]
         })
     );

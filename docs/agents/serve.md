@@ -297,7 +297,9 @@ corrected.
 Swift DTOs. The Mac app's SCHEDULED section (`ScheduledSectionModel`) is the
 reader.
 
-The user's writes are core routes too, all `POST`, camelCase bodies with
+The user's writes (and the Super Agent's, which the MCP server sends over
+the local socket after checking the caller is the Router; see
+`sessions-mcp.md`) are core routes too, all `POST`, camelCase bodies with
 the Trigger in its stored shape: `/mobile/schedules` (`schedule.create`),
 `/mobile/schedules/edit` (`schedule.edit`; pause and resume are `enabled`),
 `/mobile/schedules/delete` (`schedule.delete`: the task and its history,
