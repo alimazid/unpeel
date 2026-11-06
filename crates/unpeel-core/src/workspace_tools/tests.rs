@@ -154,11 +154,16 @@ fn fixture() -> Fixture {
 }
 
 impl Fixture {
-    /// `git worktree add` into this fixture's own folder, standing in
-    /// for `worktrees::create` (which writes under the real home).
-    fn make(&self) -> impl FnOnce(&str, &str, Option<&str>) -> Result<Worktree, String> + '_ {
-        move |repo, branch, _base| {
-            let path = self.dir.path().join("wts").join(branch);
+    /// `git worktree add` into this fixture's own folder, named like
+    /// `worktrees::create_in_folder` names it (which writes under the real
+    /// home).
+    fn make(&self) -> impl FnOnce(&str, &str, Option<&str>, &str) -> Result<Worktree, String> + '_ {
+        move |repo, branch, _base, folder| {
+            let path = self
+                .dir
+                .path()
+                .join("wts")
+                .join(crate::worktrees::slug(folder));
             let path_str = path.to_string_lossy().to_string();
             git(
                 Path::new(repo),
@@ -230,7 +235,7 @@ fn create_worktree_registers_a_child_project_once_and_then_adopts_it() {
     assert_eq!(child["sort_order"], 5, "after its last sibling");
     assert_eq!(fx.state()["desktop_only_key"]["kept"], true);
 
-    let never = |_: &str, _: &str, _: Option<&str>| -> Result<Worktree, String> {
+    let never = |_: &str, _: &str, _: Option<&str>, _: &str| -> Result<Worktree, String> {
         panic!("an adopted worktree runs no git")
     };
     let again = create_worktree_at(StateFile::At(&fx.state), "p", &request("feature"), never)
@@ -242,6 +247,47 @@ fn create_worktree_registers_a_child_project_once_and_then_adopts_it() {
 }
 
 #[test]
+fn the_name_picks_the_worktree_folder_and_both_default_to_the_branch() {
+    let fx = fixture();
+    // Upstream's meaning: `name` is the worktree's folder (as the Mac app
+    // names it, also its sidebar row); without it both follow the branch.
+    let named = WorktreeRequest {
+        name: Some("Login Fix".into()),
+        ..request("feature/login")
+    };
+    let created =
+        create_worktree_at(StateFile::At(&fx.state), "p", &named, fx.make()).expect("created");
+    let path = created["path"].as_str().expect("path");
+    assert!(path.ends_with("/wts/login-fix"), "{path}");
+    let plain = create_worktree_at(
+        StateFile::At(&fx.state),
+        "p",
+        &request("feature/docs"),
+        fx.make(),
+    )
+    .expect("created");
+    let path = plain["path"].as_str().expect("path");
+    assert!(path.ends_with("/wts/feature-docs"), "{path}");
+    let names: Vec<(String, String)> = fx
+        .worktree_children()
+        .iter()
+        .map(|child| {
+            (
+                child["worktree_branch"].as_str().unwrap_or_default().into(),
+                child["name"].as_str().unwrap_or_default().into(),
+            )
+        })
+        .collect();
+    assert_eq!(
+        names,
+        [
+            ("feature/login".to_owned(), "Login Fix".to_owned()),
+            ("feature/docs".to_owned(), "feature/docs".to_owned()),
+        ]
+    );
+}
+
+#[test]
 fn create_worktree_adopts_an_unregistered_worktree_already_on_the_branch() {
     let fx = fixture();
     let by_hand = fx.dir.path().join("by-hand");
@@ -250,7 +296,7 @@ fn create_worktree_adopts_an_unregistered_worktree_already_on_the_branch() {
         &fx.repo,
         &["worktree", "add", "--quiet", "-b", "manual", &by_hand_str],
     );
-    let never = |_: &str, _: &str, _: Option<&str>| -> Result<Worktree, String> {
+    let never = |_: &str, _: &str, _: Option<&str>, _: &str| -> Result<Worktree, String> {
         panic!("an existing worktree is adopted, not re-added")
     };
     let adopted = create_worktree_at(StateFile::At(&fx.state), "p", &request("manual"), never)
@@ -303,7 +349,7 @@ fn list_worktrees_merges_git_with_the_registered_child_projects() {
 #[test]
 fn create_worktree_refuses_an_unknown_project_or_a_flag_shaped_branch() {
     let fx = fixture();
-    let never = |_: &str, _: &str, _: Option<&str>| -> Result<Worktree, String> {
+    let never = |_: &str, _: &str, _: Option<&str>, _: &str| -> Result<Worktree, String> {
         panic!("refused before git")
     };
     let unknown = create_worktree_at(StateFile::At(&fx.state), "nope", &request("x"), never)

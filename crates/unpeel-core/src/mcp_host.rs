@@ -1836,7 +1836,7 @@ fn base_workspace_tool_definition() -> Value {
                 "action": { "type": "string", "enum": workspace_action_names(), "description": "What to do; see help" },
                 "project_id": { "type": "string", "description": "Project (default: caller's)" },
                 "branch": { "type": "string", "description": "create_worktree: branch" },
-                "name": { "type": "string", "description": "create_worktree: sidebar name" },
+                "name": { "type": "string", "description": "create_worktree: folder name" },
                 "base_ref": { "type": "string", "description": "create_worktree: base ref" },
                 "help_for": { "type": "string", "description": "help: docs for one action" }
             },
@@ -2283,7 +2283,7 @@ pub(crate) fn legacy_sessions_tool_definitions() -> Vec<Value> {
                 "properties": {
                     "branch": { "type": "string", "description": "Branch to create or adopt" },
                     "project_id": { "type": "string", "description": "Project to branch from (default: the calling session's)" },
-                    "name": { "type": "string", "description": "Sidebar name of the worktree project (default: the branch)" },
+                    "name": { "type": "string", "description": "Worktree folder name (default: branch slug)" },
                     "base_ref": { "type": "string", "description": "Base ref for a new branch (default: the repo mainline)" },
                 },
                 "required": ["branch"],

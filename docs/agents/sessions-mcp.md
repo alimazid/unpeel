@@ -113,10 +113,12 @@ Advertised ownership (old mixed `sessions` spellings remain decode-only):
     folders are not Projects; a Project filed in one is a `root`.
   - `create_worktree {project_id?, branch, name?, base_ref?}` resolves the
     project (or group, or worktree) to its root, adopts a registered or
-    existing git worktree of that branch, else runs `worktrees::create`, then
+    existing git worktree of that branch, else creates it in the folder
+    `name` names (`worktrees::create_in_folder`, the slug of `name`), then
     registers one child project per (root, branch) through `app_state::edit`
-    (`mcp-wt-<uuid>`, never `native-`; `name` is its sidebar name, default the
-    branch; `sort_order` after its last sibling). Returns `{path, project_id,
+    (`mcp-wt-<uuid>`, never `native-`; named `name`, as the Mac app names
+    it; folder and sidebar name both default to the branch; `sort_order`
+    after its last sibling). Returns `{path, project_id,
     branch, adopted, repo_path}`; `repo_path` is the root's checkout, which
     the Super Agent's worktree ledger records (below).
   - `list_worktrees` merges `git worktree list` of the root's checkout with

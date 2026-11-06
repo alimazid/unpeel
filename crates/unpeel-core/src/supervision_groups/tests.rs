@@ -393,7 +393,7 @@ fn the_workspace_tool_advertises_and_documents_the_group_actions() {
         "inputSchema": { "type": "object", "properties": {
             "action": { "type": "string" },
             "project_id": { "type": "string" },
-            "name": { "type": "string", "description": "create_worktree: sidebar name" },
+            "name": { "type": "string", "description": "create_worktree: folder name" },
         } }
     });
     let schema = crate::supervision_mcp::extend_schema("workspace", base);

@@ -107,6 +107,7 @@ def body(case):
     case.check("it is a real checkout under this home's worktrees folder",
                os.path.isdir(os.path.join(path, ".git")) or os.path.isfile(os.path.join(path, ".git")), path)
     case.check("it lands under this home", os.path.realpath(path).startswith(os.path.realpath(home.path("worktrees"))), path)
+    case.check("name picks its folder, as in the Mac app", os.path.basename(path) == "feature-work", path)
     case.check("the child project id is never native-", child.startswith("mcp-wt-"), child)
     case.check("a new worktree is not adopted", result.get("adopted") is False, str(result))
 
