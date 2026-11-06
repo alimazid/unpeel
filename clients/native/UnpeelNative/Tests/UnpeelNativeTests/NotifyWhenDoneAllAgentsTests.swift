@@ -45,6 +45,57 @@ final class NotifyWhenDoneAllAgentsTests: XCTestCase {
         ))
     }
 
+    // MARK: Scheduled Task Runs (the task's "Notify when done")
+
+    func testATasksNotifyWhenDoneNotifiesWithTheGlobalSettingOff() {
+        XCTAssertTrue(NotifyWhenDoneAllAgents.isEligible(
+            requiresNotifyWhenDone: true, sessionOptedIn: false, allAgents: false,
+            runNotifyWhenDone: true
+        ))
+    }
+
+    func testATaskWithNotifyOffStaysSilentWithTheGlobalSettingOn() {
+        XCTAssertFalse(NotifyWhenDoneAllAgents.isEligible(
+            requiresNotifyWhenDone: true, sessionOptedIn: false, allAgents: true,
+            runNotifyWhenDone: false
+        ))
+    }
+
+    func testTheSessionsOwnToggleStillCountsOnARun() {
+        // Turned on for that one Session by hand: the user asked for it.
+        XCTAssertTrue(NotifyWhenDoneAllAgents.isEligible(
+            requiresNotifyWhenDone: true, sessionOptedIn: true, allAgents: false,
+            runNotifyWhenDone: false
+        ))
+    }
+
+    func testARunsNeedsInputAndFailuresAlwaysNotify() {
+        // Needs-input and failed / failed-to-start notices never require
+        // the opt-in, whatever the task says.
+        for runNotify in [true, false] {
+            XCTAssertTrue(NotifyWhenDoneAllAgents.isEligible(
+                requiresNotifyWhenDone: false, sessionOptedIn: false, allAgents: false,
+                runNotifyWhenDone: runNotify
+            ))
+        }
+        XCTAssertTrue(NotifyWhenDoneAllAgents.isEligible(
+            requiresNotifyWhenDone: false, sessionOptedIn: false, allAgents: false,
+            runNotifyWhenDone: nil
+        ))
+    }
+
+    func testANoticeWithoutATaskSettingFollowsTheGlobalSetting() {
+        // An older Host, or a deleted task's Run: today's rule.
+        XCTAssertFalse(NotifyWhenDoneAllAgents.isEligible(
+            requiresNotifyWhenDone: true, sessionOptedIn: false, allAgents: false,
+            runNotifyWhenDone: nil
+        ))
+        XCTAssertTrue(NotifyWhenDoneAllAgents.isEligible(
+            requiresNotifyWhenDone: true, sessionOptedIn: false, allAgents: true,
+            runNotifyWhenDone: nil
+        ))
+    }
+
     // MARK: Resolution (own value → default workspace's → off)
 
     func testDefaultsToOff() {

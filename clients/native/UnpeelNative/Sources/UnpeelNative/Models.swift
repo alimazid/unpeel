@@ -1139,6 +1139,10 @@ struct SessionEntry: Codable, Identifiable, Hashable, Sendable {
     /// the pane's cwd (`UnpeelStore.paneWorkingDirectory`); nil on rows from
     /// older Hosts, which fall back to the project path.
     var cwd: String? = nil
+    /// Fork-only: Scheduled Tasks. Set on a Run Session (`ScheduledRunListing`):
+    /// its task, for the clock badge, and whether a Project lists it. Optional
+    /// so a startup cache written before it still decodes.
+    var scheduledRun: ScheduledRunMark? = nil
     /// Fork-only: this Session is the workspace's Super Agent (the Router),
     /// from the Host's wire `superAgent`. Host-published rows only.
     var superAgent: Bool = false

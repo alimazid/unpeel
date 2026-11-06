@@ -39,6 +39,10 @@ fallback = "none"
 completion_reliable = true
 attention_reliable = true
 
+# The arguments that turn off this runtime's approval prompts.
+[approvals]
+bypass_flags = ["--yolo"]
+
 [integration]
 summary = "Adds a managed [[hooks]] block to Kimi's config.toml and the unpeel MCP server to ~/.kimi-code/mcp.json."
 legacy_evidence = ["hooks/kimi-hook.sh"]

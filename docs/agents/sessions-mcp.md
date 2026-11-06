@@ -95,7 +95,8 @@ Advertised ownership (old mixed `sessions` spellings remain decode-only):
   be mistaken for the same agent. `session_id` remains a weaker compatibility
   target.
 - `workspace`: `list_presets`, `list_projects`, `create_worktree`,
-  `list_worktrees`, plus the fork-only Super Agent group actions
+  `list_worktrees`, the fork-only Scheduled Tasks reads `list_schedules` and
+  `list_schedule_runs`, plus the fork-only Super Agent group actions
   `create_group`, `rename_group`, `remove_group` and `move_session` (Super
   Agent, below). Worktree creation remains opt-in and never launches a
   Session. All of them are answered by the MCP host itself from this home's
@@ -126,6 +127,14 @@ Advertised ownership (old mixed `sessions` spellings remain decode-only):
     (`main: true`), a registration git no longer knows is `missing: true`.
   - `create_worktree` and `list_worktrees` keep `require_worktree_access`
     (`mcp_worktree_access`, off by default; the Router passes it).
+  - `list_schedules` and `list_schedule_runs` are read-only: they answer the
+    `GET /mobile/schedules` and `GET /mobile/schedules/runs` bodies
+    (`protocol/schedules-samples-v1.json`) from `app-state.json` and the
+    per-task files on disk, so they work on any Host. `list_schedule_runs`
+    returns the newest 10 Runs unless `limit` says otherwise. Agents cannot
+    create, edit, run or remove tasks, and the existing `spawned_by` rule
+    keeps a task's Run Sessions out of `sessions close` even under Create &
+    remove.
 - `artifacts`: `add_to_gallery` for a caller-owned image artifact.
 
 Session creation and closing remain user-only, except under the Create &

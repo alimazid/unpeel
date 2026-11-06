@@ -229,6 +229,13 @@
       "tui": true
     },
     {
+      "id": "session.create.initial_text_when",
+      "method": "POST",
+      "path": "/mobile/sessions#initialTextWhen",
+      "native": true,
+      "tui": true
+    },
+    {
       "id": "session.input.write",
       "method": "POST",
       "path": "/mobile/write",
@@ -484,6 +491,48 @@
       "id": "settings.git.set",
       "method": "POST",
       "path": "/mobile/git-settings",
+      "native": true,
+      "tui": true
+    },
+    {
+      "id": "schedule.list",
+      "method": "GET",
+      "path": "/mobile/schedules",
+      "native": true,
+      "tui": true
+    },
+    {
+      "id": "schedule.runs",
+      "method": "GET",
+      "path": "/mobile/schedules/runs",
+      "native": true,
+      "tui": true
+    },
+    {
+      "id": "schedule.create",
+      "method": "POST",
+      "path": "/mobile/schedules",
+      "native": true,
+      "tui": true
+    },
+    {
+      "id": "schedule.edit",
+      "method": "POST",
+      "path": "/mobile/schedules/edit",
+      "native": true,
+      "tui": true
+    },
+    {
+      "id": "schedule.delete",
+      "method": "POST",
+      "path": "/mobile/schedules/delete",
+      "native": true,
+      "tui": true
+    },
+    {
+      "id": "schedule.run",
+      "method": "POST",
+      "path": "/mobile/schedules/run",
       "native": true,
       "tui": true
     }

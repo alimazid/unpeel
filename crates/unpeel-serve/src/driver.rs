@@ -622,6 +622,8 @@ pub struct HostRuntime {
     auto_stop: crate::auto_stop::Sweeper,
     /// Removes stopped Sessions past the keep limit (`retention.rs`).
     retention: crate::retention::Retention,
+    /// Fires this workspace's Scheduled Tasks (`schedules/`).
+    schedules: crate::schedules::Scheduler,
     /// Fork-only: the Super Agent supervisor (`supervisor.rs`).
     supervisor: crate::supervisor::Supervisor,
     /// Last Host-wide sweep of abandoned resumable uploads.
@@ -723,6 +725,12 @@ impl HostRuntime {
         );
         computer.decorate_workspace_settings(&mut initial_snapshot.bootstrap);
         let snapshot = Arc::new(Mutex::new(initial_snapshot));
+        // Fork-only: Scheduled Tasks. Controllers' writes (every transport)
+        // check Triggers and start Runs now through this worker.
+        crate::schedules::host::WorkerHost::install(
+            Arc::clone(&snapshot),
+            local_control_tx.clone(),
+        );
         let (mark_read_tx, mark_read_rx) = mpsc::channel();
         let local_gateway = LocalGatewayServer::start(
             &home,
@@ -779,6 +787,7 @@ impl HostRuntime {
             pty_core_status: None,
             auto_stop: crate::auto_stop::Sweeper::default(),
             retention: crate::retention::Retention::default(),
+            schedules: crate::schedules::Scheduler::default(),
             supervisor: Default::default(), // Fork-only
             last_upload_sweep: None,
             browser_engine_rx: if browser_engine_install_enabled() {
@@ -934,6 +943,7 @@ impl HostRuntime {
             self.rescan();
             self.last_scan = Instant::now();
             self.reconcile_direct(&mut emitted);
+            self.sweep_schedules(&mut emitted);
             self.sweep_auto_stop(&mut emitted);
             self.sweep_retention(&mut emitted);
             // Fork-only: the supervisor drains Inboxes; a held draft alerts,
@@ -942,6 +952,10 @@ impl HostRuntime {
                 self.deliver_supervisor_notice(notice);
             }
             self.sweep_incomplete_uploads();
+        } else if self.schedules.has_pending() {
+            // Run now starts on the tick after it is accepted, not a rescan
+            // later.
+            self.sweep_schedules(&mut emitted);
         }
         self.reconcile_link(&mut emitted);
         self.supervise_streamer(&mut emitted);
@@ -1093,7 +1107,123 @@ impl HostRuntime {
         }
     }
 
-    /// Once per rescan: remove stopped Sessions past their group's keep limit.
+    /// Step the Scheduled Tasks against the wall clock. Definitions are
+    /// re-read from `app-state.json` every sweep, so an edit takes effect on
+    /// the next one; a file that will not read changes nothing. A Run whose
+    /// Session came up stops its task's earlier idle Run Sessions
+    /// (`run_sessions.rs`).
+    fn sweep_schedules(&mut self, emitted: &mut Vec<ServeEvent>) {
+        let definitions = unpeel_core::schedule_store::load_schedules_and_presets();
+        let (schedules, known_presets) = match definitions {
+            Ok(definitions) => definitions,
+            Err(error) => {
+                crate::tracelog::trace("host-worker", &format!("schedules not stepped: {error}"));
+                return;
+            }
+        };
+        if schedules.is_empty() && !self.schedules.has_pending() {
+            // A workspace without tasks pays one small file read per rescan.
+            return;
+        }
+        let (projects, presets) = crate::mobile::create_catalog(&self.snapshot).unwrap_or_default();
+        let catalog = crate::schedules::RunCatalog {
+            projects: &projects,
+            presets: &presets,
+            known_presets: &known_presets,
+        };
+        let activity = self.run_activity();
+        let hook_port = Some(self.hook_port);
+        let now = crate::schedules::clock::now();
+        let events = self
+            .schedules
+            .sweep(&schedules, &catalog, &activity, hook_port, &now);
+        // Run events reach Controllers through the schedules projection;
+        // the ping only says "re-read it now" (one per sweep).
+        if events
+            .iter()
+            .any(|event| !matches!(event, crate::schedules::SweepEvent::Warning(_)))
+        {
+            unpeel_core::state_bus::announce(
+                unpeel_core::state_bus::Change::Schedules,
+                unpeel_core::session_ops::own_listener_port_public(),
+            );
+        }
+        for event in events {
+            self.handle_sweep_event(event, &schedules, emitted);
+        }
+    }
+
+    /// Trace a sweep's event and act on it: a Run whose Session came up
+    /// replaces the task's earlier Runs, a recorded Run may notify.
+    fn handle_sweep_event(
+        &mut self,
+        event: crate::schedules::SweepEvent,
+        schedules: &[unpeel_core::schedules::Schedule],
+        emitted: &mut Vec<ServeEvent>,
+    ) {
+        match event {
+            crate::schedules::SweepEvent::Started {
+                schedule_id,
+                run_id,
+                session_id,
+            } => crate::tracelog::trace(
+                "host-worker",
+                &format!("schedule {schedule_id} started Run {run_id} in session {session_id}"),
+            ),
+            // Only a Session that came up replaces the earlier Runs: a
+            // failed start leaves the previous Run's Session as it is.
+            crate::schedules::SweepEvent::Spawned {
+                schedule_id,
+                session_id,
+            } => crate::run_sessions::stop_superseded(&self.model.rows, &schedule_id, &session_id),
+            crate::schedules::SweepEvent::Recorded {
+                schedule_id,
+                run,
+                previous,
+            } => {
+                crate::tracelog::trace(
+                    "host-worker",
+                    &format!(
+                        "schedule {schedule_id} Run {}: {}",
+                        run.run_id,
+                        run.status.word()
+                    ),
+                );
+                // Run notices follow whoever owns the Sessions' own edges
+                // (`rescan`).
+                let schedule = schedules.iter().find(|schedule| schedule.id == schedule_id);
+                if let Some(schedule) = schedule.filter(|_| !self.native_app_owns_controllers()) {
+                    self.notify_run(schedule, &run, previous, now_ms());
+                }
+            }
+            crate::schedules::SweepEvent::Warning(warning) => {
+                emitted.push(ServeEvent::Warning(warning))
+            }
+        }
+    }
+
+    /// Agent Runs follow the rows this worker rebuilt in its last rescan,
+    /// which it rebuilds whoever owns notification edges: they never wait
+    /// on rescan's own "finished" rule, which skips screen-tier edges.
+    fn run_activity(&self) -> HashMap<String, crate::schedules::agent_run::AgentActivity> {
+        self.model
+            .rows
+            .iter()
+            .filter(|row| row.running)
+            .map(|row| (row.id.clone(), self.agent_activity(row)))
+            .collect()
+    }
+
+    fn agent_activity(&self, row: &SessionRow) -> crate::schedules::agent_run::AgentActivity {
+        crate::schedules::agent_run::AgentActivity::from_row(
+            row,
+            row.completed_at(&self.engine),
+            self.completion_messages.last_reply(&row.id),
+        )
+    }
+
+    /// Once per rescan: remove stopped Sessions past their group's keep
+    /// limit, and Run Sessions past their task's (`run_sessions.rs`).
     fn sweep_retention(&mut self, emitted: &mut Vec<ServeEvent>) {
         for event in self.retention.step(&self.model.expired, now_ms()) {
             match event {
@@ -1166,8 +1296,7 @@ impl HostRuntime {
                 (
                     row.id.clone(),
                     (
-                        program
-                            .is_some_and(|program| program.state.is_finished()),
+                        program.is_some_and(|program| program.state.is_finished()),
                         program.map_or(0, |program| program.finished_edges),
                     ),
                 )
@@ -1200,13 +1329,11 @@ impl HostRuntime {
                 .as_ref()
                 .is_some_and(|program| program.finished_edges > edges_before)
                 || (program_finished && !finished_before);
-            let newly_completed = completed_at
-                .is_some_and(|at| {
-                    self.completed_turns
-                        .get(&row.id)
-                        .is_none_or(|previous| at > *previous)
-                })
-                && (!program_finished || completion_edge);
+            let newly_completed = completed_at.is_some_and(|at| {
+                self.completed_turns
+                    .get(&row.id)
+                    .is_none_or(|previous| at > *previous)
+            }) && (!program_finished || completion_edge);
             let kind = if old.is_none() && row.running {
                 Some(unpeel_core::activity_log::ActivityLogKind::Started)
             } else if row.status == Status::Attention && old != Some(Status::Attention) {
@@ -1246,6 +1373,9 @@ impl HostRuntime {
         self.completion_messages
             .retain(|id| rows.iter().any(|row| row.id == id));
         if canonical_activity_owner {
+            // Fork-only: Scheduled Tasks. Read once, only for a Run Session's
+            // finished turn.
+            let mut schedules: Option<Vec<unpeel_core::schedules::Schedule>> = None;
             for (row, kind, edge_msg) in events {
                 self.append_activity(&row, kind, now, None);
                 // Fork-only: the Finished reply, and whether the edge goes to a Router.
@@ -1258,17 +1388,31 @@ impl HostRuntime {
                             &row,
                             crate::notifications::NotificationKind::NeedsInput,
                             None,
-                            false,
+                            WhenDone::Always,
                             now,
                         ),
                     unpeel_core::activity_log::ActivityLogKind::Finished => {
                         // Fork-only: show what the agent said, not just
-                        // "Finished"; the Router's own turns always notify.
+                        // "Finished". The Router's own turns always notify;
+                        // a Run Session's task decides, not the app's global
+                        // "Notify when any agent finishes".
+                        let run_notify_when_done =
+                            crate::run_sessions::schedule_id(&row).and_then(|schedule_id| {
+                                crate::schedules::notice::notify_when_done(
+                                    schedules.get_or_insert_with(schedules_for_edges),
+                                    schedule_id,
+                                )
+                            });
+                        let when_done = if edge.requires_notify_when_done {
+                            WhenDone::Setting(run_notify_when_done)
+                        } else {
+                            WhenDone::Always
+                        };
                         self.deliver_notification(
                             &row,
                             crate::notifications::NotificationKind::Done,
                             edge.finished_body.as_deref(),
-                            edge.requires_notify_when_done,
+                            when_done,
                             now,
                         )
                     }
@@ -1476,6 +1620,14 @@ impl HostRuntime {
                         self.reconcile_direct(emitted);
                         serde_json::json!({ "ok": true })
                     });
+                    let _ = reply.send(result);
+                }
+                LocalControlRequest::RunScheduleNow { schedule_id, reply } => {
+                    let result = unpeel_core::schedule_store::load_schedules()
+                        .and_then(|schedules| {
+                            self.schedules.request_run_now(&schedule_id, &schedules)
+                        })
+                        .map(|run_id| serde_json::json!({ "runID": run_id }));
                     let _ = reply.send(result);
                 }
                 LocalControlRequest::SetDeviceRelayAllowed {
@@ -1916,7 +2068,7 @@ impl HostRuntime {
             &row,
             crate::notifications::NotificationKind::Alert,
             Some(&body),
-            false,
+            WhenDone::Always,
             at,
         ) {
             let _ = unpeel_core::session_ops::mark_read(session_id);
@@ -1960,15 +2112,12 @@ impl HostRuntime {
         row: &SessionRow,
         kind: crate::notifications::NotificationKind,
         body: Option<&str>,
-        requires_notify_when_done: bool,
+        when_done: WhenDone,
         now: u64,
     ) -> bool {
-        let suppress_device_ids = self.presence.viewing_device_ids(&row.id, now);
-        let any_controller = self.presence.any_viewer(&row.id, now);
         let raw_title = row.label.trim();
-        let outcome = crate::notifications::deliver(
-            &self.platform_adapters,
-            crate::notifications::NotificationRequest {
+        self.deliver_notice(
+            Notice {
                 session_id: &row.id,
                 title: if raw_title.is_empty() {
                     "Unpeel session"
@@ -1977,12 +2126,116 @@ impl HostRuntime {
                 },
                 kind,
                 body,
+                when_done,
+                schedule_id: crate::run_sessions::schedule_id(row),
+            },
+            now,
+        )
+    }
+
+    /// The one delivery path: suppress the devices already looking, send
+    /// the desktop banner only when no Controller is, and say whether anyone
+    /// already observes the Session (a Run's notice with no Session never is).
+    fn deliver_notice(&self, notice: Notice<'_>, now: u64) -> bool {
+        let session_id = notice.session_id;
+        let suppress_device_ids = self.presence.viewing_device_ids(session_id, now);
+        let any_controller = !session_id.is_empty() && self.presence.any_viewer(session_id, now);
+        let (requires_notify_when_done, task_setting) = match notice.when_done {
+            WhenDone::Always => (false, None),
+            WhenDone::Setting(task_setting) => (true, task_setting),
+        };
+        let outcome = crate::notifications::deliver(
+            &self.platform_adapters,
+            crate::notifications::NotificationRequest {
+                session_id,
+                title: notice.title,
+                kind: notice.kind,
+                body: notice.body,
                 requires_notify_when_done,
                 send_desktop: !any_controller,
                 suppress_device_ids,
+                run: notice
+                    .schedule_id
+                    .map(|schedule_id| crate::notifications::RunContext {
+                        schedule_id,
+                        notify_when_done: task_setting,
+                    }),
             },
         );
         any_controller || outcome.mac_observed
+    }
+
+    /// Fork-only: Scheduled Tasks. A Run outcome no Session edge
+    /// reports (`schedules::notice`): notify, and leave a finished or
+    /// waiting Run's Session unread unless someone saw it, as its own
+    /// edges would. A failure leaves nothing unread.
+    fn notify_run(
+        &mut self,
+        schedule: &unpeel_core::schedules::Schedule,
+        run: &unpeel_core::schedules::ScheduleRun,
+        previous: Option<unpeel_core::schedules::RunStatus>,
+        now: u64,
+    ) {
+        let session_id = run.session_id.as_deref();
+        let edges = self.run_session_edges(run);
+        let Some(notice) = crate::schedules::notice::for_recorded(schedule, run, previous, edges)
+        else {
+            return;
+        };
+        let observed = self.deliver_run_notice(&schedule.id, session_id, &notice, now);
+        let Some(session_id) = session_id.filter(|_| notice.marks_unread()) else {
+            return;
+        };
+        if observed {
+            let _ = unpeel_core::session_ops::mark_read(session_id);
+            self.unread_ids.remove(session_id);
+        } else {
+            self.unread_ids.insert(session_id.to_string());
+        }
+    }
+
+    /// What a Run's Session reports through its own edges, from the rows
+    /// this rescan built (the ones the Run was stepped against).
+    fn run_session_edges(
+        &self,
+        run: &unpeel_core::schedules::ScheduleRun,
+    ) -> crate::schedules::notice::SessionEdges {
+        let row = run
+            .session_id
+            .as_deref()
+            .and_then(|id| self.model.rows.iter().find(|row| row.id == id));
+        let Some(row) = row else {
+            return crate::schedules::notice::SessionEdges::default();
+        };
+        crate::schedules::notice::SessionEdges {
+            asks: row.status == Status::Attention,
+            finished_turn: crate::schedules::notice::finished_turn(run, &self.agent_activity(row)),
+        }
+    }
+
+    /// A Run notice goes to its Run's Session when it has one; the app
+    /// takes one with no Session (it never launched) by its task.
+    fn deliver_run_notice(
+        &self,
+        schedule_id: &str,
+        session_id: Option<&str>,
+        notice: &crate::schedules::notice::RunNotice,
+        now: u64,
+    ) -> bool {
+        self.deliver_notice(
+            Notice {
+                session_id: session_id.unwrap_or_default(),
+                title: &notice.title,
+                kind: notice.kind,
+                body: Some(&notice.body),
+                when_done: match notice.notify_when_done {
+                    Some(setting) => WhenDone::Setting(Some(setting)),
+                    None => WhenDone::Always,
+                },
+                schedule_id: Some(schedule_id),
+            },
+            now,
+        )
     }
 
     fn append_activity(
@@ -2160,8 +2413,14 @@ impl Drop for HostRuntime {
 pub fn run(mut report: impl FnMut(ServeEvent)) -> Result<(), String> {
     SHUTDOWN_REQUESTED.store(false, Ordering::Release);
     unsafe {
-        libc::signal(libc::SIGINT, request_shutdown as *const () as libc::sighandler_t);
-        libc::signal(libc::SIGTERM, request_shutdown as *const () as libc::sighandler_t);
+        libc::signal(
+            libc::SIGINT,
+            request_shutdown as *const () as libc::sighandler_t,
+        );
+        libc::signal(
+            libc::SIGTERM,
+            request_shutdown as *const () as libc::sighandler_t,
+        );
     }
     let (mut driver, events) = HostRuntime::start()?;
     for event in events {
@@ -2220,6 +2479,41 @@ fn now_ms() -> u64 {
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
         .as_millis() as u64
+}
+
+/// Whether a notification waits on a "Notify when done" setting.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum WhenDone {
+    /// It always notifies: attention, alerts, a Run's failure.
+    Always,
+    /// A finished turn: the app's own settings decide, or, when `Some`, a
+    /// Run's task setting in their place.
+    Setting(Option<bool>),
+}
+
+/// One notification, as `HostRuntime::deliver_notice` sends it.
+struct Notice<'a> {
+    /// Empty for a Run that never launched.
+    session_id: &'a str,
+    title: &'a str,
+    kind: crate::notifications::NotificationKind,
+    body: Option<&'a str>,
+    when_done: WhenDone,
+    /// The task a Run Session or Run belongs to.
+    schedule_id: Option<&'a str>,
+}
+
+/// Fork-only: Scheduled Tasks. The task definitions for a Run Session's
+/// finished turn; none when they will not read, so the app's own settings
+/// decide as for any Session.
+fn schedules_for_edges() -> Vec<unpeel_core::schedules::Schedule> {
+    unpeel_core::schedule_store::load_schedules().unwrap_or_else(|error| {
+        crate::tracelog::trace(
+            "notification",
+            &format!("Run Session edge without its task's setting: {error}"),
+        );
+        Vec::new()
+    })
 }
 
 fn runtime_launch_metadata(session_id: &str) -> (Option<u64>, Option<u64>) {

@@ -71,7 +71,13 @@ impl HostRuntime {
             return;
         };
         let kind = crate::notifications::NotificationKind::NeedsInput;
-        if self.deliver_notification(&row, kind, Some(&notice.body), false, now_ms()) {
+        if self.deliver_notification(
+            &row,
+            kind,
+            Some(&notice.body),
+            super::WhenDone::Always,
+            now_ms(),
+        ) {
             if let Err(error) = unpeel_core::session_ops::mark_read(&row.id) {
                 crate::tracelog::trace(
                     "supervisor",

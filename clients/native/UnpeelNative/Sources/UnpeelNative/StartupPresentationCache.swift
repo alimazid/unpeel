@@ -9,6 +9,10 @@ struct StartupPresentation: Codable, Equatable, Sendable {
     let nodes: [ProjectNode]
     let pins: [String: [PinnedSidebarSession]]
     let unreadIDs: Set<String>
+    /// Fork-only: Scheduled Tasks. The Run Sessions the Host last called
+    /// superseded, so the disk seed hides them too
+    /// (`ScheduledRunListing.seeding`). Absent in an older cache.
+    var supersededRunIDs: Set<String>? = nil
 }
 
 final class StartupPresentationCache: Sendable {

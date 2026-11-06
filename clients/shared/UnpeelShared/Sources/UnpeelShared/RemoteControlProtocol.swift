@@ -36,6 +36,22 @@ public enum RemoteControlProtocol {
     /// and whether it is installed.
     public static let integrationsInstallCapability = "integrations.install"
     public static let appsOpenCapability = "apps.open"
+    /// Fork-only: Scheduled Tasks. `GET /mobile/schedules` lists every task
+    /// with its next run and latest Run (`RemoteSchedulesList`).
+    public static let schedulesCapability = "schedule.list"
+    /// Fork-only: `GET /mobile/schedules/runs`, one task's Run history
+    /// (`RemoteScheduleRunHistory`).
+    public static let scheduleRunsCapability = "schedule.runs"
+    /// Fork-only: the user's Scheduled Task writes, all `POST`:
+    /// `/mobile/schedules` (`RemoteScheduleCreate`), `/mobile/schedules/edit`
+    /// (`RemoteScheduleEdit`, pause and resume included),
+    /// `/mobile/schedules/delete` and `/mobile/schedules/run`
+    /// (`RemoteScheduleTarget`; Run now answers 409 while a Run is in
+    /// progress).
+    public static let schedulesCreateCapability = "schedule.create"
+    public static let schedulesEditCapability = "schedule.edit"
+    public static let schedulesDeleteCapability = "schedule.delete"
+    public static let schedulesRunCapability = "schedule.run"
 }
 
 /// Additive Host-level capability contract carried by bootstrap.
@@ -525,6 +541,15 @@ public struct RemotePresetSummary: Codable, Equatable, Identifiable, Sendable {
     /// The CLI's brand tint (0xRRGGBB), Mac-resolved like the session
     /// spinner color. Nil = older Mac / no brand color.
     public let tintColorHex: Int?
+    /// Fork-only: Scheduled Tasks. The Host's word on whether this is an
+    /// Agent Preset, the only kind that takes a task's instructions. Nil on
+    /// an older Host: read it as not one; never classify the command here.
+    public let agentPreset: Bool?
+    /// Fork-only: Scheduled Tasks. The Host's word on whether this preset
+    /// turns off its agent's approval prompts (a flag its runtime declares),
+    /// so a task's Runs ask no one. Nil on an older Host: no warning; never
+    /// parse the command's flags here.
+    public let bypassesApprovals: Bool?
 
     public init(
         id: String,
@@ -536,8 +561,12 @@ public struct RemotePresetSummary: Codable, Equatable, Identifiable, Sendable {
         isDefault: Bool = false,
         tintColorHex: Int? = nil,
         projectID: String? = nil,
-        pluginID: String? = nil
+        pluginID: String? = nil,
+        agentPreset: Bool? = nil,
+        bypassesApprovals: Bool? = nil
     ) {
+        self.agentPreset = agentPreset
+        self.bypassesApprovals = bypassesApprovals
         self.id = id
         self.pluginID = pluginID
         self.projectID = projectID
@@ -715,6 +744,15 @@ public struct RemoteSessionSummary: Codable, Equatable, Identifiable, Sendable {
     /// actually runs, before any OSC 7 report arrives. Additive; absent on
     /// older Hosts ⇒ nil (fall back to the project path).
     public let cwd: String?
+    /// Fork-only: Scheduled Tasks. The task this Session is a Run of
+    /// (the clock badge keys off it); nil for every other Session and on
+    /// older Hosts.
+    public let scheduleID: String?
+    /// Fork-only: the Host's verdict that this Run is not its task's latest
+    /// (the Session of the task's current Run). Every Project listing hides a
+    /// superseded row; it stays openable by id from the task's Runs. Absent ⇒
+    /// false.
+    public let superseded: Bool
     /// Fork-only: this Session is the workspace's Super Agent (the Router).
     /// Additive; absent on older Hosts ⇒ false.
     public let superAgent: Bool
@@ -758,6 +796,8 @@ public struct RemoteSessionSummary: Codable, Equatable, Identifiable, Sendable {
         latestAlertBody: String? = nil,
         latestAlertAtUnixMs: Int64? = nil,
         cwd: String? = nil,
+        scheduleID: String? = nil,
+        superseded: Bool = false,
         superAgent: Bool = false,
         superAgentRouterID: String? = nil
     ) {
@@ -796,6 +836,8 @@ public struct RemoteSessionSummary: Codable, Equatable, Identifiable, Sendable {
         self.latestAlertBody = latestAlertBody
         self.latestAlertAtUnixMs = latestAlertAtUnixMs
         self.cwd = cwd
+        self.scheduleID = scheduleID
+        self.superseded = superseded
         self.superAgent = superAgent
         self.superAgentRouterID = superAgentRouterID
     }
@@ -816,7 +858,7 @@ public struct RemoteSessionSummary: Codable, Equatable, Identifiable, Sendable {
         case latestAlertBody, latestAlertAtUnixMs
         case cwd
         case activitySource
-        case superAgent, superAgentRouterID
+        case scheduleID, superseded, superAgent, superAgentRouterID
     }
 
     public init(from decoder: Decoder) throws {
@@ -858,6 +900,8 @@ public struct RemoteSessionSummary: Codable, Equatable, Identifiable, Sendable {
         latestAlertBody = try c.decodeIfPresent(String.self, forKey: .latestAlertBody)
         latestAlertAtUnixMs = try c.decodeIfPresent(Int64.self, forKey: .latestAlertAtUnixMs)
         cwd = try c.decodeIfPresent(String.self, forKey: .cwd)
+        scheduleID = try c.decodeIfPresent(String.self, forKey: .scheduleID)
+        superseded = try c.decodeIfPresent(Bool.self, forKey: .superseded) ?? false
         superAgent = try c.decodeIfPresent(Bool.self, forKey: .superAgent) ?? false
         superAgentRouterID = try c.decodeIfPresent(String.self, forKey: .superAgentRouterID)
     }
@@ -1376,6 +1420,10 @@ public struct RemoteBootstrapSnapshot: Codable, Equatable, Sendable {
     /// `hostProtocol`'s `host.mobile.tls` capability this decides whether a
     /// Controller sends Direct `/mobile` requests over pinned HTTPS.
     public let serverVersion: String?
+    /// Fork-only: Scheduled Tasks. Opaque; moves whenever the `schedules`
+    /// routes would answer differently, so a Controller refetches them on
+    /// the bootstrap refresh instead of polling. Nil on older Hosts.
+    public let schedulesRevision: String?
 
     public init(
         protocolVersion: Int = RemoteControlProtocol.version,
@@ -1405,7 +1453,8 @@ public struct RemoteBootstrapSnapshot: Codable, Equatable, Sendable {
         hostIsolationTier: String? = nil,
         hostEnvironment: RemoteHostEnvironment? = nil,
         hostWorkspaces: [RemoteWorkspaceSummary]? = nil,
-        serverVersion: String? = nil
+        serverVersion: String? = nil,
+        schedulesRevision: String? = nil
     ) {
         self.protocolVersion = protocolVersion
         self.hostProtocol = hostProtocol
@@ -1435,6 +1484,7 @@ public struct RemoteBootstrapSnapshot: Codable, Equatable, Sendable {
         self.hostEnvironment = hostEnvironment
         self.hostWorkspaces = hostWorkspaces
         self.serverVersion = serverVersion
+        self.schedulesRevision = schedulesRevision
     }
 }
 

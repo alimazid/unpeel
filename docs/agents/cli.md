@@ -91,6 +91,66 @@ stored global rows to enabled; headless/Host consumers still honor the
 compatibility flag. Do not silently remove the flag or reinterpret disable as
 delete. Native convergence, if chosen, is a separate product change.
 
+### Scheduled Tasks
+
+`crates/unpeel-cli/src/schedules_cli.rs` owns `unpeel schedules`:
+
+```text
+unpeel schedules [list] [--json]
+unpeel schedules add <name> --project <id|name> --preset <id|label> <trigger>
+                     [--instructions <text>] [--no-notify]
+unpeel schedules edit <id|name> [--name …] [--project …] [--preset …] [<trigger>]
+                      [--instructions <text>] [--notify|--no-notify]
+unpeel schedules pause|resume|run|history|rm <id|name>
+
+<trigger>: --hourly <minute> | --daily <HH:MM[:SS]> | --weekdays <HH:MM[:SS]>
+         | --weekly <day> <HH:MM[:SS]> | --once <YYYY-MM-DDTHH:MM[:SS]>
+         | --cron '<min> <hour> <day> <month> <weekday>'
+```
+
+`--instructions` is accepted only for an Agent Preset — a preset whose command
+names a catalog runtime that shows a readiness signal at launch (a `[screen]`
+idle prompt or its own program status; hooks alone never count, since they are
+an optional integration and report nothing ready at launch;
+`agent_readiness::is_agent_command`) — and capped
+at 256 KiB; any other preset is refused with the reason. `edit` checks new
+instructions against the preset the task will have, removes them with
+`--instructions ''`, and refuses a new preset that cannot take the
+instructions the task keeps.
+
+`add`, `edit`, `pause`, `resume` and `rm` edit the raw `schedules` array
+through `app_state::edit` (unknown entries and fields pass through; an edit
+goes through `unpeel_core::schedules::apply_edit`); the workspace worker
+re-reads it every rescan and fires due tasks itself
+(`unpeel_serve::schedules`). Every Trigger is stored in its canonical form
+(times without zero seconds, a weekday's full lowercase name, a cron
+expression single-spaced) after the save rules every writer runs
+(`unpeel_core::schedules::save`, with `trigger::for_save` on this machine's
+clock, the function the Host uses): they refuse out-of-range values, a past
+Once, a cron expression that is not exactly 5 fields or never comes due, and
+a task the Host would not run (a Project with no folder, a preset that is
+missing or turned off, instructions on a preset that is not an Agent
+Preset), checked against the Projects and presets of `app-state.json` and
+the app's overlay. Pause is
+`enabled: false`; Resume, and a new Trigger, stamp `clock_reset_at_ms`, and
+the due rule counts only occurrences after it, so nothing missed while
+paused runs. `run` (Run now) goes to the live worker over the owner-only
+`/_unpeel/schedules` control path, which refuses while a Run is in
+progress, so it needs a running Host. `list` and `history` read the
+per-task clock and Run log under `<UNPEEL_HOME>/schedules/<id>/`
+(`unpeel_core::schedule_store`); `list`'s next run is
+`trigger::next_run`, the instant the Host publishes. Every verb but `list`
+and `history` refuses inside a Session, the detection `unpeel send` uses.
+`rm` deletes the task and its history; its Run Sessions stay.
+
+Triggers read the local wall clock (`unpeel_serve::schedules::clock`):
+`system_zone()` resolves the zone on every call (`TZ`, else the
+`/etc/localtime` link), so travel takes effect on the next sweep. A time a
+spring-forward change skips comes due when the change ends; a repeated
+time fires once, on its first pass — for every kind, Hourly and cron
+included. Occurrences are compared as local date-times, so after a
+westward trip the same local time does not fire twice.
+
 ### Unpeel Link enrollment
 
 `crates/unpeel-cli/src/link_cli.rs` owns `unpeel link` — the scripted

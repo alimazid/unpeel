@@ -149,6 +149,42 @@ termination output is drained first. Never signal an unverified process group.
   Terminal** remains the distinct maintenance/recovery action for replacing a
   healthy live Host. Replacement paths retain the existing
   metadata/reference transfer rules. Remove prunes all shared references. See Resume recipes below.
+- When a Session's launch command exits, the startup script writes its exit
+  status (`0`, the command's code, or 128 + signal) to
+  `<session dir>/startup-exit` — a temporary file renamed into place — before
+  it execs the fallback login shell; `session_host::read_startup_exit` reads
+  it. A launch clears a stale record first and refuses to start if it cannot.
+  Commands typed later in the fallback shell and Resume Agent's in-place
+  relaunch are not recorded, and the manifest's `exit_code` stays the PTY
+  child's (the fallback shell's).
+- A create's initial text is typed by `initial_text::deliver`: as soon as
+  the control socket exists (`initialTextWhen: "attached"`, the default), or
+  with `"agentReady"` only after the agent's first readiness signal after
+  launch — a program status idle record, a hook seed reporting idle, or the
+  runtime's `[screen]` idle prompt (`agent_readiness`, read from the
+  manifest and Session dir, so it holds whoever owns notifications). A
+  Running Session with no activity is never ready. After 120 s nothing is
+  typed. An `agentReady` wait's outcome lands in
+  `<session dir>/initial-text.json` (`state`: `waiting`, `delivered` with
+  its `signal`, `readiness_timeout`, `exited`, `host_not_ready`,
+  `delivery_failed`); `attached` records nothing, as before the field.
+- A Scheduled Task with instructions runs its Agent Preset as typed and
+  types them through the same `agentReady` wait
+  (`unpeel_serve::schedules::agent_run`). Its Run line records the phase —
+  `launching`, `waiting_ready`, `prompted` (with `prompted_at_ms`),
+  `working` — and the worker follows it on its own activity rows, rebuilt
+  every rescan in both notification-ownership modes, never on rescan's
+  "finished" rule (which skips screen-tier edges). `working` is the first
+  working signal after the paste (a program's `last_non_idle_at` counts, so
+  a turn between two scans is not missed); `done` is the first idle or done
+  edge after it, with the program's done summary, the Stop hook's reply, or
+  else the reply on screen as its snippet. No readiness in 120 s is
+  `failed_to_start` (the Session stays open); no working signal within 60 s
+  of the paste, or an attention edge, is `needs_you` — in progress, never
+  timed out or killed, still finished by a later done edge; the agent
+  exiting first is `failed` with its exit code. A Host restart while a Run
+  starts fails it. `UNPEEL_AGENT_WORKING_TIMEOUT_MS` shortens the 60 s
+  window on test Hosts (`UNPEEL_TEST=1`).
 
 ### Recent ordering (sidebar + shared ⌘K/^K contract)
 

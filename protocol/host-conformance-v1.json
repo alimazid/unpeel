@@ -727,6 +727,21 @@
       }
     },
     {
+      "id": "create.unknown-initial-text-when",
+      "method": "POST",
+      "path": "/mobile/sessions",
+      "body": {
+        "projectID": "conformance-project",
+        "command": "true",
+        "initialText": "conformance",
+        "initialTextWhen": "notAValue"
+      },
+      "expected": {
+        "native": 400,
+        "tui": 400
+      }
+    },
+    {
       "id": "presets.create-missing-command",
       "method": "POST",
       "path": "/mobile/presets",
@@ -1246,6 +1261,150 @@
         "native": 400,
         "tui": 400
       }
+    },
+    {
+      "id": "schedules.list",
+      "method": "GET",
+      "path": "/mobile/schedules",
+      "expected": {
+        "native": 200,
+        "tui": 200
+      }
+    },
+    {
+      "id": "schedules.runs.missing-id",
+      "method": "GET",
+      "path": "/mobile/schedules/runs",
+      "expected": {
+        "native": 400,
+        "tui": 400
+      },
+      "expectedCode": "invalid_request"
+    },
+    {
+      "id": "schedules.runs.invalid-id",
+      "method": "GET",
+      "path": "/mobile/schedules/runs",
+      "query": {
+        "scheduleID": "../app-state"
+      },
+      "expected": {
+        "native": 400,
+        "tui": 400
+      },
+      "expectedCode": "invalid_request"
+    },
+    {
+      "id": "schedules.runs.unknown",
+      "method": "GET",
+      "path": "/mobile/schedules/runs",
+      "query": {
+        "scheduleID": "conformance-unknown"
+      },
+      "expected": {
+        "native": 404,
+        "tui": 404
+      },
+      "expectedCode": "unknown_task"
+    },
+    {
+      "id": "schedules.create.no-name",
+      "method": "POST",
+      "path": "/mobile/schedules",
+      "body": {},
+      "expected": {
+        "native": 400,
+        "tui": 400
+      },
+      "expectedCode": "invalid_request"
+    },
+    {
+      "id": "schedules.create.no-trigger",
+      "method": "POST",
+      "path": "/mobile/schedules",
+      "body": {
+        "name": "Conformance"
+      },
+      "expected": {
+        "native": 400,
+        "tui": 400
+      },
+      "expectedCode": "invalid_request"
+    },
+    {
+      "id": "schedules.edit.missing-id",
+      "method": "POST",
+      "path": "/mobile/schedules/edit",
+      "body": {
+        "name": "Conformance"
+      },
+      "expected": {
+        "native": 400,
+        "tui": 400
+      },
+      "expectedCode": "invalid_request"
+    },
+    {
+      "id": "schedules.edit.unknown",
+      "method": "POST",
+      "path": "/mobile/schedules/edit",
+      "body": {
+        "scheduleID": "conformance-unknown",
+        "name": "Conformance"
+      },
+      "expected": {
+        "native": 404,
+        "tui": 404
+      },
+      "expectedCode": "unknown_task"
+    },
+    {
+      "id": "schedules.delete.missing-id",
+      "method": "POST",
+      "path": "/mobile/schedules/delete",
+      "body": {},
+      "expected": {
+        "native": 400,
+        "tui": 400
+      },
+      "expectedCode": "invalid_request"
+    },
+    {
+      "id": "schedules.delete.unknown",
+      "method": "POST",
+      "path": "/mobile/schedules/delete",
+      "body": {
+        "scheduleID": "conformance-unknown"
+      },
+      "expected": {
+        "native": 404,
+        "tui": 404
+      },
+      "expectedCode": "unknown_task"
+    },
+    {
+      "id": "schedules.run.missing-id",
+      "method": "POST",
+      "path": "/mobile/schedules/run",
+      "body": {},
+      "expected": {
+        "native": 400,
+        "tui": 400
+      },
+      "expectedCode": "invalid_request"
+    },
+    {
+      "id": "schedules.run.unknown",
+      "method": "POST",
+      "path": "/mobile/schedules/run",
+      "body": {
+        "scheduleID": "conformance-unknown"
+      },
+      "expected": {
+        "native": 404,
+        "tui": 404
+      },
+      "expectedCode": "unknown_task"
     }
   ],
   "additiveBootstrapFields": [
@@ -1287,6 +1446,199 @@
         "id": "<string>"
       },
       "note": "Present only when the Host detects it runs inside a Box (kind box). Additive/optional; no policy in 0.5.0."
+    },
+    {
+      "field": "schedulesRevision",
+      "required": false,
+      "note": "Fork-only: Scheduled Tasks. Opaque; changes whenever GET /mobile/schedules or a task's GET /mobile/schedules/runs would answer differently. Controllers refetch the schedules routes when it moves instead of polling them. Absent on Hosts without the schedules capability."
+    },
+    {
+      "field": "presets[].agentPreset",
+      "required": false,
+      "note": "Fork-only: Scheduled Tasks. On every preset row: whether the preset is an Agent Preset (its command starts a runtime that shows a readiness signal at launch: a [screen] idle prompt or its own program status), the only kind that takes a task's instructions. Controllers show the Instructions field only when it is true and never classify a command themselves; absent (an older Host) reads as false."
+    },
+    {
+      "field": "presets[].bypassesApprovals",
+      "required": false,
+      "note": "Fork-only: Scheduled Tasks. On every preset row: whether the preset's command passes one of its runtime's declared approval-bypass flags (runtimes/<slug>/runtime.toml [approvals]), so its Runs act with no one asked. Controllers warn from this field alone and never parse a command's flags; absent (an older Host) reads as false."
     }
-  ]
+  ],
+  "scheduleWriteRefusals": {
+    "note": "Fork-only: Scheduled Tasks. Every write route's error body is {\"error\": <message>, \"code\": <code>}. Controllers branch on `code` (never the message) and show the message for a code they do not know; codes are additive. `codes` is the whole vocabulary; `cases` are refusals a Host gives with a catalog of Project `p` (folder /work) and presets `ok` (a script) and `claude` (an Agent Preset), on a clock where 2020 has passed. A case with `withoutHost` is a process with no workspace worker.",
+    "codes": [
+      {
+        "code": "invalid_request",
+        "status": 400,
+        "meaning": "a malformed body, field or task name"
+      },
+      {
+        "code": "forbidden",
+        "status": 403,
+        "meaning": "this principal may not change Scheduled Tasks"
+      },
+      {
+        "code": "unknown_task",
+        "status": 404,
+        "meaning": "no such Scheduled Task (it may have been deleted)"
+      },
+      {
+        "code": "invalid_trigger",
+        "status": 400,
+        "meaning": "the Trigger does not read or never comes due"
+      },
+      {
+        "code": "trigger_in_past",
+        "status": 400,
+        "meaning": "a Once time that has passed, on an enabled task"
+      },
+      {
+        "code": "project_missing",
+        "status": 400,
+        "meaning": "no Project, an unknown one, or one with no folder"
+      },
+      {
+        "code": "preset_missing",
+        "status": 400,
+        "meaning": "no preset, an unknown one, or one turned off"
+      },
+      {
+        "code": "not_agent_preset",
+        "status": 400,
+        "meaning": "instructions on a preset that is not an Agent Preset"
+      },
+      {
+        "code": "instructions_too_large",
+        "status": 400,
+        "meaning": "instructions longer than one create may type"
+      },
+      {
+        "code": "run_in_progress",
+        "status": 409,
+        "meaning": "Run now while a Run of the task is in progress"
+      },
+      {
+        "code": "run_no_answer",
+        "status": 504,
+        "meaning": "the Host did not answer Run now in time; the Run may still start"
+      },
+      {
+        "code": "host_unavailable",
+        "status": 503,
+        "meaning": "no workspace worker, or it has not published its catalog yet"
+      },
+      {
+        "code": "internal",
+        "status": 500,
+        "meaning": "the Host could not read or write its state"
+      }
+    ],
+    "cases": [
+      {
+        "id": "create.past-once",
+        "path": "/mobile/schedules",
+        "body": {
+          "name": "Conformance",
+          "projectID": "p",
+          "presetID": "ok",
+          "trigger": {
+            "kind": "once",
+            "at": "2020-01-01T09:00"
+          }
+        },
+        "status": 400,
+        "code": "trigger_in_past"
+      },
+      {
+        "id": "create.unknown-trigger",
+        "path": "/mobile/schedules",
+        "body": {
+          "name": "Conformance",
+          "projectID": "p",
+          "presetID": "ok",
+          "trigger": {
+            "kind": "fortnightly"
+          }
+        },
+        "status": 400,
+        "code": "invalid_trigger"
+      },
+      {
+        "id": "create.unknown-project",
+        "path": "/mobile/schedules",
+        "body": {
+          "name": "Conformance",
+          "projectID": "conformance-gone",
+          "presetID": "ok",
+          "trigger": {
+            "kind": "daily",
+            "time": "09:00"
+          }
+        },
+        "status": 400,
+        "code": "project_missing"
+      },
+      {
+        "id": "create.unknown-preset",
+        "path": "/mobile/schedules",
+        "body": {
+          "name": "Conformance",
+          "projectID": "p",
+          "presetID": "conformance-gone",
+          "trigger": {
+            "kind": "daily",
+            "time": "09:00"
+          }
+        },
+        "status": 400,
+        "code": "preset_missing"
+      },
+      {
+        "id": "create.instructions-on-a-script",
+        "path": "/mobile/schedules",
+        "body": {
+          "name": "Conformance",
+          "projectID": "p",
+          "presetID": "ok",
+          "trigger": {
+            "kind": "daily",
+            "time": "09:00"
+          },
+          "instructions": "brief me"
+        },
+        "status": 400,
+        "code": "not_agent_preset"
+      },
+      {
+        "id": "create.bad-name",
+        "path": "/mobile/schedules",
+        "body": {
+          "name": "   ",
+          "projectID": "p",
+          "presetID": "ok",
+          "trigger": {
+            "kind": "daily",
+            "time": "09:00"
+          }
+        },
+        "status": 400,
+        "code": "invalid_request"
+      },
+      {
+        "id": "create.without-a-host",
+        "path": "/mobile/schedules",
+        "body": {
+          "name": "Conformance",
+          "projectID": "p",
+          "presetID": "ok",
+          "trigger": {
+            "kind": "daily",
+            "time": "09:00"
+          }
+        },
+        "withoutHost": true,
+        "status": 503,
+        "code": "host_unavailable"
+      }
+    ]
+  }
 }

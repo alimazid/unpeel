@@ -18,6 +18,8 @@ enum SidebarSectionID: String, CaseIterable, Sendable {
     case projects
     // Fork-only: the activity dropdown as a section
     case agents
+    // Fork-only: Scheduled Tasks
+    case scheduled
     case explorer
     // Fork-only: git support
     case gitHistory
@@ -26,6 +28,7 @@ enum SidebarSectionID: String, CaseIterable, Sendable {
         switch self {
         case .projects: return "PROJECTS"
         case .agents: return "AGENTS"
+        case .scheduled: return "SCHEDULED"
         case .explorer: return "EXPLORER"
         case .gitHistory: return "GIT HISTORY"
         }
@@ -37,6 +40,7 @@ enum SidebarSectionID: String, CaseIterable, Sendable {
         switch self {
         case .projects: return 80
         case .agents: return 80
+        case .scheduled: return 60
         case .explorer: return 120
         case .gitHistory: return 100
         }

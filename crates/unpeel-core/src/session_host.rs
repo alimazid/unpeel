@@ -61,6 +61,8 @@ const SESSION_OUTPUT_JOURNAL_ADVANCE_BYTES: u64 = 8 * 1024 * 1024;
 /// treat the truncated suffix as a fresh Ground-state terminal stream.
 const SESSION_OUTPUT_JOURNAL_CONTROL_SLACK_BYTES: u64 = 64 * 1024;
 pub const OUTPUT_RETENTION_FILE: &str = "output-retention.json";
+/// The launch command's exit status, written by the startup script.
+pub const STARTUP_EXIT_FILE: &str = "startup-exit";
 const SESSION_HEARTBEAT_INTERVAL_MS: u64 = 60_000;
 const SESSION_HEARTBEAT_STALE_MS: u64 = 180_000;
 /// How often the host re-scans a session's visible screen for an agent-drawn
@@ -179,6 +181,17 @@ pub struct SessionHostLaunch {
     /// Legacy launch field. Retained for compatibility; never enables a tool.
     #[serde(default)]
     pub computer_mcp_enabled: bool,
+    /// Set only for a Scheduled Task's Run: the Session's environment names
+    /// the task and the Run (`UNPEEL_SCHEDULE_ID`, `UNPEEL_SCHEDULE_RUN_ID`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub schedule_run: Option<ScheduleRunLaunch>,
+}
+
+/// The Scheduled Task and Run a Run Session belongs to.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ScheduleRunLaunch {
+    pub schedule_id: String,
+    pub run_id: String,
 }
 
 fn default_mcp_enabled() -> bool {
@@ -2364,10 +2377,27 @@ fn attach_ready_wait_snippet(session_id: &str) -> String {
     )
 }
 
+/// Shell snippet that publishes `$__unpeel_startup_status` to the Session's
+/// `startup-exit` file: written beside it, then renamed over it, so a reader
+/// sees either no file or the whole status. `>|` keeps a user's `noclobber`
+/// from refusing the temporary file; `/bin/mv` sidesteps a `mv` alias from the
+/// user's rc files (same reasoning as the completion marker's `/bin/mkdir`).
+/// Errors are left visible: a Session folder that cannot take a few bytes is
+/// worth a line above the prompt, and the fallback shell still starts.
+fn startup_exit_record_snippet(startup_exit_path: &Path) -> String {
+    let quoted = shared::shell_quote(&startup_exit_path.to_string_lossy());
+    format!(
+        "__unpeel_startup_exit={quoted}; \
+         printf '%s\\n' \"$__unpeel_startup_status\" >| \"${{__unpeel_startup_exit}}.tmp\" \
+         && /bin/mv -f \"${{__unpeel_startup_exit}}.tmp\" \"$__unpeel_startup_exit\""
+    )
+}
+
 fn build_startup_shell_script(
     shell_path: &str,
     shell_prelude: Vec<String>,
     startup_command: &str,
+    startup_exit_path: &Path,
     history_snippet: Option<String>,
 ) -> String {
     let mut shell_segments = Vec::new();
@@ -2394,6 +2424,10 @@ fn build_startup_shell_script(
     shell_segments.push("__unpeel_startup_status=$?".to_string());
     shell_segments.push("trap - INT".to_string());
     shell_segments.push("set +e".to_string());
+    // Record the status only after `set +e`: the command ran in this shell
+    // and may have turned errexit back on, and a failed write must never
+    // cost the fallback shell. The Host reads it via `read_startup_exit`.
+    shell_segments.push(startup_exit_record_snippet(startup_exit_path));
 
     if let Some(history_snippet) = history_snippet {
         shell_segments.push(format!("{{ {history_snippet}; }}"));
@@ -2469,6 +2503,50 @@ pub fn manifest_path(session_id: &str) -> PathBuf {
 
 pub fn launch_path(session_id: &str) -> PathBuf {
     session_dir(session_id).join("launch.json")
+}
+
+/// Where the launch script records its command's exit status before it execs
+/// the fallback shell. The file appearing means the launch command exited.
+pub fn startup_exit_path(session_id: &str) -> PathBuf {
+    session_dir(session_id).join(STARTUP_EXIT_FILE)
+}
+
+/// The exit status of this Session's launch command: `None` while it runs,
+/// for a blank-terminal Session, or when the record is unreadable. `0` is a
+/// clean exit; a command killed by a signal reads as 128 + the signal.
+pub fn read_startup_exit(session_id: &str) -> Option<i32> {
+    read_startup_exit_path(&startup_exit_path(session_id))
+}
+
+fn read_startup_exit_path(path: &Path) -> Option<i32> {
+    fs::read_to_string(path).ok()?.trim().parse().ok()
+}
+
+/// The name the startup script writes before its rename: `<record>.tmp`.
+fn startup_exit_temporary_path(path: &Path) -> PathBuf {
+    let mut name = path.as_os_str().to_os_string();
+    name.push(".tmp");
+    PathBuf::from(name)
+}
+
+/// A stale record would read as the new launch having already exited, so the
+/// launch refuses to start while one it cannot delete survives (the same
+/// fail-closed rule as the runtime completion marker).
+fn prepare_startup_exit_record(path: &Path) -> Result<(), String> {
+    let temporary = startup_exit_temporary_path(path);
+    for stale in [path, temporary.as_path()] {
+        match fs::remove_file(stale) {
+            Ok(()) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => {
+                return Err(format!(
+                    "Failed to clear stale launch exit record {}: {error}",
+                    stale.display()
+                ))
+            }
+        }
+    }
+    Ok(())
 }
 
 pub fn output_path(session_id: &str) -> PathBuf {
@@ -6062,6 +6140,8 @@ pub(crate) fn start_host(
         let initial_runtime_launched_at = launches_stable_runtime.then(current_timestamp_ms);
         let initial_runtime_completion_path = runtime_launch_completion_path(&launch.session.id);
         prepare_runtime_launch_completion_marker(&initial_runtime_completion_path)?;
+        let startup_exit_record = startup_exit_path(&launch.session.id);
+        prepare_startup_exit_record(&startup_exit_record)?;
 
         // Write a preliminary manifest immediately, before the environment is
         // assembled and the PTY spawn runs. A client (unpeel-attach) spawned in parallel
@@ -6234,6 +6314,7 @@ pub(crate) fn start_host(
                 &shell,
                 shell_prelude,
                 &startup_command,
+                &startup_exit_record,
                 history_snippet,
             );
             let script_arg = match launch_shell_family {
@@ -6457,11 +6538,11 @@ mod tests {
         fish_bridge_script, fish_single_quote, load_manifest, manifest_child_is_definitively_gone,
         manifest_heartbeat_is_stale, manifest_host_is_healthy, manifest_last_heartbeat_at,
         manifest_pid_identity, normalize_prompt_title, output_path, output_retained_from,
-        process_exists, process_is_zombie, process_start_time_ms, read_input_stream_frame,
-        read_output_chunk, read_output_stream_frame, recorded_pid_identity,
-        refresh_manifest_health_from_manifest, retry_manifest_write,
-        run_batched_output_stream_forwarder, run_batched_output_writer, run_host,
-        runtime_generation_scoped_command, safe_output_retention_boundary, save_manifest,
+        prepare_startup_exit_record, process_exists, process_is_zombie, process_start_time_ms,
+        read_input_stream_frame, read_output_chunk, read_output_stream_frame,
+        read_startup_exit_path, recorded_pid_identity, refresh_manifest_health_from_manifest,
+        retry_manifest_write, run_batched_output_stream_forwarder, run_batched_output_writer,
+        run_host, runtime_generation_scoped_command, safe_output_retention_boundary, save_manifest,
         shell_family, strip_env_prefix_from_process_command, strip_env_prefix_from_pty_command,
         update_manifest_session, write_output_stream_frame, HostAnsweredQuery,
         HostedSessionManifest, HostedSessionRuntime, HostedSessionState, OscTitleScanner,
@@ -6843,6 +6924,7 @@ mod tests {
             "/bin/zsh",
             vec!["export UNPEEL_SESSION_ID='session-1'".to_string()],
             "false",
+            std::path::Path::new("/tmp/session-1/startup-exit"),
             Some("print -sr -- 'codex'; fc -AI".to_string()),
         );
 
@@ -6853,6 +6935,90 @@ mod tests {
         ));
         assert!(script.contains("; { print -sr -- 'codex'; fc -AI; }; set +e; "));
         assert!(script.ends_with("; exec '/bin/zsh' -l -i"));
+    }
+
+    /// The launch command's exit status lands in the Session's `startup-exit`
+    /// file before the fallback shell starts, under every Bourne shell the
+    /// Host runs the script with: a clean exit, a non-zero exit, and a command
+    /// killed by a signal (128 + signal, SIGTERM = 15). Runs the real composed
+    /// script; the fallback exec goes to `true` so the shell ends by itself.
+    #[cfg(unix)]
+    #[test]
+    fn startup_shell_script_records_the_command_exit_status() {
+        let shells: Vec<(&str, &[&str])> = vec![
+            ("/bin/sh", &["-c"]),
+            ("/bin/bash", &["-c"]),
+            ("/bin/zsh", &["-f", "-c"]),
+        ];
+        let commands = [
+            ("true", "0"),
+            ("/bin/sh -c 'exit 3'", "3"),
+            ("/bin/sh -c 'kill -TERM $$'", "143"),
+        ];
+        for (shell, flags) in shells {
+            if !std::path::Path::new(shell).exists() {
+                eprintln!("skipping {shell}: not installed");
+                continue;
+            }
+            for (command, expected) in commands {
+                let temp = tempfile::tempdir().expect("startup-exit temp dir");
+                let exit_path = temp.path().join("startup-exit");
+                let script = build_startup_shell_script(
+                    "/usr/bin/true",
+                    vec!["export UNPEEL_SESSION_ID='session-1'".to_string()],
+                    command,
+                    &exit_path,
+                    None,
+                );
+                let status = std::process::Command::new(shell)
+                    .args(flags)
+                    .arg(&script)
+                    .stdin(std::process::Stdio::null())
+                    .status()
+                    .expect("run startup script");
+                assert!(
+                    status.success(),
+                    "{shell} {command:?}: fallback exec not reached"
+                );
+                let recorded = fs::read_to_string(&exit_path)
+                    .unwrap_or_else(|error| panic!("{shell} {command:?}: no record: {error}"));
+                assert_eq!(recorded.trim(), expected, "{shell} {command:?}");
+                let leftovers: Vec<_> = fs::read_dir(temp.path())
+                    .expect("list temp dir")
+                    .map(|entry| entry.expect("dir entry").file_name())
+                    .collect();
+                assert_eq!(leftovers, vec![OsString::from("startup-exit")], "{shell}");
+            }
+        }
+    }
+
+    #[test]
+    fn startup_exit_record_reads_back_and_a_relaunch_clears_a_stale_one() {
+        let temp = tempfile::tempdir().expect("startup-exit temp dir");
+        let record = temp.path().join("startup-exit");
+        let temporary = temp.path().join("startup-exit.tmp");
+        assert_eq!(read_startup_exit_path(&record), None, "still running");
+
+        fs::write(&record, "3\n").expect("write record");
+        assert_eq!(read_startup_exit_path(&record), Some(3));
+        fs::write(&record, "143").expect("write record");
+        assert_eq!(read_startup_exit_path(&record), Some(143));
+        for unreadable in ["", "\n", "exited", "3 4"] {
+            fs::write(&record, unreadable).expect("write record");
+            assert_eq!(read_startup_exit_path(&record), None, "{unreadable:?}");
+        }
+
+        fs::write(&record, "0\n").expect("write stale record");
+        fs::write(&temporary, "1").expect("write stale temporary");
+        prepare_startup_exit_record(&record).expect("clear stale record");
+        assert!(!record.exists() && !temporary.exists());
+        prepare_startup_exit_record(&record).expect("nothing to clear is fine");
+
+        fs::create_dir(&record).expect("undeletable stale entry");
+        assert!(
+            prepare_startup_exit_record(&record).is_err(),
+            "fails closed"
+        );
     }
 
     /// Ctrl-C into the runtime must land the user in the fallback shell, not
@@ -6874,10 +7040,13 @@ mod tests {
         }
         // The "history" segment doubles as the survival marker; the trailing
         // fallback exec goes to `true` so the shell ends by itself.
+        let temp = tempfile::tempdir().expect("startup-exit temp dir");
+        let exit_path = temp.path().join("startup-exit");
         let script = build_startup_shell_script(
             "/usr/bin/true",
             vec!["export UNPEEL_TEST_MARK=1".to_string()],
             "sleep 30",
+            &exit_path,
             Some("printf 'SURVIVED status=%s' \"$__unpeel_startup_status\"".to_string()),
         );
         let pty = native_pty_system();
@@ -6925,6 +7094,9 @@ mod tests {
             text.contains("SURVIVED status=130"),
             "wrapper shell did not survive Ctrl-C: {text:?}"
         );
+        // The interrupted command is recorded like any other exit: 128 + SIGINT.
+        let recorded = fs::read_to_string(&exit_path).expect("interrupted command recorded");
+        assert_eq!(recorded.trim(), "130");
     }
 
     #[test]
@@ -7111,6 +7283,7 @@ exit "${UNPEEL_FAKE_PROVIDER_STATUS:-0}"
             "/opt/homebrew/bin/fish",
             vec!["export UNPEEL_SESSION_ID='session-1'".to_string()],
             "claude",
+            std::path::Path::new("/tmp/session-1/startup-exit"),
             None,
         );
         let bridge = fish_bridge_script(&script);
@@ -7141,6 +7314,8 @@ exit "${UNPEEL_FAKE_PROVIDER_STATUS:-0}"
 
         // Fallback exec target is /usr/bin/true so the test never lands in an
         // interactive shell; everything before it is the real composed script.
+        let temp = tempfile::tempdir().expect("startup-exit temp dir");
+        let exit_path = temp.path().join("startup-exit");
         let script = build_startup_shell_script(
             "/usr/bin/true",
             vec![
@@ -7149,6 +7324,7 @@ exit "${UNPEEL_FAKE_PROVIDER_STATUS:-0}"
                 "__i=0; while [ \"$__i\" -lt 3 ]; do __i=$((__i+1)); done".to_string(),
             ],
             "printf '%s' \"marker=$UNPEEL_FISH_TEST\"",
+            &exit_path,
             None,
         );
 
@@ -7174,6 +7350,8 @@ exit "${UNPEEL_FAKE_PROVIDER_STATUS:-0}"
             bridged.status,
             String::from_utf8_lossy(&bridged.stderr)
         );
+        let recorded = fs::read_to_string(&exit_path).expect("bridged command recorded");
+        assert_eq!(recorded.trim(), "0");
     }
 
     #[test]

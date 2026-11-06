@@ -274,6 +274,69 @@ Resume or Reload wins. A failed removal backs off for a minute and is
 reported as a worker warning; each removal is traced (`host-worker removed
 stopped session <id> past the keep limit`).
 
+### Scheduled Tasks for Controllers (fork-only)
+
+`unpeel_core::controller_schedules` serves two read routes from the core
+router, so `/mobile`, the local gateway and SSH answer alike, to paired
+devices and owner transports only: `GET /mobile/schedules` (capability
+`schedule.list`: every task with its next run and latest Run — the Run in
+progress if there is one, else the newest outcome, `schedules::current_run`,
+the same Run the worker follows, so an occurrence skipped behind a live Run
+never hides it) and `GET
+/mobile/schedules/runs?scheduleID=<id>[&limit=<n>]` (`schedule.runs`: the
+history, newest first). Both read the disk, never the scheduler: definitions
+from `app-state.json`, the next run from the `clock.json` the worker
+publishes and the Runs from `runs.jsonl`. Bootstrap's `schedulesRevision`
+moves whenever either route would answer differently, and the worker pings
+the state bus (`schedules`) when a sweep starts or records a Run, so
+Controllers reread on the refresh they already have instead of polling.
+`protocol/schedules-samples-v1.json` pins both bodies for the Host and the
+Swift DTOs. The Mac app's SCHEDULED section (`ScheduledSectionModel`) is the
+reader.
+
+The user's writes are core routes too, all `POST`, camelCase bodies with
+the Trigger in its stored shape: `/mobile/schedules` (`schedule.create`),
+`/mobile/schedules/edit` (`schedule.edit`; pause and resume are `enabled`),
+`/mobile/schedules/delete` (`schedule.delete`: the task and its history,
+never its Run Sessions) and `/mobile/schedules/run` (`schedule.run`: Run
+now, 409 while a Run is in progress). They edit `app-state.json` raw under
+its flock and announce, like `unpeel schedules`, and are replay-protected.
+Every refusal of the schedules routes answers `{"error": <message>, "code":
+<code>}`; the codes (`trigger_in_past`, `not_agent_preset`,
+`run_in_progress`, …) are listed with their statuses in
+`scheduleWriteRefusals` of `protocol/host-conformance-v1.json`, and
+Controllers word a refusal from its code, never its message (the bridge
+hands the Mac app `hostStatus`, `hostCode` and `hostMessage`).
+They check a task with the same save rules as the CLI and a starting Run
+(`unpeel_core::schedules::save`). What they cannot do from the disk comes
+from the `ScheduleHost` the workspace worker installs at start
+(`schedules::host::WorkerHost`): `trigger::for_save` on the Host's clock (a
+task saved enabled must come due; resuming re-checks), the create catalog
+its Runs resolve against (a Project with a folder, an enabled preset,
+instructions only on an Agent Preset), and Run now through the driver (the same request `unpeel schedules run` sends
+over `/_unpeel/schedules`). A process without a worker (the SSH fallback
+gateway) leaves the four ids out of its descriptor and answers 503. Every
+bootstrap preset row carries `agentPreset` and `bypassesApprovals`
+(`controller_schedules::mark_agent_presets`), so a Controller shows a task's
+Instructions field only where the Host would accept them, and warns about a
+preset that turns off its agent's approval prompts from the runtime's own
+declared flags (`[approvals]` in its `runtime.toml`), never by parsing the
+command itself.
+
+Session rows carry two additive fields on a Run Session (`spawned_by`
+`schedule:<id>`), from both builders (`sessions.rs` `mobile_snapshot` and
+`controller_host.rs` `DiskCatalog`): `scheduleID` (the task; the app's clock
+badge) and `superseded`. A Run Session is superseded when it is not the
+Session of its task's `current_run`; a pinned Run never is, and a task
+with no Run log supersedes nothing (`schedules::run_sessions`). Once the
+logged Session is gone, the task's newest Run Session stands in: Resume
+replaces a Session under a new id but keeps its `spawned_by` and
+`created_at`. Controllers
+hide a superseded row from every Project listing (PROJECTS, AGENTS, ⌘K, the
+phone's sidebar and bell) but keep it openable by id, which is how the
+SCHEDULED section reaches older Runs. Run Sessions take no slot in either
+builder's stopped window; Run retention bounds them per task.
+
 ### Browser engine install (`serve.json.browserEngine`)
 
 At start the worker spawns one `browser-engine-install` thread that runs

@@ -49,6 +49,10 @@ attention_reliable = true
 working = ["esc to interrupt", "• Working"]
 idle_prompt = ["›"]
 
+# The arguments that turn off this runtime's approval prompts.
+[approvals]
+bypass_flags = ["--dangerously-bypass-approvals-and-sandbox", "--yolo"]
+
 [integration]
 summary = "Registers native hooks in ~/.codex/hooks.json, the notify reporter and [mcp_servers.unpeel] in ~/.codex/config.toml."
 legacy_evidence = ["hooks/codex-notify-hook.sh"]

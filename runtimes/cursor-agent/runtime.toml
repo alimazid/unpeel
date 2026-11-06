@@ -41,6 +41,10 @@ fallback = "none"
 completion_reliable = true
 attention_reliable = true
 
+# The arguments that turn off this runtime's approval prompts.
+[approvals]
+bypass_flags = ["--force"]
+
 [integration]
 summary = "Registers hooks in ~/.cursor/hooks.json and the unpeel MCP server in ~/.cursor/mcp.json."
 legacy_evidence = ["hooks/cursor-hook.sh"]

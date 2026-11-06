@@ -133,6 +133,7 @@ fn row(id: &str, status: Status) -> SessionRow {
         activity_at: 1,
         group_id: "p".into(),
         detected_local_urls: Vec::new(),
+        spawned_by: None,
         is_worker: id != ROUTER && id != "user",
         is_router: id == ROUTER,
     }

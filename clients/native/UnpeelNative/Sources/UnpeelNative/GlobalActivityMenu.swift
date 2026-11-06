@@ -73,7 +73,8 @@ struct WorkspaceActivityMenuSlice: Equatable {
         }
 
         var seen = Set<String>()
-        for summary in snapshot.sessions {
+        // Fork-only: a superseded Run is in none of a Project's listings.
+        for summary in snapshot.sessions where ScheduledRunListing.isListed(summary) {
             guard seen.insert(summary.id).inserted else { continue }
             let item = WorkspaceActivityMenuSession(
                 sessionID: summary.id,

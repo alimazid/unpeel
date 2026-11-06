@@ -2192,11 +2192,42 @@ fn mcp_features_enabled_for_launch() -> (bool, bool, bool) {
 /// Spawn a fresh hosted session. Hook assets install host-side at spawn, so
 /// callers only provide the launch parameters. Returns the new session id.
 pub fn spawn_session(
+    session: SessionInfo,
+    cwd: &str,
+    hook_port: Option<u16>,
+    initial_cols: u16,
+    initial_rows: u16,
+) -> Result<String, String> {
+    spawn_session_with(session, cwd, hook_port, initial_cols, initial_rows, None)
+}
+
+/// [`spawn_session`] for a Scheduled Task's Run: the same launch, plus the
+/// task and Run in the Session's environment.
+pub fn spawn_scheduled_session(
+    session: SessionInfo,
+    cwd: &str,
+    hook_port: Option<u16>,
+    initial_cols: u16,
+    initial_rows: u16,
+    run: crate::session_host::ScheduleRunLaunch,
+) -> Result<String, String> {
+    spawn_session_with(
+        session,
+        cwd,
+        hook_port,
+        initial_cols,
+        initial_rows,
+        Some(run),
+    )
+}
+
+fn spawn_session_with(
     mut session: SessionInfo,
     cwd: &str,
     hook_port: Option<u16>,
     initial_cols: u16,
     initial_rows: u16,
+    schedule_run: Option<crate::session_host::ScheduleRunLaunch>,
 ) -> Result<String, String> {
     if session.id.is_empty() {
         session.id = uuid::Uuid::new_v4().to_string().to_lowercase();
@@ -2223,6 +2254,7 @@ pub fn spawn_session(
         mcp_enabled: sessions_mcp_enabled,
         browser_mcp_enabled,
         computer_mcp_enabled,
+        schedule_run,
     };
     let launch_file = write_launch_file(&launch)?;
     let host = resolve_host_binary()?;
@@ -2555,7 +2587,28 @@ fn restart_session_unlocked(
         }
         return Err(message);
     }
+    if !keep_id {
+        follow_replaced_run_session(&old.session, session_id, &replacement_id);
+    }
     Ok(replacement_id)
+}
+
+/// A Scheduled Task's Runs keep opening a Run Session that a Resume
+/// replaced under a new id. Best effort: the replacement already runs, and
+/// a Run that still names the old id only loses its link.
+fn follow_replaced_run_session(old: &SessionInfo, old_id: &str, new_id: &str) {
+    let Some(task) = crate::schedules::run_sessions::schedule_id(old.spawned_by.as_deref()) else {
+        return;
+    };
+    match crate::schedule_store::TaskStore::for_schedule(task)
+        .and_then(|store| store.replace_session(old_id, new_id))
+    {
+        Ok(true) => crate::state_bus::announce(crate::state_bus::Change::Schedules, None),
+        Ok(false) => {}
+        Err(error) => {
+            log::warn!("Runs of {task} still name {old_id}, replaced by {new_id}: {error}")
+        }
+    }
 }
 
 /// Best-effort cleanup for every failure after the original Session has been

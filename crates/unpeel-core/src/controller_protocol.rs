@@ -32,6 +32,8 @@ pub const NATIVE_HOST_CAPABILITIES: &[&str] = &[
     "push.register",
     "relay.credentials.recover",
     "session.create",
+    // Fork-only: `initialTextWhen: "agentReady"` on `session.create`.
+    "session.create.initial_text_when",
     "session.input.write",
     "session.mark_read",
     "session.mark_unread",
@@ -69,6 +71,13 @@ pub const NATIVE_HOST_CAPABILITIES: &[&str] = &[
     "integrations.install",
     "settings.git.read",
     "settings.git.set",
+    // Fork-only: Scheduled Tasks (`controller_schedules`).
+    "schedule.list",
+    "schedule.runs",
+    "schedule.create",
+    "schedule.edit",
+    "schedule.delete",
+    "schedule.run",
 ];
 
 pub const HEADLESS_HOST_CAPABILITIES: &[&str] = &[
@@ -88,6 +97,8 @@ pub const HEADLESS_HOST_CAPABILITIES: &[&str] = &[
     "project.organization.set",
     "project.pin.set",
     "session.create",
+    // Fork-only: `initialTextWhen: "agentReady"` on `session.create`.
+    "session.create.initial_text_when",
     "session.input.write",
     "session.mark_read",
     "session.mark_unread",
@@ -124,6 +135,13 @@ pub const HEADLESS_HOST_CAPABILITIES: &[&str] = &[
     "integrations.install",
     "settings.git.read",
     "settings.git.set",
+    // Fork-only: Scheduled Tasks (`controller_schedules`).
+    "schedule.list",
+    "schedule.runs",
+    "schedule.create",
+    "schedule.edit",
+    "schedule.delete",
+    "schedule.run",
 ];
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

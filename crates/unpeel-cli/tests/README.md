@@ -95,6 +95,15 @@ printed only when the check fails.
 | `cli` | headless verbs, including live agent-only restart vs stopped terminal Resume |
 | `browser_spawn` | Browser MCP engine launch from a Session |
 | `ctrlc_fallback` | Ctrl-C into a fresh preset Session lands in the fallback shell |
+| `startup_exit` | a launch command's exit status (0, 3, 128 + signal, a quit agent) lands in `startup-exit` before the fallback shell |
+| `schedules` | Scheduled Tasks on script presets: Run now records done / failed with the exit code, a Once task fires on its own with no app and disables itself, overlap is skipped without the skip replacing the live Run (it still blocks Run now and its finish lands), verbs refuse inside a Session |
+| `schedules_agents` | Scheduled Tasks on Agent Presets: instructions typed once the agent is ready (several lines arrive as one submission); screen-tier and OSC 7501 fakes reach done with their snippet, a question needs you (Run now refused) until answered, a never-ready agent fails to start, a task without instructions is done once its agent is ready; done again with a stand-in native app owning notification edges; `add`/`edit --instructions` refused for a non-agent preset |
+| `schedules_retention` | Run Sessions after a Run: each Run's start stops the previous Run's idle Session, the latest stays live, Runs never push the user's own stopped Sessions out of a Project, each task keeps its newest 5 stopped Run Sessions, deleting the task leaves them |
+| `schedules_latest_run` | PROJECTS lists only each task's latest Run: after three Runs, both session-row builders (`/mobile/bootstrap` for a paired phone, and over `host.sock` for the Mac app) mark every Run Session with `scheduleID`, the latest Run's `superseded: false` and the older two `true`, the user's rows with neither; Runs never push the user's stopped rows off either wire |
+| `schedules_edit` | every Trigger kind (hourly, daily, weekdays, weekly, once, cron) stored canonically with its next run published; invalid cron and impossible times refused at save time; `edit` changes each field and passes unknown ones through; `pause` stops firing, `resume` restarts the clock with no catch-up, then a weekly task fires on its own; verbs refuse inside a Session |
+| `schedules_mcp` | Scheduled Tasks over the MCP `workspace` tool from inside a Session: `list_schedules` shows definition, next run and last Run; `list_schedule_runs` is newest first with status, times, late and snippet, and honours `limit`; help documents both, there is no write action, `schedules add` still refuses, and Create & remove cannot close a Run Session |
+| `schedules_routes` | Scheduled Tasks over `/mobile`: bootstrap advertises `schedule.list` / `schedule.runs` and a moving `schedulesRevision`; the list shows next run and last Run, history is newest first; a recorded Run pings the state bus (`schedules`); both routes read the files on disk |
+| `schedules_writes` | Scheduled Tasks written by a Controller over `/mobile` and the local socket: bootstrap advertises `schedule.create` / `.edit` / `.delete` / `.run` and flags Agent Presets; a created task is stored with its Trigger in stored form and fires at its time; edit, pause and resume round-trip; Run now is refused (409) while a Run is in progress; delete keeps the Run Session; a past Once, instructions on a script preset or an unknown task are refused and nothing is saved |
 | `pty_core_*` | the shared PTY core: parity, adoption, in-place handoff |
 | `serve_install` | `unpeel serve install|uninstall|status` unit rendering (shim-tested) |
 | `state_bus` | cross-frontend sync: pings land immediately, writes announce |
@@ -104,8 +113,9 @@ printed only when the check fails.
 | `compat_state` | **upgrade safety**: unmodelled keys, legacy/future manifests, corrupt files, through the Host and the CLI |
 | `compat_bridge` | **version skew**: this CLI/Host beside an older app that 404s new routes |
 | `compat_serve` | **version skew**: the shipped 0.4.3 `unpeel` beside this tree's binaries over one home, both directions |
+| `compat_schedules` | **upgrade safety**: app-state without `schedules` loads; an unknown Trigger kind or damaged task never fires and never costs the rest of the file |
 
-The three `compat_*` cases exist because users update the app and the CLI
+The `compat_*` cases exist because users update the app and the CLI
 independently. Treat a failure there as "this would break someone's
 install", not as a test needing adjustment. `compat_serve` needs the pinned
 archive: it is cached under `~/Library/Caches/unpeel-matrix/<version>/`

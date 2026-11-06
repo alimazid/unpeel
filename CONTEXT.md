@@ -1,8 +1,9 @@
 # Unpeel (fork)
 
 The fork's Mac workspace for running CLI agents, with VS Code-style views of
-the project around the terminal and a Super Agent that coordinates other
-agents. This glossary covers the fork-only features; the shipped product
+the project around the terminal, a Super Agent that coordinates other agents,
+and Scheduled Tasks that start agents on their own. This glossary covers the
+fork-only features; the shipped product
 vocabulary (Host, Controller, Session, Project) is in `AGENTS.md`.
 
 ## Language
@@ -77,6 +78,35 @@ Git History header with its ahead/behind counts. It changes only through git
 itself (an agent, the user's shell, or a new worktree), never through Git
 History.
 _Avoid_: current branch, active branch
+
+### Scheduled Tasks
+
+**Scheduled Task**:
+A user's standing instruction to start a Session from a preset in a Project
+each time its Trigger comes due and, for an Agent Preset, to give the agent
+the task's instructions once it is ready. The Host keeps and fires it, app
+open or not. The CLI and code call it a *schedule*.
+_Avoid_: cron job, routine, automation, scheduled agent
+
+**Trigger**:
+When a Scheduled Task comes due: hourly, daily, on weekdays, weekly, once,
+or by a cron expression, read on the Host's local wall clock. Each task has
+exactly one.
+_Avoid_: schedule (for the timing), timer, cadence
+
+**Agent Preset**:
+A preset whose command starts an agent runtime Unpeel recognises and can
+tell is ready for input at launch, with or without its integration
+installed. Only an Agent Preset takes a Scheduled Task's
+instructions; any other preset (a script, a plain command) just runs.
+_Avoid_: AI preset, agent command
+
+**Run**:
+One time a Scheduled Task came due and what came of it: done, needs you,
+failed to start, failed, or skipped, and "late" when it started well after
+its time. Most Runs have a Session; a skipped or failed-before-launch Run
+does not.
+_Avoid_: execution, job, instance, invocation
 
 ### Super Agent
 

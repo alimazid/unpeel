@@ -164,6 +164,10 @@ pub struct SessionRow {
     /// Always empty for remote-host rows — a Controller cannot reach a
     /// remote Host's loopback.
     pub detected_local_urls: Vec<String>,
+    /// Who started the Session (manifest `session.spawned_by`): an agent
+    /// Session's id, `cli`, or `schedule:<task id>` for a Scheduled Task's
+    /// Run (`run_sessions.rs`). `None` for the user's own Sessions.
+    pub spawned_by: Option<String>,
     /// Fork-only: a Router's Worker (its `supervision.json` marker is
     /// present, stopped Workers included).
     pub is_worker: bool,
@@ -849,6 +853,7 @@ pub fn scan_sidebar(
                 } else {
                     Vec::new()
                 },
+                spawned_by: manifest.session.spawned_by.clone(),
                 is_worker: unpeel_core::supervision::is_worker(&manifest.session.id), // Fork-only
                 is_router: router_id.as_deref() == Some(manifest.session.id.as_str()), // Fork-only
             });
@@ -996,6 +1001,12 @@ pub fn scan_sidebar(
             .as_ref()
             .and_then(|state| state.sidebar_stopped_limit),
     );
+    // Run Sessions keep their own limit per task, across groups; unread is
+    // no exemption for them (`run_sessions::expired_run_sessions`).
+    let expired_runs: std::collections::HashSet<String> =
+        crate::run_sessions::expired_run_sessions(&rows)
+            .into_iter()
+            .collect();
 
     let children = project_children(app_state.as_ref(), overlay);
     // Worktrees live behind their parent's header as inline folder rows,
@@ -1014,6 +1025,7 @@ pub fn scan_sidebar(
             &known,
             date_sorted.contains(&project_id),
             stopped_window,
+            &expired_runs,
         );
         // This project's children (worktrees and groups), in project order.
         let mut kids: Vec<(String, String, Option<String>)> = all_projects
@@ -1063,6 +1075,7 @@ pub fn scan_sidebar(
                 &known,
                 date_sorted.contains(&kid_id),
                 stopped_window,
+                &expired_runs,
             );
             items.push(SidebarItem::WorktreeHeader {
                 project_id: kid_id.clone(),
@@ -1141,6 +1154,7 @@ fn group_listing(
     known: &std::collections::HashSet<String>,
     date_sorted: bool,
     stopped_window: usize,
+    expired_runs: &std::collections::HashSet<String>,
 ) -> GroupListing {
     let member = |i: &usize| in_group(&rows[*i], project_id, known);
 
@@ -1222,14 +1236,35 @@ fn group_listing(
         stopped.sort_by_key(|&i| order_key(i));
     }
 
-    // The keep limit also keeps any stopped row the user has not read.
+    // The keep limit also keeps any stopped row the user has not read. A
+    // Scheduled Task's Run Sessions take no slot: their own keep limit is
+    // per task (`expired_runs`, `run_sessions.rs`), so Runs never push the
+    // user's out.
     let mut kept: Vec<usize> = Vec::new();
     let mut hidden: Vec<usize> = Vec::new();
-    // Fork-only: a Router's stopped Workers take the last keep slots, and a
-    // stopped Router never expires.
-    let in_window = crate::supervisor::stopped_in_keep_window(rows, &stopped, stopped_window);
-    for (inactive_rank, index) in stopped.iter().copied().enumerate() {
-        let keep = in_window[inactive_rank] || keep_visible.contains(&rows[index].id);
+    // Fork-only: of the rest, a Router's stopped Workers take the last keep
+    // slots, and a stopped Router never expires.
+    let windowed: Vec<usize> = stopped
+        .iter()
+        .copied()
+        .filter(|&index| !crate::run_sessions::is_run_session(&rows[index]))
+        .collect();
+    let in_window: std::collections::HashSet<usize> = windowed
+        .iter()
+        .copied()
+        .zip(crate::supervisor::stopped_in_keep_window(
+            rows,
+            &windowed,
+            stopped_window,
+        ))
+        .filter_map(|(index, keep)| keep.then_some(index))
+        .collect();
+    for index in stopped.iter().copied() {
+        let keep = if crate::run_sessions::is_run_session(&rows[index]) {
+            !expired_runs.contains(&rows[index].id)
+        } else {
+            in_window.contains(&index) || keep_visible.contains(&rows[index].id)
+        };
         if keep {
             kept.push(index);
         } else {
@@ -1396,6 +1431,9 @@ pub fn model_from_bridge(
                 } else {
                     Vec::new()
                 },
+                // The bridge payload predates Scheduled Tasks; nothing keys
+                // retention off a bridged row.
+                spawned_by: None,
                 is_worker: unpeel_core::supervision::is_worker(&id), // Fork-only
                 is_router: false, // Fork-only: marked once the rows are in
             });
@@ -1820,6 +1858,25 @@ pub fn mobile_snapshot(
     extra_unread: &std::collections::HashSet<String>,
     activity_log: Option<&unpeel_core::activity_log::ActivityLogStore>,
 ) -> MobileSnapshot {
+    // Fork-only: Scheduled Tasks. Each task's latest Run Session,
+    // from its Run log, marks the task's other Runs superseded.
+    let run_rows: Vec<_> = model
+        .rows
+        .iter()
+        .map(crate::run_sessions::wire_row)
+        .collect();
+    let latest_runs = unpeel_core::schedule_store::latest_run_sessions_of(&run_rows);
+    mobile_snapshot_with_runs(model, overlay, extra_unread, activity_log, &latest_runs)
+}
+
+/// [`mobile_snapshot`] with each Scheduled Task's latest Run Session given.
+pub(crate) fn mobile_snapshot_with_runs(
+    model: &SidebarModel,
+    overlay: Option<&NativeOverlay>,
+    extra_unread: &std::collections::HashSet<String>,
+    activity_log: Option<&unpeel_core::activity_log::ActivityLogStore>,
+    latest_runs: &unpeel_core::schedules::run_sessions::LatestRunSessions,
+) -> MobileSnapshot {
     fn provider_id(command: &str) -> Option<&'static str> {
         crate::runtime_presentation::legacy_slug(command)
     }
@@ -1979,7 +2036,13 @@ pub fn mobile_snapshot(
                     .find(|entry| entry.session_id == row.id)
             })
             .filter(|entry| entry.kind == unpeel_core::activity_log::ActivityLogKind::Alert);
-        let summary = session_summary(row, unread, latest_alert);
+        let mut summary = session_summary(row, unread, latest_alert);
+        // Same fields as the native Host's summary (one protocol).
+        unpeel_core::schedules::run_sessions::publish(
+            &mut summary,
+            crate::run_sessions::wire_row(row),
+            latest_runs,
+        );
         // Fork-only: `superAgent` / `superAgentRouterID`.
         let summary = unpeel_core::supervision::with_summary_fields(summary, router_id.as_deref());
         sessions.push(summary);
@@ -2157,6 +2220,8 @@ pub fn mobile_snapshot(
         &mut presets,
         &mut create_presets,
     );
+    // Fork-only: Scheduled Tasks.
+    unpeel_core::controller_schedules::mark_agent_presets(&mut presets);
     workspace_settings["availableAgents"] = agents;
     workspace_settings["mcpShimPath"] =
         serde_json::json!(unpeel_core::integrations::install::mcp_shim_path().to_string_lossy());
@@ -2207,6 +2272,9 @@ pub fn mobile_snapshot(
             "experimentalWorktreesEnabled": experimental_worktrees_enabled,
             "hostTintHue": host_tint_hue,
             "hostDeviceKind": if cfg!(target_os = "linux") { "linux" } else { "unknown" },
+            // Fork-only: Scheduled Tasks. Controllers refetch the
+            // `schedules` routes when this moves.
+            "schedulesRevision": unpeel_core::controller_schedules::revision(&workspace_state),
         }),
         create_presets,
     }
@@ -2303,6 +2371,7 @@ mod tests {
             activity_at: lifecycle_at,
             group_id: "__recent_test_project".into(),
             detected_local_urls: Vec::new(),
+            spawned_by: None,
             is_worker: false,
             is_router: false,
         }
@@ -2331,6 +2400,7 @@ mod tests {
             &std::collections::HashSet::new(),
             true,
             5,
+            &std::collections::HashSet::new(),
         );
         let ids = |indices: &[usize]| {
             indices
@@ -2385,6 +2455,7 @@ mod tests {
             &std::collections::HashSet::new(),
             true,
             2,
+            &std::collections::HashSet::new(),
         );
         let ids = listing
             .sessions
@@ -2407,6 +2478,7 @@ mod tests {
             &std::collections::HashSet::new(),
             true,
             2,
+            &std::collections::HashSet::new(),
         );
         let expired = listing
             .hidden
@@ -2417,6 +2489,126 @@ mod tests {
             expired,
             ["stopped-14", "stopped-13", "stopped-12", "stopped-11"]
         );
+    }
+
+    /// A Scheduled Task's Runs never push the user's own stopped
+    /// Sessions out of a Project. Seven newer stopped Runs leave all five
+    /// of the user's stopped rows inside the window of five.
+    #[test]
+    fn run_sessions_do_not_count_toward_the_stopped_window() {
+        let mut rows = Vec::new();
+        for lifecycle in 10..15 {
+            rows.push(recent_test_row(
+                &format!("user-{lifecycle}"),
+                Status::Exited,
+                false,
+                lifecycle,
+                false,
+            ));
+        }
+        for lifecycle in 20..27 {
+            let mut row = recent_test_row(
+                &format!("run-{lifecycle}"),
+                Status::Exited,
+                false,
+                lifecycle,
+                false,
+            );
+            row.spawned_by = Some("schedule:sch_1".into());
+            rows.push(row);
+        }
+        let indices = (0..rows.len()).collect::<Vec<_>>();
+        let listing = group_listing(
+            "__recent_test_project",
+            &rows,
+            &indices,
+            None,
+            &std::collections::HashSet::new(),
+            &std::collections::HashSet::new(),
+            true,
+            5,
+            &std::collections::HashSet::new(),
+        );
+        let labels = |indices: &[usize]| {
+            indices
+                .iter()
+                .map(|index| rows[*index].label.as_str())
+                .collect::<Vec<_>>()
+        };
+
+        assert!(listing.hidden.is_empty(), "{:?}", labels(&listing.hidden));
+        assert_eq!(
+            labels(&listing.sessions),
+            [
+                "run-26", "run-25", "run-24", "run-23", "run-22", "run-21", "run-20", "user-14",
+                "user-13", "user-12", "user-11", "user-10",
+            ]
+        );
+
+        // The user's own rows still keep their window of five.
+        rows.push(recent_test_row("user-15", Status::Exited, false, 15, false));
+        let indices = (0..rows.len()).collect::<Vec<_>>();
+        let listing = group_listing(
+            "__recent_test_project",
+            &rows,
+            &indices,
+            None,
+            &std::collections::HashSet::new(),
+            &std::collections::HashSet::new(),
+            true,
+            5,
+            &std::collections::HashSet::new(),
+        );
+        assert_eq!(
+            listing
+                .hidden
+                .iter()
+                .map(|index| rows[*index].label.as_str())
+                .collect::<Vec<_>>(),
+            ["user-10"]
+        );
+
+        // Runs past their task's own keep limit are filed for removal with
+        // the rest, never listed.
+        let expired_runs = crate::run_sessions::expired_run_sessions(&rows)
+            .into_iter()
+            .collect::<std::collections::HashSet<_>>();
+        let listing = group_listing_with_expired_runs(
+            "__recent_test_project",
+            &rows,
+            &indices,
+            &expired_runs,
+        );
+        let mut hidden = listing
+            .hidden
+            .iter()
+            .map(|index| rows[*index].label.as_str())
+            .collect::<Vec<_>>();
+        hidden.sort();
+        assert_eq!(hidden, ["run-20", "run-21", "user-10"]);
+        assert!(listing
+            .sessions
+            .iter()
+            .all(|index| !hidden.contains(&rows[*index].label.as_str())));
+    }
+
+    fn group_listing_with_expired_runs(
+        project_id: &str,
+        rows: &[SessionRow],
+        indices: &[usize],
+        expired_runs: &std::collections::HashSet<String>,
+    ) -> GroupListing {
+        group_listing(
+            project_id,
+            rows,
+            indices,
+            None,
+            &std::collections::HashSet::new(),
+            &std::collections::HashSet::new(),
+            true,
+            5,
+            expired_runs,
+        )
     }
 
     /// Fork-only: past the keep limit, a Router's stopped Workers go before
@@ -2447,6 +2639,7 @@ mod tests {
                 &std::collections::HashSet::new(),
                 true,
                 window,
+                &std::collections::HashSet::new(),
             );
             let labels = |indices: &[usize]| {
                 indices
@@ -2506,6 +2699,7 @@ mod tests {
                 &std::collections::HashSet::new(),
                 true,
                 window,
+                &std::collections::HashSet::new(),
             );
             let labels = |indices: &[usize]| {
                 indices
@@ -2908,6 +3102,7 @@ mod tests {
             activity_at: 1,
             group_id: "p2".into(),
             detected_local_urls: Vec::new(),
+            spawned_by: None,
             is_worker: false,
             is_router: false,
         }];
@@ -2966,6 +3161,7 @@ mod tests {
             activity_at: 2,
             group_id: "project".into(),
             detected_local_urls: Vec::new(),
+            spawned_by: None,
             is_worker: false,
             is_router: false,
         };
@@ -3023,6 +3219,7 @@ mod tests {
             activity_at: 2,
             group_id: "project".into(),
             detected_local_urls: Vec::new(),
+            spawned_by: None,
             is_worker: false,
             is_router: false,
         };
@@ -3093,6 +3290,71 @@ mod tests {
         assert_eq!(summary["updatedAtUnixMs"], 500);
 
         std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    /// The snapshot iOS and Link/LAN Controllers read carries each Run
+    /// Session's task and whether a newer Run superseded it (the Session of
+    /// the task's current Run is the latest); other rows carry neither.
+    #[test]
+    fn mobile_session_rows_carry_the_run_sessions_task_and_superseded_flag() {
+        let run = |id: &str, running: bool, created: u64| {
+            let status = if running {
+                Status::Idle
+            } else {
+                Status::Exited
+            };
+            let mut row = recent_test_row(id, status, running, created, false);
+            row.spawned_by = Some("schedule:sch_a".into());
+            row
+        };
+        let model = SidebarModel {
+            rows: vec![
+                run("latest", true, 3),
+                run("older", false, 2),
+                recent_test_row("user", Status::Exited, false, 1, false),
+            ],
+            items: vec![
+                SidebarItem::Session(0),
+                SidebarItem::Session(1),
+                SidebarItem::Session(2),
+            ],
+            expired: Vec::new(),
+        };
+        let latest = unpeel_core::schedules::run_sessions::LatestRunSessions::from([(
+            "sch_a".to_string(),
+            Some("__recent_test_latest".to_string()),
+        )]);
+        let snapshot = mobile_snapshot_with_runs(
+            &model,
+            None,
+            &std::collections::HashSet::new(),
+            None,
+            &latest,
+        );
+        let sessions = snapshot.bootstrap["sessions"].as_array().unwrap();
+        let fields = |session: &serde_json::Value| {
+            (
+                session["id"].clone(),
+                session.get("scheduleID").cloned(),
+                session.get("superseded").cloned(),
+            )
+        };
+        assert_eq!(
+            sessions.iter().map(fields).collect::<Vec<_>>(),
+            [
+                (
+                    "__recent_test_latest".into(),
+                    Some("sch_a".into()),
+                    Some(false.into())
+                ),
+                (
+                    "__recent_test_older".into(),
+                    Some("sch_a".into()),
+                    Some(true.into())
+                ),
+                ("__recent_test_user".into(), None, None),
+            ]
+        );
     }
 
     #[test]

@@ -37,6 +37,9 @@ pub const MAX_REPLY_AGE_MS: u64 = 30_000;
 pub struct CompletionMessages {
     /// Session id → (bounded reply, receipt in unix ms).
     by_session: std::collections::HashMap<String, (String, u64)>,
+    /// The last Stop's reply per Session, which `take` leaves in place: a
+    /// Scheduled Task's Run reads it after the notification took its copy.
+    last_stop: std::collections::HashMap<String, (String, u64)>,
 }
 
 impl CompletionMessages {
@@ -54,13 +57,13 @@ impl CompletionMessages {
             "Stop" if is_session_end(raw_event) => {}
             "Stop" => match message {
                 Some(message) => {
-                    self.by_session.insert(
-                        session_id.to_owned(),
-                        (bounded_raw(message), received_at_ms),
-                    );
+                    let reply = (bounded_raw(message), received_at_ms);
+                    self.last_stop.insert(session_id.to_owned(), reply.clone());
+                    self.by_session.insert(session_id.to_owned(), reply);
                 }
                 None => {
                     self.by_session.remove(session_id);
+                    self.last_stop.remove(session_id);
                 }
             },
             "Start" | "UserPromptSubmit" | "StopCancelled" | "StopFailure" => {
@@ -76,9 +79,74 @@ impl CompletionMessages {
         (now_ms.saturating_sub(received_at_ms) <= MAX_REPLY_AGE_MS).then_some(message)
     }
 
+    /// The last Stop's reply and when it arrived, whether or not a
+    /// notification took it. Callers scope it to their own turn by time.
+    pub fn last_reply(&self, session_id: &str) -> Option<(&str, u64)> {
+        self.last_stop
+            .get(session_id)
+            .map(|(message, at)| (message.as_str(), *at))
+    }
+
     pub fn retain(&mut self, mut live: impl FnMut(&str) -> bool) {
         self.by_session.retain(|id, _| live(id));
+        self.last_stop.retain(|id, _| live(id));
     }
+}
+
+/// The reply an agent left on its screen, for a Run whose agent reported
+/// none (the screen tier has no hook reply or done summary): the text below
+/// the last line that echoes `instructions` and above the agent's input
+/// prompt (the last line starting with one of `prompt_markers`), less box
+/// rules and the glyphs agents put before a reply. `None` when the
+/// instructions are not in view: nothing then says where the reply starts.
+/// Untrusted output, cleaned like any reply.
+pub fn screen_reply(screen: &str, prompt_markers: &[String], instructions: &str) -> Option<String> {
+    let lines: Vec<&str> = screen.lines().collect();
+    let prompt = lines
+        .iter()
+        .rposition(|line| {
+            let line = line.trim_start();
+            prompt_markers
+                .iter()
+                .any(|marker| !marker.is_empty() && line.starts_with(marker.as_str()))
+        })
+        .unwrap_or(lines.len());
+    let start = below_echo(&lines[..prompt], instructions)?;
+    let reply: Vec<&str> = lines[start..prompt]
+        .iter()
+        .map(|line| {
+            line.trim_start_matches(|c: char| {
+                c.is_whitespace() || !c.is_ascii() && !c.is_alphanumeric()
+            })
+        })
+        .collect();
+    snippet(&reply.join("\n"))
+}
+
+/// The index of the first line below the agent's echo of `instructions`:
+/// the last line showing their first line, then each following line that
+/// shows the next one (blank lines skipped). `None` when they are not in
+/// view (or there are none).
+fn below_echo(lines: &[&str], instructions: &str) -> Option<usize> {
+    let wanted: Vec<String> = instructions
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .map(|line| line.chars().take(40).collect())
+        .collect();
+    let first = wanted.first()?;
+    let mut next = lines
+        .iter()
+        .rposition(|line| line.contains(first.as_str()))?
+        + 1;
+    for want in &wanted[1..] {
+        let shown = (next..lines.len()).find(|&index| !lines[index].trim().is_empty());
+        match shown.filter(|&index| lines[index].contains(want.as_str())) {
+            Some(index) => next = index + 1,
+            None => break,
+        }
+    }
+    Some(next)
 }
 
 /// The notification text for `raw`, or `None` when nothing readable is left.
@@ -512,5 +580,72 @@ mod tests {
         );
         assert_eq!(finished_body(Some("  "), Some("```\nx\n```")), None);
         assert_eq!(finished_body(None, None), None);
+    }
+
+    #[test]
+    fn the_last_reply_outlives_the_notification_taking_it() {
+        let mut messages = CompletionMessages::default();
+        assert_eq!(messages.last_reply("s1"), None);
+        messages.observe("s1", "Stop", Some("Briefing sent."), 2_000);
+        assert_eq!(
+            messages.take("s1", 2_100).as_deref(),
+            Some("Briefing sent.")
+        );
+        assert_eq!(messages.last_reply("s1"), Some(("Briefing sent.", 2_000)));
+        // A newer turn's Stop replaces it; one without a reply forgets it.
+        messages.observe("s1", "UserPromptSubmit", None, 3_000);
+        messages.observe("s1", "Stop", Some("Second."), 4_000);
+        assert_eq!(messages.last_reply("s1"), Some(("Second.", 4_000)));
+        messages.observe("s1", "Stop", None, 5_000);
+        assert_eq!(messages.last_reply("s1"), None);
+        messages.observe("gone", "Stop", Some("a"), 1);
+        messages.retain(|id| id != "gone");
+        assert_eq!(messages.last_reply("gone"), None);
+    }
+
+    fn claude_prompt() -> Vec<String> {
+        vec!["❯".into()]
+    }
+
+    #[test]
+    fn a_screen_reply_is_the_text_between_the_instructions_and_the_prompt() {
+        let screen = "Claude Code\n\n❯ run the morning briefing\n\n⏺ Morning briefing ready: 3 meetings, 2 reviews.\n\n✻ Brewed for 3s\n────────\n❯\n────────\n  ? for shortcuts";
+        let reply = screen_reply(screen, &claude_prompt(), "run the morning briefing");
+        assert_eq!(
+            reply.as_deref(),
+            Some("Morning briefing ready: 3 meetings, 2 reviews. Brewed for 3s")
+        );
+    }
+
+    #[test]
+    fn a_screen_reply_starts_below_every_line_of_echoed_instructions() {
+        let instructions =
+            "run the morning briefing\nthen file the notes:\n\n- calendar\n- reviews";
+        let screen = "❯ run the morning briefing\n  then file the notes:\n\n  - calendar\n  - reviews\n\n⏺ Filed: calendar and reviews.\n────\n❯\n────";
+        assert_eq!(
+            screen_reply(screen, &claude_prompt(), instructions).as_deref(),
+            Some("Filed: calendar and reviews.")
+        );
+    }
+
+    /// Without the instructions in view nothing says where the reply
+    /// starts, so there is no snippet: never the top of the screen.
+    #[test]
+    fn a_screen_reply_needs_the_instructions_in_view() {
+        let codex =
+            "• Sent the summary to the channel.\n\n› Ask Codex to do anything\n  gpt · ~/work";
+        assert_eq!(
+            screen_reply(codex, &["›".into()], "a long prompt that scrolled away"),
+            None
+        );
+        let banner = "Claude Code v2\n  ~/work\n\n⏺ Done.\n────\n❯\n────";
+        assert_eq!(screen_reply(banner, &claude_prompt(), "x"), None);
+        assert_eq!(screen_reply(banner, &claude_prompt(), "  \n"), None);
+        // Box rules and an empty screen give nothing.
+        assert_eq!(
+            screen_reply("❯ x\n────\n❯\n────", &claude_prompt(), "x"),
+            None
+        );
+        assert_eq!(screen_reply("", &claude_prompt(), "x"), None);
     }
 }

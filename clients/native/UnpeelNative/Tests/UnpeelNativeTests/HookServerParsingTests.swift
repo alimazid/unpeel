@@ -238,6 +238,80 @@ final class HookServerParsingTests: XCTestCase {
         )
     }
 
+    // MARK: Fork-only: Scheduled Task Runs on `notification.deliver`
+
+    private func notification(_ request: String) -> Result<PlatformAdapterCall, PlatformAdapterCallError> {
+        let envelope = #"{"version":1,"operation":"notification.deliver","request":"# + request + "}"
+        return HookServer.platformAdapterCall(from: Data(envelope.utf8))
+    }
+
+    func testARunSessionsFinishedTurnCarriesItsTasksSetting() {
+        XCTAssertEqual(
+            notification(#"{"sessionID":"session-1","title":"Morning","body":"Report sent.","kind":"done","requiresNotifyWhenDone":true,"sendDesktop":true,"suppressDeviceIDs":[],"scheduleID":"sch_1","runNotifyWhenDone":false}"#),
+            .success(.deliverNotification(
+                sessionID: "session-1",
+                title: "Morning",
+                body: "Report sent.",
+                kind: "done",
+                requiresNotifyWhenDone: true,
+                sendDesktop: true,
+                suppressDeviceIDs: [],
+                scheduleID: "sch_1",
+                runNotifyWhenDone: false
+            ))
+        )
+    }
+
+    func testANoticeFromAnOlderHostHasNoTaskFields() {
+        XCTAssertEqual(
+            notification(#"{"sessionID":"session-1","title":"Research","body":"Finished","kind":"done","requiresNotifyWhenDone":true,"sendDesktop":true,"suppressDeviceIDs":[]}"#),
+            .success(.deliverNotification(
+                sessionID: "session-1",
+                title: "Research",
+                body: "Finished",
+                kind: "done",
+                requiresNotifyWhenDone: true,
+                sendDesktop: true,
+                suppressDeviceIDs: [],
+                scheduleID: nil,
+                runNotifyWhenDone: nil
+            ))
+        )
+    }
+
+    func testARunThatNeverLaunchedArrivesWithNoSession() {
+        XCTAssertEqual(
+            notification(#"{"sessionID":"","title":"Morning","body":"Failed: the preset ok no longer exists","kind":"alert","requiresNotifyWhenDone":false,"sendDesktop":true,"suppressDeviceIDs":[],"scheduleID":"sch_1"}"#),
+            .success(.deliverNotification(
+                sessionID: "",
+                title: "Morning",
+                body: "Failed: the preset ok no longer exists",
+                kind: "alert",
+                requiresNotifyWhenDone: false,
+                sendDesktop: true,
+                suppressDeviceIDs: [],
+                scheduleID: "sch_1",
+                runNotifyWhenDone: nil
+            ))
+        )
+    }
+
+    func testTaskFieldsAreCheckedLikeEveryOther() {
+        let rejected = [
+            // No Session is only accepted for a Run.
+            #"{"sessionID":"","title":"Morning","body":"Failed","kind":"alert","requiresNotifyWhenDone":false,"sendDesktop":true,"suppressDeviceIDs":[]}"#,
+            // Not a boolean.
+            #"{"sessionID":"session-1","title":"Morning","body":"Finished","kind":"done","requiresNotifyWhenDone":true,"sendDesktop":true,"suppressDeviceIDs":[],"scheduleID":"sch_1","runNotifyWhenDone":1}"#,
+            // Not an id.
+            #"{"sessionID":"","title":"Morning","body":"Failed","kind":"alert","requiresNotifyWhenDone":false,"sendDesktop":true,"suppressDeviceIDs":[],"scheduleID":"../sch_1"}"#,
+            #"{"sessionID":"","title":"Morning","body":"Failed","kind":"alert","requiresNotifyWhenDone":false,"sendDesktop":true,"suppressDeviceIDs":[],"scheduleID":"  "}"#,
+            #"{"sessionID":"","title":"Morning","body":"Failed","kind":"alert","requiresNotifyWhenDone":false,"sendDesktop":true,"suppressDeviceIDs":[],"scheduleID":7}"#,
+        ]
+        for request in rejected {
+            XCTAssertEqual(notification(request), .failure(.invalidEnvelope), request)
+        }
+    }
+
     func testPortRegistryRegistrationPrunesOnlyProvenStaleEntries() {
         let reconciled = HookServer.reconciledPortRegistry(
             [41_000, 41_001, 41_000, 0, 41_002, 41_003],

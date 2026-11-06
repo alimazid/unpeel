@@ -572,6 +572,10 @@ struct SidebarView: View {
     // Fork-only: git support. Git History's view model, kept alive while
     // its section is collapsed (publishes nothing, like the explorer's).
     @StateObject private var gitHistorySection = GitHistorySectionModel()
+    // Fork-only: Scheduled Tasks. Held, not observed: it publishes, and
+    // only the section's own panel should re-render when it does. Its rows
+    // outlive a collapse, so re-expanding shows them at once.
+    @State private var scheduledSection = ScheduledSectionModel()
     private let sectionLayout = SidebarSectionLayoutStore.shared
 
     /// Absolute-top scroll anchor for the project tree (a 1pt marker pinned
@@ -614,6 +618,10 @@ struct SidebarView: View {
                     // strip.
                     SidebarSectionStack(layoutStore: sectionLayout, sections: sidebarSections)
                         .padding(.top, SidebarSectionMetrics.stackTopInset)
+                        // Fork-only: Scheduled Tasks. The edit sheet, from
+                        // a view that stays mounted while SCHEDULED is
+                        // collapsed.
+                        .background(ScheduledTaskSheetPresenter(model: scheduledSection, store: store))
                         .transition(.sidebarPanel(fromTrailing: false))
                 }
             }
@@ -787,6 +795,13 @@ struct SidebarView: View {
                         showsAllRecent: store.selectedHostScope == .local
                     ))
                 }
+            ),
+            // Fork-only: Scheduled Tasks
+            SidebarSectionDescriptor(
+                id: .scheduled,
+                accessory: AnyView(EmptyView()),
+                actions: AnyView(ScheduledSectionActions(runtime: store.remoteHostRuntime, model: scheduledSection)),
+                content: { AnyView(ScheduledSectionPanel(store: store, model: scheduledSection)) }
             ),
             SidebarSectionDescriptor(
                 id: .explorer,
@@ -3125,6 +3140,10 @@ struct SessionRowView: View {
                     if isPinned {
                         SidebarPinnedIndicator()
                     }
+                    // Fork-only: a Scheduled Task's Run wears the clock badge.
+                    if session.scheduledRun != nil {
+                        SidebarScheduledRunIndicator()
+                    }
                     // Fork-only
                     if session.superAgent {
                         SuperAgentBadge()
@@ -3413,6 +3432,19 @@ private struct SidebarPinnedIndicator: View {
             .frame(width: 14, height: 18)
             .fixedSize()
             .accessibilityLabel("Pinned")
+            .allowsHitTesting(false)
+    }
+}
+
+/// Fork-only: Scheduled Tasks. Marks a Run Session's row; passive, like the
+/// pinned indicator.
+private struct SidebarScheduledRunIndicator: View {
+    var body: some View {
+        ChromeIconView(icon: .clock, size: 11)
+            .foregroundStyle(Theme.foreground.opacity(0.7))
+            .frame(width: 13, height: 18)
+            .fixedSize()
+            .accessibilityLabel("Scheduled Run")
             .allowsHitTesting(false)
     }
 }

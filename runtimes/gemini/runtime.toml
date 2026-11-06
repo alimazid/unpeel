@@ -46,6 +46,10 @@ escape_cancels_turn = true
 working = ["esc to cancel"]
 idle_prompt = ["Type your message", "> Type your message"]
 
+# The arguments that turn off this runtime's approval prompts.
+[approvals]
+bypass_flags = ["--yolo", "-y", "--approval-mode yolo", "--approval-mode=yolo"]
+
 [integration]
 summary = "Registers Unpeel's lifecycle hooks in ~/.gemini/settings.json."
 legacy_evidence = ["hooks/gemini-hook.sh"]

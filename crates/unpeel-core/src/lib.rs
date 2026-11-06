@@ -11,6 +11,8 @@
 #[cfg(feature = "native-host")]
 pub mod activity_log;
 #[cfg(feature = "native-host")]
+pub mod agent_readiness;
+#[cfg(feature = "native-host")]
 pub mod app_installer;
 #[cfg(feature = "native-host")]
 pub mod app_open;
@@ -34,8 +36,11 @@ pub mod browser_mcp;
 pub mod controller_api;
 #[cfg(feature = "native-host")]
 pub mod controller_host;
+// Fork-only: Scheduled Tasks.
 #[cfg(feature = "controller-core")]
 pub mod controller_protocol;
+#[cfg(feature = "native-host")]
+pub mod controller_schedules;
 #[cfg(feature = "native-host")]
 pub mod desktop_session;
 #[cfg(feature = "native-host")]
@@ -68,6 +73,8 @@ pub mod host_resources;
 #[cfg(feature = "native-host")]
 pub mod http_fetch;
 #[cfg(feature = "native-host")]
+pub mod initial_text;
+#[cfg(feature = "native-host")]
 pub mod integrations;
 #[cfg(feature = "native-host")]
 pub mod license;
@@ -99,6 +106,13 @@ pub mod program_status;
 #[cfg(feature = "controller-core")]
 #[cfg(feature = "native-host")]
 pub mod pty_core;
+#[cfg(feature = "native-host")]
+pub mod schedule_store;
+#[cfg(feature = "controller-core")]
+pub mod schedules;
+// Fork-only: Scheduled Tasks.
+#[cfg(feature = "native-host")]
+mod schedules_mcp;
 #[cfg(feature = "native-host")]
 pub mod screen_activity;
 

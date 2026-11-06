@@ -51,6 +51,9 @@ enum ChromeIcon: String, CaseIterable {
     /// Phosphor "globe" (line) — local-site links everywhere they surface
     /// (project row, collapsed-sidebar chip, URL menus, the detected toast).
     case globe
+    /// Fork-only: Phosphor "clock" (line) — the passive badge on a Scheduled
+    /// Task's Run Session row.
+    case clock
     // Settings sidebar tab icons — Phosphor fill glyphs rendered with the
     // same glass gradient as the sidebar folder/gear marks.
     /// Phosphor "circle-half" — Settings ▸ Appearance.
@@ -197,6 +200,8 @@ enum ChromeIcon: String, CaseIterable {
         // Phosphor "globe" (line) — local-site link mark.
         case .globe:
             return ##"<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" fill="none" viewBox="0 0 256 256"><rect width="256" height="256" fill="none"/><circle cx="128" cy="128" r="96" fill="none" stroke="#FFFFFF" stroke-linecap="round" stroke-linejoin="round" stroke-width="16"/><path d="M168,128c0,64-40,96-40,96s-40-32-40-96,40-96,40-96S168,64,168,128Z" fill="none" stroke="#FFFFFF" stroke-linecap="round" stroke-linejoin="round" stroke-width="16"/><line x1="37.46" y1="96" x2="218.54" y2="96" fill="none" stroke="#FFFFFF" stroke-linecap="round" stroke-linejoin="round" stroke-width="16"/><line x1="37.46" y1="160" x2="218.54" y2="160" fill="none" stroke="#FFFFFF" stroke-linecap="round" stroke-linejoin="round" stroke-width="16"/></svg>"##
+        case .clock:
+            return ##"<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" fill="none" viewBox="0 0 256 256"><rect width="256" height="256" fill="none"/><circle cx="128" cy="128" r="96" fill="none" stroke="#FFFFFF" stroke-linecap="round" stroke-linejoin="round" stroke-width="16"/><polyline points="128 72 128 128 184 128" fill="none" stroke="#FFFFFF" stroke-linecap="round" stroke-linejoin="round" stroke-width="16"/></svg>"##
         case .settingsAppearance:
             return Self.glassSVG(
                 path: ##"M128,24A104,104,0,1,0,232,128,104.11,104.11,0,0,0,128,24ZM40,128A88,88,0,0,1,190.2,65.8L65.8,190.2A87.76,87.76,0,0,1,40,128Z"##,
@@ -385,6 +390,7 @@ struct ChromeIconView: View {
         case .splitPanes, .splitPane: return "rectangle.split.2x1"
         case .splitPaneDown: return "rectangle.split.1x2"
         case .globe: return "globe"
+        case .clock: return "clock"
         case .settingsAppearance: return "circle.righthalf.filled"
         case .quickPreset: return "cursorarrow.click.2"
         case .settingsAgents: return "sparkles"

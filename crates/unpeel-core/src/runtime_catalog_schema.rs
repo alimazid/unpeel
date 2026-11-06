@@ -44,6 +44,11 @@ pub struct RuntimeDescriptor {
     /// `lifecycle.fallback = "screen"` and forbidden otherwise.
     #[serde(default)]
     pub screen: Option<RuntimeScreenRules>,
+    /// The arguments that turn off this runtime's approval prompts, so the
+    /// Host can tell a Controller which presets run unattended with no one
+    /// asked (`bypassesApprovals` on a preset row).
+    #[serde(default)]
+    pub approvals: RuntimeApprovals,
     /// User-facing description of what the package's installer edits, and
     /// the provider's own command for registering the MCP shim by hand
     /// (`{shim}` is replaced with the shim path). Published in bootstrap.
@@ -246,6 +251,18 @@ pub struct RuntimeIntegrationInfo {
     /// installed" for hooks that are demonstrably registered.
     #[serde(default)]
     pub legacy_evidence: Vec<String>,
+}
+
+/// How a preset's command turns off the runtime's approval prompts. Each
+/// `bypass_flags` entry is one argument, or an option and its value as two
+/// words (`--permission-mode bypassPermissions`), that must appear among
+/// the command's arguments in that order; an `--option=value` spelling is
+/// its own entry.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RuntimeApprovals {
+    #[serde(default)]
+    pub bypass_flags: Vec<String>,
 }
 
 /// Bottom-of-screen markers a runtime shows while working and at its idle
@@ -1056,6 +1073,15 @@ pub fn validate_runtime_descriptors(
                         ));
                     }
                 }
+            }
+        }
+
+        for flag in &descriptor.approvals.bypass_flags {
+            if !flag.starts_with('-') || flag.trim() != flag || flag.contains(['\n', '\t']) {
+                errors.push(format!(
+                    "{prefix}: approval bypass flag '{flag}' must be an option, optionally \
+                     followed by one value"
+                ));
             }
         }
 

@@ -716,8 +716,10 @@ struct ActivityMenuSessions {
         // node. Dictionary iteration is not stable, so orphan blockers use the
         // same lifecycle/id order as every Recent surface.
         let renderedBlockerIDs = Set(blockerCandidates.map(\.id))
+        // Fork-only: a superseded Run is not orphaned, just not listed.
         let orphanBlockers = allSessions.filter {
             $0.status == .attention && !renderedBlockerIDs.contains($0.id)
+                && ScheduledRunListing.isListed($0)
         }.sorted { lhs, rhs in
             // Every candidate is in Recent's non-working tier, so its shared
             // comparator reduces exactly to lifecycle descending, then id.

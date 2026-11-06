@@ -1374,7 +1374,9 @@ struct IOSSidebarProjectTree {
             },
             by: { $0.parentProjectID ?? "" }
         )
-        let supportedSessions = snapshot.sessions.filter(\.supportsIOSSessionAPI)
+        // Fork-only: a superseded Scheduled Task Run (not its task's latest)
+        // leaves the sidebar; it stays in the snapshot, so its id still opens.
+        let supportedSessions = snapshot.sessions.filter(\.isListedInIOSSidebar)
         sidebarGroupSessionIDs = Set(
             supportedSessions.compactMap { session in
                 sidebarGroupParents[session.projectID] != nil ? session.id : nil
@@ -1762,7 +1764,7 @@ private struct SidebarWorkspaceHeader: View {
                 Spacer(minLength: 0)
                 // The session count is meaningless without a connection.
                 if !store.isDisconnected {
-                    Text("\(store.snapshot.sessions.filter(\.supportsIOSSessionAPI).count)")
+                    Text("\(store.snapshot.sessions.filter(\.isListedInIOSSidebar).count)")
                         .font(.system(size: 10, weight: .medium))
                         .foregroundStyle(IOSSidebarTheme.mutedForeground)
                         .padding(.horizontal, 6)

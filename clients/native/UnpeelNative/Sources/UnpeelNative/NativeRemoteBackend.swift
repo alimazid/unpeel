@@ -30,19 +30,31 @@ struct NativeRemoteBackendError: Error, LocalizedError, Equatable, Sendable {
     let message: String
     let kind: String?
     let operation: String?
+    /// A Host route's own refusal: its HTTP status, machine-readable reason
+    /// (`code` in the route's error body) and its own message. Nil unless a
+    /// route refused the request itself.
+    let hostStatus: Int?
+    let hostCode: String?
+    let hostMessage: String?
 
     init(
         result: Int32,
         code: String,
         message: String,
         kind: String? = nil,
-        operation: String? = nil
+        operation: String? = nil,
+        hostStatus: Int? = nil,
+        hostCode: String? = nil,
+        hostMessage: String? = nil
     ) {
         self.result = result
         self.code = code
         self.message = message
         self.kind = kind
         self.operation = operation
+        self.hostStatus = hostStatus
+        self.hostCode = hostCode
+        self.hostMessage = hostMessage
     }
 
     var errorDescription: String? { message }
@@ -2137,7 +2149,10 @@ final class NativeRemoteBackend: @unchecked Sendable {
                 message: object?["message"] as? String
                     ?? "Could not apply remote \(operation).",
                 kind: kind,
-                operation: object?["operation"] as? String ?? operation
+                operation: object?["operation"] as? String ?? operation,
+                hostStatus: object?["hostStatus"] as? Int,
+                hostCode: object?["hostCode"] as? String,
+                hostMessage: object?["hostMessage"] as? String
             )
         }
         // The effect ABI promises a delivery classification on every error.

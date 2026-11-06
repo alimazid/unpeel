@@ -230,6 +230,16 @@ pub struct RemotePresetSummary {
     pub is_default: bool,
     #[serde(default)]
     pub tint_color_hex: Option<u32>,
+    /// Fork-only: Scheduled Tasks. The Host's word on whether the preset is
+    /// an Agent Preset (takes a task's instructions); absent on older
+    /// Hosts, which Controllers read as not one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent_preset: Option<bool>,
+    /// The Host's word on whether the preset turns off its agent's approval
+    /// prompts (the task sheet warns). Absent on older Hosts: no warning.
+    /// Must round-trip here or the native bridge strips it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bypasses_approvals: Option<bool>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -353,6 +363,19 @@ pub struct RemoteSessionSummary {
     /// round-trip here or the native bridge strips it from the snapshot.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cwd: Option<String>,
+    /// The Scheduled Task this Session is a Run of, and whether a newer Run
+    /// of that task superseded it (Controllers hide superseded Runs from
+    /// their Session listings). Additive; older Hosts and Sessions that are
+    /// not Runs omit both. Must round-trip here or the native bridge strips
+    /// them from the Local snapshot.
+    #[serde(
+        default,
+        rename = "scheduleID",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub schedule_id: Option<String>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub superseded: bool,
     /// Fork-only: this Session is the workspace's Super Agent (Router).
     /// Additive; older Hosts omit it. Must round-trip, as `cwd`.
     #[serde(default)]
@@ -483,6 +506,11 @@ pub struct RemoteBootstrapSnapshot {
     pub host_device_kind: Option<String>,
     #[serde(default)]
     pub host_device_model: Option<String>,
+    /// Fork-only: Scheduled Tasks. Moves whenever the `schedules` routes
+    /// would answer differently, so the native section refetches them on
+    /// the bootstrap refresh it already rides (no timer of its own).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub schedules_revision: Option<String>,
 }
 
 impl RemoteBootstrapSnapshot {
@@ -598,6 +626,9 @@ pub enum RemoteSessionBackendError {
         operation: &'static str,
         status: u16,
         message: Option<String>,
+        /// The machine-readable reason a route gave (`code` in its error
+        /// body), for Controllers to branch on instead of the message.
+        code: Option<String>,
     },
     InvalidResponse {
         operation: &'static str,
@@ -638,6 +669,7 @@ impl fmt::Display for RemoteSessionBackendError {
                 operation,
                 status,
                 message,
+                ..
             } => match message {
                 Some(message) => write!(formatter, "Host {operation} returned {status}: {message}"),
                 None => write!(formatter, "Host {operation} returned {status}"),
@@ -1595,6 +1627,9 @@ impl RemoteSessionBackend {
                 .to_string()
                 .into_bytes());
         }
+        if let Some((capability, path)) = schedule_write_route(operation) {
+            return self.json_resource_effect(OPERATION, capability, path, bytes);
+        }
         let (method, capability, path, keys): (&str, &str, &str, &[&str]) = match operation {
             "directories" => (
                 "GET",
@@ -1614,6 +1649,14 @@ impl RemoteSessionBackend {
                 "filesystem.file.read",
                 "/mobile/files/read",
                 &["path", "offset"],
+            ),
+            // Fork-only: Scheduled Tasks' read routes.
+            "schedules" => ("GET", "schedule.list", "/mobile/schedules", &[]),
+            "scheduleRuns" => (
+                "GET",
+                "schedule.runs",
+                "/mobile/schedules/runs",
+                &["scheduleID", "limit"],
             ),
             _ => {
                 return Err(effect_failure(
@@ -1650,6 +1693,40 @@ impl RemoteSessionBackend {
                 .map(|exchange| exchange.body)
         }
     }
+
+    /// Fork-only: Scheduled Tasks. A write whose body is the caller's JSON
+    /// object as given (a Trigger is nested, so a flat parameter map cannot
+    /// carry it). Anything else is refused before it is sent.
+    fn json_resource_effect(
+        &self,
+        operation: &'static str,
+        capability: &'static str,
+        path: &'static str,
+        body: Vec<u8>,
+    ) -> Result<Vec<u8>, RemoteEffectFailure> {
+        let is_object = serde_json::from_slice::<Value>(&body).is_ok_and(|value| value.is_object());
+        if !is_object {
+            return Err(effect_failure(
+                operation,
+                RemoteEffectFailureKind::NotApplied,
+                invalid_effect_input(operation, "The request body must be a JSON object"),
+            ));
+        }
+        let turn = self.inner.begin_effect();
+        self.inner
+            .perform_effect_exchange(
+                &turn,
+                operation,
+                capability,
+                path,
+                &[],
+                "application/json",
+                body,
+                DEFAULT_EFFECT_TIMEOUT,
+            )
+            .map(|exchange| exchange.body)
+    }
+
     pub fn new(connection: Arc<dyn HostConnection>) -> Self {
         Self::with_timeouts(
             connection,
@@ -3991,6 +4068,18 @@ fn validate_output_options(
     Ok(())
 }
 
+/// Fork-only: Scheduled Tasks. The write operations the bridge may send,
+/// with their capability and route; their bodies are JSON as given.
+fn schedule_write_route(operation: &str) -> Option<(&'static str, &'static str)> {
+    match operation {
+        "createSchedule" => Some(("schedule.create", "/mobile/schedules")),
+        "editSchedule" => Some(("schedule.edit", "/mobile/schedules/edit")),
+        "deleteSchedule" => Some(("schedule.delete", "/mobile/schedules/delete")),
+        "runSchedule" => Some(("schedule.run", "/mobile/schedules/run")),
+        _ => None,
+    }
+}
+
 fn invalid_effect_input(
     operation: &'static str,
     message: impl Into<String>,
@@ -4057,8 +4146,9 @@ fn connection_error_invalidates_generation(error: &HostConnectionError) -> bool 
 }
 
 fn host_status(operation: &'static str, status: u16, body: &[u8]) -> RemoteSessionBackendError {
-    let message = serde_json::from_slice::<Value>(body)
-        .ok()
+    let parsed = serde_json::from_slice::<Value>(body).ok();
+    let message = parsed
+        .as_ref()
         .and_then(|value| {
             value
                 .get("error")
@@ -4071,7 +4161,20 @@ fn host_status(operation: &'static str, status: u16, body: &[u8]) -> RemoteSessi
         operation,
         status,
         message,
+        code: parsed.as_ref().and_then(host_error_code),
     }
+}
+
+/// A route's machine-readable error code: a short lowercase identifier, or
+/// nothing (anything else is not a code a Controller could branch on).
+fn host_error_code(body: &Value) -> Option<String> {
+    let code = body.get("code")?.as_str()?;
+    let well_formed = !code.is_empty()
+        && code.len() <= 64
+        && code
+            .bytes()
+            .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'_');
+    well_formed.then(|| code.to_owned())
 }
 
 fn invalid_output(message: &str) -> RemoteSessionBackendError {
@@ -4111,6 +4214,40 @@ mod tests {
     use serde_json::json;
 
     use crate::host_connection::{DeliveryState, HostReply, PreparedHostCall, RequestSemantics};
+
+    /// A route's refusal keeps its machine-readable `code` beside the
+    /// message, so a Controller never has to read the message to word it.
+    #[test]
+    fn a_host_refusal_keeps_its_machine_readable_code() {
+        let error = host_status(
+            "Host resource",
+            400,
+            br#"{"error":"invalid Trigger: 2020-01-01T09:00 is in the past","code":"trigger_in_past"}"#,
+        );
+        assert!(
+            matches!(&error, RemoteSessionBackendError::HostStatus { status: 400, code: Some(code), .. } if code == "trigger_in_past"),
+            "{error:?}"
+        );
+        assert_eq!(
+            error.to_string(),
+            "Host Host resource returned 400: invalid Trigger: 2020-01-01T09:00 is in the past"
+        );
+        for body in [
+            br#"{"error":"no code"}"#.as_slice(),
+            br#"{"error":"x","code":"Not A Code"}"#,
+            br#"{"error":"x","code":7}"#,
+            b"plain text",
+        ] {
+            assert!(
+                matches!(
+                    host_status("op", 500, body),
+                    RemoteSessionBackendError::HostStatus { code: None, .. }
+                ),
+                "{}",
+                String::from_utf8_lossy(body)
+            );
+        }
+    }
 
     #[derive(Debug, Clone)]
     struct ExpectedCall {
@@ -4574,6 +4711,31 @@ mod tests {
         .unwrap();
         assert!(!bare.super_agent);
         assert_eq!(bare.super_agent_router_id, None);
+    }
+
+    #[test]
+    fn session_summary_round_trips_a_run_sessions_task_and_superseded_flag() {
+        let session: RemoteSessionSummary = serde_json::from_value(json!({
+            "id": "s1", "projectID": "p1", "title": "t", "command": "zsh",
+            "createdAtUnixMs": 1, "status": "exited", "activity": "idle",
+            "scheduleID": "sch_a", "superseded": true
+        }))
+        .unwrap();
+        assert_eq!(session.schedule_id.as_deref(), Some("sch_a"));
+        assert!(session.superseded);
+        let wire = serde_json::to_value(&session).unwrap();
+        assert_eq!(wire["scheduleID"], "sch_a");
+        assert_eq!(wire["superseded"], true);
+        let bare: RemoteSessionSummary = serde_json::from_value(json!({
+            "id": "s1", "projectID": "p1", "title": "t", "command": "zsh",
+            "createdAtUnixMs": 1, "status": "running", "activity": "idle"
+        }))
+        .unwrap();
+        assert_eq!(bare.schedule_id, None);
+        assert!(!bare.superseded);
+        let bare_wire = serde_json::to_value(&bare).unwrap();
+        assert!(bare_wire.get("scheduleID").is_none());
+        assert!(bare_wire.get("superseded").is_none());
     }
 
     #[test]
@@ -7901,5 +8063,243 @@ mod tests {
             RemoteSessionBackendError::InvalidOutputOptions(_)
         ));
         assert!(connection.calls().is_empty());
+    }
+
+    // Fork-only: Scheduled Tasks.
+    #[test]
+    fn bootstrap_carries_the_schedules_revision_to_the_controller() {
+        let connection = ScriptedConnection::new();
+        let generation = connection.generation(1);
+        let mut body = bootstrap_json(
+            Some("host-1"),
+            HOST_PROTOCOL_MAJOR,
+            Some(&[BOOTSTRAP_CAPABILITY]),
+        );
+        body["schedulesRevision"] = json!("00ff00ff00ff00ff");
+        add_bootstrap(&connection, generation, body);
+        let snapshot = RemoteSessionBackend::new(connection)
+            .bootstrap()
+            .expect("bootstrap decodes")
+            .snapshot;
+        assert_eq!(
+            snapshot.schedules_revision.as_deref(),
+            Some("00ff00ff00ff00ff")
+        );
+        // The bridge hands Swift the typed snapshot, not the raw body.
+        let forwarded = serde_json::to_value(&snapshot).unwrap();
+        assert_eq!(forwarded["schedulesRevision"], "00ff00ff00ff00ff");
+    }
+
+    #[test]
+    fn schedule_reads_are_resource_operations_behind_their_capabilities() {
+        let connection = ScriptedConnection::new();
+        let generation = connection.generation(1);
+        add_bootstrap(
+            &connection,
+            generation,
+            bootstrap_json(
+                Some("host-1"),
+                HOST_PROTOCOL_MAJOR,
+                Some(&[BOOTSTRAP_CAPABILITY, "schedule.list", "schedule.runs"]),
+            ),
+        );
+        let list = br#"{"revision":"1","schedules":[]}"#.to_vec();
+        connection.push(reply_step(
+            expected_read(generation, "/mobile/schedules", vec![]),
+            generation,
+            200,
+            list.clone(),
+        ));
+        let runs = br#"{"scheduleID":"sch_1","runs":[]}"#.to_vec();
+        connection.push(reply_step(
+            expected_read(
+                generation,
+                "/mobile/schedules/runs",
+                vec![
+                    ("scheduleID".to_owned(), "sch_1".to_owned()),
+                    ("limit".to_owned(), "10".to_owned()),
+                ],
+            ),
+            generation,
+            200,
+            runs.clone(),
+        ));
+        let backend = RemoteSessionBackend::new(connection.clone());
+        backend.bootstrap().unwrap();
+        assert_eq!(
+            backend.resource_request("schedules", &HashMap::new(), Vec::new()),
+            Ok(list)
+        );
+        let query = HashMap::from([
+            ("scheduleID".to_owned(), "sch_1".to_owned()),
+            ("limit".to_owned(), "10".to_owned()),
+        ]);
+        assert_eq!(
+            backend.resource_request("scheduleRuns", &query, Vec::new()),
+            Ok(runs)
+        );
+        assert_eq!(connection.remaining(), 0);
+    }
+
+    #[test]
+    fn schedule_reads_need_the_host_to_advertise_them() {
+        let connection = ScriptedConnection::new();
+        let generation = connection.generation(1);
+        add_bootstrap(
+            &connection,
+            generation,
+            bootstrap_json(
+                Some("host-1"),
+                HOST_PROTOCOL_MAJOR,
+                Some(&[BOOTSTRAP_CAPABILITY]),
+            ),
+        );
+        let backend = RemoteSessionBackend::new(connection.clone());
+        backend.bootstrap().unwrap();
+        assert!(backend
+            .resource_request("schedules", &HashMap::new(), Vec::new())
+            .is_err());
+        assert_eq!(
+            connection.calls().len(),
+            1,
+            "only the bootstrap reached the Host"
+        );
+    }
+
+    #[test]
+    fn schedule_writes_send_their_json_body_behind_their_capabilities() {
+        let writes = [
+            ("createSchedule", "schedule.create", "/mobile/schedules"),
+            ("editSchedule", "schedule.edit", "/mobile/schedules/edit"),
+            (
+                "deleteSchedule",
+                "schedule.delete",
+                "/mobile/schedules/delete",
+            ),
+            ("runSchedule", "schedule.run", "/mobile/schedules/run"),
+        ];
+        let connection = ScriptedConnection::new();
+        let generation = connection.generation(1);
+        let mut capabilities = vec![BOOTSTRAP_CAPABILITY];
+        capabilities.extend(writes.iter().map(|(_, capability, _)| *capability));
+        add_bootstrap(
+            &connection,
+            generation,
+            bootstrap_json(Some("host-1"), HOST_PROTOCOL_MAJOR, Some(&capabilities)),
+        );
+        let body = json!({
+            "scheduleID": "sch_1",
+            "trigger": {"kind": "weekly", "weekday": "friday", "time": "17:00"},
+            "enabled": false
+        });
+        for (_, _, path) in writes {
+            connection.push(reply_step(
+                expected_effect(generation, path, body.clone()),
+                generation,
+                200,
+                br#"{"ok":true}"#.to_vec(),
+            ));
+        }
+        let backend = RemoteSessionBackend::new(connection.clone());
+        backend.bootstrap().unwrap();
+        for (operation, _, _) in writes {
+            assert_eq!(
+                backend.resource_request(
+                    operation,
+                    &HashMap::new(),
+                    serde_json::to_vec(&body).unwrap()
+                ),
+                Ok(br#"{"ok":true}"#.to_vec()),
+                "{operation}"
+            );
+        }
+        assert_eq!(connection.remaining(), 0);
+
+        let refused = backend.resource_request("createSchedule", &HashMap::new(), b"[1]".to_vec());
+        assert!(
+            refused.is_err(),
+            "a body that is not a JSON object is not sent"
+        );
+        assert_eq!(connection.calls().len(), 1 + writes.len());
+    }
+
+    #[test]
+    fn schedule_writes_need_the_host_to_advertise_them() {
+        let connection = ScriptedConnection::new();
+        let generation = connection.generation(1);
+        add_bootstrap(
+            &connection,
+            generation,
+            bootstrap_json(
+                Some("host-1"),
+                HOST_PROTOCOL_MAJOR,
+                Some(&[BOOTSTRAP_CAPABILITY, "schedule.list"]),
+            ),
+        );
+        let backend = RemoteSessionBackend::new(connection.clone());
+        backend.bootstrap().unwrap();
+        let sent = backend.resource_request("runSchedule", &HashMap::new(), b"{}".to_vec());
+        assert!(sent.is_err());
+        assert_eq!(
+            connection.calls().len(),
+            1,
+            "only the bootstrap reached the Host"
+        );
+    }
+
+    #[test]
+    fn bootstrap_carries_each_presets_agent_flag_to_the_controller() {
+        let connection = ScriptedConnection::new();
+        let generation = connection.generation(1);
+        let mut body = bootstrap_json(
+            Some("host-1"),
+            HOST_PROTOCOL_MAJOR,
+            Some(&[BOOTSTRAP_CAPABILITY]),
+        );
+        body["presets"] = json!([
+            {"id": "claude", "label": "Claude", "command": "claude", "enabled": true,
+             "quickLaunch": false, "isDefault": false, "agentPreset": true},
+            {"id": "old", "label": "Old", "command": "true", "enabled": true,
+             "quickLaunch": false, "isDefault": false}
+        ]);
+        add_bootstrap(&connection, generation, body);
+        let snapshot = RemoteSessionBackend::new(connection)
+            .bootstrap()
+            .expect("bootstrap decodes")
+            .snapshot;
+        let forwarded = serde_json::to_value(&snapshot).unwrap();
+        assert_eq!(forwarded["presets"][0]["agentPreset"], true);
+        assert!(forwarded["presets"][1].get("agentPreset").is_none());
+    }
+
+    #[test]
+    fn bootstrap_carries_each_presets_bypass_flag_to_the_controller() {
+        let connection = ScriptedConnection::new();
+        let generation = connection.generation(1);
+        let mut body = bootstrap_json(
+            Some("host-1"),
+            HOST_PROTOCOL_MAJOR,
+            Some(&[BOOTSTRAP_CAPABILITY]),
+        );
+        body["presets"] = json!([
+            {"id": "yolo", "label": "Yolo", "command": "claude --dangerously-skip-permissions",
+             "enabled": true, "quickLaunch": false, "isDefault": false,
+             "agentPreset": true, "bypassesApprovals": true},
+            {"id": "claude", "label": "Claude", "command": "claude", "enabled": true,
+             "quickLaunch": false, "isDefault": false, "agentPreset": true,
+             "bypassesApprovals": false},
+            {"id": "old", "label": "Old", "command": "true", "enabled": true,
+             "quickLaunch": false, "isDefault": false}
+        ]);
+        add_bootstrap(&connection, generation, body);
+        let snapshot = RemoteSessionBackend::new(connection)
+            .bootstrap()
+            .expect("bootstrap decodes")
+            .snapshot;
+        // Swift's approval-bypass warning reads this from the forwarded snapshot.
+        let forwarded = serde_json::to_value(&snapshot).unwrap();
+        assert_eq!(forwarded["presets"][0]["bypassesApprovals"], true);
+        assert_eq!(forwarded["presets"][1]["bypassesApprovals"], false);
+        assert!(forwarded["presets"][2].get("bypassesApprovals").is_none());
     }
 }

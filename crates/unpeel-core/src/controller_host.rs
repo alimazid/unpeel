@@ -357,6 +357,8 @@ impl DiskCatalog {
             &mut wire_presets,
             &mut create_presets,
         );
+        // Fork-only: Scheduled Tasks.
+        crate::controller_schedules::mark_agent_presets(&mut wire_presets);
         let activity_log =
             crate::activity_log::ActivityLogStore::load_default().unwrap_or_default();
         let mut sessions = Vec::new();
@@ -370,10 +372,24 @@ impl DiskCatalog {
                 .cmp(&left.session.created_at)
                 .then_with(|| left.session.id.cmp(&right.session.id))
         });
-        for manifest in &manifests {
+        // Fork-only: Scheduled Tasks. Each task's latest Run Session,
+        // from its Run log, marks the task's other Runs superseded.
+        let run_rows: Vec<crate::schedules::run_sessions::RunSessionRow<'_>> = manifests
+            .iter()
+            .map(|manifest| crate::schedules::run_sessions::RunSessionRow {
+                session_id: &manifest.session.id,
+                spawned_by: manifest.session.spawned_by.as_deref(),
+                pinned: pinned.contains(&manifest.session.id),
+                created_at: manifest.session.created_at,
+                // Read off the row's own summary below.
+                engaged: false,
+            })
+            .collect();
+        let latest_runs = crate::schedule_store::latest_run_sessions_of(&run_rows);
+        for (manifest, run_row) in manifests.iter().zip(&run_rows) {
             let project_id = effective_project_id(manifest, &known_ids);
             let resumable = crate::session_ops::has_resume_evidence(manifest);
-            let summary = session_summary_with_menu_attention(
+            let mut summary = session_summary_with_menu_attention(
                 manifest,
                 &project_id,
                 pinned.contains(&manifest.session.id),
@@ -388,6 +404,11 @@ impl DiskCatalog {
                     .filter(|entry| entry.kind == crate::activity_log::ActivityLogKind::Alert),
                 menu_attention_detection,
             );
+            let run_row = crate::schedules::run_sessions::RunSessionRow {
+                engaged: crate::schedules::run_sessions::is_engaged(&summary),
+                ..*run_row
+            };
+            crate::schedules::run_sessions::publish(&mut summary, run_row, &latest_runs);
             // The bootstrap includes the same inactive preview as the Host
             // sidebar.
             // Fork-only: `superAgent` / `superAgentRouterID`.
@@ -447,6 +468,9 @@ impl DiskCatalog {
                 "experimentalWorktreesEnabled": experimental_worktrees_enabled,
                 "hostTintHue": host_tint_hue,
                 "hostDeviceKind": if cfg!(target_os = "linux") { "linux" } else { "unknown" },
+                // Fork-only: Scheduled Tasks. Controllers refetch the
+                // `schedules` routes when this moves.
+                "schedulesRevision": crate::controller_schedules::revision(&state),
             }),
             projects: create_projects,
             presets: create_presets,
@@ -1756,6 +1780,13 @@ fn disk_protocol() -> HostProtocolDescriptor {
                 | "session.output.subscribe"
         )
     });
+    // Fork-only: Scheduled Tasks. Writes need the workspace worker (its
+    // Trigger check and Run now); a gateway without one never offers them.
+    if !crate::controller_schedules::has_host() {
+        protocol.capabilities.retain(|capability| {
+            !crate::controller_schedules::WRITE_CAPABILITIES.contains(&capability.as_str())
+        });
+    }
     protocol
 }
 
@@ -2247,6 +2278,10 @@ fn wire_sidebar_inactive_window(state: &Value) -> usize {
 
 /// Keep every live row and pin, then at most the configured number of
 /// stopped previews per project. Unread rows stay visible past that window.
+/// Fork-only: a Scheduled Task's Run Sessions (`scheduleID`) take no slot
+/// and are always kept, like `unpeel_serve`'s stopped window: their own
+/// keep limit is per task (Run retention), and a superseded one must stay
+/// on the wire for the SCHEDULED section to open.
 fn retain_wire_sidebar_inactive_window(sessions: &mut Vec<Value>, inactive_window: usize) {
     let mut inactive_by_project: HashMap<String, usize> = HashMap::new();
     sessions.retain(|session| {
@@ -2259,7 +2294,8 @@ fn retain_wire_sidebar_inactive_window(sessions: &mut Vec<Value>, inactive_windo
             .get("unread")
             .and_then(Value::as_bool)
             .unwrap_or(false);
-        if running || pinned {
+        let run_session = session.get("scheduleID").is_some();
+        if running || pinned || run_session {
             return true;
         }
         let project = session
@@ -2708,6 +2744,12 @@ mod tests {
         assert!(protocol.supports("host.bootstrap"));
         assert!(protocol.supports("session.create"));
         assert!(protocol.supports("session.output.read"));
+        // Fork-only: no workspace worker runs in this process, so the
+        // Scheduled Task writes are not offered; the reads are.
+        assert!(protocol.supports("schedule.list") && protocol.supports("schedule.runs"));
+        for write in crate::controller_schedules::WRITE_CAPABILITIES {
+            assert!(!protocol.supports(write), "{write}");
+        }
     }
 
     #[test]
@@ -3071,6 +3113,50 @@ mod tests {
             newest_unread.len(),
             5,
             "unread stopped rows within the window count toward it"
+        );
+    }
+
+    /// Run Sessions take no slot in a Project's stopped window, so
+    /// a task's Runs never push the user's stopped rows off the wire, and
+    /// every kept Run stays on it (Run retention bounds them per task) for
+    /// the SCHEDULED section to open.
+    #[test]
+    fn wire_sidebar_window_leaves_run_sessions_out_of_the_count() {
+        let stopped = |id: &str, updated: u64| {
+            json!({
+                "id": id,
+                "projectID": "project",
+                "status": "exited",
+                "pinned": false,
+                "updatedAtUnixMs": updated,
+            })
+        };
+        let mut sessions = Vec::new();
+        for updated in 10..15 {
+            sessions.push(stopped(&format!("user-{updated}"), updated));
+        }
+        for updated in 20..26 {
+            let mut run = stopped(&format!("run-{updated}"), updated);
+            run["scheduleID"] = "sch_1".into();
+            run["superseded"] = (updated < 25).into();
+            sessions.push(run);
+        }
+        sort_wire_sessions(
+            &mut sessions,
+            &[json!({ "id": "project", "dateSorted": true })],
+            &HashMap::new(),
+        );
+        retain_wire_sidebar_inactive_window(&mut sessions, 5);
+
+        assert_eq!(
+            sessions
+                .iter()
+                .filter_map(|session| session.get("id")?.as_str())
+                .collect::<Vec<_>>(),
+            [
+                "run-25", "run-24", "run-23", "run-22", "run-21", "run-20", "user-14", "user-13",
+                "user-12", "user-11", "user-10",
+            ]
         );
     }
 

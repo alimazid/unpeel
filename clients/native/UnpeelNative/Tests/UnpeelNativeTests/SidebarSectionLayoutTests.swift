@@ -14,14 +14,16 @@ final class SidebarSectionLayoutTests: XCTestCase {
 
     // Fork-only: git support — GIT HISTORY is in the default stack but
     // starts collapsed, so a fresh sidebar looks like it did before.
-    // AGENTS sits right below PROJECTS, expanded.
+    // AGENTS sits right below PROJECTS, expanded; SCHEDULED (fork-only:
+    // Scheduled Tasks) right below AGENTS, expanded.
     func testDefaultLayoutShowsEverySectionWithGitHistoryCollapsed() {
         let layout = SidebarSectionLayout.default
-        XCTAssertEqual(layout.order, [.projects, .agents, .explorer, .gitHistory])
-        XCTAssertEqual(layout.visible, [.projects, .agents, .explorer, .gitHistory])
-        XCTAssertEqual(layout.expanded, [.projects, .agents, .explorer])
+        XCTAssertEqual(layout.order, [.projects, .agents, .scheduled, .explorer, .gitHistory])
+        XCTAssertEqual(layout.visible, [.projects, .agents, .scheduled, .explorer, .gitHistory])
+        XCTAssertEqual(layout.expanded, [.projects, .agents, .scheduled, .explorer])
         XCTAssertEqual(layout.weight(of: .projects), 0.4, accuracy: 1e-9)
         XCTAssertEqual(layout.weight(of: .agents), 0.25, accuracy: 1e-9)
+        XCTAssertEqual(layout.weight(of: .scheduled), 0.2, accuracy: 1e-9)
         XCTAssertEqual(layout.weight(of: .explorer), 0.6, accuracy: 1e-9)
         XCTAssertEqual(layout.weight(of: .gitHistory), 0.4, accuracy: 1e-9)
     }
@@ -29,11 +31,12 @@ final class SidebarSectionLayoutTests: XCTestCase {
     func testIdsCarryTitlesAndMinimums() {
         XCTAssertEqual(SidebarSectionID.projects.title, "PROJECTS")
         XCTAssertEqual(SidebarSectionID.agents.title, "AGENTS")
+        XCTAssertEqual(SidebarSectionID.scheduled.title, "SCHEDULED")
         XCTAssertEqual(SidebarSectionID.explorer.title, "EXPLORER")
         XCTAssertEqual(SidebarSectionID.gitHistory.title, "GIT HISTORY")
         XCTAssertEqual(
             SidebarSectionID.minimumContentHeights,
-            [.projects: 80, .agents: 80, .explorer: 120, .gitHistory: 100]
+            [.projects: 80, .agents: 80, .scheduled: 60, .explorer: 120, .gitHistory: 100]
         )
     }
 
@@ -41,9 +44,10 @@ final class SidebarSectionLayoutTests: XCTestCase {
 
     func testContentSpaceSubtractsHeadersAndSeparators() {
         let layout = SidebarSectionLayout.default
-        XCTAssertEqual(layout.contentSpace(available: 600, headerHeight: 22, separatorHeight: 1), 600 - 88 - 3)
+        XCTAssertEqual(layout.contentSpace(available: 600, headerHeight: 22, separatorHeight: 1), 600 - 110 - 4)
         let oneVisible = layout
             .settingHidden(.agents, true)
+            .settingHidden(.scheduled, true)
             .settingHidden(.explorer, true)
             .settingHidden(.gitHistory, true)
         XCTAssertEqual(oneVisible.contentSpace(available: 600, headerHeight: 22, separatorHeight: 1), 578)
@@ -137,6 +141,7 @@ final class SidebarSectionLayoutTests: XCTestCase {
         let one = SidebarSectionLayout.default
             .settingHidden(.projects, true)
             .settingHidden(.agents, true)
+            .settingHidden(.scheduled, true)
             .settingHidden(.gitHistory, true)
         XCTAssertEqual(one.visible, [.explorer])
         XCTAssertEqual(one.settingHidden(.explorer, true), one)
@@ -149,12 +154,12 @@ final class SidebarSectionLayoutTests: XCTestCase {
             .settingHidden(.explorer, true)
         let revealed = hidden.revealing(.explorer)
         XCTAssertTrue(revealed.isExpanded(.explorer))
-        XCTAssertEqual(revealed.visible, [.projects, .agents, .explorer, .gitHistory])
+        XCTAssertEqual(revealed.visible, [.projects, .agents, .scheduled, .explorer, .gitHistory])
     }
 
     func testRevealingGitHistoryExpandsIt() {
         let revealed = SidebarSectionLayout.default.revealing(.gitHistory)
-        XCTAssertEqual(revealed.expanded, [.projects, .agents, .explorer, .gitHistory])
+        XCTAssertEqual(revealed.expanded, [.projects, .agents, .scheduled, .explorer, .gitHistory])
     }
 
     // MARK: Persistence
@@ -178,10 +183,10 @@ final class SidebarSectionLayoutTests: XCTestCase {
         let layout = SidebarSectionLayout.decode(Data(json.utf8))
         // Each missing id lands right after the nearest id that precedes it
         // in the default order (first when none does).
-        XCTAssertEqual(layout.order, [.projects, .agents, .explorer, .gitHistory])
+        XCTAssertEqual(layout.order, [.projects, .agents, .scheduled, .explorer, .gitHistory])
         XCTAssertEqual(layout.hidden, [])
-        // An added id takes its fresh-install state: PROJECTS and AGENTS
-        // expanded, GIT HISTORY collapsed.
+        // An added id takes its fresh-install state: PROJECTS, AGENTS and
+        // SCHEDULED expanded, GIT HISTORY collapsed.
         XCTAssertEqual(layout.collapsed, [.explorer, .gitHistory])
         XCTAssertEqual(layout.weight(of: .explorer), 0.7, accuracy: 1e-9)
         XCTAssertEqual(layout.weight(of: .projects), 0.4, accuracy: 1e-9)
@@ -193,10 +198,10 @@ final class SidebarSectionLayoutTests: XCTestCase {
     func testLayoutSavedBeforeGitHistoryGainsItCollapsed() {
         let json = #"{"version":1,"order":["projects","explorer"],"hidden":[],"collapsed":["projects"],"weights":{"projects":0.3,"explorer":0.7}}"#
         let layout = SidebarSectionLayout.decode(Data(json.utf8))
-        XCTAssertEqual(layout.order, [.projects, .agents, .explorer, .gitHistory])
+        XCTAssertEqual(layout.order, [.projects, .agents, .scheduled, .explorer, .gitHistory])
         XCTAssertEqual(layout.collapsed, [.projects, .gitHistory])
         XCTAssertEqual(layout.hidden, [])
-        XCTAssertEqual(layout.expanded, [.agents, .explorer])
+        XCTAssertEqual(layout.expanded, [.agents, .scheduled, .explorer])
         XCTAssertEqual(layout.weight(of: .projects), 0.3, accuracy: 1e-9)
         XCTAssertEqual(layout.weight(of: .explorer), 0.7, accuracy: 1e-9)
     }
@@ -207,25 +212,39 @@ final class SidebarSectionLayoutTests: XCTestCase {
     func testLayoutSavedBeforeAgentsGainsItExpandedBelowProjects() {
         let json = #"{"version":1,"order":["projects","explorer","gitHistory"],"hidden":[],"collapsed":["gitHistory"],"weights":{"projects":0.35,"explorer":0.65}}"#
         let layout = SidebarSectionLayout.decode(Data(json.utf8))
-        XCTAssertEqual(layout.order, [.projects, .agents, .explorer, .gitHistory])
+        XCTAssertEqual(layout.order, [.projects, .agents, .scheduled, .explorer, .gitHistory])
         XCTAssertEqual(layout.collapsed, [.gitHistory])
-        XCTAssertEqual(layout.expanded, [.projects, .agents, .explorer])
+        XCTAssertEqual(layout.expanded, [.projects, .agents, .scheduled, .explorer])
         XCTAssertEqual(layout.weight(of: .projects), 0.35, accuracy: 1e-9)
         XCTAssertEqual(layout.weight(of: .agents), 0.25, accuracy: 1e-9)
         XCTAssertEqual(layout.weight(of: .explorer), 0.65, accuracy: 1e-9)
+    }
+
+    // Fork-only: Scheduled Tasks — a layout saved before SCHEDULED existed
+    // gains it right below AGENTS, expanded at its default weight; every
+    // choice the record made is kept.
+    func testLayoutSavedBeforeScheduledGainsItExpandedBelowAgents() {
+        let json = #"{"version":1,"order":["agents","projects","explorer","gitHistory"],"hidden":["gitHistory"],"collapsed":["agents"],"weights":{"projects":0.3,"agents":0.1,"explorer":0.6}}"#
+        let layout = SidebarSectionLayout.decode(Data(json.utf8))
+        XCTAssertEqual(layout.order, [.agents, .scheduled, .projects, .explorer, .gitHistory])
+        XCTAssertEqual(layout.hidden, [.gitHistory])
+        XCTAssertEqual(layout.collapsed, [.agents])
+        XCTAssertEqual(layout.expanded, [.scheduled, .projects, .explorer])
+        XCTAssertEqual(layout.weight(of: .scheduled), 0.2, accuracy: 1e-9)
+        XCTAssertEqual(layout.weight(of: .agents), 0.1, accuracy: 1e-9)
     }
 
     func testLayoutSavedWithHiddenSectionsKeepsThemHidden() {
         let json = #"{"version":1,"order":["projects","explorer"],"hidden":["projects"],"collapsed":[],"weights":{}}"#
         let layout = SidebarSectionLayout.decode(Data(json.utf8))
         XCTAssertEqual(layout.hidden, [.projects])
-        XCTAssertEqual(layout.visible, [.agents, .explorer, .gitHistory])
-        XCTAssertEqual(layout.expanded, [.agents, .explorer])
+        XCTAssertEqual(layout.visible, [.agents, .scheduled, .explorer, .gitHistory])
+        XCTAssertEqual(layout.expanded, [.agents, .scheduled, .explorer])
     }
 
     func testDecodeNeverHidesEverySection() {
-        let json = #"{"version":1,"order":["projects","agents","explorer","gitHistory"],"hidden":["projects","agents","explorer","gitHistory"],"collapsed":[],"weights":{}}"#
-        XCTAssertEqual(SidebarSectionLayout.decode(Data(json.utf8)).visible, [.projects, .agents, .explorer, .gitHistory])
+        let json = #"{"version":1,"order":["projects","agents","scheduled","explorer","gitHistory"],"hidden":["projects","agents","scheduled","explorer","gitHistory"],"collapsed":[],"weights":{}}"#
+        XCTAssertEqual(SidebarSectionLayout.decode(Data(json.utf8)).visible, [.projects, .agents, .scheduled, .explorer, .gitHistory])
     }
 
     func testDecodeIgnoresNonPositiveOrNonFiniteWeights() {

@@ -35,7 +35,7 @@ use base64::Engine;
 use unpeel_core::app_paths;
 use unpeel_core::controller_api::{
     ControllerEffects, ControllerPrincipal, ControllerRequest, HostBootstrapContext,
-    HostCreateContext, HostCreateProject, HostRouteContext,
+    HostCreateContext, HostCreatePreset, HostCreateProject, HostRouteContext,
 };
 use unpeel_core::rustls;
 
@@ -1456,6 +1456,24 @@ fn headless_create_context(
 ) -> Option<HostCreateContext> {
     let host_id = unpeel_core::relay_uplink::ensure_host_id().ok()?;
     let host_owner_principal_id = unpeel_core::state::host_owner_principal_id(&host_id);
+    let (projects, presets) = create_catalog(snapshot)?;
+    let executor = Arc::new(move |resolved| {
+        unpeel_core::controller_api::execute_headless_session_create(resolved, hook_port)
+    });
+    Some(HostCreateContext::new(
+        host_owner_principal_id,
+        projects,
+        presets,
+        executor,
+    ))
+}
+
+/// The Projects and presets a Host-side launch resolves against: the ones
+/// the published snapshot shows (app-state and the native overlay both),
+/// so a Scheduled Task's Run finds the same Project `session.create` would.
+pub(crate) fn create_catalog(
+    snapshot: &SharedSnapshot,
+) -> Option<(Vec<HostCreateProject>, Vec<HostCreatePreset>)> {
     let (bootstrap, presets) = {
         let snapshot = snapshot.lock().ok()?;
         (snapshot.bootstrap.clone(), snapshot.create_presets.clone())
@@ -1496,15 +1514,7 @@ fn headless_create_context(
             })
         })
         .collect();
-    let executor = Arc::new(move |resolved| {
-        unpeel_core::controller_api::execute_headless_session_create(resolved, hook_port)
-    });
-    Some(HostCreateContext::new(
-        host_owner_principal_id,
-        projects,
-        presets,
-        executor,
-    ))
+    Some((projects, presets))
 }
 
 fn headless_controller_effects(hook_port: Option<u16>) -> ControllerEffects {
@@ -3359,6 +3369,9 @@ mod tests {
         #[serde(default)]
         body: serde_json::Value,
         expected: ConformanceExpected,
+        /// The error body's machine-readable `code`, where the case pins one.
+        #[serde(default, rename = "expectedCode")]
+        expected_code: Option<String>,
     }
 
     #[derive(serde::Deserialize)]
@@ -4144,6 +4157,16 @@ non-ephemeral ports — a product regression, not a port race. Attempts: {failur
                 None,
             );
             assert_eq!(status, case.expected.tui, "conformance case {}", case.id);
+            if let Some(code) = &case.expected_code {
+                let answer: serde_json::Value =
+                    serde_json::from_str(&body).expect("error body json");
+                assert_eq!(
+                    answer.get("code").and_then(serde_json::Value::as_str),
+                    Some(code.as_str()),
+                    "conformance case {} code",
+                    case.id
+                );
+            }
             if case.id == "bootstrap.valid" {
                 let response: serde_json::Value =
                     serde_json::from_str(&body).expect("bootstrap response json");

@@ -198,6 +198,33 @@ final class DesktopNotifier: NSObject, ObservableObject, UNUserNotificationCente
         }
     }
 
+    /// Fork-only: Scheduled Tasks. A banner for a Run with no Session on
+    /// this Mac (it never launched): keyed by its task (`bannerKey`, from
+    /// `NotificationTarget`), with no `sessionID` in userInfo, so a tap only
+    /// brings Unpeel forward.
+    func notifyRun(title: String, body: String, bannerKey: String, kind: String) {
+        guard authorized else { return }
+        let content = UNMutableNotificationContent()
+        content.title = title
+        content.body = body
+        content.sound = .default
+        content.threadIdentifier = bannerKey
+        content.userInfo = ["kind": kind]
+        let request = UNNotificationRequest(
+            identifier: "\(kind):\(bannerKey)",
+            content: content,
+            trigger: nil
+        )
+        UNUserNotificationCenter.current().add(request) { error in
+            if let error {
+                NSLog(
+                    "[UnpeelNative] Run notification scheduling failed: %@",
+                    error.localizedDescription
+                )
+            }
+        }
+    }
+
     /// Banner for a session needing input in a BACKGROUND workspace (the
     /// workspace pool's cross-workspace attention). Deduplication happens in
     /// the pool's per-(workspace, session) edge latch; the identifier here
