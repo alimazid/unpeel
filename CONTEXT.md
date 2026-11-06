@@ -95,7 +95,8 @@ _Avoid_: schedule (for the timing), timer, cadence
 
 **Agent Preset**:
 A preset whose command starts an agent runtime Unpeel recognises and can
-tell is ready for input. Only an Agent Preset takes a Scheduled Task's
+tell is ready for input at launch, with or without its integration
+installed. Only an Agent Preset takes a Scheduled Task's
 instructions; any other preset (a script, a plain command) just runs.
 _Avoid_: AI preset, agent command
 

@@ -158,12 +158,18 @@ fn screen_shows_idle_prompt(manifest: &HostedSessionManifest) -> bool {
         && manifest.screen_activity.as_deref() == Some("idle")
 }
 
-/// Whether `command` starts an agent whose readiness Unpeel can detect: its
-/// head names a catalog runtime (on this platform) that declares at least
-/// one readiness signal — lifecycle hooks, its own program status report,
-/// or a `[screen]` idle prompt. Such a preset is an **Agent Preset**: only
-/// it takes a Scheduled Task's instructions. Program status (`OSC 7501`) is
-/// detected at run time, so a command no runtime claims never counts.
+/// Whether `command` starts an agent whose readiness Unpeel can detect at
+/// launch: its head names a catalog runtime (on this platform) that shows
+/// the detector a positive signal before anyone types — a `[screen]` idle
+/// prompt, or its own program status report. Such a preset is an **Agent
+/// Preset**: only it takes a Scheduled Task's instructions.
+///
+/// Lifecycle hooks alone never count. They are an integration the user
+/// installs or not, and the event every integration records at launch
+/// (`HookSeen`) is metadata, not "ready"; a hook-only runtime would wait
+/// out the whole readiness budget on every Run. Program status (`OSC 7501`)
+/// from a command no runtime claims is detected at run time, so it never
+/// counts either.
 pub fn is_agent_command(command: &str) -> bool {
     let head = crate::integrations::command_head(command);
     if head.trim().is_empty() {
@@ -171,17 +177,14 @@ pub fn is_agent_command(command: &str) -> bool {
     }
     crate::runtime_catalog::builtin_runtime_catalog()
         .by_command_alias_for_current_platform(head)
-        .is_some_and(declares_readiness_signal)
+        .is_some_and(shows_readiness_at_launch)
 }
 
-fn declares_readiness_signal(runtime: &crate::runtime_catalog::RuntimeDescriptor) -> bool {
+fn shows_readiness_at_launch(runtime: &crate::runtime_catalog::RuntimeDescriptor) -> bool {
     use crate::runtime_catalog::RuntimeLifecycleSource;
     let screen_prompt = crate::screen_activity::rules_for_runtime(&runtime.legacy_slug)
         .is_some_and(|rules| !rules.idle_prompt.is_empty());
-    matches!(
-        runtime.lifecycle.source,
-        RuntimeLifecycleSource::Hooks | RuntimeLifecycleSource::SelfReport
-    ) || screen_prompt
+    runtime.lifecycle.source == RuntimeLifecycleSource::SelfReport || screen_prompt
 }
 
 /// How a readiness wait ended.

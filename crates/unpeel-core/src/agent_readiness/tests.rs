@@ -248,20 +248,20 @@ fn the_wait_times_out_when_nothing_says_ready() {
 
 #[test]
 fn an_agent_command_names_a_runtime_that_can_say_it_is_ready() {
-    // Hooks (and a declared screen idle prompt) for Claude Code and Codex,
-    // however the preset spells the executable.
+    // A declared screen idle prompt, however the preset spells the
+    // executable.
     for command in [
         "claude",
         "claude --model opus",
         "/usr/local/bin/claude",
         "codex --dangerously-bypass-approvals-and-sandbox",
         "gemini --yolo",
-        "cursor-agent --force",
     ] {
         assert!(is_agent_command(command), "{command}");
     }
-    // Plain commands, and runtimes whose only lifecycle is output growth,
-    // give no readiness signal to wait for.
+    // Plain commands, runtimes whose only lifecycle is output growth, and
+    // runtimes whose hooks say nothing at launch (Cursor's fire Start and
+    // Stop only) give no readiness signal to wait for.
     for command in [
         "",
         "  ",
@@ -270,7 +270,68 @@ fn an_agent_command_names_a_runtime_that_can_say_it_is_ready() {
         "sleep 60",
         "pi",
         "antigravity",
+        "cursor-agent --force",
     ] {
         assert!(!is_agent_command(command), "{command:?}");
+    }
+}
+
+/// What a freshly launched `runtime` can show the detector before anyone
+/// types, with no integration installed (hooks are an explicit install):
+/// its declared idle prompt as the PTY core classifies it, a program idle
+/// report when it reports its own status, and the launch hook every
+/// integration records (`HookSeen`).
+fn launch_evidence(
+    runtime: &crate::runtime_catalog::RuntimeDescriptor,
+) -> Vec<(HostedSessionManifest, Option<HookSeed>)> {
+    let observed = json!({ "currentObservation": { "id": runtime.legacy_slug, "pid": 43 } });
+    let mut evidence = vec![(
+        manifest(json!({ "runtime": observed })),
+        Some(seed("HookSeen", None, LAUNCHED_AT + 10)),
+    )];
+    let prompts = crate::screen_activity::rules_for_runtime(&runtime.legacy_slug)
+        .map(|rules| (rules, rules.idle_prompt.clone()))
+        .into_iter()
+        .flat_map(|(rules, prompts)| prompts.into_iter().map(move |prompt| (rules, prompt)));
+    for (rules, prompt) in prompts {
+        let verdict = crate::screen_activity::classify(&format!("{prompt} "), rules);
+        evidence.push((
+            manifest(json!({
+                "runtime": observed,
+                "screen_activity": verdict.map(crate::screen_activity::ScreenActivity::as_str),
+            })),
+            None,
+        ));
+    }
+    if runtime.lifecycle.source == crate::runtime_catalog::RuntimeLifecycleSource::SelfReport {
+        evidence.push((
+            manifest(json!({
+                "runtime": observed,
+                "program_status": program("idle", LAUNCHED_AT + 900),
+            })),
+            None,
+        ));
+    }
+    evidence
+}
+
+/// An Agent Preset is exactly a runtime the detector can see ready at
+/// launch: otherwise every Run of it would wait out the readiness budget
+/// and fail to start.
+#[test]
+fn every_catalog_runtime_is_an_agent_exactly_when_the_detector_can_see_it_ready() {
+    let catalog = crate::runtime_catalog::builtin_runtime_catalog();
+    for runtime in catalog.current_platform_descriptors() {
+        let detectable = launch_evidence(runtime)
+            .iter()
+            .any(|(manifest, seed)| readiness_signal(manifest, seed.as_ref()).is_some());
+        for alias in &runtime.detection.command_aliases {
+            assert_eq!(
+                is_agent_command(&format!("{alias} --some-flag")),
+                detectable,
+                "{} ({alias})",
+                runtime.slug
+            );
+        }
     }
 }

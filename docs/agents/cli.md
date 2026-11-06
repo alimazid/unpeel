@@ -104,8 +104,10 @@ unpeel schedules pause|resume|run|history|rm <id|name>
 ```
 
 `--instructions` is accepted only for an Agent Preset — a preset whose command
-names a catalog runtime declaring a readiness signal (hooks, program status,
-or a `[screen]` idle prompt; `agent_readiness::is_agent_command`) — and capped
+names a catalog runtime that shows a readiness signal at launch (a `[screen]`
+idle prompt or its own program status; hooks alone never count, since they are
+an optional integration and report nothing ready at launch;
+`agent_readiness::is_agent_command`) — and capped
 at 256 KiB; any other preset is refused with the reason. `edit` checks new
 instructions against the preset the task will have, removes them with
 `--instructions ''`, and refuses a new preset that cannot take the
