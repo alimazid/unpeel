@@ -380,6 +380,8 @@ impl DiskCatalog {
                 spawned_by: manifest.session.spawned_by.as_deref(),
                 pinned: pinned.contains(&manifest.session.id),
                 created_at: manifest.session.created_at,
+                // Read off the row's own summary below.
+                engaged: false,
             })
             .collect();
         let latest_runs = crate::schedule_store::latest_run_sessions_of(&run_rows);
@@ -401,7 +403,11 @@ impl DiskCatalog {
                     .filter(|entry| entry.kind == crate::activity_log::ActivityLogKind::Alert),
                 menu_attention_detection,
             );
-            crate::schedules::run_sessions::publish(&mut summary, *run_row, &latest_runs);
+            let run_row = crate::schedules::run_sessions::RunSessionRow {
+                engaged: crate::schedules::run_sessions::is_engaged(&summary),
+                ..*run_row
+            };
+            crate::schedules::run_sessions::publish(&mut summary, run_row, &latest_runs);
             // The bootstrap includes the same inactive preview as the Host
             // sidebar.
             sessions.push(summary);

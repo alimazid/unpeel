@@ -9,7 +9,10 @@
 //! (the SCHEDULED section's Runs open it).
 //!
 //! A pinned Run is never superseded: the user kept it there, as Run
-//! retention and the next Run's stop both leave it alone. A task with no Run
+//! retention and the next Run's stop both leave it alone. Nor is an older
+//! Run that is live and busy or waiting on the user, while it is: the next
+//! Run's stop leaves it live too, and hiding it would hide the follow-up the
+//! user is in (or the question it asks). A task with no Run
 //! log (deleted, or not run yet) supersedes nothing, so its Run Sessions stay
 //! listed rather than vanish with the task.
 
@@ -24,7 +27,7 @@ use super::SPAWNED_BY_PREFIX;
 /// no Run log is absent.
 pub type LatestRunSessions = HashMap<String, Option<String>>;
 
-/// One Session row, as far as Q32 needs it.
+/// One Session row, as far as a Project's listing of Runs needs it.
 #[derive(Debug, Clone, Copy)]
 pub struct RunSessionRow<'a> {
     pub session_id: &'a str,
@@ -33,6 +36,18 @@ pub struct RunSessionRow<'a> {
     pub pinned: bool,
     /// The manifest's `session.created_at`, which Resume keeps.
     pub created_at: u64,
+    /// Live and busy, or waiting on the user ([`is_engaged`]).
+    pub engaged: bool,
+}
+
+/// Whether a published Session row is live and busy or waiting on the
+/// user: the user may be following up in it, so it is never hidden.
+pub fn is_engaged(summary: &Value) -> bool {
+    summary.get("status").and_then(Value::as_str) == Some("running")
+        && matches!(
+            summary.get("activity").and_then(Value::as_str),
+            Some("working" | "blocked")
+        )
 }
 
 /// The task a Session is a Run of; `None` for every other Session.
@@ -79,6 +94,7 @@ pub fn is_superseded(row: RunSessionRow<'_>, latest: &LatestRunSessions) -> bool
         return false;
     };
     !row.pinned
+        && !row.engaged
         && latest
             .get(task)
             .is_some_and(|current| current.as_deref() != Some(row.session_id))
@@ -108,6 +124,7 @@ mod tests {
             spawned_by: Some(spawned_by),
             pinned: false,
             created_at: 1,
+            engaged: false,
         }
     }
 
@@ -149,6 +166,7 @@ mod tests {
             spawned_by: None,
             pinned: false,
             created_at: 1,
+            engaged: false,
         };
         assert!(!is_superseded(user, &latest), "the user's own Session");
         let agent = run_row("child", "4f1c-agent-session");
@@ -221,6 +239,36 @@ mod tests {
         assert!(resolve_latest(LatestRunSessions::new(), &rows).is_empty());
     }
 
+    /// An older Run the user is following up in (live and busy) or that
+    /// waits on them stays listed while it is, like a pinned one.
+    #[test]
+    fn a_live_older_run_that_is_busy_or_waiting_is_not_superseded() {
+        let latest = latest(&[("sch_a", Some("a-3"))]);
+        let engaged = RunSessionRow {
+            engaged: true,
+            ..run_row("a-1", "schedule:sch_a")
+        };
+        assert!(!is_superseded(engaged, &latest));
+        assert!(is_superseded(run_row("a-2", "schedule:sch_a"), &latest));
+    }
+
+    #[test]
+    fn a_session_is_engaged_while_it_runs_busy_or_waiting() {
+        let summary = |status: &str, activity: &str| {
+            serde_json::json!({ "status": status, "activity": activity })
+        };
+        assert!(is_engaged(&summary("running", "working")));
+        assert!(is_engaged(&summary("running", "blocked")));
+        for (status, activity) in [
+            ("running", "idle"),
+            ("running", "done"),
+            ("running", "starting"),
+            ("exited", "working"),
+        ] {
+            assert!(!is_engaged(&summary(status, activity)), "{status} {activity}");
+        }
+    }
+
     #[test]
     fn a_pinned_run_is_never_superseded() {
         let latest = latest(&[("sch_a", Some("a-3"))]);
@@ -257,6 +305,7 @@ mod tests {
             spawned_by: None,
             pinned: false,
             created_at: 1,
+            engaged: false,
         };
         publish(&mut row, user, &latest);
         assert_eq!(row, serde_json::json!({"id": "user"}));

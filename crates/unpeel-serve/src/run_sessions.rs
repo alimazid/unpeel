@@ -32,6 +32,7 @@ pub fn wire_row(row: &SessionRow) -> unpeel_core::schedules::run_sessions::RunSe
         spawned_by: row.spawned_by.as_deref(),
         pinned: row.pinned,
         created_at: row.created_at,
+        engaged: row.running && matches!(row.status, Status::Busy | Status::Attention),
     }
 }
 
@@ -291,6 +292,24 @@ mod tests {
         let mut pinned = row("a-previous", Some("sch_a"), true, 2);
         pinned.pinned = true;
         assert!(superseded_run_sessions(&[pinned], "sch_a", "a-new").is_empty());
+    }
+
+    /// What keeps an older Run listed: live and busy, or waiting on the user.
+    #[test]
+    fn a_live_run_is_engaged_while_busy_or_waiting() {
+        for (status, engaged) in [
+            (Status::Busy, true),
+            (Status::Attention, true),
+            (Status::Idle, false),
+            (Status::Starting, false),
+        ] {
+            let mut live = row("a", Some("sch_a"), true, 1);
+            live.status = status;
+            assert_eq!(wire_row(&live).engaged, engaged, "{status:?}");
+        }
+        let mut stopped = row("a", Some("sch_a"), false, 1);
+        stopped.status = Status::Busy;
+        assert!(!wire_row(&stopped).engaged);
     }
 
     /// Keyed by `spawned_by` alone: a deleted task's Runs keep the rule.
