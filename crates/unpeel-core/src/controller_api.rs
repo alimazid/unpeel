@@ -17,6 +17,7 @@ use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 
 use crate::controller_protocol::HostProtocolDescriptor;
+use crate::initial_text;
 use crate::session_artifacts;
 use crate::session_host::{self, HostedSessionState, SessionHostCommand};
 use crate::session_input;
@@ -25,7 +26,6 @@ use crate::state::{current_timestamp_ms, initial_session_label, SessionInfo};
 use crate::transcripts;
 
 const SESSION_COMMAND_TIMEOUT: Duration = Duration::from_secs(2);
-const SESSION_CREATE_READY_TIMEOUT: Duration = Duration::from_secs(10);
 const SESSION_CREATE_INITIAL_COLUMNS: u16 = 120;
 const SESSION_CREATE_INITIAL_ROWS: u16 = 32;
 const REPLAY_CACHE_TTL: Duration = Duration::from_secs(5 * 60);
@@ -35,7 +35,7 @@ const MAX_CREATE_ID_BYTES: usize = 256;
 const MAX_CREATE_COMMAND_BYTES: usize = 64 * 1024;
 const MAX_CREATE_PATH_BYTES: usize = 16 * 1024;
 const MAX_CREATE_BRANCH_BYTES: usize = 4 * 1024;
-const MAX_CREATE_INITIAL_TEXT_BYTES: usize = 256 * 1024;
+const MAX_CREATE_INITIAL_TEXT_BYTES: usize = crate::initial_text::MAX_INITIAL_TEXT_BYTES;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(
@@ -166,6 +166,19 @@ pub enum HostCreateSubmitMode {
     Raw,
 }
 
+/// When the Host types a create's initial text. `Attached` (the default when
+/// the field is absent) is the shipped behavior: as soon as the Session's
+/// control socket exists. `AgentReady` waits for the launched agent's first
+/// real readiness signal (`crate::agent_readiness`), so the text lands in the
+/// agent's prompt rather than ahead of it.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum HostCreateInitialTextWhen {
+    #[default]
+    Attached,
+    AgentReady,
+}
+
 /// Fully Host-resolved create input passed across the adapter's effect
 /// boundary. No Controller-supplied filesystem path survives into this type.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -182,6 +195,7 @@ pub struct ResolvedHostCreate {
     pub source_preset_id: Option<String>,
     pub initial_text: Option<String>,
     pub initial_text_submit_mode: HostCreateSubmitMode,
+    pub initial_text_when: HostCreateInitialTextWhen,
 }
 
 /// Adapter result for a newly created Session. `session` is the optional
@@ -305,6 +319,8 @@ struct HostCreateWireRequest {
     initial_text: Option<String>,
     #[serde(default)]
     initial_text_submit_mode: HostCreateSubmitMode,
+    #[serde(default)]
+    initial_text_when: HostCreateInitialTextWhen,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -600,6 +616,7 @@ fn resolve_host_create(
         source_preset_id: preset_id,
         initial_text: request.initial_text,
         initial_text_submit_mode: request.initial_text_submit_mode,
+        initial_text_when: request.initial_text_when,
     })
 }
 
@@ -683,6 +700,7 @@ pub fn execute_headless_session_create(
         source_preset_id,
         initial_text,
         initial_text_submit_mode,
+        initial_text_when,
     } = request;
     // Allocate the recovery handle before invoking the launcher. Once the
     // launcher accepts this id, the Controller gets a successful receipt;
@@ -745,25 +763,21 @@ pub fn execute_headless_session_create(
             }
             HostCreateSubmitMode::Raw => session_ops::InitialTextSubmitMode::Raw,
         };
+        let when = match initial_text_when {
+            HostCreateInitialTextWhen::Attached => initial_text::InitialTextWhen::Attached,
+            HostCreateInitialTextWhen::AgentReady => initial_text::InitialTextWhen::AgentReady,
+        };
         let delivery_session_id = session_id.clone();
+        // The receipt never waits on the agent: readiness can take up to the
+        // helper's two-minute budget, and its outcome lands in the Session's
+        // `initial-text.json` for the Controller to observe.
         if let Err(error) = std::thread::Builder::new()
             .name("unpeel-create-initial-text".into())
             .spawn(move || {
-                if let Err(error) = session_host::wait_until_ready(
-                    &delivery_session_id,
-                    SESSION_CREATE_READY_TIMEOUT,
-                ) {
-                    log::warn!(
-                        "session {delivery_session_id} initial text skipped; Host not ready: {error}"
-                    );
-                    return;
-                }
-                if let Err(error) =
-                    session_ops::deliver_initial_text(&delivery_session_id, &initial_text, mode)
-                {
-                    log::warn!(
-                        "session {delivery_session_id} initial text delivery failed: {error}"
-                    );
+                let outcome =
+                    initial_text::deliver(&delivery_session_id, &initial_text, mode, when);
+                if !outcome.typed() {
+                    log::warn!("session {delivery_session_id} initial text not typed: {outcome:?}");
                 }
             })
         {
@@ -2545,6 +2559,7 @@ mod tests {
                 source_preset_id: Some("preset-1".into()),
                 initial_text: Some("héllo\n\u{1b}[A".into()),
                 initial_text_submit_mode: HostCreateSubmitMode::PasteAndSubmit,
+                initial_text_when: HostCreateInitialTextWhen::Attached,
             }]
         );
     }
@@ -2619,6 +2634,7 @@ mod tests {
                 source_preset_id: None,
                 initial_text: Some("raw bytes\r".into()),
                 initial_text_submit_mode: HostCreateSubmitMode::Raw,
+                initial_text_when: HostCreateInitialTextWhen::Attached,
             }]
         );
 
@@ -2656,6 +2672,45 @@ mod tests {
     }
 
     #[test]
+    fn create_initial_text_waits_for_the_agent_only_when_asked() {
+        let captured = Arc::new(Mutex::new(Vec::<ResolvedHostCreate>::new()));
+        let executor_captured = Arc::clone(&captured);
+        let context = create_catalog(Arc::new(move |request| {
+            executor_captured
+                .lock()
+                .expect("capture lock")
+                .push(request);
+            Ok(HostCreateOutcome {
+                session_id: "ready-session".into(),
+                session: None,
+            })
+        }));
+        for (when, expected) in [
+            (None, HostCreateInitialTextWhen::Attached),
+            (Some("attached"), HostCreateInitialTextWhen::Attached),
+            (Some("agentReady"), HostCreateInitialTextWhen::AgentReady),
+        ] {
+            let mut request = valid_create_request();
+            request.body["initialText"] = "do the thing".into();
+            request.body["initialTextSubmitMode"] = "pasteOnly".into();
+            if let Some(when) = when {
+                request.body["initialTextWhen"] = Value::from(when);
+            }
+            let response = route_with_create_context(&request, None, Some(&context)).unwrap();
+            assert_eq!(response.status, 200, "{when:?}: {:?}", response.body);
+            let executed = captured.lock().expect("capture lock");
+            let last = executed.last().expect("one execution per request");
+            assert_eq!(last.initial_text_when, expected, "{when:?}");
+            // The wait changes when the text is typed, never what is typed.
+            assert_eq!(last.initial_text.as_deref(), Some("do the thing"));
+            assert_eq!(
+                last.initial_text_submit_mode,
+                HostCreateSubmitMode::PasteOnly
+            );
+        }
+    }
+
+    #[test]
     fn create_rejects_invalid_or_unbounded_requests_before_execution() {
         let executions = Arc::new(AtomicUsize::new(0));
         let executor_count = Arc::clone(&executions);
@@ -2683,6 +2738,12 @@ mod tests {
                 "projectID": "project-1",
                 "command": "codex",
                 "initialTextSubmitMode": "futureMode",
+            }),
+            json!({
+                "projectID": "project-1",
+                "command": "codex",
+                "initialText": "hello",
+                "initialTextWhen": "futureWhen",
             }),
         ];
 
