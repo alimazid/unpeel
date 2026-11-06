@@ -11,6 +11,8 @@
 #[cfg(feature = "native-host")]
 pub mod activity_log;
 #[cfg(feature = "native-host")]
+pub mod agent_readiness;
+#[cfg(feature = "native-host")]
 pub mod app_installer;
 #[cfg(feature = "native-host")]
 pub mod app_open;
@@ -67,6 +69,8 @@ pub mod host_name;
 pub mod host_resources;
 #[cfg(feature = "native-host")]
 pub mod http_fetch;
+#[cfg(feature = "native-host")]
+pub mod initial_text;
 #[cfg(feature = "native-host")]
 pub mod integrations;
 #[cfg(feature = "native-host")]

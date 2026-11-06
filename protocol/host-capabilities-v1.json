@@ -229,6 +229,13 @@
       "tui": true
     },
     {
+      "id": "session.create.initial_text_when",
+      "method": "POST",
+      "path": "/mobile/sessions#initialTextWhen",
+      "native": true,
+      "tui": true
+    },
+    {
       "id": "session.input.write",
       "method": "POST",
       "path": "/mobile/write",

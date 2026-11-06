@@ -661,6 +661,21 @@
       }
     },
     {
+      "id": "create.unknown-initial-text-when",
+      "method": "POST",
+      "path": "/mobile/sessions",
+      "body": {
+        "projectID": "conformance-project",
+        "command": "true",
+        "initialText": "conformance",
+        "initialTextWhen": "notAValue"
+      },
+      "expected": {
+        "native": 400,
+        "tui": 400
+      }
+    },
+    {
       "id": "presets.create-missing-command",
       "method": "POST",
       "path": "/mobile/presets",

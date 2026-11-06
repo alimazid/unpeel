@@ -32,6 +32,8 @@ pub const NATIVE_HOST_CAPABILITIES: &[&str] = &[
     "push.register",
     "relay.credentials.recover",
     "session.create",
+    // Fork-only: `initialTextWhen: "agentReady"` on `session.create`.
+    "session.create.initial_text_when",
     "session.input.write",
     "session.mark_read",
     "session.mark_unread",
@@ -84,6 +86,8 @@ pub const HEADLESS_HOST_CAPABILITIES: &[&str] = &[
     "project.organization.set",
     "project.pin.set",
     "session.create",
+    // Fork-only: `initialTextWhen: "agentReady"` on `session.create`.
+    "session.create.initial_text_when",
     "session.input.write",
     "session.mark_read",
     "session.mark_unread",
