@@ -225,6 +225,119 @@ struct ScheduledSectionModelTests {
         #expect(model.availability == .ready, "a failed revision is read again")
     }
 
+    // MARK: Managing tasks
+
+    @Test
+    func theWritesOnOfferAreTheOnesTheHostAdvertises() {
+        let all = ScheduledTaskWrites(protocol: RemoteHostProtocolDescriptor(capabilities: [
+            RemoteControlProtocol.schedulesCreateCapability, RemoteControlProtocol.schedulesEditCapability,
+            RemoteControlProtocol.schedulesDeleteCapability, RemoteControlProtocol.schedulesRunCapability,
+        ]))
+        #expect(all.create && all.edit && all.delete && all.run)
+        let readOnly = ScheduledTaskWrites(protocol: RemoteHostProtocolDescriptor(capabilities: [
+            RemoteControlProtocol.schedulesCapability,
+        ]))
+        #expect(!readOnly.create && !readOnly.edit && !readOnly.delete && !readOnly.run)
+        #expect(ScheduledTaskWrites(protocol: nil) == readOnly)
+
+        let model = ScheduledSectionModel()
+        let source = FakeSchedulesSource(list: [])
+        model.update(snapshot: snapshot(revision: "r1", capabilities: [
+            RemoteControlProtocol.schedulesCapability, RemoteControlProtocol.schedulesRunCapability,
+        ]), scopeID: "local", source: source)
+        #expect(model.writes.run && !model.writes.create, "the model follows the selected Host")
+        model.update(snapshot: nil, scopeID: "local", source: source)
+        #expect(model.writes == readOnly)
+    }
+
+    @Test
+    func theSheetOpensBlankFromPlusAndFilledFromARow() {
+        let model = ScheduledSectionModel()
+        model.openNewTask()
+        #expect(model.editing == ScheduledTaskEditing(task: nil))
+        let row = task("sch_a", "A")
+        model.openEditor(for: row)
+        #expect(model.editing?.task == row)
+        model.closeEditor()
+        #expect(model.editing == nil)
+    }
+
+    @Test
+    func deleteAsksInlineThenDeletesAndLeavesNoConfirmationBehind() async {
+        let source = FakeSchedulesSource(list: [task("sch_a", "A"), task("sch_b", "B")])
+        let writer = FakeSchedulesWriter()
+        let model = ScheduledSectionModel()
+        model.update(snapshot: snapshot(revision: "r1"), scopeID: "local", source: source)
+        await model.settle()
+
+        model.requestDelete("sch_a")
+        #expect(model.confirmingDeleteTaskID == "sch_a")
+        model.cancelDelete()
+        #expect(model.confirmingDeleteTaskID == nil)
+        #expect(writer.calls.isEmpty, "cancel deletes nothing")
+
+        model.requestDelete("sch_a")
+        await model.confirmDelete("sch_a", writer: writer).value
+        #expect(writer.calls == ["delete sch_a"])
+        #expect(model.confirmingDeleteTaskID == nil)
+        #expect(model.actionError == nil)
+    }
+
+    @Test
+    func aConfirmationEndsWhenItsTaskLeavesTheList() async {
+        let source = FakeSchedulesSource(list: [task("sch_a", "A")])
+        let model = ScheduledSectionModel()
+        model.update(snapshot: snapshot(revision: "r1"), scopeID: "local", source: source)
+        await model.settle()
+        model.requestDelete("sch_a")
+        source.list = []
+        model.update(snapshot: snapshot(revision: "r2"), scopeID: "local", source: source)
+        await model.settle()
+        #expect(model.confirmingDeleteTaskID == nil)
+    }
+
+    @Test
+    func rowActionsSendTheirWritesAndAHostRefusalSaysWhy() async {
+        let source = FakeSchedulesSource(list: [task("sch_a", "A")])
+        let writer = FakeSchedulesWriter()
+        let model = ScheduledSectionModel()
+        model.update(snapshot: snapshot(revision: "r1"), scopeID: "local", source: source)
+        await model.settle()
+        let row = RemoteScheduledTask(
+            id: "sch_a", name: "A", projectID: "p", presetID: "ok",
+            trigger: RemoteScheduleTrigger(kind: "daily", time: "09:00")
+        )
+
+        await model.setPaused(row, true, writer: writer).value
+        await model.setPaused(row, false, writer: writer).value
+        await model.duplicate(row, writer: writer).value
+        await model.runNow("sch_a", writer: writer).value
+        #expect(writer.calls == [
+            "edit sch_a enabled=false", "edit sch_a enabled=true", "create A copy", "run sch_a",
+        ])
+        #expect(model.actionError == nil)
+
+        writer.failure = "Host resource was not sent: Host Host resource returned 409: a Run of A is still in progress"
+        await model.runNow("sch_a", writer: writer).value
+        #expect(model.actionError == "A Run of this task is still in progress. Try again once it finishes.")
+        writer.failure = nil
+        await model.runNow("sch_a", writer: writer).value
+        #expect(model.actionError == nil, "a later success clears it")
+    }
+
+    @Test
+    func anotherHostEndsTheSheetAndTheConfirmation() async {
+        let source = FakeSchedulesSource(list: [task("sch_a", "A")])
+        let model = ScheduledSectionModel()
+        model.update(snapshot: snapshot(revision: "r1"), scopeID: "local", source: source)
+        await model.settle()
+        model.requestDelete("sch_a")
+        model.openEditor(for: task("sch_a", "A"))
+        model.update(snapshot: snapshot(revision: "r1", macID: "host-2"), scopeID: "remote:host-2", source: source)
+        #expect(model.confirmingDeleteTaskID == nil)
+        #expect(model.editing == nil)
+    }
+
     // MARK: Fixtures
 
     private var calendar: Calendar {
@@ -305,6 +418,40 @@ private final class FakeSchedulesSource: ScheduledTasksSource {
         runCalls.append(scheduleID)
         if let failure { throw ScheduledTasksReadError(message: failure) }
         return RemoteScheduleRunHistory(scheduleID: scheduleID, runs: runs[scheduleID] ?? [])
+    }
+}
+
+/// The Host's write routes, scripted: each call is recorded in words.
+@MainActor
+private final class FakeSchedulesWriter: ScheduledTasksWriter {
+    var failure: String?
+    private(set) var calls: [String] = []
+
+    func createSchedule(_ request: RemoteScheduleCreate) async throws -> RemoteScheduledTask {
+        calls.append("create \(request.name)")
+        try fail()
+        return RemoteScheduledTask(id: "sch_new", name: request.name)
+    }
+
+    func editSchedule(_ request: RemoteScheduleEdit) async throws -> RemoteScheduledTask {
+        calls.append("edit \(request.scheduleID)" + (request.enabled.map { " enabled=\($0)" } ?? ""))
+        try fail()
+        return RemoteScheduledTask(id: request.scheduleID, name: request.name ?? "")
+    }
+
+    func deleteSchedule(id: String) async throws {
+        calls.append("delete \(id)")
+        try fail()
+    }
+
+    func runScheduleNow(id: String) async throws -> String {
+        calls.append("run \(id)")
+        try fail()
+        return "run_new"
+    }
+
+    private func fail() throws {
+        if let failure { throw ScheduledTasksReadError(message: failure) }
     }
 }
 

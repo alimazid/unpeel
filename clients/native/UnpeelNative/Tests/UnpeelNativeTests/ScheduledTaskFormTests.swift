@@ -1,0 +1,266 @@
+import Foundation
+import Testing
+import UnpeelShared
+@testable import UnpeelNative
+
+/// Fork-only: Scheduled Tasks. The edit sheet's model: which fields show
+/// for which preset (only the Host's Agent Preset flag counts), the
+/// approval-bypass warning, a cron Trigger kept read-only, what a save
+/// sends, and the Host's refusals in words a person reads.
+struct ScheduledTaskFormTests {
+    // MARK: Fields by preset kind
+
+    @Test
+    func instructionsShowOnlyWhenTheHostSaysThePresetIsAnAgentPreset() {
+        #expect(ScheduledTaskForm.showsInstructions(preset("claude", "claude", agent: true)))
+        #expect(!ScheduledTaskForm.showsInstructions(preset("ok", "./backup.sh", agent: false)))
+        // An older Host says nothing: the app never guesses from the command.
+        #expect(!ScheduledTaskForm.showsInstructions(preset("old", "claude", agent: nil)))
+        #expect(!ScheduledTaskForm.showsInstructions(nil))
+    }
+
+    @Test
+    func aProjectSeesItsOwnPresetsAndTheGlobalOnesItDoesNotOverride() {
+        let presets = [
+            preset("claude", "claude", agent: true),
+            preset("ok", "true", agent: false),
+            preset("claude", "claude --resume", agent: true, projectID: "p"),
+            preset("other", "codex", agent: true, projectID: "q"),
+            preset("off", "true", agent: false, enabled: false),
+        ]
+        let forP = ScheduledTaskForm.presets(for: "p", in: presets)
+        #expect(forP.map(\.command) == ["claude --resume", "true"])
+        #expect(ScheduledTaskForm.presets(for: "q", in: presets).map(\.id) == ["claude", "ok", "other"])
+        #expect(ScheduledTaskForm.preset(id: "claude", projectID: "p", in: presets)?.command == "claude --resume")
+    }
+
+    @Test
+    func onlyProjectsWithAFolderCanRunATask() {
+        let projects = [
+            RemoteProjectSummary(id: "p", name: "Inbox", path: "/work/inbox"),
+            RemoteProjectSummary(id: "g", name: "Clients", path: "", isGroup: true),
+            RemoteProjectSummary(id: "w", name: "Inbox", path: "/work/inbox-fix",
+                                 parentProjectID: "p", worktreeBranch: "fix"),
+        ]
+        let choices = ScheduledTaskForm.projectChoices(projects)
+        #expect(choices.map(\.id) == ["p", "w"])
+        #expect(choices.map(\.title) == ["Inbox", "Inbox (fix)"])
+    }
+
+    // MARK: Approval-bypass warning
+
+    @Test
+    func aKnownApprovalBypassFlagIsNamedInOneLine() {
+        let flagged = [
+            ("claude --dangerously-skip-permissions", "--dangerously-skip-permissions"),
+            ("codex --dangerously-bypass-approvals-and-sandbox", "--dangerously-bypass-approvals-and-sandbox"),
+            ("gemini --yolo", "--yolo"),
+            ("gemini -y", "-y"),
+            ("/usr/local/bin/cursor-agent --force", "--force"),
+            ("grok --always-approve", "--always-approve"),
+            ("claude --permission-mode bypassPermissions", "--permission-mode bypassPermissions"),
+            ("claude --permission-mode=bypassPermissions", "--permission-mode=bypassPermissions"),
+            ("gemini --approval-mode yolo", "--approval-mode yolo"),
+        ]
+        for (command, flag) in flagged {
+            #expect(ScheduledTaskForm.bypassFlag(in: command) == flag, "\(command)")
+            let warning = ScheduledTaskForm.bypassWarning(for: command)
+            #expect(warning?.contains(flag) == true, "\(command)")
+            #expect(warning?.contains("\n") == false, "one line")
+        }
+        // Whole tokens only, and generic flags only where they mean bypass.
+        for command in [
+            "rsync --force-delete ./a ./b", "git push --force", "claude --yolo-mode-docs",
+            "tail -y", "claude --permission-mode plan", "claude", "",
+        ] {
+            #expect(ScheduledTaskForm.bypassFlag(in: command) == nil, "\(command)")
+        }
+        #expect(ScheduledTaskForm.bypassWarning(for: nil) == nil)
+    }
+
+    // MARK: Trigger
+
+    @Test
+    func aCronTriggerOpensReadOnlyAndIsSentBackUnchanged() throws {
+        let cron = RemoteScheduleTrigger(kind: "cron", expr: "*/15 9-17 * * 1-5")
+        #expect(!ScheduledTaskForm.isTriggerEditable(cron))
+        #expect(!ScheduledTaskForm.isTriggerEditable(RemoteScheduleTrigger(kind: "fortnightly")))
+        for kind in ["hourly", "daily", "weekdays", "weekly", "once"] {
+            #expect(ScheduledTaskForm.isTriggerEditable(RemoteScheduleTrigger(kind: kind)), "\(kind)")
+        }
+        let task = RemoteScheduledTask(id: "sch_c", name: "Quarter hours", projectID: "p",
+                                       presetID: "ok", trigger: cron)
+        let draft = ScheduledTaskDraft(task: task, calendar: calendar)
+        #expect(draft.fixedTrigger == cron)
+        #expect(draft.trigger(calendar: calendar) == cron)
+        #expect(ScheduledTaskForm.readOnlyTriggerText(cron).contains("*/15 9-17 * * 1-5"))
+        #expect(ScheduledTaskForm.readOnlyTriggerText(cron).contains("unpeel schedules edit"))
+
+        var renamed = draft
+        renamed.name = "Every quarter hour"
+        let edit = ScheduledTaskForm.editRequest(original: task, initial: draft, draft: renamed,
+                                                 showsInstructions: false, calendar: calendar)
+        #expect(edit == RemoteScheduleEdit(scheduleID: "sch_c", name: "Every quarter hour"))
+    }
+
+    @Test
+    func everyEditableTriggerRoundTripsThroughTheDraft() {
+        let triggers = [
+            RemoteScheduleTrigger(kind: "hourly", minute: 15),
+            RemoteScheduleTrigger(kind: "daily", time: "09:43"),
+            RemoteScheduleTrigger(kind: "weekdays", time: "08:30"),
+            RemoteScheduleTrigger(kind: "weekly", time: "17:00", weekday: "friday"),
+            RemoteScheduleTrigger(kind: "once", at: "2026-11-07T15:00"),
+        ]
+        for trigger in triggers {
+            let draft = ScheduledTaskDraft(task: RemoteScheduledTask(id: "s", name: "n", trigger: trigger),
+                                           calendar: calendar)
+            #expect(draft.fixedTrigger == nil)
+            #expect(draft.trigger(calendar: calendar) == trigger, "\(trigger.kind)")
+        }
+        var draft = ScheduledTaskDraft.blank(projectID: "p", presetID: "ok", now: at(6, 22, 10), calendar: calendar)
+        draft.triggerKind = .weekly
+        draft.weekday = "monday"
+        #expect(draft.trigger(calendar: calendar) == RemoteScheduleTrigger(kind: "weekly", time: "09:00", weekday: "monday"))
+        draft.triggerKind = .once
+        #expect(draft.trigger(calendar: calendar) == RemoteScheduleTrigger(kind: "once", at: "2026-11-06T23:00"),
+                "a new Once defaults to the next whole hour")
+    }
+
+    // MARK: What a save sends
+
+    @Test
+    func aBlankSheetCreatesAnEnabledTaskThatNotifiesByDefault() {
+        var draft = ScheduledTaskDraft.blank(projectID: "p", presetID: "claude", now: at(6, 22, 10), calendar: calendar)
+        #expect(draft.enabled && draft.notifyWhenDone)
+        #expect(draft.triggerKind == .daily)
+        #expect(ScheduledTaskForm.problem(draft) == "Give the task a name.")
+        draft.name = "  Morning briefing "
+        draft.instructions = "  brief me  "
+        #expect(ScheduledTaskForm.problem(draft) == nil)
+        let create = ScheduledTaskForm.createRequest(draft, showsInstructions: true, calendar: calendar)
+        #expect(create == RemoteScheduleCreate(
+            name: "Morning briefing", projectID: "p", presetID: "claude",
+            trigger: RemoteScheduleTrigger(kind: "daily", time: "09:00"),
+            instructions: "brief me", enabled: true, notifyWhenDone: true
+        ))
+        // Instructions typed for an agent preset are not sent once a script
+        // preset is picked.
+        let script = ScheduledTaskForm.createRequest(draft, showsInstructions: false, calendar: calendar)
+        #expect(script.instructions == nil)
+
+        draft.projectID = ""
+        #expect(ScheduledTaskForm.problem(draft) == "Pick a Project.")
+        draft.projectID = "p"
+        draft.presetID = ""
+        #expect(ScheduledTaskForm.problem(draft) == "Pick a preset.")
+    }
+
+    @Test
+    func anEditSendsOnlyWhatChanged() {
+        let task = RemoteScheduledTask(
+            id: "sch_1", name: "Morning", projectID: "p", presetID: "claude",
+            trigger: RemoteScheduleTrigger(kind: "daily", time: "09:43:30"),
+            enabled: true, notifyWhenDone: true, instructions: "brief me"
+        )
+        let initial = ScheduledTaskDraft(task: task, calendar: calendar)
+        let unchanged = ScheduledTaskForm.editRequest(original: task, initial: initial, draft: initial,
+                                                      showsInstructions: true, calendar: calendar)
+        #expect(!unchanged.changesSomething, "opening and saving changes nothing, seconds included")
+
+        var draft = initial
+        draft.notifyWhenDone = false
+        draft.enabled = false
+        draft.instructions = "brief me twice"
+        draft.triggerKind = .weekdays
+        let edit = ScheduledTaskForm.editRequest(original: task, initial: initial, draft: draft,
+                                                 showsInstructions: true, calendar: calendar)
+        #expect(edit == RemoteScheduleEdit(
+            scheduleID: "sch_1", trigger: RemoteScheduleTrigger(kind: "weekdays", time: "09:43"),
+            instructions: "brief me twice", enabled: false, notifyWhenDone: false
+        ))
+
+        var toScript = initial
+        toScript.presetID = "ok"
+        let moved = ScheduledTaskForm.editRequest(original: task, initial: initial, draft: toScript,
+                                                  showsInstructions: false, calendar: calendar)
+        #expect(moved == RemoteScheduleEdit(scheduleID: "sch_1", presetID: "ok", instructions: ""),
+                "a script preset drops the task's instructions")
+    }
+
+    @Test
+    func duplicatingCopiesEverySettingUnderANewName() {
+        let task = RemoteScheduledTask(
+            id: "sch_1", name: "Morning", projectID: "p", presetID: "claude",
+            trigger: RemoteScheduleTrigger(kind: "cron", expr: "0 9 * * 1-5"),
+            enabled: false, notifyWhenDone: false, instructions: "brief me"
+        )
+        #expect(ScheduledTaskForm.duplicateRequest(of: task) == RemoteScheduleCreate(
+            name: "Morning copy", projectID: "p", presetID: "claude",
+            trigger: RemoteScheduleTrigger(kind: "cron", expr: "0 9 * * 1-5"),
+            instructions: "brief me", enabled: false, notifyWhenDone: false
+        ))
+        let untitled = RemoteScheduledTask(id: "sch_2", name: " ", projectID: "p", presetID: "ok",
+                                           trigger: RemoteScheduleTrigger(kind: "hourly", minute: 0))
+        #expect(ScheduledTaskForm.duplicateRequest(of: untitled).name == "Untitled task copy")
+    }
+
+    // MARK: The Host's refusals
+
+    @Test
+    func hostRefusalsReadAsSentences() {
+        let wrapped = { (status: Int, text: String) -> Error in
+            ScheduledTaskFormTestError(message:
+                "Host resource was not sent: Host Host resource returned \(status): \(text)")
+        }
+        #expect(ScheduledTaskErrorText.message(for: wrapped(409, "a Run of Morning is still in progress"))
+            == "A Run of this task is still in progress. Try again once it finishes.")
+        #expect(ScheduledTaskErrorText.message(for: wrapped(400,
+            "invalid Trigger: 2026-11-06T09:00 is in the past"))
+            == "That time has already passed. Pick a time in the future.")
+        #expect(ScheduledTaskErrorText.message(for: wrapped(400, "cannot resume: 2026-11-06T09:00 is in the past"))
+            == "That time has already passed. Pick a time in the future.")
+        #expect(ScheduledTaskErrorText.message(for: wrapped(400,
+            "this preset is not an Agent Preset: it does not start an agent Unpeel can tell is ready, so it cannot take instructions"))
+            == "This preset doesn't start an agent Unpeel can tell is ready, so it can't take instructions. Clear them or pick an agent preset.")
+        #expect(ScheduledTaskErrorText.message(for: wrapped(400,
+            "invalid Trigger: \"25:00\" is not a local time HH:MM or HH:MM:SS"))
+            == "That schedule isn't valid: \"25:00\" is not a local time HH:MM or HH:MM:SS.")
+        #expect(ScheduledTaskErrorText.message(for: wrapped(404, "no Scheduled Task sch_1; it may have been deleted"))
+            == "This Scheduled Task no longer exists on the Host.")
+        #expect(ScheduledTaskErrorText.message(for: wrapped(400, "the preset ok does not exist in that Project or is turned off"))
+            == "The preset ok does not exist in that Project or is turned off.")
+        // Anything that is not a Host answer keeps its own words.
+        let plain = ScheduledTaskFormTestError(message: "This Host does not support Scheduled Tasks yet. Update Unpeel on the Host.")
+        #expect(ScheduledTaskErrorText.message(for: plain) == plain.message)
+    }
+
+    // MARK: Fixtures
+
+    private var calendar: Calendar {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(identifier: "America/New_York")!
+        calendar.locale = Locale(identifier: "en_US_POSIX")
+        return calendar
+    }
+
+    private func at(_ day: Int, _ hour: Int, _ minute: Int) -> Date {
+        calendar.date(from: DateComponents(year: 2026, month: 11, day: day, hour: hour, minute: minute))!
+    }
+
+    private func preset(
+        _ id: String,
+        _ command: String,
+        agent: Bool?,
+        projectID: String? = nil,
+        enabled: Bool = true
+    ) -> RemotePresetSummary {
+        RemotePresetSummary(id: id, label: id, command: command, enabled: enabled,
+                            projectID: projectID, agentPreset: agent)
+    }
+}
+
+private struct ScheduledTaskFormTestError: LocalizedError {
+    let message: String
+    var errorDescription: String? { message }
+}

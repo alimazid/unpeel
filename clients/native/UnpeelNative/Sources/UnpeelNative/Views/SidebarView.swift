@@ -618,6 +618,10 @@ struct SidebarView: View {
                     // strip.
                     SidebarSectionStack(layoutStore: sectionLayout, sections: sidebarSections)
                         .padding(.top, SidebarSectionMetrics.stackTopInset)
+                        // Fork-only: Scheduled Tasks. The edit sheet, from
+                        // a view that stays mounted while SCHEDULED is
+                        // collapsed.
+                        .background(ScheduledTaskSheetPresenter(model: scheduledSection, store: store))
                         .transition(.sidebarPanel(fromTrailing: false))
                 }
             }
@@ -796,7 +800,7 @@ struct SidebarView: View {
             SidebarSectionDescriptor(
                 id: .scheduled,
                 accessory: AnyView(EmptyView()),
-                actions: AnyView(EmptyView()),
+                actions: AnyView(ScheduledSectionActions(runtime: store.remoteHostRuntime, model: scheduledSection)),
                 content: { AnyView(ScheduledSectionPanel(store: store, model: scheduledSection)) }
             ),
             SidebarSectionDescriptor(
