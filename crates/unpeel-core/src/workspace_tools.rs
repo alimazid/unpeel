@@ -324,22 +324,20 @@ fn register_worktree(
 
 /// The presets a Session in `project_id` may launch: enabled, global or
 /// scoped to that project, project-scoped first so an override wins over
-/// its global twin. `sessions create` resolves `preset` against exactly
-/// this list.
+/// its global twin. A group or worktree launches its root Project's
+/// presets. `sessions create` resolves `preset` against exactly this list.
 pub(crate) fn usable_presets(state: &Value, project_id: &str) -> Vec<Preset> {
+    let root_id = Tree::from_state(state)
+        .root_of(project_id)
+        .map(|root| root.id.clone());
+    let in_scope = |scope: &str| scope == project_id || root_id.as_deref() == Some(scope);
     let mut usable: Vec<Preset> = state
         .get("presets")
         .and_then(Value::as_array)
         .into_iter()
         .flatten()
         .filter_map(|raw| serde_json::from_value::<Preset>(raw.clone()).ok())
-        .filter(|preset| {
-            preset.enabled
-                && preset
-                    .project_id
-                    .as_deref()
-                    .is_none_or(|scope| scope == project_id)
-        })
+        .filter(|preset| preset.enabled && preset.project_id.as_deref().is_none_or(in_scope))
         .collect();
     // A stable sort keeps each half in the user's order.
     usable.sort_by_key(|preset| preset.project_id.is_none());

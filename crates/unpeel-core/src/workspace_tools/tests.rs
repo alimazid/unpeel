@@ -48,6 +48,22 @@ fn usable_presets_are_enabled_global_or_this_projects_scoped_first() {
 }
 
 #[test]
+fn a_group_or_worktree_uses_its_root_projects_presets() {
+    let mut state = workspace();
+    state["presets"] = json!([
+        { "id": "global", "label": "Claude", "command": "claude", "project_id": null },
+        { "id": "root", "label": "Tests", "command": "cargo test", "project_id": "p" },
+        { "id": "other", "label": "Other", "command": "y", "project_id": "q" },
+    ]);
+    assert_eq!(preset_ids(&state, "g"), ["root", "global"]);
+    assert_eq!(preset_ids(&state, "wt"), ["root", "global"]);
+    assert_eq!(preset_ids(&state, "wt-g"), ["root", "global"]);
+    // A root is its own root; an unknown id keeps the exact match only.
+    assert_eq!(preset_ids(&state, "p"), ["root", "global"]);
+    assert_eq!(preset_ids(&state, "desktop-owned"), ["global"]);
+}
+
+#[test]
 fn the_preset_listing_names_each_presets_launch_fields() {
     let state = json!({
         "presets": [

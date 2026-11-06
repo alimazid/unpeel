@@ -432,7 +432,7 @@ fn session_dir(session_id: &str) -> Option<std::path::PathBuf> {
 }
 
 /// Session ids name directories under `app-sessions/`.
-fn valid_session_id(id: &str) -> bool {
+pub(crate) fn valid_session_id(id: &str) -> bool {
     !id.trim().is_empty() && !id.contains('/') && !id.contains('\\') && !id.contains("..")
 }
 

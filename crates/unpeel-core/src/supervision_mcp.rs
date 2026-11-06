@@ -9,13 +9,17 @@ use crate::session_host::HostedSessionManifest;
 use crate::state::SessionInfo;
 
 mod inbox;
+mod workers;
 
 /// An extra domain action: arguments in, the tool's text result out.
 pub(crate) type Handler = fn(&Value) -> Result<String, String>;
 
 /// Extra `sessions` actions (name, handler). Their names join the advertised
 /// action enum; each runs behind the same gate as upstream's actions.
-const SESSIONS_ACTIONS: &[(&str, Handler)] = &[("inbox", inbox::inbox_action)];
+const SESSIONS_ACTIONS: &[(&str, Handler)] = &[
+    ("inbox", inbox::inbox_action),
+    ("stop", workers::control::stop_action),
+];
 
 /// Extra `workspace` actions, as `SESSIONS_ACTIONS`.
 const WORKSPACE_ACTIONS: &[(&str, Handler)] = &[
@@ -73,7 +77,7 @@ pub(crate) fn extend_schema(tool: &str, definition: Value) -> Value {
 /// Extra schema properties per tool.
 fn extra_properties(tool: &str) -> Vec<(&'static str, Value)> {
     match tool {
-        "sessions" => inbox::schema_properties(),
+        "sessions" => [inbox::schema_properties(), workers::schema_properties()].concat(),
         "workspace" => crate::supervision_groups::schema_properties(),
         _ => Vec::new(),
     }
@@ -104,7 +108,7 @@ pub(crate) fn help_docs(tool: &str) -> Vec<(String, Value)> {
         return docs;
     }
     if tool == "sessions" {
-        return inbox::help_doc();
+        return [inbox::help_doc(), workers::help_docs()].concat();
     }
     Vec::new()
 }
@@ -128,21 +132,29 @@ pub(crate) fn immediate_report_result(message: String) -> String {
 }
 
 /// `send_text` to `target_id`, taken over before the write gate, as
-/// `route_report`. `None`: upstream's paste path.
+/// `route_report`: a Worker's message to its Router goes through the Inbox.
+/// `None`: upstream's paste path.
 pub(crate) fn route_send_text(
     args: &Value,
     caller: Option<&HostedSessionManifest>,
     target_id: &str,
 ) -> Option<Result<String, String>> {
-    let _ = (args, caller, target_id);
-    None
+    inbox::route_send_text(args, caller, target_id)
 }
 
-/// Close authority beyond upstream's `spawned_by == caller` (a Router closes
-/// its Workers by marker). `false` keeps upstream's rule alone.
-pub(crate) fn may_close(caller: &HostedSessionManifest, target: &HostedSessionManifest) -> bool {
-    let _ = (caller, target);
-    false
+/// A write from `caller_id` into `target_id` passed the write gate: a
+/// Router's write to its Worker leaves the router-touch stamp.
+pub(crate) fn note_write(caller_id: &str, target_id: &str) {
+    workers::control::note_write(caller_id, target_id)
+}
+
+/// `close` of `target` by `caller`, decided here for the Router (its
+/// Workers, by marker alone). `None` keeps upstream's `spawned_by` rule.
+pub(crate) fn route_close(
+    caller: &HostedSessionManifest,
+    target: &HostedSessionManifest,
+) -> Option<Result<String, String>> {
+    workers::control::route_close(caller, target)
 }
 
 /// The Super Agent half of one `sessions create`: extra parameters read
@@ -150,6 +162,8 @@ pub(crate) fn may_close(caller: &HostedSessionManifest, target: &HostedSessionMa
 #[derive(Debug, Default)]
 pub(crate) struct CreateHooks {
     default_cwd: Option<String>,
+    /// Set when the Router is starting a Worker.
+    worker: Option<workers::WorkerPlan>,
 }
 
 /// Read the extra create parameters. An `Err` refuses the create before
@@ -158,13 +172,18 @@ pub(crate) fn create_hooks(
     args: &Value,
     caller: &HostedSessionManifest,
 ) -> Result<CreateHooks, String> {
-    let _ = caller;
-    let default_cwd = if args.get("project_id").is_some() {
-        default_create_cwd(&crate::app_state::load().unwrap_or(Value::Null), args)
-    } else {
-        None
-    };
-    Ok(CreateHooks { default_cwd })
+    let worker = workers::plan_create_at_home(args, caller)?;
+    let default_cwd = worker
+        .as_ref()
+        .and_then(workers::WorkerPlan::cwd)
+        .or_else(|| {
+            args.get("project_id")
+                .and_then(|_| default_create_cwd(&crate::app_state::load().ok()?, args))
+        });
+    Ok(CreateHooks {
+        default_cwd,
+        worker,
+    })
 }
 
 impl CreateHooks {
@@ -176,21 +195,26 @@ impl CreateHooks {
 
     /// The session record about to be spawned, with any extra fields set.
     pub(crate) fn prepare(&self, session: SessionInfo) -> SessionInfo {
-        session
+        match &self.worker {
+            Some(worker) => worker.prepare(session),
+            None => session,
+        }
     }
 
     /// After a successful spawn: record what the new Session is and add any
     /// fields to the create result.
     pub(crate) fn after_spawn(&self, session_id: &str, result: Value) -> Value {
-        let _ = session_id;
-        result
+        match &self.worker {
+            Some(worker) => worker.after_spawn(session_id, result),
+            None => result,
+        }
     }
 }
 
-/// Extra fields for `sessions current` (`None`: nothing to add).
+/// Extra fields for `sessions current` (`None`: nothing to add): Worker
+/// cards for the Router, `router_id` for a Worker.
 pub(crate) fn current_extras(caller: &HostedSessionManifest) -> Option<Value> {
-    let _ = caller;
-    None
+    workers::cards::current_extras(&caller.session.id)
 }
 
 /// `result` with the fields of `extras` (an object) added.
@@ -207,8 +231,16 @@ pub(crate) fn merge_extras(result: Value, extras: Option<Value>) -> Value {
 /// The wait budget for `caller_id`, after upstream's clamp: a Router never
 /// waits long, since its own Inbox holds behind a Busy turn.
 pub(crate) fn cap_wait_timeout(caller_id: Option<&str>, requested_ms: u64) -> u64 {
-    let _ = caller_id;
-    requested_ms
+    workers::control::cap_wait_timeout(caller_id, requested_ms)
+}
+
+/// One finished `tool` call: a Router wait the cap cut short says why.
+pub(crate) fn explain_wait(
+    tool: &str,
+    args: &Value,
+    result: Result<String, String>,
+) -> Result<String, String> {
+    workers::control::explain_wait(tool, args, result)
 }
 
 /// Deepest group nesting walked before a project tree counts as broken.
@@ -321,7 +353,10 @@ mod tests {
             workspace_action("list_presets", &json!({}), gate_open),
             None
         );
-        assert_eq!(sessions_action_names().collect::<Vec<_>>(), ["inbox"]);
+        assert_eq!(
+            sessions_action_names().collect::<Vec<_>>(),
+            ["inbox", "stop"]
+        );
         assert_eq!(
             workspace_action_names().collect::<Vec<_>>(),
             [

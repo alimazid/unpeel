@@ -605,7 +605,8 @@ fn tools_call_with_domains(params: &Value, domains: McpDomainMask) -> Result<Val
         true
     };
     let outcome = if domains.allows_tool(name) && action_mask_allows {
-        run_tool(name, &arguments)
+        // Fork-only: a Router's capped wait says why.
+        crate::supervision_mcp::explain_wait(name, &arguments, run_tool(name, &arguments))
     } else {
         Err(format!(
             "The '{name}' tool is not enabled for this MCP registration."
@@ -1779,19 +1780,21 @@ fn base_sessions_tool_definition() -> Value {
         "inputSchema": {
             "type": "object",
             "properties": {
+                // Fork-only: four descriptions trimmed to make room for the
+                // Super Agent parameters; `help` keeps the detail.
                 "action": {
                     "type": "string",
                     "enum": sessions_action_names(),
-                    "description": "What to do; see the tool description and help"
+                    "description": "What to do; see help"
                 },
-                "session_id": { "type": "string", "description": "Target session id (most actions; from action 'list')" },
+                "session_id": { "type": "string", "description": "Target session id" },
                 "text": { "type": "string", "description": "send_text: text to type; wait_for_text: substring to wait for" },
                 "submit": { "type": "boolean", "description": "send_text/report: press Enter after (default true)" },
                 "keys": { "type": "array", "items": { "type": "string" }, "description": "send_keys: keys in order, e.g. [\"down\",\"enter\"] (max 40)" },
-                "delay_ms": { "type": "integer", "description": "send_keys: delay between keys in ms (default 60, max 1000)" },
+                "delay_ms": { "type": "integer", "description": "send_keys: ms between keys (max 1000)" },
                 "timeout_ms": { "type": "integer", "description": "wait_for_text budget (default 30000, max 120000)" },
                 "status": { "type": "string", "description": "report: update|done|blocked" },
-                "rows": { "type": "integer", "description": "read_screen: rows to return (default terminal height, max 500)" },
+                "rows": { "type": "integer", "description": "read_screen: rows (max 500)" },
                 "scroll_offset_rows": { "type": "integer", "description": "read_screen: scroll up into scrollback (default 0)" },
                 "tail_bytes": { "type": "integer", "description": "read_output: trailing bytes (default 16384, max 262144)" },
                 "strip_ansi": { "type": "boolean", "description": "read_output: strip ANSI sequences (default true)" },
@@ -3555,10 +3558,11 @@ fn tool_close_session(args: &Value) -> Result<String, String> {
     let target = load_manifest(target_id).ok_or_else(|| {
         format!("Unknown session id '{target_id}'. Use list to find valid targets.")
     })?;
-    // Fork-only: `may_close` lets a Router close its Workers too.
-    if target.session.spawned_by.as_deref() != Some(caller.session.id.as_str())
-        && !crate::supervision_mcp::may_close(&caller, &target)
-    {
+    // Fork-only: a Router closes its Workers, by marker alone.
+    if let Some(routed) = crate::supervision_mcp::route_close(&caller, &target) {
+        return routed;
+    }
+    if target.session.spawned_by.as_deref() != Some(caller.session.id.as_str()) {
         return Err(format!(
             "Session '{target_id}' was not created by this session, so it stays user-owned. \
 Ask the user to close it."
@@ -3978,6 +3982,7 @@ fn require_session(session_id: &str, access: WriteAccess) -> Result<(), String> 
                 crate::mcp_cancel::bail_if_cancelled()?;
             }
         }
+        crate::supervision_mcp::note_write(&caller_id, session_id); // Fork-only: router-touch
     }
     Ok(())
 }

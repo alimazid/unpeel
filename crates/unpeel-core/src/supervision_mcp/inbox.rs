@@ -5,8 +5,10 @@
 
 use serde_json::{json, Value};
 
+use super::workers::Home;
 use crate::session_host::HostedSessionManifest;
 use crate::session_inbox::{self, Hold, ItemKind, NewItem, Priority, Sender, Store};
+use crate::supervision::{WorkerMarker, WorkerOrigin};
 
 /// The reporting Session, as its report carries it.
 pub(super) struct Caller<'a> {
@@ -147,7 +149,9 @@ pub(super) fn delivery(wake_pending: bool, hold: Option<&Hold>) -> String {
 
 /// `report` while a Host worker runs: past the write gate it is queued in
 /// the target's Inbox, and the supervisor pastes it when the target is
-/// idle. `None` without a Host: upstream pastes at once.
+/// idle. A Worker's report to its own Router skips the gate (§18.1.7): the
+/// app-wide Deny still holds when the supervisor drains it. `None` without
+/// a Host: upstream pastes at once.
 pub(super) fn route_report(
     args: &Value,
     caller: &HostedSessionManifest,
@@ -157,20 +161,116 @@ pub(super) fn route_report(
     if !crate::supervision::host_worker_running() {
         return None;
     }
-    Some(gate().and_then(|()| queue_report(args, caller, target)))
+    let caller = Caller::of(caller);
+    let queued = super::workers::at_home_without_facts(|home| {
+        report_through_inbox(home, args, &caller, &target.session.id, gate)
+    });
+    Some(queued.and_then(|result| announced(&result, "report")))
 }
 
-fn queue_report(
+/// `send_text` from a Worker to its own Router while a Host worker runs:
+/// rerouted into the Router's Inbox as a waking `message` item, without the
+/// approval prompt (`submit` is ignored). `None` for every other pair.
+pub(super) fn route_send_text(
     args: &Value,
-    caller: &HostedSessionManifest,
-    target: &HostedSessionManifest,
-) -> Result<String, String> {
-    let item = report_item(args, &Caller::of(caller))?;
-    let target_id = target.session.id.as_str();
-    let queued = session_inbox::enqueue(target_id, item)?;
+    caller: Option<&HostedSessionManifest>,
+    target_id: &str,
+) -> Option<Result<String, String>> {
+    let caller = Caller::of(caller?);
+    if !crate::supervision::host_worker_running() {
+        return None;
+    }
+    let queued = super::workers::at_home_without_facts(|home| {
+        message_through_inbox(home, args, &caller, target_id)
+    })?;
+    Some(queued.and_then(|result| announced(&result, "message")))
+}
+
+/// The marker of `caller_id` when `target_id` is the Router it works for.
+fn router_link(home: &Home, caller_id: &str, target_id: &str) -> Option<WorkerMarker> {
+    home.is_router(target_id).then_some(())?;
+    home.marker(caller_id)
+        .filter(|marker| marker.router_id == target_id)
+}
+
+pub(super) fn report_through_inbox(
+    home: &Home,
+    args: &Value,
+    caller: &Caller<'_>,
+    target_id: &str,
+    gate: &dyn Fn() -> Result<(), String>,
+) -> Result<Value, String> {
+    let link = router_link(home, caller.id, target_id);
+    if link.is_none() {
+        gate()?;
+    }
+    let item = report_item(args, caller)?;
+    let item = match link {
+        Some(marker) if owes_hand_over_summary(home, &marker, caller.id, target_id) => NewItem {
+            kind: ItemKind::Handover,
+            priority: Priority::Wake,
+            ..item
+        },
+        _ => item,
+    };
+    queue(home, target_id, item, "report")
+}
+
+/// A handed-over Worker that has not reported to its Router since the
+/// Hand-over: its next report is the summary the Hand-over asked for.
+fn owes_hand_over_summary(home: &Home, marker: &WorkerMarker, worker: &str, router: &str) -> bool {
+    marker.origin == WorkerOrigin::HandedOver
+        && !home
+            .inbox
+            .history(router)
+            .unwrap_or_default()
+            .iter()
+            .any(|header| {
+                header.sender == Sender::Session(worker.to_owned())
+                    && matches!(header.kind, ItemKind::Report | ItemKind::Handover)
+                    && header.at >= marker.since
+            })
+}
+
+pub(super) fn message_through_inbox(
+    home: &Home,
+    args: &Value,
+    caller: &Caller<'_>,
+    target_id: &str,
+) -> Option<Result<Value, String>> {
+    router_link(home, caller.id, target_id)?;
+    Some(message_item(args, caller).and_then(|item| queue(home, target_id, item, "message")))
+}
+
+/// A message's first line leads it (its summary); the rest is its body.
+fn message_item(args: &Value, caller: &Caller<'_>) -> Result<NewItem, String> {
+    let text = args
+        .get("text")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|text| !text.is_empty())
+        .ok_or("Nothing to send: text is empty.")?;
+    let (summary, body) = text.split_once('\n').unwrap_or((text, ""));
+    Ok(NewItem {
+        sender: Sender::Session(caller.id.to_owned()),
+        kind: ItemKind::Message,
+        priority: Priority::Wake,
+        about: None,
+        status: None,
+        label: Some(caller.label.to_owned()),
+        summary: summary.trim().to_owned(),
+        body: body.trim().to_owned(),
+        dedupe_key: None,
+    })
+}
+
+/// Queue `item` for `target_id`: `{queued, session_id, item_id, pending,
+/// delivery}`.
+fn queue(home: &Home, target_id: &str, item: NewItem, what: &str) -> Result<Value, String> {
+    let queued = home.inbox.enqueue(target_id, item, home.now_ms)?;
     let delivery = delivery(
-        session_inbox::has_wake_pending(target_id),
-        session_inbox::hold(target_id).as_ref(),
+        home.inbox.has_wake_pending(target_id),
+        home.inbox.hold(target_id).as_ref(),
     );
     let mut result = json!({
         "queued": true,
@@ -182,11 +282,17 @@ fn queue_report(
     if queued.truncated {
         result["truncated"] = Value::Bool(true);
         result["note"] = Value::String(format!(
-            "The report was cut to {} KiB; send the rest as another report.",
+            "The {what} was cut to {} KiB; send the rest as another {what}.",
             session_inbox::MAX_STORED_ITEM_BYTES / 1024
         ));
     }
-    serde_json::to_string_pretty(&result).map_err(|e| format!("Failed to encode report: {e}"))
+    Ok(result)
+}
+
+/// Pending items changed: other frontends re-read session markers.
+fn announced(result: &Value, what: &str) -> Result<String, String> {
+    crate::state_bus::announce(crate::state_bus::Change::SessionMarkers, None);
+    serde_json::to_string_pretty(result).map_err(|e| format!("Failed to encode {what}: {e}"))
 }
 
 /// Upstream's immediate paste result, for when no Host worker runs.
@@ -497,6 +603,129 @@ mod tests {
         )
         .unwrap_err();
         assert!(error.contains("one of"), "{error}");
+    }
+
+    use crate::supervision::WorkerOrigin;
+    use crate::supervision_mcp::workers::tests::{TestHome, ROUTER};
+
+    fn as_caller(id: &str) -> Caller<'_> {
+        Caller {
+            id,
+            label: "w label",
+            task: None,
+        }
+    }
+
+    fn prompted() -> Result<(), String> {
+        Err("asked the user".into())
+    }
+
+    fn report_from(
+        home: &TestHome,
+        worker: &str,
+        target: &str,
+        status: &str,
+    ) -> Result<Value, String> {
+        let args = json!({ "summary": format!("{worker} {status}"), "status": status });
+        home.run(|ctx| report_through_inbox(ctx, &args, &as_caller(worker), target, &prompted))
+    }
+
+    #[test]
+    fn a_workers_report_to_its_router_skips_the_approval_prompt() {
+        let home = TestHome::new().worker("w1", true, WorkerOrigin::Created, 1);
+        let queued = report_from(&home, "w1", ROUTER, "done").unwrap();
+        assert_eq!(queued["queued"], true);
+        assert_eq!(queued["delivery"], "when_idle");
+        let pending = home.inbox.list(ROUTER).unwrap().pending;
+        assert_eq!(pending[0].kind, ItemKind::Report);
+        assert_eq!(pending[0].sender, Sender::Session("w1".into()));
+    }
+
+    #[test]
+    fn every_other_report_still_passes_the_write_gate() {
+        let home = TestHome::new()
+            .worker("w1", true, WorkerOrigin::Created, 1)
+            .session("w-other", true);
+        home.mark("w-other", "router-2", WorkerOrigin::Created, 1);
+        // The user's session, a Worker writing elsewhere, another Router's
+        // Worker, the Router writing down to its Worker.
+        for (caller, target) in [
+            ("user-1", ROUTER),
+            ("w1", "user-1"),
+            ("w-other", ROUTER),
+            (ROUTER, "w1"),
+        ] {
+            let refused = report_from(&home, caller, target, "done").unwrap_err();
+            assert_eq!(refused, "asked the user", "{caller} -> {target}");
+        }
+        assert!(home.inbox.list(ROUTER).unwrap().pending.is_empty());
+    }
+
+    #[test]
+    fn a_handed_over_workers_first_report_is_its_hand_over_summary() {
+        let home = TestHome::new()
+            .worker("w1", true, WorkerOrigin::HandedOver, 500)
+            .worker("w2", true, WorkerOrigin::Created, 500);
+        // A report from before this Hand-over (an earlier stint) doesn't count.
+        let old = report_item(
+            &json!({ "summary": "old", "status": "done" }),
+            &as_caller("w1"),
+        );
+        home.inbox.enqueue(ROUTER, old.unwrap(), 100).unwrap();
+
+        report_from(&home, "w1", ROUTER, "progress").unwrap();
+        report_from(&home, "w1", ROUTER, "done").unwrap();
+        report_from(&home, "w2", ROUTER, "done").unwrap();
+        let pending = home.inbox.list(ROUTER).unwrap().pending;
+        let kinds: Vec<(&str, ItemKind, Priority)> = pending
+            .iter()
+            .map(|item| (item.summary.as_str(), item.kind, item.priority))
+            .collect();
+        assert_eq!(
+            kinds,
+            [
+                ("old", ItemKind::Report, Priority::Wake),
+                // Even a progress status: the summary wakes the Router.
+                ("w1 progress", ItemKind::Handover, Priority::Wake),
+                ("w1 done", ItemKind::Report, Priority::Wake),
+                ("w2 done", ItemKind::Report, Priority::Wake),
+            ]
+        );
+    }
+
+    #[test]
+    fn a_workers_send_text_to_its_router_becomes_a_waking_message() {
+        let home = TestHome::new().worker("w1", true, WorkerOrigin::Created, 1);
+        let args = json!({ "text": "  Which database?\nPostgres or SQLite.  ", "submit": false });
+        let queued = home
+            .run(|ctx| message_through_inbox(ctx, &args, &as_caller("w1"), ROUTER))
+            .expect("rerouted")
+            .unwrap();
+        assert_eq!(queued["queued"], true);
+        let pending = home.inbox.list(ROUTER).unwrap().pending;
+        let item = home.inbox.item(ROUTER, &pending[0].id).unwrap().unwrap();
+        assert_eq!(
+            (item.kind, item.priority),
+            (ItemKind::Message, Priority::Wake)
+        );
+        assert_eq!(item.sender, Sender::Session("w1".into()));
+        assert_eq!(item.summary, "Which database?");
+        assert_eq!(item.body, "Postgres or SQLite.");
+
+        let empty = json!({ "text": "  " });
+        let refused = home.run(|ctx| message_through_inbox(ctx, &empty, &as_caller("w1"), ROUTER));
+        assert!(refused.unwrap().is_err());
+    }
+
+    #[test]
+    fn any_other_send_text_keeps_upstreams_path() {
+        let home = TestHome::new().worker("w1", true, WorkerOrigin::Created, 1);
+        let args = json!({ "text": "hi" });
+        for (caller, target) in [("w1", "user-1"), ("user-1", ROUTER), (ROUTER, "w1")] {
+            let routed =
+                home.run(|ctx| message_through_inbox(ctx, &args, &as_caller(caller), target));
+            assert!(routed.is_none(), "{caller} -> {target}");
+        }
     }
 
     #[test]
