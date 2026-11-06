@@ -648,10 +648,7 @@ final class HookServer: @unchecked Sendable {
                   let enabled = rawEnabled as? Bool
             else { return .failure(.invalidEnvelope) }
             let sessionID = rawSessionID.trimmingCharacters(in: .whitespacesAndNewlines)
-            guard !sessionID.isEmpty,
-                  sessionID.utf8.count <= 128,
-                  !sessionID.contains("/"),
-                  !sessionID.contains("..")
+            guard Self.isWellFormedID(sessionID)
             else { return .failure(.invalidEnvelope) }
             return .success(.setNotifyWhenDone(sessionID: sessionID, enabled: enabled))
         case "notification.deliver":
@@ -672,10 +669,7 @@ final class HookServer: @unchecked Sendable {
             let title = rawTitle.trimmingCharacters(in: .whitespacesAndNewlines)
             let bodyText = rawBody.trimmingCharacters(in: .whitespacesAndNewlines)
             // Only a Run that never launched comes without a Session.
-            guard sessionID.isEmpty ? run.scheduleID != nil : true,
-                  sessionID.utf8.count <= 128,
-                  !sessionID.contains("/"),
-                  !sessionID.contains(".."),
+            guard sessionID.isEmpty ? run.scheduleID != nil : Self.isWellFormedID(sessionID),
                   !title.isEmpty,
                   title.utf8.count <= 512,
                   !bodyText.isEmpty,
@@ -713,6 +707,15 @@ final class HookServer: @unchecked Sendable {
         }
     }
 
+    /// Longest Session (or Scheduled Task) id an adapter call may name.
+    private static let maxIDBytes = 128
+
+    /// The shape every Session id an adapter call names must have, and a
+    /// Scheduled Task id too: non-empty, bounded, no path parts.
+    private static func isWellFormedID(_ id: String) -> Bool {
+        !id.isEmpty && id.utf8.count <= maxIDBytes && !id.contains("/") && !id.contains("..")
+    }
+
     /// Fork-only: Scheduled Tasks. `notification.deliver`'s optional Run
     /// fields, each absent from an older Host and as strict as the rest when
     /// present: an id-shaped `scheduleID`, a JSON boolean
@@ -724,10 +727,7 @@ final class HookServer: @unchecked Sendable {
         if let raw = request["scheduleID"], !(raw is NSNull) {
             guard let text = raw as? String else { return nil }
             let id = text.trimmingCharacters(in: .whitespacesAndNewlines)
-            guard !id.isEmpty,
-                  id.utf8.count <= 128,
-                  !id.contains("/"),
-                  !id.contains(".."),
+            guard isWellFormedID(id),
                   !id.unicodeScalars.contains(where: { CharacterSet.controlCharacters.contains($0) })
             else { return nil }
             scheduleID = id
