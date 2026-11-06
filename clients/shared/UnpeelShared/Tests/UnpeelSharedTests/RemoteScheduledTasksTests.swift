@@ -13,7 +13,7 @@ struct RemoteScheduledTasksTests {
             from: try sampleData(["responses", "list"])
         )
         #expect(list.revision == "0000000000000000")
-        #expect(list.schedules.map(\.id) == ["sch_daily", "sch_paused", "sch_future"])
+        #expect(list.schedules.map(\.id) == ["sch_daily", "sch_paused", "sch_future", "sch_weekly", "sch_cron"])
 
         let daily = list.schedules[0]
         #expect(daily.name == "Morning briefing")
@@ -33,6 +33,10 @@ struct RemoteScheduledTasksTests {
         let future = list.schedules[2]
         #expect(future.trigger.kind == "unknown")
         #expect(future.nextRun == nil && future.lastRun == nil)
+
+        #expect(list.schedules[3].trigger
+            == RemoteScheduleTrigger(kind: "weekly", time: "08:15", weekday: "monday"))
+        #expect(list.schedules[4].trigger == RemoteScheduleTrigger(kind: "cron", expr: "*/15 9-17 * * 1-5"))
     }
 
     @Test func runHistoryDecodesNewestFirstWithItsOpenStatuses() throws {

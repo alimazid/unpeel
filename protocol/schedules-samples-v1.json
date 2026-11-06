@@ -31,6 +31,23 @@
           "preset_id": "ok",
           "trigger": { "kind": "fortnightly", "weekday": "mon" },
           "created_at_ms": 1793300000000
+        },
+        {
+          "id": "sch_weekly",
+          "name": "Inbox sweep",
+          "project_id": "p",
+          "preset_id": "ok",
+          "trigger": { "kind": "weekly", "weekday": "monday", "time": "08:15" },
+          "created_at_ms": 1793200000000,
+          "clock_reset_at_ms": 1793250000000
+        },
+        {
+          "id": "sch_cron",
+          "name": "Every quarter hour",
+          "project_id": "p",
+          "preset_id": "ok",
+          "trigger": { "kind": "cron", "expr": "*/15 9-17 * * 1-5" },
+          "created_at_ms": 1793100000000
         }
       ]
     },
@@ -174,6 +191,30 @@
           "enabled": true,
           "notifyWhenDone": true,
           "createdAtMs": 1793300000000,
+          "nextRun": null,
+          "lastRun": null
+        },
+        {
+          "id": "sch_weekly",
+          "name": "Inbox sweep",
+          "projectID": "p",
+          "presetID": "ok",
+          "trigger": { "kind": "weekly", "weekday": "monday", "time": "08:15" },
+          "enabled": true,
+          "notifyWhenDone": true,
+          "createdAtMs": 1793200000000,
+          "nextRun": null,
+          "lastRun": null
+        },
+        {
+          "id": "sch_cron",
+          "name": "Every quarter hour",
+          "projectID": "p",
+          "presetID": "ok",
+          "trigger": { "kind": "cron", "expr": "*/15 9-17 * * 1-5" },
+          "enabled": true,
+          "notifyWhenDone": true,
+          "createdAtMs": 1793100000000,
           "nextRun": null,
           "lastRun": null
         }
