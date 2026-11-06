@@ -3123,6 +3123,10 @@ struct SessionRowView: View {
                     if isPinned {
                         SidebarPinnedIndicator()
                     }
+                    // Fork-only: a Scheduled Task's Run (Q32).
+                    if session.scheduledRun != nil {
+                        SidebarScheduledRunIndicator()
+                    }
                 }
             }
 
@@ -3402,6 +3406,19 @@ private struct SidebarPinnedIndicator: View {
             .frame(width: 14, height: 18)
             .fixedSize()
             .accessibilityLabel("Pinned")
+            .allowsHitTesting(false)
+    }
+}
+
+/// Fork-only: Scheduled Tasks. Marks a Run Session's row; passive, like the
+/// pinned indicator.
+private struct SidebarScheduledRunIndicator: View {
+    var body: some View {
+        ChromeIconView(icon: .clock, size: 11)
+            .foregroundStyle(Theme.foreground.opacity(0.7))
+            .frame(width: 13, height: 18)
+            .fixedSize()
+            .accessibilityLabel("Scheduled Run")
             .allowsHitTesting(false)
     }
 }

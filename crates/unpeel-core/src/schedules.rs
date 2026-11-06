@@ -13,6 +13,8 @@
 
 use serde::{Deserialize, Deserializer, Serialize};
 
+pub mod run_sessions;
+
 /// `spawned_by` of a Run's Session is this prefix plus the task id. It names
 /// no Session id, so the MCP close rule never lets an agent close one.
 pub const SPAWNED_BY_PREFIX: &str = "schedule:";

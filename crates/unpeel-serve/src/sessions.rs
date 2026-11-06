@@ -1832,6 +1832,25 @@ pub fn mobile_snapshot(
     extra_unread: &std::collections::HashSet<String>,
     activity_log: Option<&unpeel_core::activity_log::ActivityLogStore>,
 ) -> MobileSnapshot {
+    // Fork-only: Scheduled Tasks (Q32). Each task's latest Run Session,
+    // from its Run log, marks the task's other Runs superseded.
+    let run_rows: Vec<_> = model
+        .rows
+        .iter()
+        .map(crate::run_sessions::wire_row)
+        .collect();
+    let latest_runs = unpeel_core::schedule_store::latest_run_sessions_of(&run_rows);
+    mobile_snapshot_with_runs(model, overlay, extra_unread, activity_log, &latest_runs)
+}
+
+/// [`mobile_snapshot`] with each Scheduled Task's latest Run Session given.
+pub(crate) fn mobile_snapshot_with_runs(
+    model: &SidebarModel,
+    overlay: Option<&NativeOverlay>,
+    extra_unread: &std::collections::HashSet<String>,
+    activity_log: Option<&unpeel_core::activity_log::ActivityLogStore>,
+    latest_runs: &unpeel_core::schedules::run_sessions::LatestRunSessions,
+) -> MobileSnapshot {
     fn provider_id(command: &str) -> Option<&'static str> {
         crate::runtime_presentation::legacy_slug(command)
     }
@@ -1990,7 +2009,14 @@ pub fn mobile_snapshot(
                     .find(|entry| entry.session_id == row.id)
             })
             .filter(|entry| entry.kind == unpeel_core::activity_log::ActivityLogKind::Alert);
-        sessions.push(session_summary(row, unread, latest_alert));
+        let mut summary = session_summary(row, unread, latest_alert);
+        // Same fields as the native Host's summary (one protocol).
+        unpeel_core::schedules::run_sessions::publish(
+            &mut summary,
+            crate::run_sessions::wire_row(row),
+            latest_runs,
+        );
+        sessions.push(summary);
     }
 
     let app_state = load_app_state();
@@ -3111,6 +3137,71 @@ mod tests {
         assert_eq!(summary["updatedAtUnixMs"], 500);
 
         std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    /// Q32: the snapshot iOS and Link/LAN Controllers read carries each Run
+    /// Session's task and whether a newer Run superseded it (the Session of
+    /// the task's current Run is the latest); other rows carry neither.
+    #[test]
+    fn mobile_session_rows_carry_the_run_sessions_task_and_superseded_flag() {
+        let run = |id: &str, running: bool, created: u64| {
+            let status = if running {
+                Status::Idle
+            } else {
+                Status::Exited
+            };
+            let mut row = recent_test_row(id, status, running, created, false);
+            row.spawned_by = Some("schedule:sch_a".into());
+            row
+        };
+        let model = SidebarModel {
+            rows: vec![
+                run("latest", true, 3),
+                run("older", false, 2),
+                recent_test_row("user", Status::Exited, false, 1, false),
+            ],
+            items: vec![
+                SidebarItem::Session(0),
+                SidebarItem::Session(1),
+                SidebarItem::Session(2),
+            ],
+            expired: Vec::new(),
+        };
+        let latest = unpeel_core::schedules::run_sessions::LatestRunSessions::from([(
+            "sch_a".to_string(),
+            Some("__recent_test_latest".to_string()),
+        )]);
+        let snapshot = mobile_snapshot_with_runs(
+            &model,
+            None,
+            &std::collections::HashSet::new(),
+            None,
+            &latest,
+        );
+        let sessions = snapshot.bootstrap["sessions"].as_array().unwrap();
+        let fields = |session: &serde_json::Value| {
+            (
+                session["id"].clone(),
+                session.get("scheduleID").cloned(),
+                session.get("superseded").cloned(),
+            )
+        };
+        assert_eq!(
+            sessions.iter().map(fields).collect::<Vec<_>>(),
+            [
+                (
+                    "__recent_test_latest".into(),
+                    Some("sch_a".into()),
+                    Some(false.into())
+                ),
+                (
+                    "__recent_test_older".into(),
+                    Some("sch_a".into()),
+                    Some(true.into())
+                ),
+                ("__recent_test_user".into(), None, None),
+            ]
+        );
     }
 
     #[test]
