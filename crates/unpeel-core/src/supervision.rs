@@ -16,6 +16,11 @@ use serde_json::{Map, Value};
 
 mod config;
 pub use config::{config_from_state, load_config, SupervisorConfig};
+mod controller;
+pub use controller::{
+    clear_super_agent, hand_over_to_super_agent, set_super_agent, with_summary_fields,
+    SessionFacts, VerbError, VerbOutcome, CLAUDE_CODE_RUNTIME_ID,
+};
 
 /// App-state key holding the Router mark.
 pub const ROUTER_MARK_KEY: &str = "super_agent";
@@ -173,6 +178,11 @@ pub fn on_session_replaced(old_id: &str, replacement_id: Option<&str>) -> Result
     }
     if markers_changed {
         announce_markers();
+    }
+    // A resumed Router is a new process: it is sent its instructions again.
+    let router_resumed = outcome.as_ref().is_ok_and(|changed| changed.mark_moved);
+    if let Some(new_id) = replacement_id.filter(|_| router_resumed) {
+        controller::router_resumed(new_id);
     }
     outcome.map(|_| ())
 }
