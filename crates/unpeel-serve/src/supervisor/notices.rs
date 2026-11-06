@@ -40,6 +40,20 @@ pub fn finished(
     }
 }
 
+/// A Worker only its screen speaks for went idle after a turn. The screen
+/// tier never makes a Finished edge, so this best guess stands in for one,
+/// marked as such; there is no reply to carry. Once per turn.
+pub fn screen_finished(row: &SessionRow, turn_started_at: u64) -> NewItem {
+    let summary = format!(
+        "{} finished (screen-detected: no reply was captured; read its screen for the result).",
+        name(row)
+    );
+    NewItem {
+        dedupe_key: Some(format!("fin:{}:screen:{turn_started_at}", row.id)),
+        ..lifecycle(row, FINISHED_STATUS, Priority::Wake, summary, None)
+    }
+}
+
 /// A Worker waits on a prompt or a menu.
 pub fn needs_input(row: &SessionRow) -> NewItem {
     let program = row.program_status.as_ref();
