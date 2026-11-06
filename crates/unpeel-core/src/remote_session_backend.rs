@@ -348,6 +348,19 @@ pub struct RemoteSessionSummary {
     /// round-trip here or the native bridge strips it from the snapshot.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cwd: Option<String>,
+    /// The Scheduled Task this Session is a Run of, and whether a newer Run
+    /// of that task superseded it (Controllers hide superseded Runs from
+    /// their Session listings). Additive; older Hosts and Sessions that are
+    /// not Runs omit both. Must round-trip here or the native bridge strips
+    /// them from the Local snapshot.
+    #[serde(
+        default,
+        rename = "scheduleID",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub schedule_id: Option<String>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub superseded: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -4578,6 +4591,31 @@ mod tests {
         .unwrap();
         assert_eq!(bare.cwd, None);
         assert!(serde_json::to_value(&bare).unwrap().get("cwd").is_none());
+    }
+
+    #[test]
+    fn session_summary_round_trips_a_run_sessions_task_and_superseded_flag() {
+        let session: RemoteSessionSummary = serde_json::from_value(json!({
+            "id": "s1", "projectID": "p1", "title": "t", "command": "zsh",
+            "createdAtUnixMs": 1, "status": "exited", "activity": "idle",
+            "scheduleID": "sch_a", "superseded": true
+        }))
+        .unwrap();
+        assert_eq!(session.schedule_id.as_deref(), Some("sch_a"));
+        assert!(session.superseded);
+        let wire = serde_json::to_value(&session).unwrap();
+        assert_eq!(wire["scheduleID"], "sch_a");
+        assert_eq!(wire["superseded"], true);
+        let bare: RemoteSessionSummary = serde_json::from_value(json!({
+            "id": "s1", "projectID": "p1", "title": "t", "command": "zsh",
+            "createdAtUnixMs": 1, "status": "running", "activity": "idle"
+        }))
+        .unwrap();
+        assert_eq!(bare.schedule_id, None);
+        assert!(!bare.superseded);
+        let bare_wire = serde_json::to_value(&bare).unwrap();
+        assert!(bare_wire.get("scheduleID").is_none());
+        assert!(bare_wire.get("superseded").is_none());
     }
 
     #[test]
