@@ -111,6 +111,12 @@ Important fields:
   the Host applies while the Session has no hook latch (integration not
   installed); hooks always win once they latch, and screen verdicts never
   send completion notifications.
+- `approvals`: optional `bypass_flags`, the arguments that turn off the
+  runtime's approval prompts (`--yolo`; an option and its value as two
+  words, `--permission-mode bypassPermissions`; an `--option=value`
+  spelling as its own entry). The Host publishes `bypassesApprovals` on
+  every preset row from them, so a Controller warns that a Scheduled Task's
+  Runs ask no one, without parsing a command itself.
 - `integration`: user-facing copy for Settings ▸ Agents ▸ Install integration
   agents — `summary` says which of the provider's own files the installer
   edits; optional `manual_command` is the provider's documented way to
