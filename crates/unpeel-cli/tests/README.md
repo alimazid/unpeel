@@ -96,6 +96,7 @@ printed only when the check fails.
 | `browser_spawn` | Browser MCP engine launch from a Session |
 | `ctrlc_fallback` | Ctrl-C into a fresh preset Session lands in the fallback shell |
 | `startup_exit` | a launch command's exit status (0, 3, 128 + signal, a quit agent) lands in `startup-exit` before the fallback shell |
+| `schedules` | Scheduled Tasks on script presets: Run now records done / failed with the exit code, a Once task fires on its own with no app and disables itself, overlap is skipped, verbs refuse inside a Session |
 | `pty_core_*` | the shared PTY core: parity, adoption, in-place handoff |
 | `serve_install` | `unpeel serve install|uninstall|status` unit rendering (shim-tested) |
 | `state_bus` | cross-frontend sync: pings land immediately, writes announce |
@@ -105,8 +106,9 @@ printed only when the check fails.
 | `compat_state` | **upgrade safety**: unmodelled keys, legacy/future manifests, corrupt files, through the Host and the CLI |
 | `compat_bridge` | **version skew**: this CLI/Host beside an older app that 404s new routes |
 | `compat_serve` | **version skew**: the shipped 0.4.3 `unpeel` beside this tree's binaries over one home, both directions |
+| `compat_schedules` | **upgrade safety**: app-state without `schedules` loads; an unknown Trigger kind or damaged task never fires and never costs the rest of the file |
 
-The three `compat_*` cases exist because users update the app and the CLI
+The `compat_*` cases exist because users update the app and the CLI
 independently. Treat a failure there as "this would break someone's
 install", not as a test needing adjustment. `compat_serve` needs the pinned
 archive: it is cached under `~/Library/Caches/unpeel-matrix/<version>/`
