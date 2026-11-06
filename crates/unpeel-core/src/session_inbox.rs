@@ -394,6 +394,69 @@ impl Store {
         Ok(position + 1)
     }
 
+    /// A stopped Worker's undelivered items go to its Router instead of
+    /// being dropped: as ride-along items, `about` the Worker unless they
+    /// already name someone. They bypass the pending caps (the Worker's own
+    /// Inbox already respected them). Returns how many moved.
+    pub fn move_pending(&self, from: &str, to: &str) -> Result<usize> {
+        let (source, target) = (self.dir(from)?, self.dir(to)?);
+        if from == to {
+            return Ok(0);
+        }
+        let _locks = self.lock_pair(from, to)?;
+        let pending = settled_pending(&source)?;
+        remove_if_present(&source.join(INFLIGHT_FILE))?;
+        let mut moved = 0;
+        for item in pending {
+            let source_path = source.join(PENDING_DIR).join(file_name(&item.id));
+            if !item_exists(&target, &item.id) {
+                let returned = InboxItem {
+                    priority: Priority::RideAlong,
+                    about: item.about.clone().or_else(|| Some(from.to_owned())),
+                    ..item
+                };
+                write_item(&target.join(PENDING_DIR), &returned)?;
+                moved += 1;
+            }
+            remove_if_present(&source_path)?;
+        }
+        Ok(moved)
+    }
+
+    /// Resume gave the session a new id: its Inbox follows, merged into
+    /// anything already queued for the new id. An in-flight claim is dropped,
+    /// so the next paste is a fresh batch.
+    pub fn transfer(&self, old: &str, new: &str) -> Result<()> {
+        let (source, target) = (self.dir(old)?, self.dir(new)?);
+        if old == new {
+            return Ok(());
+        }
+        let _locks = self.lock_pair(old, new)?;
+        if !source.is_dir() {
+            return Ok(());
+        }
+        remove_if_present(&source.join(INFLIGHT_FILE))?;
+        if !target.exists() {
+            return fs::rename(&source, &target).map_err(|error| io_error(&source, error));
+        }
+        for sub in [PENDING_DIR, DELIVERED_DIR] {
+            merge_items(&source.join(sub), &target, sub)?;
+        }
+        fs::remove_dir_all(&source).map_err(|error| io_error(&source, error))
+    }
+
+    /// The session is gone for good: so is its Inbox.
+    pub fn remove(&self, session_id: &str) -> Result<()> {
+        let dir = self.dir(session_id)?;
+        let _lock = self.lock(session_id)?;
+        match fs::remove_dir_all(&dir) {
+            Err(error) if error.kind() != std::io::ErrorKind::NotFound => {
+                Err(io_error(&dir, error))
+            }
+            _ => Ok(()),
+        }
+    }
+
     /// Pending headers (FIFO) and the last `LIST_DELIVERED` deliveries
     /// (newest first).
     pub fn list(&self, session_id: &str) -> Result<Listing> {
@@ -438,6 +501,34 @@ impl Store {
         let target = locks.join(format!("{:x}", Sha256::digest(session_id.as_bytes())));
         crate::app_state::lock_exclusive(&target).map_err(InboxError::Io)
     }
+
+    /// Both Inboxes' locks, always taken in id order so two crossing moves
+    /// can't deadlock. The ids must differ: a second flock on the same file
+    /// would wait on the first forever.
+    fn lock_pair(
+        &self,
+        a: &str,
+        b: &str,
+    ) -> Result<(crate::app_state::FileLock, crate::app_state::FileLock)> {
+        let (first, second) = if a <= b { (a, b) } else { (b, a) };
+        Ok((self.lock(first)?, self.lock(second)?))
+    }
+}
+
+/// Rename every item file of one sub-directory into the same sub-directory
+/// of `target`, skipping names `target` already holds (the same Host
+/// notice queued for both ids).
+fn merge_items(source: &Path, target: &Path, sub: &str) -> Result<()> {
+    let destination = target.join(sub);
+    fs::create_dir_all(&destination).map_err(|error| io_error(&destination, error))?;
+    for item in read_items(source) {
+        let path = source.join(file_name(&item.id));
+        if !item_exists(target, &item.id) {
+            fs::rename(&path, destination.join(file_name(&item.id)))
+                .map_err(|error| io_error(&path, error))?;
+        }
+    }
+    Ok(())
 }
 
 /// Shown per item in a paste; the rest is behind a Spill pointer.
@@ -1511,5 +1602,94 @@ mod tests {
         assert_eq!(delivered.len(), 1);
         assert_eq!(delivered[0].summary, "r230");
         assert!(store.item("router", &second[79]).unwrap().is_none());
+    }
+
+    #[test]
+    fn transfer_moves_the_inbox_to_the_resumed_id_and_drops_its_claim() {
+        let (_tmp, store) = store();
+        let r0 = store.enqueue("old", report("w1", "r0"), 1).unwrap().item_id;
+        store.ack_through("old", &r0, 2).unwrap();
+        store.enqueue("old", report("w1", "r1"), 3).unwrap();
+        store.enqueue("old", report("w1", "r2"), 4).unwrap();
+        let claimed = store.claim_batch("old", 5).unwrap().unwrap();
+
+        store.transfer("old", "new").unwrap();
+        assert!(!store.root.join("old").exists());
+        let old = store.list("old").unwrap();
+        assert!(old.pending.is_empty() && old.delivered.is_empty());
+        assert_eq!(pending_summaries(&store, "new"), ["r1", "r2"]);
+        assert!(store.item("new", &r0).unwrap().is_some());
+        let fresh = store.claim_batch("new", 6).unwrap().unwrap();
+        assert_ne!(fresh.batch_id, claimed.batch_id);
+        assert!(!fresh.redelivery());
+
+        // Nothing to move, or onto itself: nothing happens.
+        store.transfer("missing", "new").unwrap();
+        store.transfer("new", "new").unwrap();
+        assert_eq!(pending_summaries(&store, "new"), ["r1", "r2"]);
+    }
+
+    #[test]
+    fn transfer_into_an_inbox_that_already_has_items_merges_them_in_order() {
+        let (_tmp, store) = store();
+        store.enqueue("old", report("w1", "r0"), 10).unwrap();
+        store.enqueue("new", report("w1", "r1"), 20).unwrap();
+        store.enqueue("old", report("w1", "r2"), 30).unwrap();
+        let notice = || host_notice("w9", "exited", Some("exit:w9:1"));
+        store.enqueue("old", notice(), 40).unwrap();
+        store.enqueue("new", notice(), 41).unwrap();
+
+        store.transfer("old", "new").unwrap();
+        assert_eq!(
+            pending_summaries(&store, "new"),
+            ["r0", "r1", "r2", "w9 exited"]
+        );
+        assert!(!store.root.join("old").exists());
+    }
+
+    #[test]
+    fn move_pending_returns_a_stopped_workers_undelivered_items_to_its_router_as_ride_along() {
+        let (_tmp, store) = store();
+        let task = NewItem {
+            kind: ItemKind::Task,
+            status: None,
+            label: None,
+            ..report("router", "write the tests")
+        };
+        store.enqueue("w1", task, 1).unwrap();
+        let message = NewItem {
+            kind: ItemKind::Message,
+            ..report("w2", "ping")
+        };
+        store.enqueue("w1", message, 2).unwrap();
+        store.claim_batch("w1", 3).unwrap().unwrap();
+
+        assert_eq!(store.move_pending("w1", "router").unwrap(), 2);
+        assert!(store.list("w1").unwrap().pending.is_empty());
+        assert!(store.claim_batch("w1", 4).unwrap().is_none());
+
+        let moved = store.list("router").unwrap().pending;
+        assert_eq!(moved.len(), 2);
+        assert_eq!(moved[0].summary, "write the tests");
+        assert_eq!(moved[0].sender, Sender::Session("router".into()));
+        assert_eq!(moved[1].kind, ItemKind::Message);
+        assert!(moved.iter().all(
+            |item| item.priority == Priority::RideAlong && item.about.as_deref() == Some("w1")
+        ));
+        // Ride-along only: they wait for the Router's next wake batch.
+        assert!(!store.has_wake_pending("router"));
+        assert_eq!(store.move_pending("w1", "router").unwrap(), 0);
+        assert_eq!(store.move_pending("router", "router").unwrap(), 0);
+    }
+
+    #[test]
+    fn remove_deletes_the_inbox() {
+        let (_tmp, store) = store();
+        store.enqueue("gone", report("w1", "r0"), 1).unwrap();
+        store.remove("gone").unwrap();
+        assert!(!store.root.join("gone").exists());
+        assert!(store.list("gone").unwrap().pending.is_empty());
+        store.remove("gone").unwrap();
+        assert!(store.remove("../x").is_err());
     }
 }
