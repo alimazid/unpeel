@@ -1374,8 +1374,7 @@ impl HostRuntime {
                             &row,
                             crate::notifications::NotificationKind::NeedsInput,
                             None,
-                            false,
-                            None,
+                            WhenDone::Always,
                             now,
                         ),
                     unpeel_core::activity_log::ActivityLogKind::Finished => {
@@ -1399,8 +1398,7 @@ impl HostRuntime {
                             &row,
                             crate::notifications::NotificationKind::Done,
                             body.as_deref(),
-                            true,
-                            run_notify_when_done,
+                            WhenDone::Setting(run_notify_when_done),
                             now,
                         )
                     }
@@ -2056,8 +2054,7 @@ impl HostRuntime {
             &row,
             crate::notifications::NotificationKind::Alert,
             Some(&body),
-            false,
-            None,
+            WhenDone::Always,
             at,
         ) {
             let _ = unpeel_core::session_ops::mark_read(session_id);
@@ -2096,23 +2093,17 @@ impl HostRuntime {
     /// Returns true when any Controller or the local Mac is already observing
     /// this Session. The Host owns the edge and exact-device suppression;
     /// the app callback supplies only platform delivery and window presence.
-    /// Fork-only: `run_notify_when_done` is a Run Session's task setting
-    /// for its finished turn (`schedules::notice::notify_when_done`).
     fn deliver_notification(
         &self,
         row: &SessionRow,
         kind: crate::notifications::NotificationKind,
         body: Option<&str>,
-        requires_notify_when_done: bool,
-        run_notify_when_done: Option<bool>,
+        when_done: WhenDone,
         now: u64,
     ) -> bool {
-        let suppress_device_ids = self.presence.viewing_device_ids(&row.id, now);
-        let any_controller = self.presence.any_viewer(&row.id, now);
         let raw_title = row.label.trim();
-        let outcome = crate::notifications::deliver(
-            &self.platform_adapters,
-            crate::notifications::NotificationRequest {
+        self.deliver_notice(
+            Notice {
                 session_id: &row.id,
                 title: if raw_title.is_empty() {
                     "Unpeel session"
@@ -2121,15 +2112,40 @@ impl HostRuntime {
                 },
                 kind,
                 body,
+                when_done,
+                schedule_id: crate::run_sessions::schedule_id(row),
+            },
+            now,
+        )
+    }
+
+    /// The one delivery path: suppress the devices already looking, send
+    /// the desktop banner only when no Controller is, and say whether anyone
+    /// already observes the Session (a Run's notice with no Session never is).
+    fn deliver_notice(&self, notice: Notice<'_>, now: u64) -> bool {
+        let session_id = notice.session_id;
+        let suppress_device_ids = self.presence.viewing_device_ids(session_id, now);
+        let any_controller = !session_id.is_empty() && self.presence.any_viewer(session_id, now);
+        let (requires_notify_when_done, task_setting) = match notice.when_done {
+            WhenDone::Always => (false, None),
+            WhenDone::Setting(task_setting) => (true, task_setting),
+        };
+        let outcome = crate::notifications::deliver(
+            &self.platform_adapters,
+            crate::notifications::NotificationRequest {
+                session_id,
+                title: notice.title,
+                kind: notice.kind,
+                body: notice.body,
                 requires_notify_when_done,
                 send_desktop: !any_controller,
                 suppress_device_ids,
-                run: crate::run_sessions::schedule_id(row).map(|schedule_id| {
-                    crate::notifications::RunContext {
+                run: notice
+                    .schedule_id
+                    .map(|schedule_id| crate::notifications::RunContext {
                         schedule_id,
-                        notify_when_done: run_notify_when_done,
-                    }
-                }),
+                        notify_when_done: task_setting,
+                    }),
             },
         );
         any_controller || outcome.mac_observed
@@ -2192,26 +2208,20 @@ impl HostRuntime {
         notice: &crate::schedules::notice::RunNotice,
         now: u64,
     ) -> bool {
-        let session_id = session_id.unwrap_or_default();
-        let suppress_device_ids = self.presence.viewing_device_ids(session_id, now);
-        let any_controller = !session_id.is_empty() && self.presence.any_viewer(session_id, now);
-        let outcome = crate::notifications::deliver(
-            &self.platform_adapters,
-            crate::notifications::NotificationRequest {
-                session_id,
+        self.deliver_notice(
+            Notice {
+                session_id: session_id.unwrap_or_default(),
                 title: &notice.title,
                 kind: notice.kind,
                 body: Some(&notice.body),
-                requires_notify_when_done: notice.notify_when_done.is_some(),
-                send_desktop: !any_controller,
-                suppress_device_ids,
-                run: Some(crate::notifications::RunContext {
-                    schedule_id,
-                    notify_when_done: notice.notify_when_done,
-                }),
+                when_done: match notice.notify_when_done {
+                    Some(setting) => WhenDone::Setting(Some(setting)),
+                    None => WhenDone::Always,
+                },
+                schedule_id: Some(schedule_id),
             },
-        );
-        any_controller || outcome.mac_observed
+            now,
+        )
     }
 
     fn append_activity(
@@ -2450,6 +2460,28 @@ fn now_ms() -> u64 {
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
         .as_millis() as u64
+}
+
+/// Whether a notification waits on a "Notify when done" setting.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum WhenDone {
+    /// It always notifies: attention, alerts, a Run's failure.
+    Always,
+    /// A finished turn: the app's own settings decide, or, when `Some`, a
+    /// Run's task setting in their place.
+    Setting(Option<bool>),
+}
+
+/// One notification, as `HostRuntime::deliver_notice` sends it.
+struct Notice<'a> {
+    /// Empty for a Run that never launched.
+    session_id: &'a str,
+    title: &'a str,
+    kind: crate::notifications::NotificationKind,
+    body: Option<&'a str>,
+    when_done: WhenDone,
+    /// The task a Run Session or Run belongs to.
+    schedule_id: Option<&'a str>,
 }
 
 /// Fork-only: Scheduled Tasks. The task definitions for a Run Session's
