@@ -7,9 +7,9 @@
 //!   its earlier ones; past 100 lines it is rewritten to the newest 50 Runs.
 //!
 //! The workspace worker is the writer; MCP, the CLI and Controller routes
-//! read through here, so none of them needs the scheduler. Every write takes
-//! the task's `runs.lock` flock and lands by temp file + rename or one
-//! `O_APPEND` write.
+//! read through here, so none of them needs the scheduler. Every write, and
+//! deleting a task, takes the task's `<id>.lock` flock (beside its
+//! directory) and lands by temp file + rename or one `O_APPEND` write.
 
 use std::fs::{self, OpenOptions};
 use std::io::Write;
@@ -80,18 +80,30 @@ impl TaskStore {
         serde_json::from_slice(&raw).map_err(|error| format!("parse {}: {error}", path.display()))
     }
 
+    /// Save the task's clock. The scheduler's first write for a new task,
+    /// so it makes the task's directory.
     pub fn save_clock(&self, clock: &ScheduleClock) -> Result<(), String> {
         let body = serde_json::to_vec_pretty(clock).map_err(|error| error.to_string())?;
         let _lock = self.lock()?;
+        fs::create_dir_all(&self.dir)
+            .map_err(|error| format!("create {}: {error}", self.dir.display()))?;
         replace_file(&self.dir.join(CLOCK_FILE), &body)
     }
 
     /// Append one Run line; compacts the log once it passes
-    /// [`COMPACT_AFTER_LINES`].
+    /// [`COMPACT_AFTER_LINES`]. The task's clock is always saved first, so
+    /// a missing directory is a task deleted since: its Run is not
+    /// recorded, and the directory is not made again.
     pub fn append_run(&self, run: &ScheduleRun) -> Result<(), String> {
         let mut line = serde_json::to_vec(run).map_err(|error| error.to_string())?;
         line.push(b'\n');
         let _lock = self.lock()?;
+        if !self.dir.is_dir() {
+            return Err(format!(
+                "{} is gone: the Scheduled Task was deleted",
+                self.dir.display()
+            ));
+        }
         let path = self.dir.join(RUNS_FILE);
         let mut file = OpenOptions::new()
             .create(true)
@@ -137,10 +149,10 @@ impl TaskStore {
         new_session_id: &str,
     ) -> Result<bool, String> {
         let path = self.dir.join(RUNS_FILE);
+        let _lock = self.lock()?;
         if !path.exists() {
             return Ok(false);
         }
-        let _lock = self.lock()?;
         let raw = fs::read(&path).map_err(|error| format!("read {}: {error}", path.display()))?;
         let mut body = Vec::with_capacity(raw.len());
         let mut replaced = false;
@@ -164,8 +176,11 @@ impl TaskStore {
         Ok(replaced)
     }
 
-    /// Delete the task's clock and Run log. Its Run Sessions are untouched.
+    /// Delete the task's clock and Run log, under the same lock as every
+    /// write, so it never interleaves with an append or a compaction. Its
+    /// Run Sessions are untouched.
     pub fn remove(&self) -> Result<(), String> {
+        let _lock = self.lock()?;
         match fs::remove_dir_all(&self.dir) {
             Ok(()) => Ok(()),
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
@@ -173,10 +188,15 @@ impl TaskStore {
         }
     }
 
+    /// The task's lock, `<root>/<id>.lock`: beside its directory rather than
+    /// in it, so deleting the directory cannot strand a waiter on a lock
+    /// file nobody else opens.
     fn lock(&self) -> Result<crate::app_state::FileLock, String> {
-        fs::create_dir_all(&self.dir)
-            .map_err(|error| format!("create {}: {error}", self.dir.display()))?;
-        crate::app_state::lock_exclusive(&self.dir.join(RUNS_FILE))
+        if let Some(root) = self.dir.parent() {
+            fs::create_dir_all(root)
+                .map_err(|error| format!("create {}: {error}", root.display()))?;
+        }
+        crate::app_state::lock_exclusive(&self.dir)
     }
 }
 
@@ -255,10 +275,12 @@ mod tests {
     use super::*;
     use crate::schedules::RunStatus;
 
-    /// A private root: never this machine's `UNPEEL_HOME`.
+    /// A private root: never this machine's `UNPEEL_HOME`. The task has
+    /// saved its first clock, as the scheduler always does before a Run.
     fn with_store<T>(body: impl FnOnce(&TaskStore) -> T) -> T {
         let root = std::env::temp_dir().join(format!("unpeel-sched-{}", uuid::Uuid::new_v4()));
         let store = TaskStore::open(&root, "sch_test").expect("valid id");
+        store.save_clock(&ScheduleClock::default()).expect("first clock");
         let outcome = body(&store);
         let _ = fs::remove_dir_all(&root);
         outcome
@@ -412,9 +434,11 @@ mod tests {
     fn each_tasks_latest_run_session_is_its_current_runs() {
         let root = std::env::temp_dir().join(format!("unpeel-sched-{}", uuid::Uuid::new_v4()));
         let append = |task: &str, line: ScheduleRun| {
-            TaskStore::open(&root, task)
-                .and_then(|store| store.append_run(&line))
-                .expect("append");
+            let store = TaskStore::open(&root, task).expect("valid id");
+            if !store.dir().exists() {
+                store.save_clock(&ScheduleClock::default()).expect("first clock");
+            }
+            store.append_run(&line).expect("append");
         };
         let with_session = |run_id: &str, status, session: &str, ended| ScheduleRun {
             session_id: Some(session.into()),
@@ -509,7 +533,10 @@ mod tests {
         });
         with_store(|store| {
             assert_eq!(store.replace_session("old", "new"), Ok(false));
-            assert!(!store.dir().exists(), "a task with no log gains no store");
+            assert!(
+                !store.dir().join("runs.jsonl").exists(),
+                "a task with no log gains none"
+            );
         });
     }
 
@@ -519,6 +546,47 @@ mod tests {
         assert!(TaskStore::open(root, "../escape").is_err());
         assert!(TaskStore::open(root, "").is_err());
         assert!(TaskStore::open(root, "a/b").is_err());
+    }
+
+    /// A Run recorded after its task was deleted (a sweep that read the
+    /// task first) does not bring the task's directory back.
+    #[test]
+    fn a_deleted_task_records_no_more_runs() {
+        with_store(|store| {
+            store.append_run(&run("run_1", RunStatus::Done)).unwrap();
+            store.remove().unwrap();
+            assert!(store.append_run(&run("run_2", RunStatus::Done)).is_err());
+            assert!(!store.dir().exists());
+        });
+    }
+
+    /// Deleting a task waits for a write in progress (same lock), so it
+    /// never interleaves with an append or a compaction.
+    #[test]
+    fn removing_a_task_waits_for_a_write_in_progress() {
+        with_store(|store| {
+            store.append_run(&run("run_1", RunStatus::Done)).unwrap();
+            let held = store.lock().unwrap();
+            let other = store.clone();
+            let (removed_tx, removed_rx) = std::sync::mpsc::channel();
+            let remover = std::thread::spawn(move || {
+                let removed = other.remove();
+                let _ = removed_tx.send(removed);
+            });
+            assert!(
+                removed_rx
+                    .recv_timeout(std::time::Duration::from_millis(200))
+                    .is_err(),
+                "remove waits for the lock"
+            );
+            drop(held);
+            let removed = removed_rx
+                .recv_timeout(std::time::Duration::from_secs(5))
+                .expect("remove once the lock is free");
+            assert_eq!(removed, Ok(()));
+            remover.join().unwrap();
+            assert!(!store.dir().exists());
+        });
     }
 
     #[test]
