@@ -136,6 +136,8 @@ pub mod session_artifacts;
 #[cfg(feature = "native-host")]
 pub mod session_host;
 #[cfg(feature = "native-host")]
+pub mod session_inbox; // Fork-only
+#[cfg(feature = "native-host")]
 pub mod session_input;
 #[cfg(feature = "native-host")]
 pub mod session_ops;
