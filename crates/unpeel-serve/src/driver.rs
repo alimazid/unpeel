@@ -631,6 +631,8 @@ pub struct HostRuntime {
     auto_stop: crate::auto_stop::Sweeper,
     /// Removes stopped Sessions past the keep limit (`retention.rs`).
     retention: crate::retention::Retention,
+    /// Fork-only: the Super Agent supervisor (`supervisor.rs`).
+    supervisor: crate::supervisor::Supervisor,
     /// Last Host-wide sweep of abandoned resumable uploads.
     last_upload_sweep: Option<Instant>,
     last_activity_state_signature: Option<crate::activity_snapshot::ActivityStateSignature>,
@@ -786,6 +788,7 @@ impl HostRuntime {
             pty_core_status: None,
             auto_stop: crate::auto_stop::Sweeper::default(),
             retention: crate::retention::Retention::default(),
+            supervisor: Default::default(), // Fork-only
             last_upload_sweep: None,
             browser_engine_rx: if browser_engine_install_enabled() {
                 Some(spawn_browser_engine_install(&home))
@@ -901,6 +904,10 @@ impl HostRuntime {
                         .duration_since(UNIX_EPOCH)
                         .map_or(0, |since| since.as_millis() as u64),
                 );
+                // Fork-only: the supervisor sees every accepted hook event.
+                let at_ms = crate::supervisor::unix_ms(message.received_at);
+                self.supervisor
+                    .observe_hook(&message.session_id, &canonical, at_ms);
             }
             dirty |= accepted;
         }
@@ -938,6 +945,7 @@ impl HostRuntime {
             self.reconcile_direct(&mut emitted);
             self.sweep_auto_stop(&mut emitted);
             self.sweep_retention(&mut emitted);
+            self.supervisor.step(&self.model, now_ms()); // Fork-only
             self.sweep_incomplete_uploads();
         }
         self.reconcile_link(&mut emitted);
@@ -1061,9 +1069,11 @@ impl HostRuntime {
             .map(|elapsed| elapsed.as_millis() as u64)
             .unwrap_or(0);
         let minutes = crate::auto_stop::minutes_from_disk();
+        // Fork-only: the supervisor filters what the sweep may stop.
+        let rows = self.supervisor.auto_stop_rows(&self.model.rows);
         for event in self
             .auto_stop
-            .step(&self.model.rows, &self.unread_ids, minutes, now_ms)
+            .step(&rows, &self.unread_ids, minutes, now_ms)
         {
             match event {
                 crate::auto_stop::SweepEvent::Stopped(session_id) => {
@@ -1243,7 +1253,24 @@ impl HostRuntime {
         if canonical_activity_owner {
             for (row, kind, edge_msg) in events {
                 self.append_activity(&row, kind, now, None);
+                // Fork-only: a Finished edge's reply is taken first, so it is
+                // consumed even when the edge goes to a Router instead.
+                let finished_body = (kind == unpeel_core::activity_log::ActivityLogKind::Finished)
+                    .then(|| {
+                        let hook_message = self.completion_messages.take(&row.id, now);
+                        crate::completion_snippet::finished_body(
+                            edge_msg.as_deref(),
+                            hook_message.as_deref(),
+                        )
+                    })
+                    .flatten();
+                // Fork-only: a Worker's edge goes to its Router, not the user.
+                let diverted =
+                    self.supervisor
+                        .divert_edge(&row, kind, finished_body.as_deref(), now);
                 let observed = match kind {
+                    // Fork-only: diverted reads as observed, so it is marked read.
+                    _ if diverted => true,
                     unpeel_core::activity_log::ActivityLogKind::NeedsInput => self
                         .deliver_notification(
                             &row,
@@ -1255,15 +1282,10 @@ impl HostRuntime {
                     unpeel_core::activity_log::ActivityLogKind::Finished => {
                         // Fork-only: show what the agent said, not just
                         // "Finished".
-                        let hook_message = self.completion_messages.take(&row.id, now);
-                        let body = crate::completion_snippet::finished_body(
-                            edge_msg.as_deref(),
-                            hook_message.as_deref(),
-                        );
                         self.deliver_notification(
                             &row,
                             crate::notifications::NotificationKind::Done,
-                            body.as_deref(),
+                            finished_body.as_deref(),
                             true,
                             now,
                         )

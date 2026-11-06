@@ -381,6 +381,7 @@ mod tests {
             activity_at: 1_000,
             group_id: "p".into(),
             detected_local_urls: Vec::new(),
+            is_worker: false,
         };
         let now = 90_000_000_000;
         let mut sweeper = Sweeper::starting_at(now);
@@ -458,6 +459,7 @@ mod tests {
             activity_at,
             group_id: "p".into(),
             detected_local_urls: Vec::new(),
+            is_worker: false,
         }
     }
 

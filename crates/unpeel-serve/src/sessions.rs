@@ -164,6 +164,9 @@ pub struct SessionRow {
     /// Always empty for remote-host rows — a Controller cannot reach a
     /// remote Host's loopback.
     pub detected_local_urls: Vec<String>,
+    /// Fork-only: a Router's Worker (its `supervision.json` marker is
+    /// present, stopped Workers included).
+    pub is_worker: bool,
 }
 
 impl SessionRow {
@@ -843,6 +846,7 @@ pub fn scan_sidebar(
                 } else {
                     Vec::new()
                 },
+                is_worker: unpeel_core::supervision::is_worker(&manifest.session.id), // Fork-only
             });
         }
     }
@@ -1217,8 +1221,11 @@ fn group_listing(
     // The keep limit also keeps any stopped row the user has not read.
     let mut kept: Vec<usize> = Vec::new();
     let mut hidden: Vec<usize> = Vec::new();
+    // Fork-only: a Router's stopped Workers take the last keep slots.
+    let keep_ranks = crate::supervisor::stopped_keep_ranks(rows, &stopped);
     for (inactive_rank, index) in stopped.iter().copied().enumerate() {
-        let keep = inactive_rank < stopped_window || keep_visible.contains(&rows[index].id);
+        let keep =
+            keep_ranks[inactive_rank] < stopped_window || keep_visible.contains(&rows[index].id);
         if keep {
             kept.push(index);
         } else {
@@ -1385,6 +1392,7 @@ pub fn model_from_bridge(
                 } else {
                     Vec::new()
                 },
+                is_worker: unpeel_core::supervision::is_worker(&id), // Fork-only
             });
             items.push(SidebarItem::Session(rows.len() - 1));
         }
@@ -2286,6 +2294,7 @@ mod tests {
             activity_at: lifecycle_at,
             group_id: "__recent_test_project".into(),
             detected_local_urls: Vec::new(),
+            is_worker: false,
         }
     }
 
@@ -2398,6 +2407,67 @@ mod tests {
             expired,
             ["stopped-14", "stopped-13", "stopped-12", "stopped-11"]
         );
+    }
+
+    /// Fork-only: past the keep limit, a Router's stopped Workers go before
+    /// any of the user's stopped Sessions; the kept rows keep their order.
+    #[test]
+    fn stopped_workers_expire_before_the_users_stopped_sessions() {
+        let mut rows = vec![recent_test_row("live", Status::Idle, true, 1, false)];
+        for (label, lifecycle, is_worker) in [
+            ("user-10", 10, false),
+            ("user-11", 11, false),
+            ("user-12", 12, false),
+            ("worker-13", 13, true),
+            ("worker-14", 14, true),
+            ("worker-15", 15, true),
+        ] {
+            let mut row = recent_test_row(label, Status::Exited, false, lifecycle, false);
+            row.is_worker = is_worker;
+            rows.push(row);
+        }
+        let indices = (0..rows.len()).collect::<Vec<_>>();
+        let listing = |window: usize, keep_visible: &std::collections::HashSet<String>| {
+            let listing = group_listing(
+                "__recent_test_project",
+                &rows,
+                &indices,
+                None,
+                keep_visible,
+                &std::collections::HashSet::new(),
+                true,
+                window,
+            );
+            let labels = |indices: &[usize]| {
+                indices
+                    .iter()
+                    .map(|index| rows[*index].label.clone())
+                    .collect::<Vec<_>>()
+            };
+            (labels(&listing.sessions), labels(&listing.hidden))
+        };
+        let none = std::collections::HashSet::new();
+
+        let (shown, expired) = listing(3, &none);
+        assert_eq!(shown, ["live", "user-12", "user-11", "user-10"]);
+        assert_eq!(expired, ["worker-15", "worker-14", "worker-13"]);
+
+        // A spare slot goes to the newest Worker, shown in its usual place.
+        let (shown, expired) = listing(4, &none);
+        assert_eq!(
+            shown,
+            ["live", "worker-15", "user-12", "user-11", "user-10"]
+        );
+        assert_eq!(expired, ["worker-14", "worker-13"]);
+
+        // Unread rows are still kept, Worker or not.
+        let unread = std::collections::HashSet::from([rows[5].id.clone()]);
+        let (shown, expired) = listing(3, &unread);
+        assert_eq!(
+            shown,
+            ["live", "worker-14", "user-12", "user-11", "user-10"]
+        );
+        assert_eq!(expired, ["worker-15", "worker-13"]);
     }
 
     #[test]
@@ -2774,6 +2844,7 @@ mod tests {
             activity_at: 1,
             group_id: "p2".into(),
             detected_local_urls: Vec::new(),
+            is_worker: false,
         }];
         let items = vec![
             SidebarItem::Header("Second".into()),
@@ -2830,6 +2901,7 @@ mod tests {
             activity_at: 2,
             group_id: "project".into(),
             detected_local_urls: Vec::new(),
+            is_worker: false,
         };
         assert_eq!(row.command, "");
         assert_eq!(row.presentation_command(), "claude");
@@ -2885,6 +2957,7 @@ mod tests {
             activity_at: 2,
             group_id: "project".into(),
             detected_local_urls: Vec::new(),
+            is_worker: false,
         };
         let model = SidebarModel {
             rows: vec![row],
