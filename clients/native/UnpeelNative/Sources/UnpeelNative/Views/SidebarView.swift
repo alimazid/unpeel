@@ -1216,6 +1216,9 @@ extension SessionRowView: @MainActor Equatable {
             && lhs.agentAccessRole == rhs.agentAccessRole
             && (lhs.onMoveToProjectSidebar == nil) == (rhs.onMoveToProjectSidebar == nil)
             && (lhs.onMoveToMainArea == nil) == (rhs.onMoveToMainArea == nil)
+            && (lhs.onMakeSuperAgent == nil) == (rhs.onMakeSuperAgent == nil)
+            && (lhs.onStopBeingSuperAgent == nil) == (rhs.onStopBeingSuperAgent == nil)
+            && (lhs.onHandToSuperAgent == nil) == (rhs.onHandToSuperAgent == nil)
     }
 }
 
@@ -1737,6 +1740,7 @@ struct ProjectNodeView: View {
         // frame below is what the controller hit-tests. Pinned and regular
         // rows each reorder only within their own section — the controller
         // gates on `drag.pinned` exactly as the drop delegates used to.
+        let superAgentMenu = store.superAgentMenu(forSession: session.id)
         let row = SessionRowView(
             session: session,
             depth: depth,
@@ -1831,6 +1835,15 @@ struct ProjectNodeView: View {
                 : nil,
             onMoveToMainArea: store.sessionIsInProjectSidebar(session.id)
                 ? { store.moveSessionToMainArea(session.id) }
+                : nil,
+            onMakeSuperAgent: superAgentMenu.canMake
+                ? { store.makeSuperAgent(session.id) }
+                : nil,
+            onStopBeingSuperAgent: superAgentMenu.canStopBeing
+                ? { store.stopBeingSuperAgent(session.id) }
+                : nil,
+            onHandToSuperAgent: superAgentMenu.canHandOver
+                ? { store.handToSuperAgent(session.id) }
                 : nil
         ).equatable()
         .id(session.id)
@@ -3067,6 +3080,10 @@ struct SessionRowView: View {
     var onMoveToProjectSidebar: (() -> Void)? = nil
     /// Un-files a sidebar-group member back to its own project; nil hides it.
     var onMoveToMainArea: (() -> Void)? = nil
+    /// Fork-only: the Super Agent menu items; nil hides each one.
+    var onMakeSuperAgent: (() -> Void)? = nil
+    var onStopBeingSuperAgent: (() -> Void)? = nil
+    var onHandToSuperAgent: (() -> Void)? = nil
 
     @State private var hovering = false
     @State private var hoverIntentTask: Task<Void, Never>?
@@ -3126,6 +3143,12 @@ struct SessionRowView: View {
                     // Fork-only: a Scheduled Task's Run wears the clock badge.
                     if session.scheduledRun != nil {
                         SidebarScheduledRunIndicator()
+                    }
+                    // Fork-only
+                    if session.superAgent {
+                        SuperAgentBadge()
+                            .frame(width: 14, height: 18)
+                            .fixedSize()
                     }
                 }
             }
@@ -3278,6 +3301,9 @@ struct SessionRowView: View {
             onRestartApp: onRestartApp,
             onSetNotifyWhenDone: onSetNotifyWhenDone,
             onSetAgentAccessRole: onSetAgentAccessRole,
+            onMakeSuperAgent: onMakeSuperAgent,
+            onStopBeingSuperAgent: onStopBeingSuperAgent,
+            onHandToSuperAgent: onHandToSuperAgent,
             onCopyTranscript: onCopyTranscript,
             onStop: onStop,
             onRequestRemove: onRequestRemove
@@ -3720,7 +3746,9 @@ extension SessionRowView {
 
 /// Selection updates terminate here. Live rows observe their per-id token in
 /// this background-only leaf; snapshot/drag rows use the fixed fallback.
-private struct SessionRowSelectionBackground: View {
+/// Fork-only: also behind the sidebar AGENTS rows, so their selection reads
+/// exactly as PROJECTS does.
+struct SessionRowSelectionBackground: View {
     let state: SessionSelectionRowState?
     let fallbackIsSelected: Bool
     let isHovering: Bool

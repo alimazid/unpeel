@@ -1143,6 +1143,12 @@ struct SessionEntry: Codable, Identifiable, Hashable, Sendable {
     /// its task, for the clock badge, and whether a Project lists it. Optional
     /// so a startup cache written before it still decodes.
     var scheduledRun: ScheduledRunMark? = nil
+    /// Fork-only: this Session is the workspace's Super Agent (the Router),
+    /// from the Host's wire `superAgent`. Host-published rows only.
+    var superAgent: Bool = false
+    /// Fork-only: the Super Agent this Session works for (a Worker), from
+    /// the Host's wire `superAgentRouterID`. Host-published rows only.
+    var superAgentRouterID: String? = nil
 
     var isLive: Bool { status != .exited }
     var isAttachable: Bool { status != .starting && status != .exited }

@@ -362,6 +362,27 @@
       "tui": true
     },
     {
+      "id": "session.super_agent.set",
+      "method": "POST",
+      "path": "/mobile/super-agent/set",
+      "native": true,
+      "tui": true
+    },
+    {
+      "id": "session.super_agent.clear",
+      "method": "POST",
+      "path": "/mobile/super-agent/clear",
+      "native": true,
+      "tui": true
+    },
+    {
+      "id": "session.super_agent.hand_over",
+      "method": "POST",
+      "path": "/mobile/super-agent/hand-over",
+      "native": true,
+      "tui": true
+    },
+    {
       "id": "session.title.set",
       "method": "POST",
       "path": "/mobile/session-organization#title",

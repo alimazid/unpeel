@@ -167,6 +167,17 @@ pub fn list(path: &str) -> Result<Vec<Worktree>, String> {
 /// Create (or adopt) a worktree for `branch`. Returns its path. A best-effort
 /// fetch freshens the mainline first, matching the desktop.
 pub fn create(path: &str, branch: &str, base_ref: Option<&str>) -> Result<Worktree, String> {
+    create_in_folder(path, branch, base_ref, branch) // Fork-only: `folder` names it
+}
+
+/// Fork-only: `create`, in the folder `slug(folder)` — the desktop's
+/// `folderName` (`WorktreeGit.createWorktree`); `create` passes the branch.
+pub fn create_in_folder(
+    path: &str,
+    branch: &str,
+    base_ref: Option<&str>,
+    folder: &str,
+) -> Result<Worktree, String> {
     if branch.trim().is_empty() {
         return Err("a branch name is required".into());
     }
@@ -174,9 +185,9 @@ pub fn create(path: &str, branch: &str, base_ref: Option<&str>) -> Result<Worktr
         return Err("invalid base ref".into());
     }
     let toplevel = repo_toplevel(path)?;
-    let name = slug(branch);
+    let name = slug(folder);
     if name.is_empty() {
-        return Err("branch name has no usable characters".into());
+        return Err("the worktree folder name has no usable characters".into());
     }
     let dir = repo_worktrees_dir(&toplevel).join(&name);
 

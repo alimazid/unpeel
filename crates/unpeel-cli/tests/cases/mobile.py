@@ -20,6 +20,142 @@ def mobile_binary_request(port, path, token, data, content_type, timeout=10):
     )
 
 
+def super_agent_verbs(case, home, driver, port, token):
+    """Fork-only `session.super_agent.*`: make `fixture-live` (a `claude`
+    launch) the Super Agent, hand it `fixture-active`, and clear it again.
+    Ends with no Router, so later checks see an ordinary workspace."""
+
+    def verb(name, session_id):
+        return mobile_request(
+            port, f"/mobile/super-agent/{name}", token, method="POST",
+            body={"sessionID": session_id},
+        )
+
+    def summary(session_id):
+        _, boot_now = mobile_request(port, "/mobile/bootstrap", token)
+        return next(
+            (item for item in boot_now.get("sessions", [])
+             if item.get("id") == session_id),
+            {},
+        )
+
+    def pending_summaries(session_id):
+        pending = home.path("session-inboxes", session_id, "pending")
+        try:
+            names = sorted(os.listdir(pending))
+        except FileNotFoundError:
+            return []
+        found = []
+        for name in names:
+            with open(os.path.join(pending, name)) as handle:
+                found.append(json.load(handle))
+        return found
+
+    status, no_router = verb("hand-over", "fixture-active")
+    case.check(
+        "hand-over needs a Super Agent first",
+        status == 409 and "no Super Agent" in no_router.get("error", ""),
+        repr((status, no_router)),
+    )
+    status, refused = verb("set", "fixture-slow")
+    case.check(
+        "only a runtime declaring super_agent can be made the Super Agent",
+        status == 422
+        and refused.get("error") == "this session's agent cannot be the Super Agent"
+        and (home.state().get("super_agent") or {}).get("session_id") is None,
+        repr((status, refused, home.state().get("super_agent"))),
+    )
+
+    status, made = verb("set", "fixture-live")
+    instructions = pending_summaries("fixture-live")
+    published = driver.wait_for(
+        lambda: summary("fixture-live").get("superAgent") is True, timeout=5
+    )
+    case.check(
+        "set marks the Router, queues its instructions, and publishes superAgent",
+        status == 200
+        and made.get("ok") is True
+        and made.get("changed") is True
+        and (home.state().get("super_agent") or {}).get("session_id") == "fixture-live"
+        and len(instructions) == 1
+        and instructions[0].get("kind") == "task"
+        and instructions[0].get("priority") == "wake"
+        and "You are now the Super Agent" in instructions[0].get("summary", "")
+        and bool(published)
+        and summary("fixture-slow").get("superAgent") is False,
+        repr((status, made, instructions, summary("fixture-live"))),
+    )
+    status, again = verb("set", "fixture-live")
+    case.check(
+        "set is idempotent for the current Super Agent",
+        status == 200 and again.get("changed") is False
+        and len(pending_summaries("fixture-live")) == 1,
+        repr((status, again)),
+    )
+
+    status, not_agent = verb("hand-over", "fixture-slow")
+    status_router, is_router = verb("hand-over", "fixture-live")
+    case.check(
+        "hand-over refuses a plain command and the Super Agent itself",
+        status == 422 and status_router == 409
+        and not home.has_marker("fixture-slow", "supervision.json")
+        and "is the Super Agent" in is_router.get("error", ""),
+        repr((status, not_agent, status_router, is_router)),
+    )
+    status, handed = verb("hand-over", "fixture-active")
+    marker = home.read_marker("fixture-active", "supervision.json") or {}
+    request = pending_summaries("fixture-active")
+    routed = driver.wait_for(
+        lambda: summary("fixture-active").get("superAgentRouterID") == "fixture-live",
+        timeout=5,
+    )
+    case.check(
+        "hand-over makes a Worker, asks it for a summary, and publishes its Router",
+        status == 200
+        and handed.get("changed") is True
+        and marker.get("router_id") == "fixture-live"
+        and marker.get("origin") == "handed_over"
+        and len(request) == 1
+        and request[0].get("kind") == "task"
+        and "session_id=fixture-live" in request[0].get("body", "")
+        and bool(routed)
+        and summary("fixture-active").get("superAgent") is False,
+        repr((status, handed, marker, request, summary("fixture-active"))),
+    )
+
+    status, cleared = verb("clear", "fixture-live")
+    unpublished = driver.wait_for(
+        lambda: summary("fixture-live").get("superAgent") is False
+        and "superAgentRouterID" not in summary("fixture-active"),
+        timeout=5,
+    )
+    case.check(
+        "clear drops the mark and frees its Workers",
+        status == 200
+        and cleared.get("changed") is True
+        and (home.state().get("super_agent") or {}).get("session_id") is None
+        and not home.has_marker("fixture-active", "supervision.json")
+        and bool(unpublished),
+        repr((status, cleared, home.state().get("super_agent"),
+              summary("fixture-live"), summary("fixture-active"))),
+    )
+    status, noop = verb("clear", "fixture-active")
+    case.check(
+        "clear is a no-op for a Session that is not the Super Agent",
+        status == 200 and noop.get("changed") is False,
+        repr((status, noop)),
+    )
+
+    missing = {name: verb(name, "fixture-never-created")
+               for name in ("set", "clear", "hand-over")}
+    case.check(
+        "every Super Agent verb reports a Session that does not exist",
+        all(status == 404 and reply.get("error") == "unknown session"
+            for status, reply in missing.values()),
+        repr(missing),
+    )
+
+
 def body(case):
     home = case.home
     home.project("proj-1", "unpeel", "/tmp")
@@ -830,6 +966,8 @@ def body(case):
         status == 404 and missing.get("error") == "unknown session",
         repr((status, missing)),
     )
+
+    super_agent_verbs(case, home, driver, port, token)
 
     started = time.monotonic()
     status, _ = mobile_request(

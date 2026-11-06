@@ -27,6 +27,9 @@ use crate::platform_adapter::PlatformAdapterHub;
 use crate::relay::RelayUplink;
 use crate::sessions::{scan_sidebar, ScanCache, SessionRow, SidebarItem, SidebarModel, Status};
 
+// Fork-only: the Super Agent plumbing (`driver/super_agent.rs`).
+mod super_agent;
+
 const LOOP_INTERVAL: Duration = Duration::from_millis(100);
 const RESCAN_INTERVAL: Duration = Duration::from_secs(1);
 const NATIVE_PROBE_INTERVAL: Duration = Duration::from_secs(1);
@@ -353,21 +356,9 @@ pub fn is_running() -> bool {
 /// It cannot change `UNPEEL_HOME` inside the supervisor process just to
 /// inspect another workspace.
 pub fn is_running_at(home: &Path) -> bool {
-    let path = home.join("serve.lock");
-    let Ok(file) = std::fs::OpenOptions::new()
-        .read(true)
-        .write(true)
-        .truncate(false)
-        .open(path)
-    else {
-        return false;
-    };
-    if unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } == 0 {
-        let _ = unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_UN) };
-        false
-    } else {
-        std::io::Error::last_os_error().kind() == std::io::ErrorKind::WouldBlock
-    }
+    // Fork-only: one lease probe, shared with the MCP host (a shared lock,
+    // so two probes never mistake each other for a Host).
+    unpeel_core::supervision::host_worker_running_at(home)
 }
 
 struct NativeProbe {
@@ -633,6 +624,8 @@ pub struct HostRuntime {
     retention: crate::retention::Retention,
     /// Fires this workspace's Scheduled Tasks (`schedules/`).
     schedules: crate::schedules::Scheduler,
+    /// Fork-only: the Super Agent supervisor (`supervisor.rs`).
+    supervisor: crate::supervisor::Supervisor,
     /// Last Host-wide sweep of abandoned resumable uploads.
     last_upload_sweep: Option<Instant>,
     last_activity_state_signature: Option<crate::activity_snapshot::ActivityStateSignature>,
@@ -795,6 +788,7 @@ impl HostRuntime {
             auto_stop: crate::auto_stop::Sweeper::default(),
             retention: crate::retention::Retention::default(),
             schedules: crate::schedules::Scheduler::default(),
+            supervisor: Default::default(), // Fork-only
             last_upload_sweep: None,
             browser_engine_rx: if browser_engine_install_enabled() {
                 Some(spawn_browser_engine_install(&home))
@@ -910,6 +904,10 @@ impl HostRuntime {
                         .duration_since(UNIX_EPOCH)
                         .map_or(0, |since| since.as_millis() as u64),
                 );
+                // Fork-only: the supervisor sees every accepted hook event.
+                let at_ms = crate::supervisor::unix_ms(message.received_at);
+                self.supervisor
+                    .observe_hook(&message.session_id, &canonical, at_ms);
             }
             dirty |= accepted;
         }
@@ -948,6 +946,11 @@ impl HostRuntime {
             self.sweep_schedules(&mut emitted);
             self.sweep_auto_stop(&mut emitted);
             self.sweep_retention(&mut emitted);
+            // Fork-only: the supervisor drains Inboxes; a held draft alerts,
+            // an unanswered Worker prompt escalates.
+            for notice in self.supervisor.step(&self.model, now_ms()) {
+                self.deliver_supervisor_notice(notice);
+            }
             self.sweep_incomplete_uploads();
         } else if self.schedules.has_pending() {
             // Run now starts on the tick after it is accepted, not a rescan
@@ -1075,9 +1078,11 @@ impl HostRuntime {
             .map(|elapsed| elapsed.as_millis() as u64)
             .unwrap_or(0);
         let minutes = crate::auto_stop::minutes_from_disk();
+        // Fork-only: the supervisor filters what the sweep may stop.
+        let rows = self.supervisor.auto_stop_rows(&self.model.rows);
         for event in self
             .auto_stop
-            .step(&self.model.rows, &self.unread_ids, minutes, now_ms)
+            .step(&rows, &self.unread_ids, minutes, now_ms)
         {
             match event {
                 crate::auto_stop::SweepEvent::Stopped(session_id) => {
@@ -1373,7 +1378,11 @@ impl HostRuntime {
             let mut schedules: Option<Vec<unpeel_core::schedules::Schedule>> = None;
             for (row, kind, edge_msg) in events {
                 self.append_activity(&row, kind, now, None);
+                // Fork-only: the Finished reply, and whether the edge goes to a Router.
+                let edge = self.supervise_edge(&row, kind, edge_msg.as_deref(), now);
                 let observed = match kind {
+                    // Fork-only: diverted reads as observed, so it is marked read.
+                    _ if edge.diverted => true,
                     unpeel_core::activity_log::ActivityLogKind::NeedsInput => self
                         .deliver_notification(
                             &row,
@@ -1384,14 +1393,9 @@ impl HostRuntime {
                         ),
                     unpeel_core::activity_log::ActivityLogKind::Finished => {
                         // Fork-only: show what the agent said, not just
-                        // "Finished".
-                        let hook_message = self.completion_messages.take(&row.id, now);
-                        let body = crate::completion_snippet::finished_body(
-                            edge_msg.as_deref(),
-                            hook_message.as_deref(),
-                        );
-                        // Fork-only: a Run Session's task decides, not the
-                        // app's global "Notify when any agent finishes".
+                        // "Finished". The Router's own turns always notify;
+                        // a Run Session's task decides, not the app's global
+                        // "Notify when any agent finishes".
                         let run_notify_when_done =
                             crate::run_sessions::schedule_id(&row).and_then(|schedule_id| {
                                 crate::schedules::notice::notify_when_done(
@@ -1399,11 +1403,16 @@ impl HostRuntime {
                                     schedule_id,
                                 )
                             });
+                        let when_done = if edge.requires_notify_when_done {
+                            WhenDone::Setting(run_notify_when_done)
+                        } else {
+                            WhenDone::Always
+                        };
                         self.deliver_notification(
                             &row,
                             crate::notifications::NotificationKind::Done,
-                            body.as_deref(),
-                            WhenDone::Setting(run_notify_when_done),
+                            edge.finished_body.as_deref(),
+                            when_done,
                             now,
                         )
                     }
@@ -2403,10 +2412,15 @@ impl Drop for HostRuntime {
 /// lease before returning.
 pub fn run(mut report: impl FnMut(ServeEvent)) -> Result<(), String> {
     SHUTDOWN_REQUESTED.store(false, Ordering::Release);
-    let handler = request_shutdown as extern "C" fn(libc::c_int) as libc::sighandler_t;
     unsafe {
-        libc::signal(libc::SIGINT, handler);
-        libc::signal(libc::SIGTERM, handler);
+        libc::signal(
+            libc::SIGINT,
+            request_shutdown as *const () as libc::sighandler_t,
+        );
+        libc::signal(
+            libc::SIGTERM,
+            request_shutdown as *const () as libc::sighandler_t,
+        );
     }
     let (mut driver, events) = HostRuntime::start()?;
     for event in events {

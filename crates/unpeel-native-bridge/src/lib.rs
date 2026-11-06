@@ -243,6 +243,10 @@ trait RegisteredRemoteBackend: Send + Sync {
     ) -> Result<u64, NativeRemoteEffectError>;
     fn mark_session_read(&self, session_id: &str) -> Result<u64, NativeRemoteEffectError>;
     fn mark_session_unread(&self, session_id: &str) -> Result<u64, NativeRemoteEffectError>;
+    // Fork-only: the Super Agent verbs.
+    fn set_super_agent(&self, session_id: &str) -> Result<u64, NativeRemoteEffectError>;
+    fn clear_super_agent(&self, session_id: &str) -> Result<u64, NativeRemoteEffectError>;
+    fn hand_over_to_super_agent(&self, session_id: &str) -> Result<u64, NativeRemoteEffectError>;
     fn set_session_title(
         &self,
         session_id: &str,
@@ -609,6 +613,27 @@ impl RegisteredRemoteBackend for RegisteredCoreBackend {
     fn mark_session_unread(&self, session_id: &str) -> Result<u64, NativeRemoteEffectError> {
         self.backend
             .mark_session_unread(session_id)
+            .map(|receipt| receipt.request_id())
+            .map_err(native_remote_effect_error)
+    }
+
+    fn set_super_agent(&self, session_id: &str) -> Result<u64, NativeRemoteEffectError> {
+        self.backend
+            .set_super_agent(session_id)
+            .map(|receipt| receipt.request_id())
+            .map_err(native_remote_effect_error)
+    }
+
+    fn clear_super_agent(&self, session_id: &str) -> Result<u64, NativeRemoteEffectError> {
+        self.backend
+            .clear_super_agent(session_id)
+            .map(|receipt| receipt.request_id())
+            .map_err(native_remote_effect_error)
+    }
+
+    fn hand_over_to_super_agent(&self, session_id: &str) -> Result<u64, NativeRemoteEffectError> {
+        self.backend
+            .hand_over_to_super_agent(session_id)
             .map(|receipt| receipt.request_id())
             .map_err(native_remote_effect_error)
     }
@@ -1906,6 +1931,18 @@ fn mark_remote_session_unread(
         .map_err(native_not_applied_effect_error("mark Session unread"))?
         .mark_session_unread(session_id)?;
     encode_effect_receipt("mark Session unread", request_id)
+}
+
+/// Fork-only: one Super Agent verb through the registered backend.
+fn remote_super_agent_effect(
+    handle: RemoteHandle,
+    session_id: &str,
+    operation: &'static str,
+    verb: fn(&dyn RegisteredRemoteBackend, &str) -> Result<u64, NativeRemoteEffectError>,
+) -> Result<Vec<u8>, NativeRemoteEffectError> {
+    let backend = remote_backend(handle).map_err(native_not_applied_effect_error(operation))?;
+    let request_id = verb(backend.as_ref(), session_id)?;
+    encode_effect_receipt(operation, request_id)
 }
 
 /// Incoming Session-create parameters, decoded from the exact camelCase wire
@@ -4030,6 +4067,99 @@ pub unsafe extern "C" fn unpeel_native_bridge_remote_mark_unread(
     )
 }
 
+/// Fork-only: make a remote Session the workspace's Super Agent at most
+/// once (`session.super_agent.set`).
+///
+/// # Safety
+///
+/// A non-empty Session id must point to readable UTF-8 bytes. Both output
+/// pointers must be non-null and writable.
+#[no_mangle]
+pub unsafe extern "C" fn unpeel_native_bridge_remote_super_agent_set(
+    handle: RemoteHandle,
+    session_id_pointer: *const u8,
+    session_id_length: usize,
+    out_pointer: *mut *mut u8,
+    out_length: *mut usize,
+) -> i32 {
+    const OPERATION: &str = "make Session the Super Agent";
+    remote_session_effect_ffi(
+        handle,
+        session_id_pointer,
+        session_id_length,
+        OPERATION,
+        out_pointer,
+        out_length,
+        |session_id| {
+            remote_super_agent_effect(handle, session_id, OPERATION, |backend, id| {
+                backend.set_super_agent(id)
+            })
+        },
+    )
+}
+
+/// Fork-only: stop a remote Session being the Super Agent at most once
+/// (`session.super_agent.clear`).
+///
+/// # Safety
+///
+/// A non-empty Session id must point to readable UTF-8 bytes. Both output
+/// pointers must be non-null and writable.
+#[no_mangle]
+pub unsafe extern "C" fn unpeel_native_bridge_remote_super_agent_clear(
+    handle: RemoteHandle,
+    session_id_pointer: *const u8,
+    session_id_length: usize,
+    out_pointer: *mut *mut u8,
+    out_length: *mut usize,
+) -> i32 {
+    const OPERATION: &str = "stop Session being the Super Agent";
+    remote_session_effect_ffi(
+        handle,
+        session_id_pointer,
+        session_id_length,
+        OPERATION,
+        out_pointer,
+        out_length,
+        |session_id| {
+            remote_super_agent_effect(handle, session_id, OPERATION, |backend, id| {
+                backend.clear_super_agent(id)
+            })
+        },
+    )
+}
+
+/// Fork-only: hand a remote agent Session to the Super Agent at most once
+/// (`session.super_agent.hand_over`).
+///
+/// # Safety
+///
+/// A non-empty Session id must point to readable UTF-8 bytes. Both output
+/// pointers must be non-null and writable.
+#[no_mangle]
+pub unsafe extern "C" fn unpeel_native_bridge_remote_super_agent_hand_over(
+    handle: RemoteHandle,
+    session_id_pointer: *const u8,
+    session_id_length: usize,
+    out_pointer: *mut *mut u8,
+    out_length: *mut usize,
+) -> i32 {
+    const OPERATION: &str = "hand Session to the Super Agent";
+    remote_session_effect_ffi(
+        handle,
+        session_id_pointer,
+        session_id_length,
+        OPERATION,
+        out_pointer,
+        out_length,
+        |session_id| {
+            remote_super_agent_effect(handle, session_id, OPERATION, |backend, id| {
+                backend.hand_over_to_super_agent(id)
+            })
+        },
+    )
+}
+
 /// Shared body for the `(handle, session_id) → effect receipt` FFI verbs.
 ///
 /// # Safety
@@ -5478,6 +5608,21 @@ mod tests {
             unreachable!("static test backend has no effects")
         }
 
+        fn set_super_agent(&self, _session_id: &str) -> Result<u64, NativeRemoteEffectError> {
+            unreachable!("static test backend has no effects")
+        }
+
+        fn clear_super_agent(&self, _session_id: &str) -> Result<u64, NativeRemoteEffectError> {
+            unreachable!("static test backend has no effects")
+        }
+
+        fn hand_over_to_super_agent(
+            &self,
+            _session_id: &str,
+        ) -> Result<u64, NativeRemoteEffectError> {
+            unreachable!("static test backend has no effects")
+        }
+
         fn set_session_title(
             &self,
             _session_id: &str,
@@ -5747,6 +5892,33 @@ mod tests {
                 .unwrap_or_else(|poisoned| poisoned.into_inner())
                 .push(format!("unread:{session_id}"));
             Ok(45)
+        }
+
+        fn set_super_agent(&self, session_id: &str) -> Result<u64, NativeRemoteEffectError> {
+            self.effects
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .push(format!("super-agent-set:{session_id}"));
+            Ok(55)
+        }
+
+        fn clear_super_agent(&self, session_id: &str) -> Result<u64, NativeRemoteEffectError> {
+            self.effects
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .push(format!("super-agent-clear:{session_id}"));
+            Ok(56)
+        }
+
+        fn hand_over_to_super_agent(
+            &self,
+            session_id: &str,
+        ) -> Result<u64, NativeRemoteEffectError> {
+            self.effects
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .push(format!("super-agent-hand-over:{session_id}"));
+            Ok(57)
         }
 
         fn set_session_title(
@@ -7210,6 +7382,33 @@ mod tests {
         assert_eq!(code, RESULT_OK);
         assert_eq!(unsafe { take_owned_json(pointer, length) }["requestID"], 45);
 
+        // Fork-only: the Super Agent verbs.
+        type SessionEffect =
+            unsafe extern "C" fn(RemoteHandle, *const u8, usize, *mut *mut u8, *mut usize) -> i32;
+        let super_agent_verbs: [(SessionEffect, u64); 3] = [
+            (unpeel_native_bridge_remote_super_agent_set, 55),
+            (unpeel_native_bridge_remote_super_agent_clear, 56),
+            (unpeel_native_bridge_remote_super_agent_hand_over, 57),
+        ];
+        for (verb, request_id) in super_agent_verbs {
+            pointer = ptr::null_mut();
+            length = 0;
+            let code = unsafe {
+                verb(
+                    handle,
+                    session_id.as_ptr(),
+                    session_id.len(),
+                    &mut pointer,
+                    &mut length,
+                )
+            };
+            assert_eq!(code, RESULT_OK);
+            assert_eq!(
+                unsafe { take_owned_json(pointer, length) }["requestID"],
+                request_id
+            );
+        }
+
         assert_eq!(
             *controls.effects.lock().unwrap(),
             vec![
@@ -7217,7 +7416,10 @@ mod tests {
                 "fit:s1:80x24",
                 "clear:s1",
                 "read:s1",
-                "unread:s1"
+                "unread:s1",
+                "super-agent-set:s1",
+                "super-agent-clear:s1",
+                "super-agent-hand-over:s1",
             ]
         );
         assert_eq!(unsafe { close_ffi(handle) }.0, RESULT_OK);

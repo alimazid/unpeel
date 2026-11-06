@@ -168,6 +168,11 @@ pub struct SessionRow {
     /// Session's id, `cli`, or `schedule:<task id>` for a Scheduled Task's
     /// Run (`run_sessions.rs`). `None` for the user's own Sessions.
     pub spawned_by: Option<String>,
+    /// Fork-only: a Router's Worker (its `supervision.json` marker is
+    /// present, stopped Workers included).
+    pub is_worker: bool,
+    /// Fork-only: this workspace's Router (the app-state Super Agent mark).
+    pub is_router: bool,
 }
 
 impl SessionRow {
@@ -698,6 +703,7 @@ pub fn scan_sidebar(
 ) -> SidebarModel {
     let now = SystemTime::now();
     let app_state = load_app_state();
+    let router_id = unpeel_core::supervision::router_id(); // Fork-only
     let menu_attention_detection = app_state
         .as_ref()
         .map(|state| state.menu_attention_detection)
@@ -848,6 +854,8 @@ pub fn scan_sidebar(
                     Vec::new()
                 },
                 spawned_by: manifest.session.spawned_by.clone(),
+                is_worker: unpeel_core::supervision::is_worker(&manifest.session.id), // Fork-only
+                is_router: router_id.as_deref() == Some(manifest.session.id.as_str()), // Fork-only
             });
         }
     }
@@ -1234,13 +1242,28 @@ fn group_listing(
     // user's out.
     let mut kept: Vec<usize> = Vec::new();
     let mut hidden: Vec<usize> = Vec::new();
-    let mut inactive_rank = 0;
+    // Fork-only: of the rest, a Router's stopped Workers take the last keep
+    // slots, and a stopped Router never expires.
+    let windowed: Vec<usize> = stopped
+        .iter()
+        .copied()
+        .filter(|&index| !crate::run_sessions::is_run_session(&rows[index]))
+        .collect();
+    let in_window: std::collections::HashSet<usize> = windowed
+        .iter()
+        .copied()
+        .zip(crate::supervisor::stopped_in_keep_window(
+            rows,
+            &windowed,
+            stopped_window,
+        ))
+        .filter_map(|(index, keep)| keep.then_some(index))
+        .collect();
     for index in stopped.iter().copied() {
         let keep = if crate::run_sessions::is_run_session(&rows[index]) {
             !expired_runs.contains(&rows[index].id)
         } else {
-            inactive_rank += 1;
-            inactive_rank <= stopped_window || keep_visible.contains(&rows[index].id)
+            in_window.contains(&index) || keep_visible.contains(&rows[index].id)
         };
         if keep {
             kept.push(index);
@@ -1411,6 +1434,8 @@ pub fn model_from_bridge(
                 // The bridge payload predates Scheduled Tasks; nothing keys
                 // retention off a bridged row.
                 spawned_by: None,
+                is_worker: unpeel_core::supervision::is_worker(&id), // Fork-only
+                is_router: false, // Fork-only: marked once the rows are in
             });
             items.push(SidebarItem::Session(rows.len() - 1));
         }
@@ -1482,7 +1507,7 @@ pub fn model_from_bridge(
     }
     items.push(SidebarItem::AddProject);
     let mut model = SidebarModel {
-        rows,
+        rows: crate::supervisor::with_router_marked(rows), // Fork-only
         items,
         expired: Vec::new(),
     };
@@ -1995,6 +2020,7 @@ pub(crate) fn mobile_snapshot_with_runs(
     }
 
     let mut sessions = Vec::new();
+    let router_id = unpeel_core::supervision::router_id(); // Fork-only
     for item in &model.items {
         let SidebarItem::Session(i) = item else {
             continue;
@@ -2017,6 +2043,8 @@ pub(crate) fn mobile_snapshot_with_runs(
             crate::run_sessions::wire_row(row),
             latest_runs,
         );
+        // Fork-only: `superAgent` / `superAgentRouterID`.
+        let summary = unpeel_core::supervision::with_summary_fields(summary, router_id.as_deref());
         sessions.push(summary);
     }
 
@@ -2344,6 +2372,8 @@ mod tests {
             group_id: "__recent_test_project".into(),
             detected_local_urls: Vec::new(),
             spawned_by: None,
+            is_worker: false,
+            is_router: false,
         }
     }
 
@@ -2579,6 +2609,123 @@ mod tests {
             5,
             expired_runs,
         )
+    }
+
+    /// Fork-only: past the keep limit, a Router's stopped Workers go before
+    /// any of the user's stopped Sessions; the kept rows keep their order.
+    #[test]
+    fn stopped_workers_expire_before_the_users_stopped_sessions() {
+        let mut rows = vec![recent_test_row("live", Status::Idle, true, 1, false)];
+        for (label, lifecycle, is_worker) in [
+            ("user-10", 10, false),
+            ("user-11", 11, false),
+            ("user-12", 12, false),
+            ("worker-13", 13, true),
+            ("worker-14", 14, true),
+            ("worker-15", 15, true),
+        ] {
+            let mut row = recent_test_row(label, Status::Exited, false, lifecycle, false);
+            row.is_worker = is_worker;
+            rows.push(row);
+        }
+        let indices = (0..rows.len()).collect::<Vec<_>>();
+        let listing = |window: usize, keep_visible: &std::collections::HashSet<String>| {
+            let listing = group_listing(
+                "__recent_test_project",
+                &rows,
+                &indices,
+                None,
+                keep_visible,
+                &std::collections::HashSet::new(),
+                true,
+                window,
+                &std::collections::HashSet::new(),
+            );
+            let labels = |indices: &[usize]| {
+                indices
+                    .iter()
+                    .map(|index| rows[*index].label.clone())
+                    .collect::<Vec<_>>()
+            };
+            (labels(&listing.sessions), labels(&listing.hidden))
+        };
+        let none = std::collections::HashSet::new();
+
+        let (shown, expired) = listing(3, &none);
+        assert_eq!(shown, ["live", "user-12", "user-11", "user-10"]);
+        assert_eq!(expired, ["worker-15", "worker-14", "worker-13"]);
+
+        // A spare slot goes to the newest Worker, shown in its usual place.
+        let (shown, expired) = listing(4, &none);
+        assert_eq!(
+            shown,
+            ["live", "worker-15", "user-12", "user-11", "user-10"]
+        );
+        assert_eq!(expired, ["worker-14", "worker-13"]);
+
+        // Unread rows are still kept, Worker or not.
+        let unread = std::collections::HashSet::from([rows[5].id.clone()]);
+        let (shown, expired) = listing(3, &unread);
+        assert_eq!(
+            shown,
+            ["live", "worker-14", "user-12", "user-11", "user-10"]
+        );
+        assert_eq!(expired, ["worker-15", "worker-13"]);
+    }
+
+    /// Fork-only: a stopped Router is exempt from the keep limit, like a
+    /// pinned row: it never expires (which would silently free its
+    /// Workers) and takes no keep slot from the user's stopped Sessions.
+    #[test]
+    fn a_stopped_router_never_expires_and_takes_no_keep_slot() {
+        let mut rows = Vec::new();
+        for (label, lifecycle, is_router) in [
+            ("user-12", 12, false),
+            ("user-11", 11, false),
+            ("router-10", 10, true),
+        ] {
+            let mut row = recent_test_row(label, Status::Exited, false, lifecycle, false);
+            row.is_router = is_router;
+            rows.push(row);
+        }
+        let indices = (0..rows.len()).collect::<Vec<_>>();
+        let listing = |window: usize| {
+            let listing = group_listing(
+                "__recent_test_project",
+                &rows,
+                &indices,
+                None,
+                &std::collections::HashSet::new(),
+                &std::collections::HashSet::new(),
+                true,
+                window,
+                &std::collections::HashSet::new(),
+            );
+            let labels = |indices: &[usize]| {
+                indices
+                    .iter()
+                    .map(|index| rows[*index].label.clone())
+                    .collect::<Vec<_>>()
+            };
+            (labels(&listing.sessions), labels(&listing.hidden))
+        };
+
+        // Even with no stopped Sessions kept at all.
+        assert_eq!(
+            listing(0),
+            (
+                vec!["router-10".to_owned()],
+                vec!["user-12".to_owned(), "user-11".to_owned()]
+            )
+        );
+        // The one slot still goes to the user's newest stopped Session.
+        assert_eq!(
+            listing(1),
+            (
+                vec!["user-12".to_owned(), "router-10".to_owned()],
+                vec!["user-11".to_owned()]
+            )
+        );
     }
 
     #[test]
@@ -2956,6 +3103,8 @@ mod tests {
             group_id: "p2".into(),
             detected_local_urls: Vec::new(),
             spawned_by: None,
+            is_worker: false,
+            is_router: false,
         }];
         let items = vec![
             SidebarItem::Header("Second".into()),
@@ -3013,6 +3162,8 @@ mod tests {
             group_id: "project".into(),
             detected_local_urls: Vec::new(),
             spawned_by: None,
+            is_worker: false,
+            is_router: false,
         };
         assert_eq!(row.command, "");
         assert_eq!(row.presentation_command(), "claude");
@@ -3069,6 +3220,8 @@ mod tests {
             group_id: "project".into(),
             detected_local_urls: Vec::new(),
             spawned_by: None,
+            is_worker: false,
+            is_router: false,
         };
         let model = SidebarModel {
             rows: vec![row],

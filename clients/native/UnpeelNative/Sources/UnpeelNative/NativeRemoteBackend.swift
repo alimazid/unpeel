@@ -186,6 +186,12 @@ protocol NativeRemoteBackendProtocol: Sendable {
     func markRead(sessionID: String) async throws -> NativeRemoteEffectReceipt
     /// Fork-only: the user's explicit "Mark as Unread" (`session.mark_unread`).
     func markUnread(sessionID: String) async throws -> NativeRemoteEffectReceipt
+    /// Fork-only: Make Super Agent (`session.super_agent.set`).
+    func setSuperAgent(sessionID: String) async throws -> NativeRemoteEffectReceipt
+    /// Fork-only: Stop Being Super Agent (`session.super_agent.clear`).
+    func clearSuperAgent(sessionID: String) async throws -> NativeRemoteEffectReceipt
+    /// Fork-only: Hand to Super Agent (`session.super_agent.hand_over`).
+    func handOverToSuperAgent(sessionID: String) async throws -> NativeRemoteEffectReceipt
     func setSessionTitle(sessionID: String, title: String) async throws
         -> NativeRemoteEffectReceipt
     func setSessionPinned(sessionID: String, pinned: Bool) async throws
@@ -254,6 +260,29 @@ extension NativeRemoteBackendProtocol {
             message: "Marking a session unread is unavailable on this backend.",
             kind: "notApplied",
             operation: "mark Session unread"
+        )
+    }
+
+    /// Defaults for test doubles: fail closed, nothing was changed.
+    func setSuperAgent(sessionID: String) async throws -> NativeRemoteEffectReceipt {
+        throw Self.superAgentUnavailable("make Session the Super Agent")
+    }
+
+    func clearSuperAgent(sessionID: String) async throws -> NativeRemoteEffectReceipt {
+        throw Self.superAgentUnavailable("stop Session being the Super Agent")
+    }
+
+    func handOverToSuperAgent(sessionID: String) async throws -> NativeRemoteEffectReceipt {
+        throw Self.superAgentUnavailable("hand Session to the Super Agent")
+    }
+
+    private static func superAgentUnavailable(_ operation: String) -> NativeRemoteBackendError {
+        NativeRemoteBackendError(
+            result: Int32(UNPEEL_NATIVE_BRIDGE_ERROR_REMOTE),
+            code: "super_agent_unavailable",
+            message: "The Super Agent is unavailable on this backend.",
+            kind: "notApplied",
+            operation: operation
         )
     }
 
@@ -1076,6 +1105,30 @@ final class NativeRemoteBackend: @unchecked Sendable {
             sessionID: sessionID,
             operation: "mark Session unread",
             call: unpeel_native_bridge_remote_mark_unread
+        )
+    }
+
+    func setSuperAgent(sessionID: String) async throws -> NativeRemoteEffectReceipt {
+        try await performSessionEffect(
+            sessionID: sessionID,
+            operation: "make Session the Super Agent",
+            call: unpeel_native_bridge_remote_super_agent_set
+        )
+    }
+
+    func clearSuperAgent(sessionID: String) async throws -> NativeRemoteEffectReceipt {
+        try await performSessionEffect(
+            sessionID: sessionID,
+            operation: "stop Session being the Super Agent",
+            call: unpeel_native_bridge_remote_super_agent_clear
+        )
+    }
+
+    func handOverToSuperAgent(sessionID: String) async throws -> NativeRemoteEffectReceipt {
+        try await performSessionEffect(
+            sessionID: sessionID,
+            operation: "hand Session to the Super Agent",
+            call: unpeel_native_bridge_remote_super_agent_hand_over
         )
     }
 

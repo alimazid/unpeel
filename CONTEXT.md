@@ -1,8 +1,9 @@
 # Unpeel (fork)
 
 The fork's Mac workspace for running CLI agents, with VS Code-style views of
-the project around the terminal and Scheduled Tasks that start agents on
-their own. This glossary covers the fork-only features; the shipped product
+the project around the terminal, a Super Agent that coordinates other agents,
+and Scheduled Tasks that start agents on their own. This glossary covers the
+fork-only features; the shipped product
 vocabulary (Host, Controller, Session, Project) is in `AGENTS.md`.
 
 ## Language
@@ -106,3 +107,33 @@ failed to start, failed, or skipped, and "late" when it started well after
 its time. Most Runs have a Session; a skipped or failed-before-launch Run
 does not.
 _Avoid_: execution, job, instance, invocation
+
+### Super Agent
+
+**Router**:
+An agent Session the user made a Super Agent from the sidebar: it holds the
+Create & remove role and coordinates work instead of doing it, starting
+Workers in the Projects where the work belongs. A workspace has at most one.
+The app calls it a **Super Agent**; the docs and code call it the Router.
+_Avoid_: orchestrator, lead, coordinator
+
+**Worker**:
+A Session doing one task for the Router: one the Router started (other than
+a plugin panel) or one the user handed over. It reports to the Router, and
+the Router stops it when its work is done. A Worker the user restarts
+becomes the user's again until handed over.
+_Avoid_: child, sub-agent, helper
+
+**Hand-over**:
+The user giving one of their agent Sessions to the Router, which makes it a
+Worker; the Session summarises its conversation into the Router's Inbox so
+the Router can carry on from there.
+_Avoid_: handoff (in Unpeel that means restart-with-resume), adoption,
+delegation
+
+**Inbox**:
+The messages waiting for one Session: its Workers' reports and Unpeel's
+alerts about them. They arrive together as one batch when the Session is
+idle and nobody is typing into it. A Worker reaches its Router only through
+the Router's Inbox.
+_Avoid_: queue, mailbox, message buffer

@@ -83,7 +83,8 @@ channel semantics.
 Advertised ownership (old mixed `sessions` spellings remain decode-only):
 
 - `sessions`: `current`, `list`, `inspect`, `read_screen`, `read_output`,
-  `wait_for_text`, `send_text`, `send_keys`, `report`. This domain reports
+  `wait_for_text`, `send_text`, `send_keys`, `report`, plus the fork-only
+  `inbox` and `stop` (Super Agent, below). This domain reports
   terminal/container state only; `inspect` no
   longer smuggles in provider transcript or agent identity.
 - `agents`: `list`, `get`, `read_transcript`, `wait`. Every action targets one
@@ -93,35 +94,68 @@ Advertised ownership (old mixed `sessions` spellings remain decode-only):
   Follow-up operations validate it so a replacement foreground process cannot
   be mistaken for the same agent. `session_id` remains a weaker compatibility
   target.
-- `workspace`: `list_presets`, `create_worktree`, `list_worktrees`,
-  `list_schedules`, `list_schedule_runs`. Worktree creation remains opt-in and
-  never launches a Session. The two Scheduled Tasks actions are read-only
-  (fork-only): they answer the `GET /mobile/schedules` and
-  `GET /mobile/schedules/runs` bodies (`protocol/schedules-samples-v1.json`)
-  from `app-state.json` and the per-task files on disk, so they work on any
-  Host. `list_schedule_runs` returns the newest 10 Runs unless `limit` says
-  otherwise. Agents cannot create, edit, run or remove tasks, and the
-  existing `spawned_by` rule keeps a task's Run Sessions out of `sessions
-  close` even under Create & remove.
+- `workspace`: `list_presets`, `list_projects`, `create_worktree`,
+  `list_worktrees`, the fork-only Scheduled Tasks reads `list_schedules` and
+  `list_schedule_runs`, plus the fork-only Super Agent group actions
+  `create_group`, `rename_group`, `remove_group` and `move_session` (Super
+  Agent, below). Worktree creation remains opt-in and never launches a
+  Session. All of them are answered by the MCP host itself from this home's
+  `app-state.json` and git (`crates/unpeel-core/src/workspace_tools.rs`,
+  `supervision_groups.rs`, fork-only); no app or Host route is involved:
+  - `list_presets` uses the same filter `sessions create` resolves `preset`
+    against (`workspace_tools::usable_presets`): enabled, global or scoped to
+    the project, project-scoped first; a group or worktree id gets its root
+    Project's presets too. Each row: `id`, `label`, `command`,
+    `project_id` (null = global), `quick_launch`.
+  - `list_projects` (open to every caller) lists every Project in sidebar
+    tree order: `{id, name, path, kind: root|group|worktree, parent_id?,
+    worktree_branch?, sidebar}`. A group's `path` is its checkout's folder;
+    `sidebar: true` marks a root's `sidebar-<root>` group. Top-level sidebar
+    folders are not Projects; a Project filed in one is a `root`.
+  - `create_worktree {project_id?, branch, name?, base_ref?}` resolves the
+    project (or group, or worktree) to its root, adopts a registered or
+    existing git worktree of that branch, else creates it in the folder
+    `name` names (`worktrees::create_in_folder`, the slug of `name`), then
+    registers one child project per (root, branch) through `app_state::edit`
+    (`mcp-wt-<uuid>`, never `native-`; named `name`, as the Mac app names
+    it; folder and sidebar name both default to the branch; `sort_order`
+    after its last sibling). Returns `{path, project_id,
+    branch, adopted, repo_path}`; `repo_path` is the root's checkout, which
+    the Super Agent's worktree ledger records (below).
+  - `list_worktrees` merges `git worktree list` of the root's checkout with
+    its registered worktree projects: the main checkout carries the root's id
+    (`main: true`), a registration git no longer knows is `missing: true`.
+  - `create_worktree` and `list_worktrees` keep `require_worktree_access`
+    (`mcp_worktree_access`, off by default; the Router passes it).
+  - `list_schedules` and `list_schedule_runs` are read-only: they answer the
+    `GET /mobile/schedules` and `GET /mobile/schedules/runs` bodies
+    (`protocol/schedules-samples-v1.json`) from `app-state.json` and the
+    per-task files on disk, so they work on any Host. `list_schedule_runs`
+    returns the newest 10 Runs unless `limit` says otherwise. Agents cannot
+    create, edit, run or remove tasks, and the existing `spawned_by` rule
+    keeps a task's Run Sessions out of `sessions close` even under Create &
+    remove.
 - `artifacts`: `add_to_gallery` for a caller-owned image artifact.
 
-Session creation and closing remain user-only. Stale start/delegate/close tool
+Session creation and closing remain user-only, except under the Create &
+remove role and for the Super Agent (below). Stale start/delegate/close tool
 calls are refused. Legacy mixed action names and per-tool names continue to
 dispatch where safe for already-running/cached clients, but are absent from
 the new schemas. `list_group` remains an organizational compatibility query;
 `report_to_group` aliases `report` and uses the ordinary write policy. The
 unreleased group-wide wait/summary spellings are intentionally not retained.
 
-Preset/worktree effects and write-approval prompts are Host-owned: the
-worker answers `POST /mcp/*` on its own hook port and mirrors approvals to
-the app through the `approval.present` platform callback (answers return
-over the Host approval verb). The native `MCPBridge.swift` compatibility
-adapter was retired 2026-09-03; the historical route contract below is the
+Write-approval prompts are Host-owned: the worker answers `POST
+/mcp/approve-*` on its own hook port and mirrors approvals to the app
+through the `approval.present` platform callback (answers return over the
+Host approval verb). The native `MCPBridge.swift` compatibility adapter was
+retired 2026-09-03, and with it the `list-presets`, `create-worktree` and
+`list-worktrees` routes (the worker never served them; the `workspace`
+actions read app-state directly, above). The route contract below is the
 worker's.
 
 - Bridge: `crates/unpeel-serve` hook port, authenticated `POST /mcp/*`
-  calls. Public effects use `list-presets`,
-  `create-worktree`, `list-worktrees`, and `approve-write`
+  calls: `approve-write`, `approve-browser`
   (`approve-app-open` is still served for MCP binaries older than
   2026-09-06, but current App opens need no approval and never call it);
   `start-session` remains reserved for user/controller launches. Approval routes reply asynchronously (150s bridge ceiling, ~130s
@@ -129,7 +163,7 @@ worker's.
   `~/.unpeel/app-ports` newest-first. App-less `unpeel serve` Hosts serve the
   same routes and the same shared approval queue.
 - Auth: unlike hook routes, `/mcp/*` requires the `x-unpeel-auth` header matching `<UNPEEL_HOME>/mcp/auth-token` (0600; the workspace worker mints it at start and the MCP host mints it on first use via `mcp_auth::ensure_auth_token`, so a fresh workspace home never reaches its first approval prompt without one — that gap broke every agent write in a new workspace until 2026-09-16) — the endpoints can launch arbitrary commands, and localhost is reachable by browser CSRF.
-- Worktree creation maps onto the same native path as its UI verb. The MCP host defaults `project_id` to the calling session's project.
+- Worktree creation uses the desktop's folder layout (`worktrees.rs`, `~/.unpeel/worktrees/<repo-slug>-<hash>/<branch-slug>`). The MCP host defaults `project_id` to the calling session's project.
 
 > **Security scope (2026-08-14): these are cooperative controls, not
 > same-UID isolation.** Hosted commands run as the user's account and are not
@@ -148,7 +182,7 @@ other session** (reworked 2026-08-31):
 - **Sidebar groups are organizational only.** Project roots, plain groups, and worktrees remain useful filing and layout context, but moving a session never grants or revokes authority.
 - **Every write to another session goes through the app-wide write policy** stored under the compatibility key `AppState.mcp_nonchild_write_access` (`ask` default / `deny` / `allow`, `McpNonChildWriteAccess` in `state.rs`), re-read per call so changes apply live. Under `ask`, `require_session(_, Write)` first checks the persisted pair map `AppState.mcp_write_approvals` (`caller id → [target ids]`, directional); on a miss it POSTs `/mcp/approve-write` to the app with a 130s read timeout (`request_write_approval`) and the user answers the approval prompt — Allow persists the pair, Deny fails the tool call with a clear "don't retry" message. Prompts are FIFO and identical pairs coalesce; the exited-target check runs before the prompt so a dead session never asks.
 - **Agent access roles (per session, sidebar right-click ▸ Agent access).** Stored as `AppState.mcp_orchestrators[<session id>] = { role, reach }` and re-read per call, so a change reaches a running agent without a restart. Roles: `read` (default, no entry), `send` (**Write** — writes to any other session skip the Ask prompt; Never allow still denies), `manage` (**Create & remove** — Write plus `sessions create` and `sessions close`). Retired lineage spellings (`write`, `orchestrator`, bare-string grants) decode as inert Read. The menu shows only for agent sessions on this Mac's own Host (the grant lives in that Host's app-state); remote Hosts have no grant verb yet.
-- **Session lifecycle is user-owned by default.** Without `manage`, `create`/`close` (and the stale `start_session`/`delegate_*` names) refuse with a pointer to the role. `create` launches a preset (id or label, project-scoped first), a raw `command`, or a plain shell, in the caller's cwd and project unless given, and stamps `spawned_by = <caller id>`; `close` runs `session_ops::remove_session` only on a session whose `spawned_by` is the caller (App companions from `apps.open` qualify) and never the caller itself. Both actions are always advertised because providers cache `tools/list`; the gate is at call time. A caller replaced by Resume gets a new id, so it loses removal rights over helpers it created before.
+- **Session lifecycle is user-owned by default.** Without `manage`, `create`/`close` (and the stale `start_session`/`delegate_*` names) refuse with a pointer to the role. `create` launches a preset (id or label, project-scoped first), a raw `command`, or a plain shell, in the caller's cwd and project unless given, and stamps `spawned_by = <caller id>`; `close` runs `session_ops::remove_session` only on a session whose `spawned_by` is the caller (App companions from `apps.open` qualify) and never the caller itself. Both actions are always advertised because providers cache `tools/list`; the gate is at call time. A caller replaced by Resume gets a new id, so it loses removal rights over helpers it created before. The Super Agent is the exception: it holds Create & remove by its mark, and its `close`/`stop` authority is the Worker marker alone (below), which follows a Router Resume.
 - **Legacy lineage is decode-only.** `parent_session_id`, `session_parents`, and the remote protocol's `parentSessionID` remain tolerated for older manifests/controllers, but current hosts never write or enforce them and current clients render sessions flat.
 - **Unified approval prompts, answerable from controllers:**
   `/mcp/approve-write|browser|computer|app-open` share one pending queue
@@ -177,6 +211,36 @@ other session** (reworked 2026-08-31):
   write approval, offers the app-wide write policy and gallery toggle, and lists both approved
   Session-write pairs and approved App launches with per-entry Revoke. Changes
   apply live; nothing here drives a restart banner.
+- **A running Session with no published activity (fork-only).** While a Host
+  worker holds this workspace's serve lease (`supervision::host_worker_running`,
+  a shared-lock probe of `serve.lock`), a running Session with no
+  `activity-state.json` entry reads activity `unknown`, not `idle`
+  (`mcp_host::activity_status_for_manifest` → `supervision::running_status_without_activity`),
+  and an `agents wait` / `wait_for_status` for `idle` keeps waiting on
+  `unknown`. Without a Host worker it reads `idle`, as upstream: nothing would
+  ever publish an entry, so a wait would never end.
+
+- **Super Agent Workers (fork-only, `supervision_mcp/workers.rs`, `workers/control.rs`, `workers/cards.rs`).** Only the Session marked in app-state `super_agent` (the Router) gets these; a plain Create & remove caller keeps the behavior above and is refused `role`/`task`/`text`/`worktree`.
+  - `create` from the Router starts a Worker: `role` and `task` are plain labels (control characters stripped, trimmed, at most 120 characters, `"app-panel"` refused; never the Agent access role); `text` is the first task, queued as a waking `task` item in the Worker's own Inbox (sender: the Router) and pasted the first time the Worker is idle; `worktree=<branch>` (+ `base_ref`, not with `cwd`) creates or adopts the worktree through `workspace_tools::create_and_register` and launches in its child project (`mcp-wt-<uuid>`, `worktree_path`/`worktree_branch` set). With neither `preset` nor `command` the Worker runs the Router's own agent (its observed runtime, else the catalog match on its command): the first enabled preset of the target Project (a group or worktree uses its root's) whose command runs that runtime, else the runtime's plain command (its first command alias), never the Router's own launch line. A root's Sidebar group (`sidebar-<root>`) is refused. Limits, counted from the markers alone: `supervisor_max_children` running Workers (default 8) and `supervisor_max_spawns_per_minute` `sessions create` starts (default 6; Hand-overs don't count). After the spawn the Worker gets `app-sessions/<id>/supervision.json` `{router_id, since, origin: "created"}`; the result adds `worker`, `task_item_id`, `worktree` and a Router `note` (a failed marker or task write becomes `warning`).
+  - `stop {session_id}` (Router only, its own Workers by marker): stamps router-touch, moves the Worker's pending Inbox items to the Router as ride-along items `about` the Worker (`session_inbox::move_pending`), then `session_ops::stop_session`. The row stays, greyed and restartable; the marker stays, so it is still a Worker for the keep limit. Returns `{session_id, stopped, was_running, returned_items}`.
+  - `close` from the Router is decided by `supervision_mcp::route_close`: its Workers by marker (whoever spawned them; pending items move back first), and App panels it opened (`role == "app-panel"` and `spawned_by` = the Router). A Worker the user restarted lost its marker and is refused even though `spawned_by` still names the Router.
+  - `current`: every caller gets `inbox: {pending}` (undelivered items in its own Inbox). The Router also gets `super_agent: true` and `workers[]` cards `{id, label, project_id, group_id, activity_status, last_report_status, preview}` (oldest first, stopped Workers included). `last_report_status` and `preview` come from the Router's whole Inbox history (`Store::history`): the Worker's last `report`/`handover`/`message`, or a Host `lifecycle` item `about` the Worker with status `finished` (its reply in the body), cut to 160 characters. A Worker gets `router_id`.
+  - Router waits: `agents wait`, `sessions wait_for_text` and `wait_for_status` cap `timeout_ms` at 5 000 for the Router (`cap_wait_timeout`); a capped wait that fails says why (`explain_wait`, wrapped around `run_tool`).
+  - Worker → its Router (while a Host worker runs): `report` and `send_text` skip the write gate and queue in the Router's Inbox (`send_text` as a waking `message`: first line as its summary, `submit` ignored); the app-wide Deny is re-read when the supervisor drains it. A handed-over Worker's first report since its Hand-over is queued as kind `handover` (Wake). A Worker's `send_keys` into its Router follows the ordinary policy. Without a Host worker both keep upstream's paste path.
+  - router-touch: every write that passes `require_session(_, Write)` from the Router into one of its Workers, and every Router stop/close, stamps `session-inboxes/<worker>/router-touch` (unix ms; `session_inbox::router_touched_at`) for the supervisor to tell self-caused edges apart.
+  - Switching the Super Agent (`session.super_agent.set` on another Session) hands the old Router's pending Inbox items to the new one as they were (`Store::hand_over_pending`), dropping the old Router's own undelivered instructions.
+- **Becoming the Router: three Host verbs (fork-only, `supervision/controller.rs`).** The Mac menu items Make Super Agent / Stop Being Super Agent / Hand to Super Agent call `session.super_agent.set`, `.clear` and `.hand_over` (`POST /mobile/super-agent/{set,clear,hand-over}`, body `{sessionID}`, answer `{ok, changed}`; `changed: false` means already in effect). They are advertised on the native and headless lists in `protocol/host-capabilities-v1.json`, replay-protected, and pinned by the missing- and unknown-session conformance cases. Every refusal is decided before anything is written: 400 invalid id, 404 unknown session, 409 not running / no Super Agent / is the Super Agent / Worker limit (Hand-over), 422 the runtime cannot be the Super Agent / not an agent; only a 500 may follow a partial write.
+  - `set`: a running Session whose runtime declares the `super_agent` capability in its package (`runtimes/claude-code/runtime.toml` today; the observed foreground runtime wins; with none observed, the catalog match on the command head; the Mac menu applies the same rule). One Router per workspace: app-state `super_agent: {session_id, since}`. The new Router stops being anyone's Worker, takes the previous Router's Workers (their markers' `router_id`) and pending items, and gets a waking `task` item ("You are now the Super Agent. Read your instructions with skills read unpeel/router, then call sessions current.") and, when Workers moved, a `handover` item listing what it took over. The old Router becomes an ordinary agent.
+  - `clear`: a no-op for any Session but the Router. The mark is nulled (never removed: app-state refuses a write that drops a top-level key), every Worker marker is removed (running and stopped Workers become the user's ordinary Sessions; a later Router does not take them back), and the Router's undelivered instructions are dropped. Removing the Router's Session clears the mark and frees its Workers the same way (`supervision::on_session_replaced(old, None)`, which also deletes its Inbox).
+  - `hand_over`: a running catalog agent that is not the Router. It gets a marker with `origin: "handed_over"` and a waking `task` item asking it to summarise its conversation into one `sessions report` to the Router (queued as kind `handover`). A Hand-over is the user's free slot: it is accepted at `supervisor_max_children` running Workers (one over the limit) and refused with 409 past that.
+  - Resume (a replacement id) moves the mark, rewrites every Worker marker and renames the Inbox directory to the new id (`supervision::on_session_replaced`, delegated from `session_ops::rewrite_shared_session_references`), then queues the instructions again. A same-id Reload changes nothing. A user restart of a Worker tears its session dir down with the marker, so it is the user's.
+  - Being the Router implies Create & remove (`supervision::grant_override`; its writes to any Session skip the Ask prompt, app-wide Deny still applies) and `mcp_worktree_access`. Bootstrap session summaries carry `superAgent: bool` and, from a Worker marker, `superAgentRouterID` (both builders: `controller_host.rs` and `unpeel-serve` `mobile_snapshot`); older Controllers ignore them.
+- **The Inbox (fork-only, `session_inbox.rs`, `supervision_mcp/inbox.rs`, `unpeel-serve/src/supervisor/inbox_*.rs`).** While a Host worker runs, `sessions report` to any Session queues into the target's Inbox instead of typing: `<UNPEEL_HOME>/session-inboxes/<id>/` (`pending/`, `delivered/`, `inflight.json`, `hold.json`, `router-touch`; locks under `.locks/`), outside the session dir so Resume cannot destroy it. The result says `{queued, item_id, pending, delivery}`, `delivery` being `when_idle` or `held:<reason>`; status `done`/`blocked` or `questions` wake the target, `update`/`progress` ride along with the next wake batch, and `submit` is ignored. Without a Host worker `report` pastes at once (`queued: false`, `delivery: immediate_legacy`). Caps: 200 pending items or 2 MiB ("inbox full"); delivered history 200 items / 24 h; an Inbox whose session has had no manifest for 10 minutes is collected.
+  - Delivery (`inbox_rules.rs`, a pure truth table): only a wake item starts a paste, and the paste carries everything pending, oldest first, as one bracketed paste — `[unpeel inbox for id:<target> · batch <id> · N items · channel: terminal]` … `[end of inbox batch <id>]`, each item headed `[message|notice from id:<sender>, channel: terminal, via: inbox, kind: …]` (only `id:host` notices come from Unpeel; sender text that imitates a header is quoted with `│`; an item over 1 500 characters is cut with a pointer to `sessions inbox item_id=…`; a batch is at most 12 000). It needs a running, idle target that an agent owns: idle by its program's own report, or by hooks or a `done`/`error` report while a runtime is in the foreground, is confident; the screen tier, or nothing with a runtime in front, is a best guess (`supervisor_inbox_low_confidence`, default on); with no runtime in front it holds `no_agent_authority`. It also needs no select menu, mode 2004 set, no app-wide Deny, 3 s of screen quiet (10 s for a best guess), 2 s since the newest item (at most 30 s after the oldest), no draft on the input line, and at most `supervisor_max_deliveries_per_hour` (60). Pasting runs off the tick thread, one paste in flight per target. A paste counts as delivered when the target's `UserPromptSubmit` hook or 7501 Busy edge follows it; otherwise it is pasted again after 30 s marked `(redelivery)` (same batch id), and after its third paste it counts as delivered. A best-guess paste counts at once. A draft that holds items for 120 s alerts the user.
+  - `sessions inbox` is the target's own pull mode, refused for anyone else's Inbox: no parameters lists pending headers, the last 20 delivered and `hold` (the current hold reason, e.g. `busy`, `no_agent_authority`, `ride_along`, `quiet`, `draft`, `unconfirmed`, `policy_deny`); `item_id` reads one item in full; `ack_through` marks every pending item up to that one consumed, so it is never pasted. A plain shell (`cat`) is held `no_agent_authority` and drains only by pulling.
+- **Worker notices and the watchdog (fork-only, `unpeel-serve/src/supervisor/worker_alerts.rs`, `notices.rs`, `watchdog.rs`).** While the Router runs, its Workers' lifecycle edges become Host notices `about` the Worker in the Router's Inbox instead of user notifications (the user side is in `docs/agents/clients/session-activity.md`): NeedsInput → wake `needs_input`; Finished → wake `lifecycle` `finished` with the Worker's reply as the body (the shape the Worker cards read), "after the user talked to it directly" when the turn began with no Host paste or Router write in the 10 s before it, and nothing when the Worker reported a result that turn; Exited → a ride-along `exited`, or a waking watchdog `exited_unexpectedly` when it exited busy, waiting, or with a failing code; Started only with `supervisor_notify_started`. A Worker only the screen tier (or nothing) speaks for never produces a Finished edge, so the end of its turn (Busy → Idle) is a wake `finished` notice marked "screen-detected" with no reply, once per turn. The watchdog reports, once per episode: `stalled` (Busy with no progress — hook, program report, Busy edge or durable stamp — for `supervisor_stall_minutes`, 20), `blocked` (waiting on a prompt for `supervisor_blocked_minutes`, 10), `went_quiet` (a hook or program turn ended without finishing), `long_turn` (`supervisor_max_turn_minutes`, off by default). Edges the Router caused itself (router-touch within 5 s, 15 s for an exit, and no Busy since) produce no notice. Every clock is floored at the supervisor's start; on a Host start the Router is caught up on exits and finishes since the previous supervisor's last heartbeat (`<UNPEEL_HOME>/supervision/heartbeat`), with the live notices' dedupe keys. `UNPEEL_SUPERVISOR_SECONDS=1` (tests only, with `UNPEEL_TEST`) reads every minute setting as seconds.
+- **Groups, worktrees and the keep limit (fork-only, `supervision_groups.rs`, `supervision_worktrees.rs`).** `workspace create_group {project_id, name}` adds a sidebar group (`sa-<uuid>`) at the top of the root Project a group or worktree id resolves to; a Worker started with that `project_id` runs in the root's folder. `rename_group` and `remove_group` (empty groups only: no Session, stopped ones included, and no child groups) act only on groups the Router created (`sa-` ids); every other group (the Mac app's `native-` groups, migrated `legacy-pinned-` groups, other frontends' groups, a root's Sidebar group), Projects and worktrees are refused. `move_session {session_id, project_id}` files one of the Router's own Workers under its root (or worktree) or a group directly under it, never the Sidebar group; only the sidebar changes. A Worker's worktree goes on the ledger `<UNPEEL_HOME>/supervision/worktrees.json`; when retention removes that Worker, the worktree is removed with it only if its branch is merged (`git merge-base --is-ancestor`) and it has no uncommitted changes. Past `sidebar_stopped_limit`, stopped Workers are removed before any of the user's stopped Sessions, and a stopped Router is never removed and takes no keep slot (`supervisor::stopped_in_keep_window`, `SessionRow.is_router`). Auto-stop never stops the Router, a running Router's running Workers, or a Session with undelivered Inbox items.
+- **Super Agent settings** (app-state, re-read every sweep, `supervision/config.rs`; an out-of-range value falls back to its default): `supervisor_max_children` (8, 1–32), `supervisor_max_spawns_per_minute` (6), `supervisor_escalate_minutes` (5; 0, 1, 2, 5, 10, 15, 30, 60), `supervisor_stall_minutes` (20), `supervisor_blocked_minutes` (10), `supervisor_max_turn_minutes` (0 = off), `supervisor_max_deliveries_per_hour` (60), `supervisor_notify_started` (false), `supervisor_inbox_low_confidence` (true). `unpeel settings get/set/list` script every one of them with exactly these value sets (`supervision::SupervisorSetting`, shared with the supervisor; `settings_cli.rs` whitelists them, so `settings.workspace.set` is unchanged). The Router's instructions are the built-in `unpeel/router` skill (`crates/unpeel-core/src/skills/router.md`).
 
 > **Removed (2026-06-22):** the per-project MCP *block* feature (`mcp_blocked_projects`, `Project.mcp_blocked`, the Settings "Block individual projects" section, host/bridge block gates) is gone. The native `AppStateFile`/`Project` decoders still tolerate the old `mcp_blocked*` keys for backward-compatible reads, but nothing writes or enforces them.
 
@@ -243,12 +307,15 @@ then — with no approval prompt: installing the App was the user's consent,
 and the App runs with the authority the agent already has (decided
 2026-09-06) — creates or reuses the project/resource App instance,
 starts its companion Session when it is missing or exited, and binds the
-caller's semantic panel. This is the one bounded exception to user-only
-Session creation (decided 2026-09-06: agents may open files in panes). MCP
+caller's semantic panel. This is a bounded exception to user-only
+Session creation (decided 2026-09-06: agents may open files in panes); the
+others are the Create & remove role and the Super Agent's Workers. MCP
 never installs an App and never removes a companion; a missing App returns
 exact guidance to ask the user to install it. A caller-scoped `request_id` deduplicates retries;
 `reveal:false` attaches without advancing the reveal revision. The root `skills` domain provides
-`list`, `search`, and `get`; future App package guidance uses namespaced ids
+`list`, `search`, and `get` (fork-only: `read` is an alias of `get`, and the
+built-in `unpeel/router` skill, compiled into the Host and never
+overridable, is the Super Agent's instructions); future App package guidance uses namespaced ids
 there rather than adding an Apps action. Every App action rechecks the Host's
 resolved PATH, so a mid-session install is visible without a restart.
 

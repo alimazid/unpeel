@@ -51,6 +51,10 @@ pub const NATIVE_HOST_CAPABILITIES: &[&str] = &[
     "session.runtime.resume",
     "session.stop",
     "session.reload",
+    // Fork-only: the Super Agent verbs.
+    "session.super_agent.set",
+    "session.super_agent.clear",
+    "session.super_agent.hand_over",
     "session.title.set",
     "session.transcript.markdown",
     "settings.presets.set",
@@ -111,6 +115,10 @@ pub const HEADLESS_HOST_CAPABILITIES: &[&str] = &[
     "session.runtime.resume",
     "session.stop",
     "session.reload",
+    // Fork-only: the Super Agent verbs.
+    "session.super_agent.set",
+    "session.super_agent.clear",
+    "session.super_agent.hand_over",
     "session.title.set",
     "session.transcript.markdown",
     "settings.presets.set",

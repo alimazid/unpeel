@@ -172,6 +172,8 @@ mod tests {
             group_id: "p".into(),
             detected_local_urls: Vec::new(),
             spawned_by: task.map(|task| format!("schedule:{task}")),
+            is_worker: false,
+            is_router: false,
         }
     }
 

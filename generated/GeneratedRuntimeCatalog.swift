@@ -13,6 +13,7 @@ public enum UnpeelRuntimeCapability: String, Equatable, Hashable, Sendable {
     case transcript = "transcript"
     case notifyWhenDone = "notify_when_done"
     case semanticTerminalTitle = "semantic_terminal_title"
+    case superAgent = "super_agent"
 }
 
 public enum UnpeelRuntimePlatform: String, Equatable, Hashable, Sendable {
@@ -123,7 +124,7 @@ public enum UnpeelRuntimeCatalog {
             anchorStartEventToOutput: true,
             attentionClearsOnOutput: true,
             distrustStopsWhileOutputGrows: false,
-            capabilities: [.lifecycleHooks, .resume, .restartAgent, .mcpSessions, .mcpBrowser, .mcpComputer, .transcript, .notifyWhenDone, .semanticTerminalTitle],
+            capabilities: [.lifecycleHooks, .resume, .restartAgent, .mcpSessions, .mcpBrowser, .mcpComputer, .transcript, .notifyWhenDone, .semanticTerminalTitle, .superAgent],
             usageStores: [
                 UnpeelRuntimeUsageStore(
                     root: ".claude/projects",
