@@ -15,6 +15,7 @@ use crate::ghostty_vt as vt;
 use crate::session_host::{output_path, read_output_chunk, request_terminal_viewport_snapshot};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+use std::ops::Range;
 use std::path::PathBuf;
 use std::sync::{Mutex, OnceLock};
 
@@ -55,6 +56,10 @@ pub struct TerminalViewportStyleRun {
     pub bg: Option<String>,
     pub bold: bool,
     pub inverse: bool,
+    /// SGR 2 (dim). Omitted when false, so runs without it keep their
+    /// pre-faint wire shape.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub faint: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -100,6 +105,59 @@ pub struct TerminalViewportSnapshot {
     #[serde(default)]
     pub application_cursor: bool,
     pub viewport_rows: Vec<TerminalViewportRow>,
+    /// Text the program drew faint from the cursor onward on the cursor's
+    /// row: how an input box shows a proposed reply or a placeholder (Claude
+    /// Code's prompt suggestion). Typed input is drawn in the normal pen, so
+    /// this is never something anyone typed. `None` when the cursor row is
+    /// outside `viewport_rows`, or from a Host that predates the field.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub suggested_input: Option<TerminalSuggestedInput>,
+}
+
+/// Where [`TerminalViewportSnapshot::suggested_input`] sits in the snapshot.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TerminalSuggestedInput {
+    /// Index into `viewport_rows`.
+    pub row: u16,
+    /// Byte range of the suggestion in that row's `text`.
+    pub byte_start: u32,
+    pub byte_end: u32,
+}
+
+impl TerminalViewportSnapshot {
+    /// The suggested input's text; `None` without one, or when its range
+    /// does not fit its row (a malformed snapshot).
+    pub fn suggested_input_text(&self) -> Option<&str> {
+        let suggested = self.suggested_input.as_ref()?;
+        self.viewport_rows
+            .get(usize::from(suggested.row))?
+            .text
+            .get(suggested.byte_start as usize..suggested.byte_end as usize)
+    }
+
+    /// The cursor's row, right-trimmed, with the suggested input cut out:
+    /// what is really on an input line. `None` when the cursor row is
+    /// outside `viewport_rows`.
+    pub fn cursor_row_text_without_suggestion(&self) -> Option<String> {
+        let cursor_row = (self.scrollback_rows + u32::from(self.cursor_row))
+            .checked_sub(self.viewport_start_row)? as usize;
+        let text = &self.viewport_rows.get(cursor_row)?.text;
+        let suggested = self
+            .suggested_input
+            .as_ref()
+            .filter(|suggested| usize::from(suggested.row) == cursor_row)
+            .filter(|_| self.suggested_input_text().is_some());
+        let without = match suggested {
+            Some(suggested) => format!(
+                "{}{}",
+                &text[..suggested.byte_start as usize],
+                &text[suggested.byte_end as usize..]
+            ),
+            None => text.clone(),
+        };
+        Some(without.trim_end().to_owned())
+    }
 }
 
 /// DEC private modes that shape input semantics and are worth re-asserting
@@ -242,6 +300,7 @@ struct CellStyle {
     bg: Option<String>,
     bold: bool,
     inverse: bool,
+    faint: bool,
 }
 
 /// Owned libghostty-vt terminal handle for one virtual terminal. Not
@@ -606,6 +665,17 @@ impl VtTerminal {
 
     /// Render the current viewport and return its rows.
     fn viewport_rows(&mut self, with_styles: bool) -> Vec<TerminalViewportRow> {
+        self.viewport_rows_with_faint_tail(with_styles, None).0
+    }
+
+    /// [`Self::viewport_rows`], plus the byte range of the faint text that
+    /// starts at `from = (row, col)` of this viewport (see
+    /// [`faint_text_from`]).
+    fn viewport_rows_with_faint_tail(
+        &mut self,
+        with_styles: bool,
+        from: Option<(usize, u16)>,
+    ) -> (Vec<TerminalViewportRow>, Option<Range<usize>>) {
         let row_count = self.rows as usize;
         with_render_scratch(self, |scratch| unsafe {
             if vt::ghostty_render_state_get(
@@ -614,10 +684,11 @@ impl VtTerminal {
                 &mut scratch.row_iter as *mut _ as *mut _,
             ) != vt::GHOSTTY_SUCCESS
             {
-                return Vec::new();
+                return (Vec::new(), None);
             }
 
             let mut rows = Vec::with_capacity(row_count);
+            let mut faint_tail = None;
             while vt::ghostty_render_state_row_iterator_next(scratch.row_iter) {
                 let mut wrapped = false;
                 let mut raw_row: vt::GhosttyRow = 0;
@@ -646,11 +717,15 @@ impl VtTerminal {
                     });
                     continue;
                 }
-                let mut row = read_row_cells(scratch.cells, with_styles);
+                let faint_from = from
+                    .filter(|(row, _)| *row == rows.len())
+                    .map(|(_, col)| col);
+                let (mut row, tail) = read_row_cells(scratch.cells, with_styles, faint_from);
                 row.wrapped = wrapped;
                 rows.push(row);
+                faint_tail = faint_tail.or(tail);
             }
-            rows
+            (rows, faint_tail)
         })
     }
 }
@@ -744,6 +819,7 @@ fn read_cell(
                     bg: style_color_string(&style.bg_color),
                     bold: style.bold,
                     inverse: style.inverse,
+                    faint: style.faint,
                 };
             }
         }
@@ -787,7 +863,13 @@ fn style_color_string(color: &vt::GhosttyStyleColor) -> Option<String> {
     }
 }
 
-fn read_row_cells(cells: vt::GhosttyRenderStateRowCells, with_styles: bool) -> TerminalViewportRow {
+/// One row's text and style runs; with `faint_from`, also the byte range of
+/// the faint text starting at that cell (see [`faint_text_from`]).
+fn read_row_cells(
+    cells: vt::GhosttyRenderStateRowCells,
+    with_styles: bool,
+    faint_from: Option<u16>,
+) -> (TerminalViewportRow, Option<Range<usize>>) {
     let mut pieces: Vec<String> = Vec::new();
     let mut cell_styles: Vec<CellStyle> = Vec::new();
     let mut previous_style = CellStyle::default();
@@ -807,17 +889,40 @@ fn read_row_cells(cells: vt::GhosttyRenderStateRowCells, with_styles: bool) -> T
         .map(|index| index + 1)
         .unwrap_or(0);
     let text: String = pieces[..text_end].concat();
+    let faint_tail = faint_from
+        .and_then(|col| faint_text_from(&pieces[..text_end], &cell_styles, usize::from(col)));
 
     let styles = if with_styles {
         style_runs(&cell_styles)
     } else {
         Vec::new()
     };
-    TerminalViewportRow {
+    let row = TerminalViewportRow {
         text,
         styles,
         wrapped: false,
+    };
+    (row, faint_tail)
+}
+
+/// Byte range, in the concatenation of `pieces`, of the faint cells from
+/// cell `col` onward up to the first non-faint cell, trailing blanks
+/// trimmed. `None` unless cell `col` itself is faint and the run holds
+/// text. Wide-character spacers are empty pieces, so offsets stay exact.
+fn faint_text_from(pieces: &[String], styles: &[CellStyle], col: usize) -> Option<Range<usize>> {
+    if !styles.get(col)?.faint || col >= pieces.len() {
+        return None;
     }
+    let run_end = (col..pieces.len())
+        .find(|&cell| !styles.get(cell).is_some_and(|style| style.faint))
+        .unwrap_or(pieces.len());
+    let start: usize = pieces[..col].iter().map(String::len).sum();
+    let run = pieces[col..run_end].concat();
+    let trimmed = run.trim_end();
+    if trimmed.trim_start().is_empty() {
+        return None;
+    }
+    Some(start..start + trimmed.len())
 }
 
 fn style_runs(cell_styles: &[CellStyle]) -> Vec<TerminalViewportStyleRun> {
@@ -858,6 +963,7 @@ fn viewport_style_run(start: usize, len: usize, style: &CellStyle) -> TerminalVi
         bg: style.bg.clone(),
         bold: style.bold,
         inverse: style.inverse,
+        faint: style.faint,
     }
 }
 
@@ -885,8 +991,14 @@ fn snapshot_terminal(
         .saturating_sub(viewport_row_count)
         .saturating_sub(scroll_offset_rows as usize);
 
+    let (cursor_col, cursor_row) = term.cursor();
+    let cursor_row = cursor_row.min((grid_rows as u16).saturating_sub(1));
+    let cursor_col = cursor_col.min(grid_cols.saturating_sub(1));
+    let cursor_absolute_row = scrollback_rows + usize::from(cursor_row);
+
     let end_row = viewport_start_row + viewport_row_count;
     let mut viewport_rows = Vec::with_capacity(viewport_row_count);
+    let mut suggested_input = None;
     let mut absolute_row = viewport_start_row;
     while absolute_row < end_row {
         // Any absolute row is reachable from a viewport position in
@@ -895,9 +1007,20 @@ fn snapshot_terminal(
         let position = absolute_row.min(scrollback_rows);
         term.scroll_to_row(position);
         let skip = absolute_row - position;
-        let rendered = term.viewport_rows(true);
+        let cursor_in_pass = cursor_absolute_row
+            .checked_sub(position)
+            .filter(|row| *row >= skip && cursor_absolute_row < end_row)
+            .map(|row| (row, cursor_col));
+        let (rendered, faint_tail) = term.viewport_rows_with_faint_tail(true, cursor_in_pass);
         if skip >= rendered.len() {
             break;
+        }
+        if let (Some(range), Some(_)) = (faint_tail, cursor_in_pass) {
+            suggested_input = Some(TerminalSuggestedInput {
+                row: (cursor_absolute_row - viewport_start_row) as u16,
+                byte_start: range.start as u32,
+                byte_end: range.end as u32,
+            });
         }
         for row in rendered.into_iter().skip(skip) {
             if absolute_row >= end_row {
@@ -909,14 +1032,13 @@ fn snapshot_terminal(
     }
     term.scroll_bottom();
 
-    let (cursor_col, cursor_row) = term.cursor();
     TerminalViewportSnapshot {
         cols: grid_cols,
         rows: grid_rows as u16,
         output_offset,
         truncated,
-        cursor_row: cursor_row.min((grid_rows as u16).saturating_sub(1)),
-        cursor_col: cursor_col.min(grid_cols.saturating_sub(1)),
+        cursor_row,
+        cursor_col,
         scrollback_rows: scrollback_rows as u32,
         viewport_start_row: viewport_start_row as u32,
         scroll_offset_rows,
@@ -928,6 +1050,7 @@ fn snapshot_terminal(
         mouse_alternate_scroll: term.mode(1007),
         application_cursor: term.mode(1),
         viewport_rows,
+        suggested_input,
     }
 }
 
@@ -2012,6 +2135,176 @@ mod tests {
         assert_eq!(style.start, 0);
         assert_eq!(style.len, 8);
         assert_eq!(style.bg.as_deref(), Some("rgb:53,53,57"));
+    }
+
+    #[test]
+    fn viewport_style_runs_carry_faint() {
+        let snapshot =
+            render_terminal_viewport_from_bytes(b"\x1b[2mghost\x1b[22mX", 8, 1, 14, false, 0, None);
+
+        assert_eq!(rows(&snapshot), vec!["ghostX"]);
+        assert_eq!(snapshot.viewport_rows[0].styles.len(), 1);
+        assert_eq!(snapshot.viewport_rows[0].styles[0].len, 5);
+        assert!(snapshot.viewport_rows[0].styles[0].faint);
+    }
+
+    /// Claude Code's prompt row with a suggested reply, as captured from a
+    /// live session: grey `❯` + NBSP, then the suggestion in SGR 2 with the
+    /// cursor parked on its first cell.
+    const CLAUDE_SUGGESTION_ROW: &[u8] = b"\x1b[38;2;153;153;153m\xe2\x9d\xaf\xc2\xa0\x1b[39m\
+\x1b[2mleave the epic assigned to me\x1b[22m\x1b[1;3H";
+
+    #[test]
+    fn snapshot_reports_faint_text_at_the_cursor_as_suggested_input() {
+        let snapshot =
+            render_terminal_viewport_from_bytes(CLAUDE_SUGGESTION_ROW, 40, 2, 0, false, 0, None);
+
+        assert_eq!(snapshot.cursor_row, 0);
+        assert_eq!(snapshot.cursor_col, 2);
+        let suggested = snapshot.suggested_input.as_ref().expect("suggested input");
+        assert_eq!(suggested.row, 0);
+        assert_eq!(
+            snapshot.suggested_input_text(),
+            Some("leave the epic assigned to me")
+        );
+        assert_eq!(
+            &snapshot.viewport_rows[0].text[..suggested.byte_start as usize],
+            "❯\u{a0}"
+        );
+    }
+
+    #[test]
+    fn snapshot_reports_no_suggested_input_for_typed_text() {
+        // Typed input is drawn in the normal pen; the cursor sits after it.
+        let typed = render_terminal_viewport_from_bytes(
+            "❯\u{a0}fix the bug".as_bytes(),
+            40,
+            2,
+            0,
+            false,
+            0,
+            None,
+        );
+        assert_eq!(typed.cursor_col, 13);
+        assert_eq!(typed.suggested_input, None);
+
+        // Cursor moved back over typed text: still not a suggestion.
+        let home = render_terminal_viewport_from_bytes(
+            "❯\u{a0}fix the bug\x1b[1;3H".as_bytes(),
+            40,
+            2,
+            0,
+            false,
+            0,
+            None,
+        );
+        assert_eq!(home.cursor_col, 2);
+        assert_eq!(home.suggested_input, None);
+    }
+
+    #[test]
+    fn snapshot_ignores_faint_text_away_from_the_cursor() {
+        // Claude Code draws block-quote bars faint; an empty prompt below.
+        let snapshot = render_terminal_viewport_from_bytes(
+            "\x1b[2m▎\x1b[22m \x1b[3mquoted mail\x1b[23m\r\n❯\u{a0}".as_bytes(),
+            40,
+            3,
+            0,
+            false,
+            0,
+            None,
+        );
+        assert_eq!(snapshot.cursor_row, 1);
+        assert!(snapshot.viewport_rows[0].styles[0].faint);
+        assert_eq!(snapshot.suggested_input, None);
+    }
+
+    #[test]
+    fn suggested_input_byte_range_skips_wide_characters_and_stops_at_the_pen_change() {
+        let snapshot = render_terminal_viewport_from_bytes(
+            "日本 \x1b[2mghost  \x1b[22m tail\x1b[1;6H".as_bytes(),
+            40,
+            1,
+            0,
+            false,
+            0,
+            None,
+        );
+        assert_eq!(snapshot.cursor_col, 5);
+        let suggested = snapshot.suggested_input.as_ref().expect("suggested input");
+        assert_eq!(suggested.byte_start as usize, "日本 ".len());
+        assert_eq!(snapshot.suggested_input_text(), Some("ghost"));
+    }
+
+    #[test]
+    fn cursor_row_text_leaves_out_the_suggestion() {
+        let empty = render_terminal_viewport_from_bytes(
+            "\x1b[38;2;153;153;153m❯\u{a0}\x1b[39m".as_bytes(),
+            40,
+            2,
+            0,
+            false,
+            0,
+            None,
+        );
+        let suggested =
+            render_terminal_viewport_from_bytes(CLAUDE_SUGGESTION_ROW, 40, 2, 0, false, 0, None);
+        let typed = render_terminal_viewport_from_bytes(
+            "❯\u{a0}fix\x1b[1;3H".as_bytes(),
+            40,
+            2,
+            0,
+            false,
+            0,
+            None,
+        );
+
+        assert_eq!(
+            empty.cursor_row_text_without_suggestion().as_deref(),
+            Some("❯")
+        );
+        assert_eq!(
+            suggested.cursor_row_text_without_suggestion(),
+            empty.cursor_row_text_without_suggestion()
+        );
+        assert_eq!(
+            typed.cursor_row_text_without_suggestion().as_deref(),
+            Some("❯\u{a0}fix")
+        );
+    }
+
+    #[test]
+    fn cursor_row_text_follows_the_cursor_into_a_window() {
+        let mut bytes = numbered_lines(30);
+        bytes.extend_from_slice(b"\r\n> typed \x1b[2mghost\x1b[22m\x1b[5D");
+        let tail = render_terminal_viewport_from_bytes(&bytes, 20, 5, 0, false, 0, Some(2));
+        assert_eq!(
+            tail.cursor_row_text_without_suggestion().as_deref(),
+            Some("> typed")
+        );
+
+        let scrolled = render_terminal_viewport_from_bytes(&bytes, 20, 5, 0, false, 10, None);
+        assert_eq!(scrolled.cursor_row_text_without_suggestion(), None);
+    }
+
+    #[test]
+    fn suggested_input_row_indexes_the_returned_window() {
+        let mut bytes = numbered_lines(30);
+        bytes.extend_from_slice(b"\r\n> \x1b[2mmaybe this\x1b[22m\x1b[3D\x1b[7D");
+        // Full grid: the prompt is the grid's last row.
+        let full = render_terminal_viewport_from_bytes(&bytes, 20, 5, 0, false, 0, None);
+        assert_eq!(full.cursor_row, 4);
+        assert_eq!(full.suggested_input.as_ref().map(|s| s.row), Some(4));
+        assert_eq!(full.suggested_input_text(), Some("maybe this"));
+
+        // A two-row bottom window: the prompt is its second row.
+        let tail = render_terminal_viewport_from_bytes(&bytes, 20, 5, 0, false, 0, Some(2));
+        assert_eq!(tail.suggested_input.as_ref().map(|s| s.row), Some(1));
+        assert_eq!(tail.suggested_input_text(), Some("maybe this"));
+
+        // Scrolled back past the cursor row: nothing to report.
+        let scrolled = render_terminal_viewport_from_bytes(&bytes, 20, 5, 0, false, 10, None);
+        assert_eq!(scrolled.suggested_input, None);
     }
 
     #[test]

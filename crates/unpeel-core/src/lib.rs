@@ -115,6 +115,8 @@ pub mod schedules;
 mod schedules_mcp;
 #[cfg(feature = "native-host")]
 pub mod screen_activity;
+#[cfg(feature = "native-host")]
+mod screen_read;
 
 pub mod relay_connection;
 #[cfg(feature = "native-host")]

@@ -48,6 +48,9 @@ is a Session you started, or one the user handed to you.
 
 - When a Worker waits on a prompt or a menu, read it (`sessions read_screen`)
   and answer it yourself (`sessions send_text` or `send_keys`) when you can.
+- Text shown as `⟪suggested: …⟫` in a Worker's input box is the program's
+  proposed reply, not something the user typed. Never report it as the
+  user's words, and never press Enter on it.
 - Escalate to the user only for real decisions. Speak to the user only when
   they must act or can use a result.
 

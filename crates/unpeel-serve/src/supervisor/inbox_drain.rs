@@ -630,6 +630,18 @@ fn deliver(
     }
 }
 
+/// The draft guard's view of `snapshot`'s input line. Suggested input (a
+/// reply the program proposes, drawn faint at the cursor) is left out: it
+/// comes and goes on its own and is never the user's draft.
+fn cursor_line(snapshot: &unpeel_core::terminal_viewport::TerminalViewportSnapshot) -> CursorLine {
+    CursorLine {
+        text: snapshot
+            .cursor_row_text_without_suggestion()
+            .unwrap_or_default(),
+        col: snapshot.cursor_col,
+    }
+}
+
 /// The real Host: manifests, viewport snapshots, the paste recipe.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct HostTerminal;
@@ -655,15 +667,7 @@ impl HostIo for HostTerminal {
             SNAPSHOT_TIMEOUT,
         )
         .ok()?;
-        let line = snapshot
-            .viewport_rows
-            .get(usize::from(snapshot.cursor_row))
-            .map(|row| row.text.trim_end().to_owned())
-            .unwrap_or_default();
-        Some(CursorLine {
-            text: line,
-            col: snapshot.cursor_col,
-        })
+        Some(cursor_line(&snapshot))
     }
 
     fn paste(&self, session_id: &str, text: &str) -> Result<(), String> {
