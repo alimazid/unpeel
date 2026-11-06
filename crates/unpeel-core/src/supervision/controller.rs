@@ -62,6 +62,9 @@ pub enum VerbError {
     NotAnAgent,
     NoRouter,
     IsTheRouter,
+    /// The Router already runs `supervisor_max_children` (the value held)
+    /// Workers plus the one hand-over slot.
+    WorkerLimit(usize),
     Failed(String),
 }
 
@@ -71,7 +74,10 @@ impl VerbError {
         match self {
             VerbError::InvalidId => 400,
             VerbError::UnknownSession => 404,
-            VerbError::NotRunning | VerbError::NoRouter | VerbError::IsTheRouter => 409,
+            VerbError::NotRunning
+            | VerbError::NoRouter
+            | VerbError::IsTheRouter
+            | VerbError::WorkerLimit(_) => 409,
             VerbError::NotClaudeCode | VerbError::NotAnAgent => 422,
             VerbError::Failed(_) => 500,
         }
@@ -80,7 +86,7 @@ impl VerbError {
 
 impl std::fmt::Display for VerbError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(match self {
+        let text = match self {
             VerbError::InvalidId => "invalid session id",
             VerbError::UnknownSession => "unknown session",
             VerbError::NotRunning => "the session is not running",
@@ -88,8 +94,18 @@ impl std::fmt::Display for VerbError {
             VerbError::NotAnAgent => "only an agent session can be handed to the Super Agent",
             VerbError::NoRouter => "this workspace has no Super Agent",
             VerbError::IsTheRouter => "this session is the Super Agent",
+            VerbError::WorkerLimit(limit) => {
+                return write!(
+                    f,
+                    "the Super Agent already has {} running Workers: its limit \
+                     (supervisor_max_children = {limit}) plus the one hand-over slot. Stop one \
+                     of its Workers first",
+                    limit + 1
+                );
+            }
             VerbError::Failed(message) => message,
-        })
+        };
+        f.write_str(text)
     }
 }
 
@@ -383,11 +399,14 @@ pub(crate) fn clear_at(ctx: &Ctx, session_id: &str) -> Result<VerbOutcome, VerbE
 
 /// `session.super_agent.hand_over`: make a running agent Session the
 /// Router's Worker and ask it to summarise itself into the Router's Inbox.
-/// No Worker limit applies: a hand-over is the user's free slot (§17.6).
-/// Idempotent for a Session already working for this Router.
+/// A hand-over is the user's free slot (§17.6): accepted at
+/// `supervisor_max_children` running Workers, one over the limit, and
+/// refused past that. Idempotent for a Session already working for this
+/// Router.
 pub(crate) fn hand_over_at(ctx: &Ctx, session_id: &str) -> Result<VerbOutcome, VerbError> {
     let facts = (ctx.facts)(session_id).ok_or(VerbError::UnknownSession)?;
-    let router_id = current_router(ctx)?.ok_or(VerbError::NoRouter)?;
+    let state = load_state(ctx)?;
+    let router_id = super::router_id_in(&state).ok_or(VerbError::NoRouter)?;
     if router_id == session_id {
         return Err(VerbError::IsTheRouter);
     }
@@ -400,6 +419,10 @@ pub(crate) fn hand_over_at(ctx: &Ctx, session_id: &str) -> Result<VerbOutcome, V
     let dir = ctx.sessions_root.join(session_id);
     if super::read_worker_marker_in(&dir).is_some_and(|marker| marker.router_id == router_id) {
         return Ok(VerbOutcome::default());
+    }
+    let limit = super::config_from_state(&state, false).max_children;
+    if running_workers(ctx, &router_id) > limit {
+        return Err(VerbError::WorkerLimit(limit));
     }
     let marker = super::WorkerMarker {
         router_id: router_id.clone(),
@@ -494,9 +517,20 @@ fn enqueue(ctx: &Ctx, target: &str, item: NewItem) -> Result<(), String> {
 }
 
 fn current_router(ctx: &Ctx) -> Result<Option<String>, VerbError> {
+    load_state(ctx).map(|state| super::router_id_in(&state))
+}
+
+fn load_state(ctx: &Ctx) -> Result<serde_json::Value, VerbError> {
     crate::app_state::load_for_edit_at(ctx.state_path)
-        .map(|state| super::router_id_in(&state))
         .map_err(|error| VerbError::Failed(format!("Super Agent mark: {error}")))
+}
+
+/// `router_id`'s Workers that are running now.
+fn running_workers(ctx: &Ctx, router_id: &str) -> usize {
+    super::workers_of_in(ctx.sessions_root, router_id)
+        .iter()
+        .filter(|id| (ctx.facts)(id).is_some_and(|facts| facts.running))
+        .count()
 }
 
 #[cfg(test)]
