@@ -1141,53 +1141,56 @@ impl HostRuntime {
                 unpeel_core::session_ops::own_listener_port_public(),
             );
         }
-        // Run notices follow whoever owns the Sessions' own edges (`rescan`).
-        let owns_notifications = !self.native_app_owns_controllers();
         for event in events {
-            match event {
-                crate::schedules::SweepEvent::Started {
-                    schedule_id,
-                    run_id,
-                    session_id,
-                } => {
-                    crate::tracelog::trace(
-                        "host-worker",
-                        &format!(
-                            "schedule {schedule_id} started Run {run_id} in session {session_id}"
-                        ),
-                    );
+            self.handle_sweep_event(event, &schedules, emitted);
+        }
+    }
+
+    /// Trace a sweep's event and act on it: a Run whose Session came up
+    /// replaces the task's earlier Runs, a recorded Run may notify.
+    fn handle_sweep_event(
+        &mut self,
+        event: crate::schedules::SweepEvent,
+        schedules: &[unpeel_core::schedules::Schedule],
+        emitted: &mut Vec<ServeEvent>,
+    ) {
+        match event {
+            crate::schedules::SweepEvent::Started {
+                schedule_id,
+                run_id,
+                session_id,
+            } => crate::tracelog::trace(
+                "host-worker",
+                &format!("schedule {schedule_id} started Run {run_id} in session {session_id}"),
+            ),
+            // Only a Session that came up replaces the earlier Runs: a
+            // failed start leaves the previous Run's Session as it is.
+            crate::schedules::SweepEvent::Spawned {
+                schedule_id,
+                session_id,
+            } => crate::run_sessions::stop_superseded(&self.model.rows, &schedule_id, &session_id),
+            crate::schedules::SweepEvent::Recorded {
+                schedule_id,
+                run,
+                previous,
+            } => {
+                crate::tracelog::trace(
+                    "host-worker",
+                    &format!(
+                        "schedule {schedule_id} Run {}: {}",
+                        run.run_id,
+                        run.status.word()
+                    ),
+                );
+                // Run notices follow whoever owns the Sessions' own edges
+                // (`rescan`).
+                let schedule = schedules.iter().find(|schedule| schedule.id == schedule_id);
+                if let Some(schedule) = schedule.filter(|_| !self.native_app_owns_controllers()) {
+                    self.notify_run(schedule, &run, previous, now_ms());
                 }
-                // Only a Session that came up replaces the earlier Runs: a
-                // failed start leaves the previous Run's Session as it is.
-                crate::schedules::SweepEvent::Spawned {
-                    schedule_id,
-                    session_id,
-                } => crate::run_sessions::stop_superseded(
-                    &self.model.rows,
-                    &schedule_id,
-                    &session_id,
-                ),
-                crate::schedules::SweepEvent::Recorded {
-                    schedule_id,
-                    run,
-                    previous,
-                } => {
-                    crate::tracelog::trace(
-                        "host-worker",
-                        &format!(
-                            "schedule {schedule_id} Run {}: {}",
-                            run.run_id,
-                            run.status.word()
-                        ),
-                    );
-                    let schedule = schedules.iter().find(|schedule| schedule.id == schedule_id);
-                    if let Some(schedule) = schedule.filter(|_| owns_notifications) {
-                        self.notify_run(schedule, &run, previous, now_ms());
-                    }
-                }
-                crate::schedules::SweepEvent::Warning(warning) => {
-                    emitted.push(ServeEvent::Warning(warning))
-                }
+            }
+            crate::schedules::SweepEvent::Warning(warning) => {
+                emitted.push(ServeEvent::Warning(warning))
             }
         }
     }
