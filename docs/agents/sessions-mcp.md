@@ -93,8 +93,32 @@ Advertised ownership (old mixed `sessions` spellings remain decode-only):
   Follow-up operations validate it so a replacement foreground process cannot
   be mistaken for the same agent. `session_id` remains a weaker compatibility
   target.
-- `workspace`: `list_presets`, `create_worktree`, `list_worktrees`.
-  Worktree creation remains opt-in and never launches a Session.
+- `workspace`: `list_presets`, `list_projects`, `create_worktree`,
+  `list_worktrees`. Worktree creation remains opt-in and never launches a
+  Session. All four are answered by the MCP host itself from this home's
+  `app-state.json` and git (`crates/unpeel-core/src/workspace_tools.rs`,
+  fork-only); no app or Host route is involved:
+  - `list_presets` uses the same filter `sessions create` resolves `preset`
+    against (`workspace_tools::usable_presets`): enabled, global or scoped to
+    the project, project-scoped first. Each row: `id`, `label`, `command`,
+    `project_id` (null = global), `quick_launch`.
+  - `list_projects` (open to every caller) lists every Project in sidebar
+    tree order: `{id, name, path, kind: root|group|worktree, parent_id?,
+    worktree_branch?, sidebar}`. A group's `path` is its checkout's folder;
+    `sidebar: true` marks a root's `sidebar-<root>` group. Top-level sidebar
+    folders are not Projects; a Project filed in one is a `root`.
+  - `create_worktree {project_id?, branch, name?, base_ref?}` resolves the
+    project (or group, or worktree) to its root, adopts a registered or
+    existing git worktree of that branch, else runs `worktrees::create`, then
+    registers one child project per (root, branch) through `app_state::edit`
+    (`mcp-wt-<uuid>`, never `native-`; `name` is its sidebar name, default the
+    branch; `sort_order` after its last sibling). Returns `{path, project_id,
+    branch, adopted}`.
+  - `list_worktrees` merges `git worktree list` of the root's checkout with
+    its registered worktree projects: the main checkout carries the root's id
+    (`main: true`), a registration git no longer knows is `missing: true`.
+  - `create_worktree` and `list_worktrees` keep `require_worktree_access`
+    (`mcp_worktree_access`, off by default; the Router passes it).
 - `artifacts`: `add_to_gallery` for a caller-owned image artifact.
 
 Session creation and closing remain user-only. Stale start/delegate/close tool
@@ -104,16 +128,17 @@ the new schemas. `list_group` remains an organizational compatibility query;
 `report_to_group` aliases `report` and uses the ordinary write policy. The
 unreleased group-wide wait/summary spellings are intentionally not retained.
 
-Preset/worktree effects and write-approval prompts are Host-owned: the
-worker answers `POST /mcp/*` on its own hook port and mirrors approvals to
-the app through the `approval.present` platform callback (answers return
-over the Host approval verb). The native `MCPBridge.swift` compatibility
-adapter was retired 2026-09-03; the historical route contract below is the
+Write-approval prompts are Host-owned: the worker answers `POST
+/mcp/approve-*` on its own hook port and mirrors approvals to the app
+through the `approval.present` platform callback (answers return over the
+Host approval verb). The native `MCPBridge.swift` compatibility adapter was
+retired 2026-09-03, and with it the `list-presets`, `create-worktree` and
+`list-worktrees` routes (the worker never served them; the `workspace`
+actions read app-state directly, above). The route contract below is the
 worker's.
 
 - Bridge: `crates/unpeel-serve` hook port, authenticated `POST /mcp/*`
-  calls. Public effects use `list-presets`,
-  `create-worktree`, `list-worktrees`, and `approve-write`
+  calls: `approve-write`, `approve-browser`
   (`approve-app-open` is still served for MCP binaries older than
   2026-09-06, but current App opens need no approval and never call it);
   `start-session` remains reserved for user/controller launches. Approval routes reply asynchronously (150s bridge ceiling, ~130s
@@ -121,7 +146,7 @@ worker's.
   `~/.unpeel/app-ports` newest-first. App-less `unpeel serve` Hosts serve the
   same routes and the same shared approval queue.
 - Auth: unlike hook routes, `/mcp/*` requires the `x-unpeel-auth` header matching `<UNPEEL_HOME>/mcp/auth-token` (0600; the workspace worker mints it at start and the MCP host mints it on first use via `mcp_auth::ensure_auth_token`, so a fresh workspace home never reaches its first approval prompt without one — that gap broke every agent write in a new workspace until 2026-09-16) — the endpoints can launch arbitrary commands, and localhost is reachable by browser CSRF.
-- Worktree creation maps onto the same native path as its UI verb. The MCP host defaults `project_id` to the calling session's project.
+- Worktree creation uses the desktop's folder layout (`worktrees.rs`, `~/.unpeel/worktrees/<repo-slug>-<hash>/<branch-slug>`). The MCP host defaults `project_id` to the calling session's project.
 
 > **Security scope (2026-08-14): these are cooperative controls, not
 > same-UID isolation.** Hosted commands run as the user's account and are not

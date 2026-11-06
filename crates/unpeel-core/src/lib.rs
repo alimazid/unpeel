@@ -163,5 +163,8 @@ pub mod supervision_mcp;
 pub mod terminal_viewport;
 #[cfg(feature = "native-host")]
 pub mod transcripts;
+// Fork-only
+#[cfg(feature = "native-host")]
+pub mod workspace_tools;
 #[cfg(feature = "native-host")]
 pub mod worktrees;

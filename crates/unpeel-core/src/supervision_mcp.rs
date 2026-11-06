@@ -18,7 +18,8 @@ pub(crate) type Handler = fn(&Value) -> Result<String, String>;
 const SESSIONS_ACTIONS: &[(&str, Handler)] = &[("inbox", inbox::inbox_action)];
 
 /// Extra `workspace` actions, as `SESSIONS_ACTIONS`.
-const WORKSPACE_ACTIONS: &[(&str, Handler)] = &[];
+const WORKSPACE_ACTIONS: &[(&str, Handler)] =
+    &[("list_projects", crate::workspace_tools::tool_list_projects)];
 
 pub(crate) fn sessions_action_names() -> impl Iterator<Item = &'static str> {
     SESSIONS_ACTIONS.iter().map(|(name, _)| *name)
@@ -91,10 +92,13 @@ fn merge_properties(definition: Value, properties: Vec<(&'static str, Value)>) -
 /// `legacy_sessions_tool_definitions` entries: `(action, {description,
 /// inputSchema})`.
 pub(crate) fn help_docs(tool: &str) -> Vec<(String, Value)> {
-    match tool {
-        "sessions" => inbox::help_doc(),
-        _ => Vec::new(),
+    if tool == "workspace" {
+        return crate::workspace_tools::help_docs();
     }
+    if tool == "sessions" {
+        return inbox::help_doc();
+    }
+    Vec::new()
 }
 
 /// `report` from `caller` to `target`, taken over before upstream's write
@@ -310,7 +314,10 @@ mod tests {
             None
         );
         assert_eq!(sessions_action_names().collect::<Vec<_>>(), ["inbox"]);
-        assert_eq!(workspace_action_names().count(), 0);
+        assert_eq!(
+            workspace_action_names().collect::<Vec<_>>(),
+            ["list_projects"]
+        );
     }
 
     #[test]

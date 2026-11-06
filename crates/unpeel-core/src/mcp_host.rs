@@ -1261,50 +1261,15 @@ Settings ▸ Agent access (\"Let sessions create worktrees\")."
 /// the resulting child project after the worktree exists.
 fn tool_create_worktree(args: &Value) -> Result<String, String> {
     require_worktree_access()?;
-    let branch = required_str(args, "branch")?;
-    let project_id = resolve_project_id(args)?;
-    let mut payload = json!({
-        "project_id": project_id,
-        "branch": branch,
-    });
-    if let Some(name) = optional_trimmed_str(args, "name") {
-        payload["name"] = json!(name);
-    }
-    if let Some(base_ref) = optional_trimmed_str(args, "base_ref") {
-        payload["base_ref"] = json!(base_ref);
-    }
-    let response = app_request("/mcp/create-worktree", &payload)?;
-    let path = response
-        .get("path")
-        .and_then(Value::as_str)
-        .unwrap_or("(unknown path)");
-    let child_project = response
-        .get("project_id")
-        .and_then(Value::as_str)
-        .unwrap_or("(unknown)");
-    let adopted = response.get("adopted").and_then(Value::as_bool) == Some(true);
-    let mut message = format!(
-        "{} worktree for branch '{branch}' at {path} (child project {child_project}).",
-        if adopted {
-            "Adopted existing"
-        } else {
-            "Created"
-        }
-    );
-    message.push_str(
-        " The user can launch sessions into it from the sidebar; you can point shell \
-commands at the path.",
-    );
-    Ok(message)
+    // Fork-only: served from app-state and git (the app route is retired).
+    crate::workspace_tools::tool_create_worktree(args, &resolve_project_id(args)?)
 }
 
 /// List a project's Unpeel-managed worktree child projects.
 fn tool_list_worktrees(args: &Value) -> Result<String, String> {
     require_worktree_access()?;
-    let project_id = resolve_project_id(args)?;
-    let response = app_request("/mcp/list-worktrees", &json!({ "project_id": project_id }))?;
-    serde_json::to_string_pretty(&response)
-        .map_err(|e| format!("Failed to render worktree list: {e}"))
+    // Fork-only: served from app-state and git (the app route is retired).
+    crate::workspace_tools::tool_list_worktrees(&resolve_project_id(args)?)
 }
 
 /// The MCP security state read from `app-state.json`: the project records and
@@ -1868,7 +1833,7 @@ fn base_workspace_tool_definition() -> Value {
                 "action": { "type": "string", "enum": workspace_action_names(), "description": "What to do; see help" },
                 "project_id": { "type": "string", "description": "Project (default: caller's)" },
                 "branch": { "type": "string", "description": "create_worktree: branch" },
-                "name": { "type": "string", "description": "create_worktree: folder name" },
+                "name": { "type": "string", "description": "create_worktree: sidebar name" },
                 "base_ref": { "type": "string", "description": "create_worktree: base ref" },
                 "help_for": { "type": "string", "description": "help: docs for one action" }
             },
@@ -2315,7 +2280,7 @@ pub(crate) fn legacy_sessions_tool_definitions() -> Vec<Value> {
                 "properties": {
                     "branch": { "type": "string", "description": "Branch to create or adopt" },
                     "project_id": { "type": "string", "description": "Project to branch from (default: the calling session's)" },
-                    "name": { "type": "string", "description": "Worktree folder name (default: branch slug)" },
+                    "name": { "type": "string", "description": "Sidebar name of the worktree project (default: the branch)" },
                     "base_ref": { "type": "string", "description": "Base ref for a new branch (default: the repo mainline)" },
                 },
                 "required": ["branch"],
@@ -3453,10 +3418,8 @@ fn tool_report(args: &Value) -> Result<String, String> {
 }
 
 fn tool_list_presets(args: &Value) -> Result<String, String> {
-    let project_id = resolve_project_id(args)?;
-    let response = app_request("/mcp/list-presets", &json!({ "project_id": project_id }))?;
-    serde_json::to_string_pretty(&response)
-        .map_err(|e| format!("Failed to encode preset list: {e}"))
+    // Fork-only: served from app-state (the app route is retired).
+    crate::workspace_tools::tool_list_presets(&resolve_project_id(args)?)
 }
 
 /// The calling session, when the user granted it the Create & remove role.
@@ -3489,21 +3452,8 @@ fn resolve_create_command(
         (None, None) => Ok((String::new(), None)),
         (Some(wanted), None) => {
             let state = crate::app_state::load().unwrap_or(Value::Null);
-            let presets: Vec<crate::state::Preset> = state
-                .get("presets")
-                .cloned()
-                .and_then(|raw| serde_json::from_value(raw).ok())
-                .unwrap_or_default();
-            let usable = presets.iter().filter(|preset| {
-                preset.enabled
-                    && preset
-                        .project_id
-                        .as_deref()
-                        .is_none_or(|scope| scope == project_id)
-            });
-            // Project-scoped rows first so an override wins over its global twin.
-            let mut ordered: Vec<&crate::state::Preset> = usable.collect();
-            ordered.sort_by_key(|preset| preset.project_id.is_none());
+            // Fork-only: one filter shared with `workspace list_presets`.
+            let ordered = crate::workspace_tools::usable_presets(&state, project_id);
             ordered
                 .iter()
                 .find(|preset| preset.id == wanted)
@@ -3800,6 +3750,7 @@ fn group_peer_status_json(
 
 /// POST a JSON payload to the desktop app's local bridge and return the JSON
 /// response body. Hand-rolled HTTP/1.1 to match the hand-rolled server.
+#[allow(dead_code)] // Fork-only: its workspace callers read app-state now.
 fn app_request(path: &str, payload: &Value) -> Result<Value, String> {
     app_request_with_timeout(path, payload, Duration::from_secs(20))
 }
