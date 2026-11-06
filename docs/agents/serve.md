@@ -299,7 +299,10 @@ Session rows carry two additive fields on a Run Session (`spawned_by`
 `controller_host.rs` `DiskCatalog`): `scheduleID` (the task; the app's clock
 badge) and `superseded`. A Run Session is superseded when it is not the
 Session of its task's `current_run` (Q32); a pinned Run never is, and a task
-with no Run log supersedes nothing (`schedules::run_sessions`). Controllers
+with no Run log supersedes nothing (`schedules::run_sessions`). Once the
+logged Session is gone, the task's newest Run Session stands in: Resume
+replaces a Session under a new id but keeps its `spawned_by` and
+`created_at`. Controllers
 hide a superseded row from every Project listing (PROJECTS, AGENTS, ⌘K, the
 phone's sidebar and bell) but keep it openable by id, which is how the
 SCHEDULED section reaches older Runs. Run Sessions take no slot in either

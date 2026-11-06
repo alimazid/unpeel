@@ -31,6 +31,8 @@ pub struct RunSessionRow<'a> {
     /// The manifest's `session.spawned_by`.
     pub spawned_by: Option<&'a str>,
     pub pinned: bool,
+    /// The manifest's `session.created_at`, which Resume keeps.
+    pub created_at: u64,
 }
 
 /// The task a Session is a Run of; `None` for every other Session.
@@ -38,6 +40,37 @@ pub fn schedule_id(spawned_by: Option<&str>) -> Option<&str> {
     spawned_by?
         .strip_prefix(SPAWNED_BY_PREFIX)
         .filter(|id| !id.is_empty())
+}
+
+/// The Host's rows' view of `logged` (each task's latest Run Session, from
+/// its Run log). Runs never overlap, so the current Run's Session is the
+/// task's newest; once it no longer exists, the task's newest Run Session
+/// stands in. That is the logged Session itself after Resume, which replaces
+/// a Session under a new id but keeps its `spawned_by` and `created_at`.
+pub fn resolve_latest(logged: LatestRunSessions, rows: &[RunSessionRow<'_>]) -> LatestRunSessions {
+    logged
+        .into_iter()
+        .map(|(task, session)| {
+            let Some(session) = session else {
+                return (task, None);
+            };
+            let runs = || {
+                rows.iter()
+                    .filter(|row| schedule_id(row.spawned_by) == Some(task.as_str()))
+            };
+            if runs().any(|row| row.session_id == session) {
+                return (task, Some(session));
+            }
+            let newest = runs()
+                .max_by(|left, right| {
+                    left.created_at
+                        .cmp(&right.created_at)
+                        .then_with(|| right.session_id.cmp(left.session_id))
+                })
+                .map(|row| row.session_id.to_string());
+            (task, newest.or(Some(session)))
+        })
+        .collect()
 }
 
 /// Whether a Project's listings hide this Session (see the module docs).
@@ -74,7 +107,12 @@ mod tests {
             session_id,
             spawned_by: Some(spawned_by),
             pinned: false,
+            created_at: 1,
         }
+    }
+
+    fn created<'a>(row: RunSessionRow<'a>, created_at: u64) -> RunSessionRow<'a> {
+        RunSessionRow { created_at, ..row }
     }
 
     fn latest(entries: &[(&str, Option<&str>)]) -> LatestRunSessions {
@@ -110,6 +148,7 @@ mod tests {
             session_id: "user",
             spawned_by: None,
             pinned: false,
+            created_at: 1,
         };
         assert!(!is_superseded(user, &latest), "the user's own Session");
         let agent = run_row("child", "4f1c-agent-session");
@@ -136,6 +175,50 @@ mod tests {
             run_row("gone-2", "schedule:sch_gone"),
             &latest
         ));
+    }
+
+    /// The logged Session is on the Host: it is the task's latest.
+    #[test]
+    fn the_logged_session_stays_the_latest_while_it_exists() {
+        let rows = [
+            created(run_row("a-2", "schedule:sch_a"), 20),
+            created(run_row("a-1", "schedule:sch_a"), 10),
+        ];
+        let resolved = resolve_latest(latest(&[("sch_a", Some("a-2"))]), &rows);
+        assert_eq!(resolved, latest(&[("sch_a", Some("a-2"))]));
+    }
+
+    /// Resume replaced the latest Run's Session under a new id (same
+    /// `spawned_by` and `created_at`): the replacement is the latest, and
+    /// the task's earlier Runs stay superseded.
+    #[test]
+    fn a_resumed_latest_run_stays_the_latest() {
+        let rows = [
+            created(run_row("a-1", "schedule:sch_a"), 10),
+            created(run_row("a-2-resumed", "schedule:sch_a"), 20),
+            created(run_row("b-1", "schedule:sch_b"), 30),
+        ];
+        let resolved = resolve_latest(
+            latest(&[("sch_a", Some("a-2")), ("sch_b", Some("b-1"))]),
+            &rows,
+        );
+        assert_eq!(
+            resolved,
+            latest(&[("sch_a", Some("a-2-resumed")), ("sch_b", Some("b-1"))])
+        );
+        assert!(!is_superseded(rows[1], &resolved));
+        assert!(is_superseded(rows[0], &resolved));
+    }
+
+    /// A current Run without a Session, and a task without a Run log, are
+    /// what the log says.
+    #[test]
+    fn resolving_keeps_a_sessionless_run_and_an_unlogged_task() {
+        let rows = [created(run_row("a-1", "schedule:sch_a"), 10)];
+        let resolved = resolve_latest(latest(&[("sch_a", None)]), &rows);
+        assert_eq!(resolved, latest(&[("sch_a", None)]));
+        let rows = [created(run_row("gone-1", "schedule:sch_gone"), 10)];
+        assert!(resolve_latest(LatestRunSessions::new(), &rows).is_empty());
     }
 
     #[test]
@@ -173,6 +256,7 @@ mod tests {
             session_id: "user",
             spawned_by: None,
             pinned: false,
+            created_at: 1,
         };
         publish(&mut row, user, &latest);
         assert_eq!(row, serde_json::json!({"id": "user"}));

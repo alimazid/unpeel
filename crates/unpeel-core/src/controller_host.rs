@@ -371,11 +371,17 @@ impl DiskCatalog {
         });
         // Fork-only: Scheduled Tasks (Q32). Each task's latest Run Session,
         // from its Run log, marks the task's other Runs superseded.
-        let latest_runs =
-            crate::schedule_store::latest_run_sessions(manifests.iter().filter_map(|manifest| {
-                crate::schedules::run_sessions::schedule_id(manifest.session.spawned_by.as_deref())
-            }));
-        for manifest in &manifests {
+        let run_rows: Vec<crate::schedules::run_sessions::RunSessionRow<'_>> = manifests
+            .iter()
+            .map(|manifest| crate::schedules::run_sessions::RunSessionRow {
+                session_id: &manifest.session.id,
+                spawned_by: manifest.session.spawned_by.as_deref(),
+                pinned: pinned.contains(&manifest.session.id),
+                created_at: manifest.session.created_at,
+            })
+            .collect();
+        let latest_runs = crate::schedule_store::latest_run_sessions_of(&run_rows);
+        for (manifest, run_row) in manifests.iter().zip(&run_rows) {
             let project_id = effective_project_id(manifest, &known_ids);
             let resumable = crate::session_ops::has_resume_evidence(manifest);
             let mut summary = session_summary_with_menu_attention(
@@ -393,15 +399,7 @@ impl DiskCatalog {
                     .filter(|entry| entry.kind == crate::activity_log::ActivityLogKind::Alert),
                 menu_attention_detection,
             );
-            crate::schedules::run_sessions::publish(
-                &mut summary,
-                crate::schedules::run_sessions::RunSessionRow {
-                    session_id: &manifest.session.id,
-                    spawned_by: manifest.session.spawned_by.as_deref(),
-                    pinned: pinned.contains(&manifest.session.id),
-                },
-                &latest_runs,
-            );
+            crate::schedules::run_sessions::publish(&mut summary, *run_row, &latest_runs);
             // The bootstrap includes the same inactive preview as the Host
             // sidebar.
             sessions.push(summary);

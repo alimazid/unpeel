@@ -15,7 +15,7 @@ use std::fs::{self, OpenOptions};
 use std::io::Write;
 use std::path::{Path, PathBuf};
 
-use crate::schedules::run_sessions::LatestRunSessions;
+use crate::schedules::run_sessions::{LatestRunSessions, RunSessionRow};
 use crate::schedules::{self, Schedule, ScheduleClock, ScheduleRun};
 
 /// Runs a task keeps once its log is compacted.
@@ -144,6 +144,17 @@ impl TaskStore {
 /// which Run is the task's.
 pub fn latest_run_sessions<'a>(task_ids: impl IntoIterator<Item = &'a str>) -> LatestRunSessions {
     latest_run_sessions_in(&schedules_root(), task_ids)
+}
+
+/// Each task's latest Run Session as the Host's `rows` see it
+/// (`run_sessions::resolve_latest`): what both session-row builders publish
+/// from.
+pub fn latest_run_sessions_of(rows: &[RunSessionRow<'_>]) -> LatestRunSessions {
+    let logged = latest_run_sessions(
+        rows.iter()
+            .filter_map(|row| schedules::run_sessions::schedule_id(row.spawned_by)),
+    );
+    schedules::run_sessions::resolve_latest(logged, rows)
 }
 
 /// [`latest_run_sessions`] under an explicit root (tests).

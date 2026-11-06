@@ -24,6 +24,16 @@ pub fn schedule_id(row: &SessionRow) -> Option<&str> {
     unpeel_core::schedules::run_sessions::schedule_id(row.spawned_by.as_deref())
 }
 
+/// The facts the superseded flag reads off a row (`unpeel_core::schedules::run_sessions`).
+pub fn wire_row(row: &SessionRow) -> unpeel_core::schedules::run_sessions::RunSessionRow<'_> {
+    unpeel_core::schedules::run_sessions::RunSessionRow {
+        session_id: &row.id,
+        spawned_by: row.spawned_by.as_deref(),
+        pinned: row.pinned,
+        created_at: row.created_at,
+    }
+}
+
 pub fn is_run_session(row: &SessionRow) -> bool {
     schedule_id(row).is_some()
 }

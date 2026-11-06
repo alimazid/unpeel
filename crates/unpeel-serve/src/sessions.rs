@@ -1834,10 +1834,12 @@ pub fn mobile_snapshot(
 ) -> MobileSnapshot {
     // Fork-only: Scheduled Tasks (Q32). Each task's latest Run Session,
     // from its Run log, marks the task's other Runs superseded.
-    let latest_runs =
-        unpeel_core::schedule_store::latest_run_sessions(model.rows.iter().filter_map(|row| {
-            unpeel_core::schedules::run_sessions::schedule_id(row.spawned_by.as_deref())
-        }));
+    let run_rows: Vec<_> = model
+        .rows
+        .iter()
+        .map(crate::run_sessions::wire_row)
+        .collect();
+    let latest_runs = unpeel_core::schedule_store::latest_run_sessions_of(&run_rows);
     mobile_snapshot_with_runs(model, overlay, extra_unread, activity_log, &latest_runs)
 }
 
@@ -2011,11 +2013,7 @@ pub(crate) fn mobile_snapshot_with_runs(
         // Same fields as the native Host's summary (one protocol).
         unpeel_core::schedules::run_sessions::publish(
             &mut summary,
-            unpeel_core::schedules::run_sessions::RunSessionRow {
-                session_id: &row.id,
-                spawned_by: row.spawned_by.as_deref(),
-                pinned: row.pinned,
-            },
+            crate::run_sessions::wire_row(row),
             latest_runs,
         );
         sessions.push(summary);

@@ -9,7 +9,10 @@ Run Session carries `scheduleID`; the latest Run's (the Session of the
 task's current Run) has `superseded: false` and the two older ones `true`;
 the user's Sessions carry neither; and on both wires every Run Session and
 all five of the user's stopped Sessions are still listed, so Runs never
-crowd the user's rows out and a superseded Run stays openable by id.
+crowd the user's rows out and a superseded Run stays openable by id. Then
+the latest Run is replaced the way Resume leaves it on disk (a new id with
+the same `spawned_by` and `created_at`, the logged one gone): the
+replacement is the latest and the older two stay superseded.
 """
 
 import base64
@@ -119,20 +122,41 @@ def phone_rows_settled(phone, runs):
     return boot if status == 200 and set(runs) <= listed else None
 
 
-def check_both_wires(case, service, task_id, runs, phone):
+def check_both_wires(case, service, task_id, runs, phone, stage):
     boot = service.wait_for(lambda: phone_rows_settled(phone, runs), timeout=15)
-    if not case.check("the phone's /mobile/bootstrap lists every Run", bool(boot),
+    if not case.check(f"{stage}: the phone's /mobile/bootstrap lists every Run", bool(boot),
                       json.dumps(phone()[1].get("sessions", []))[:800]):
         return
-    check_rows(case, "phone", boot.get("sessions", []), task_id, runs)
+    check_rows(case, f"{stage}, phone", boot.get("sessions", []), task_id, runs)
 
     socket_path = (service.status() or {}).get("localSocket")
-    if not case.check("the Host serves host.sock", bool(socket_path and os.path.exists(socket_path)),
+    if not case.check(f"{stage}: the Host serves host.sock",
+                      bool(socket_path and os.path.exists(socket_path)),
                       json.dumps(service.status())):
         return
     status, local = local_bootstrap(socket_path)
-    case.check("the Mac app's wire reads /mobile/bootstrap", status == 200, str(status))
-    check_rows(case, "host.sock", local.get("sessions", []), task_id, runs)
+    case.check(f"{stage}: the Mac app's wire reads /mobile/bootstrap", status == 200, str(status))
+    check_rows(case, f"{stage}, host.sock", local.get("sessions", []), task_id, runs)
+
+
+def resume_latest_on_disk(case, home, task_id, runs):
+    """Resume replaces a Session under a new id, keeping its `spawned_by`
+    and `created_at` (`session_ops::restart_session_unlocked`). Leave that on
+    disk without the resume machinery (a script Run has no resume evidence)."""
+    latest = runs[-1]
+    created = home.manifests().get(latest, {}).get("session", {}).get("created_at")
+    removed = cli(home, "rm", latest)
+    if not case.check("the latest Run's Session is removed", removed.returncode == 0
+                      and latest not in home.manifests(), removed.stderr):
+        return None
+    replacement = "resumed-latest-run"
+    home.session(replacement, label="Nightly", command="true", project_id="p",
+                 extra_manifest={"session": {
+                     "id": replacement, "project_id": "p", "label": "Nightly",
+                     "command": "true", "created_at": created,
+                     "spawned_by": f"schedule:{task_id}",
+                 }})
+    return runs[:-1] + [replacement]
 
 
 def seed_user_sessions(home):
@@ -169,8 +193,11 @@ def body(case):
         if not case.check(f"all {RUNS} Runs started a Session",
                           len(runs) == RUNS and all(runs), json.dumps(runs)):
             return
-        check_both_wires(case, service, task_id, runs,
-                         lambda: mobile_request(port, "/mobile/bootstrap", token, home=home))
+        phone = lambda: mobile_request(port, "/mobile/bootstrap", token, home=home)  # noqa: E731
+        check_both_wires(case, service, task_id, runs, phone, "after three Runs")
+        resumed = resume_latest_on_disk(case, home, task_id, runs)
+        if resumed:
+            check_both_wires(case, service, task_id, resumed, phone, "after a Resume")
     finally:
         for session_id in list(home.manifests()):
             cli(home, "rm", session_id)
