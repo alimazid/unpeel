@@ -135,8 +135,10 @@ pub mod runtime_observer;
 pub mod session_artifacts;
 #[cfg(feature = "native-host")]
 pub mod session_host;
+// Fork-only (the marker sits apart so `portable_gating_tests` reads the
+// declaration).
 #[cfg(feature = "native-host")]
-pub mod session_inbox; // Fork-only
+pub mod session_inbox;
 #[cfg(feature = "native-host")]
 pub mod session_input;
 #[cfg(feature = "native-host")]
@@ -151,10 +153,12 @@ pub mod ssh_connection;
 pub mod state;
 #[cfg(feature = "native-host")]
 pub mod state_bus;
+// Fork-only
 #[cfg(feature = "native-host")]
-pub mod supervision; // Fork-only
+pub mod supervision;
+// Fork-only
 #[cfg(feature = "native-host")]
-pub mod supervision_mcp; // Fork-only
+pub mod supervision_mcp;
 #[cfg(feature = "native-host")]
 pub mod terminal_viewport;
 #[cfg(feature = "native-host")]
