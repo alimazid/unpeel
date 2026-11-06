@@ -106,6 +106,8 @@ pub struct WorkerAlerts {
     floor: Option<Option<u64>>,
     reconciled: bool,
     heartbeat_at: Option<u64>,
+    /// The Router and Worker set Controllers last saw (a hash).
+    projection: Option<u64>,
 }
 
 impl Default for WorkerAlerts {
@@ -137,6 +139,7 @@ impl WorkerAlerts {
             floor: None,
             reconciled: false,
             heartbeat_at: None,
+            projection: None,
         }
     }
 
@@ -252,6 +255,25 @@ impl WorkerAlerts {
         ))
     }
 
+    /// Controllers read the Router and its Workers from the bootstrap this
+    /// rescan just rebuilt, but a verb's own announce can race that rebuild
+    /// and leave a quiet workspace showing the old Super Agent. Announce
+    /// again whenever the set changes.
+    fn refresh_controllers_on_change(&mut self, router: Option<&str>, workers: &HashSet<String>) {
+        let mut sorted: Vec<&String> = workers.iter().collect();
+        sorted.sort();
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        std::hash::Hash::hash(&(router, sorted), &mut hasher);
+        let signature = std::hash::Hasher::finish(&hasher);
+        if self
+            .projection
+            .replace(signature)
+            .is_some_and(|previous| previous != signature)
+        {
+            self.io.announce();
+        }
+    }
+
     fn exited(&mut self, row: &SessionRow, touched: Option<u64>, now: u64) -> Option<NewItem> {
         let track = self.tracks.entry(row.id.clone()).or_default();
         if self_caused(track, touched, now, SELF_CAUSED_EXIT_MS) {
@@ -294,6 +316,7 @@ impl WorkerAlerts {
                 .collect(),
             None => HashSet::new(),
         };
+        self.refresh_controllers_on_change(router.as_deref(), &workers);
         if let Some(router) = router.as_deref().filter(|_| router_running) {
             if !self.reconciled {
                 self.reconcile(rows, router, &workers, floor, now);

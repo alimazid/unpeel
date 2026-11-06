@@ -25,6 +25,7 @@ struct World {
     progress: HashMap<String, u64>,
     heartbeat: Option<u64>,
     heartbeats_written: Vec<u64>,
+    announced: usize,
 }
 
 #[derive(Default)]
@@ -58,7 +59,9 @@ impl WorkerHost for FakeHost {
     fn write_heartbeat(&self, at_ms: u64) {
         self.with(|world| world.heartbeats_written.push(at_ms));
     }
-    fn announce(&self) {}
+    fn announce(&self) {
+        self.with(|world| world.announced += 1);
+    }
 }
 
 #[derive(Default)]
@@ -1080,4 +1083,44 @@ fn a_heartbeat_is_kept_while_a_router_exists() {
     fx.host.with(|world| world.router = None);
     fx.step(&[], T0 + 5 * HEARTBEAT_MS);
     assert_eq!(fx.host.with(|world| world.heartbeats_written.len()), 2);
+}
+
+#[test]
+fn a_changed_super_agent_or_worker_set_refreshes_controllers_once() {
+    // A Controller reads the Router and its Workers from the bootstrap the
+    // worker rebuilt on this rescan; a verb's own announce raced that
+    // rebuild, so a quiet workspace kept showing the old Super Agent.
+    let mut f = fixture();
+    f.step(&[worker(Status::Idle)], T0 + 1_000);
+    let before = f.host.with(|world| world.announced);
+    f.step(&[worker(Status::Idle)], T0 + 2_000);
+    assert_eq!(
+        f.host.with(|world| world.announced),
+        before,
+        "nothing changed"
+    );
+
+    // Stop Being Super Agent: no mark, no Worker markers.
+    f.host.with(|world| {
+        world.router = None;
+        world.markers.clear();
+    });
+    let freed = [
+        SessionRow {
+            is_router: false,
+            ..row(ROUTER, Status::Idle)
+        },
+        SessionRow {
+            is_worker: false,
+            ..worker(Status::Idle)
+        },
+    ];
+    f.alerts.step(&freed, T0 + 3_000);
+    assert_eq!(f.host.with(|world| world.announced), before + 1);
+    f.alerts.step(&freed, T0 + 4_000);
+    assert_eq!(
+        f.host.with(|world| world.announced),
+        before + 1,
+        "once per change"
+    );
 }
