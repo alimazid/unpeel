@@ -945,7 +945,10 @@ impl HostRuntime {
             self.reconcile_direct(&mut emitted);
             self.sweep_auto_stop(&mut emitted);
             self.sweep_retention(&mut emitted);
-            self.supervisor.step(&self.model, now_ms()); // Fork-only
+            // Fork-only: the supervisor drains Inboxes; a held draft alerts.
+            for notice in self.supervisor.step(&self.model, now_ms()) {
+                self.record_alert(&notice.session_id, notice.body, SystemTime::now());
+            }
             self.sweep_incomplete_uploads();
         }
         self.reconcile_link(&mut emitted);

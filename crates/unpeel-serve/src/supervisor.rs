@@ -12,14 +12,22 @@ use unpeel_core::activity_log::ActivityLogKind;
 
 use crate::sessions::{SessionRow, SidebarModel};
 
+mod inbox_drain;
+mod inbox_rules;
+
+pub use inbox_drain::Notice;
+
 #[derive(Debug, Default)]
-pub struct Supervisor {}
+pub struct Supervisor {
+    /// Pastes queued Inbox items into idle targets (`inbox_drain.rs`).
+    inbox: inbox_drain::Drain,
+}
 
 impl Supervisor {
     /// One accepted hook event for `session_id` (canonical name, as
     /// `activity::normalize_event_name` returns it), received at `at_ms`.
     pub fn observe_hook(&mut self, session_id: &str, canonical_event: &str, at_ms: u64) {
-        let _ = (session_id, canonical_event, at_ms);
+        self.inbox.observe_hook(session_id, canonical_event, at_ms);
     }
 
     /// A lifecycle edge of `row` about to notify the user. `true` takes it
@@ -37,9 +45,10 @@ impl Supervisor {
         false
     }
 
-    /// Once per rescan, after the keep-limit sweep.
-    pub fn step(&mut self, model: &SidebarModel, now_ms: u64) {
-        let _ = (model, now_ms);
+    /// Once per rescan, after the keep-limit sweep: drains Inboxes. Returns
+    /// notifications for the user (a draft holding queued items).
+    pub fn step(&mut self, model: &SidebarModel, now_ms: u64) -> Vec<Notice> {
+        self.inbox.step(&model.rows, now_ms)
     }
 
     /// The rows the auto-stop sweep may consider.
