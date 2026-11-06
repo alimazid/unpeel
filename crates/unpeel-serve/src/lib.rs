@@ -35,6 +35,7 @@ pub mod pty_core_supervisor;
 pub mod relay;
 pub mod remote_streamer;
 pub mod retention;
+pub mod run_sessions;
 pub mod runtime_presentation;
 pub mod schedules;
 pub mod service;

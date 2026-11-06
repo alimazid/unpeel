@@ -571,6 +571,7 @@ fn row(
         activity_at: 1_000,
         group_id: "p".into(),
         detected_local_urls: Vec::new(),
+        spawned_by: Some("schedule:sch_agent".into()),
     }
 }
 
