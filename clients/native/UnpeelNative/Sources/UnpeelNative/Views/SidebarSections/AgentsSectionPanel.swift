@@ -5,9 +5,10 @@
 //  Fork-only: sidebar sections. AGENTS: the titlebar activity dropdown —
 //  blocked, working, then recently finished agents, and the "All recent"
 //  link — as a section below PROJECTS. Pinned sessions and the Super Agent
-//  follow, so they never drop out of it. Unlike the bell (which stays,
-//  across every workspace), it lists the current workspace only, and its
-//  rows carry the PROJECTS session menu (`AgentsSessionRow`).
+//  follow, so they never drop out of it; the Super Agent's running Workers
+//  are indented under it (`SuperAgentNesting`). Unlike the bell (which
+//  stays, across every workspace), it lists the current workspace only, and
+//  its rows carry the PROJECTS session menu (`AgentsSessionRow`).
 //
 
 import SwiftUI
@@ -28,9 +29,18 @@ struct AgentsSectionPanel: View {
         self.model = store.globalActivityMenu
     }
 
-    private static func sessionIDs(_ activity: GlobalActivityMenuSessions) -> Set<String> {
-        Set((activity.blockers + activity.jobs + activity.finished + activity.pinned)
-            .map(\.session.sessionID))
+    /// The Sessions the section shows a row for, the nested Workers
+    /// included — the same entries the list renders.
+    static func sessionIDs(_ activity: GlobalActivityMenuSessions) -> Set<String> {
+        let entries = ActivityMenuList.entries(
+            blockers: activity.blockers, jobs: activity.jobs,
+            finished: activity.finished, pinned: activity.pinned,
+            workers: activity.workers, nestsWorkers: true
+        )
+        return Set(entries.compactMap { entry in
+            guard case let .row(item, _) = entry else { return nil }
+            return item.session.sessionID
+        })
     }
 
     var body: some View {
@@ -40,6 +50,8 @@ struct AgentsSectionPanel: View {
             blockers: activity.blockers,
             finished: activity.finished,
             pinned: activity.pinned,
+            workers: activity.workers,
+            nestsWorkers: true,
             onSelect: { [store] item in
                 store.revealGlobalActivitySession(
                     workspaceKey: item.workspaceKey,

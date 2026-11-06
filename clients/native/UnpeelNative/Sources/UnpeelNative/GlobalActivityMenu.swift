@@ -23,6 +23,9 @@ struct WorkspaceActivityMenuSession: Equatable {
     let status: String
     /// Latest App alert when it is this Session's newest activity.
     let alertBody: String?
+    /// Fork-only: not stopped. Only a running Worker is nested under the
+    /// Super Agent in AGENTS.
+    var isLive: Bool = true
     /// Fork-only: the Session is the workspace's Super Agent (the Router).
     var superAgent: Bool = false
     /// Fork-only: the Super Agent this Session works for (a Worker).
@@ -36,6 +39,9 @@ struct WorkspaceActivityMenuSlice: Equatable {
     /// Fork-only: pinned sessions and the Super Agent in none of the groups
     /// above, so the AGENTS section always shows them.
     var pinned: [WorkspaceActivityMenuSession] = []
+    /// Fork-only: running Workers in none of the groups above. AGENTS lists
+    /// them under the Super Agent, and nowhere else.
+    var workers: [WorkspaceActivityMenuSession] = []
 
     init() {}
 
@@ -77,6 +83,7 @@ struct WorkspaceActivityMenuSlice: Equatable {
                 projectPath: projectPath(summary.projectID),
                 status: Self.statusLabel(summary),
                 alertBody: summary.latestAlertBody,
+                isLive: summary.status == .running,
                 superAgent: summary.superAgent,
                 superAgentRouterID: summary.superAgentRouterID
             )
@@ -89,6 +96,8 @@ struct WorkspaceActivityMenuSlice: Equatable {
                 finished.append(item)
             } else if summary.pinned || summary.superAgent {
                 pinned.append(item)
+            } else if summary.status == .running, summary.superAgentRouterID != nil {
+                workers.append(item)
             }
         }
     }
@@ -109,6 +118,7 @@ struct WorkspaceActivityMenuSlice: Equatable {
                 projectPath: projectName(session.projectID),
                 status: statusLabel(session),
                 alertBody: alertBody(session),
+                isLive: session.isLive,
                 superAgent: session.superAgent,
                 superAgentRouterID: session.superAgentRouterID
             )
@@ -117,6 +127,7 @@ struct WorkspaceActivityMenuSlice: Equatable {
         blockers = activity.blockers.map(item)
         finished = activity.finished.map(item)
         pinned = activity.pinned.map(item)
+        workers = activity.workers.map(item)
     }
 
     /// Fork-only: Session id → the id of the first node that lists it,
@@ -147,6 +158,22 @@ struct WorkspaceActivityMenuSlice: Equatable {
             for node in nodes {
                 result.append(contentsOf: node.sessions.filter {
                     $0.superAgent || isPinned($0.id, node.id)
+                })
+                collect(node.worktrees)
+            }
+        }
+        collect(nodes)
+        return result
+    }
+
+    /// Fork-only: the running Workers, in sidebar order — candidates for
+    /// `workers`.
+    static func runningWorkers(in nodes: [ProjectNode]) -> [SessionEntry] {
+        var result: [SessionEntry] = []
+        func collect(_ nodes: [ProjectNode]) {
+            for node in nodes {
+                result.append(contentsOf: node.sessions.filter {
+                    $0.isLive && !$0.superAgent && $0.superAgentRouterID != nil
                 })
                 collect(node.worktrees)
             }
@@ -190,6 +217,9 @@ struct GlobalActivityMenuSessions: Equatable {
     /// Fork-only: shown by the AGENTS section only, so the counts below —
     /// which size the dropdowns — leave it out.
     var pinned: [GlobalActivityMenuItem] = []
+    /// Fork-only: idle Workers, listed under the Super Agent in AGENTS only;
+    /// left out of the counts too.
+    var workers: [GlobalActivityMenuItem] = []
 
     static let empty = GlobalActivityMenuSessions()
 
@@ -221,6 +251,7 @@ struct GlobalActivityMenuSessions: Equatable {
             jobs.append(contentsOf: wrap(slice.jobs))
             finished.append(contentsOf: wrap(slice.finished))
             pinned.append(contentsOf: wrap(slice.pinned))
+            workers.append(contentsOf: wrap(slice.workers))
         }
     }
 
@@ -247,6 +278,7 @@ struct GlobalActivityMenuSessions: Equatable {
         jobs = wrap(slice.jobs)
         finished = wrap(slice.finished)
         pinned = wrap(slice.pinned)
+        workers = wrap(slice.workers)
     }
 
     var sectionCount: Int {
@@ -347,7 +379,8 @@ final class GlobalActivityMenuModel: ObservableObject {
             allSessions: Array(store.displaySessionsByID.values),
             jobs: store.activeJobSessions,
             finished: store.unreadJobSessions,
-            pinned: store.pinnedActivitySessions
+            pinned: store.pinnedActivitySessions,
+            workers: WorkspaceActivityMenuSlice.runningWorkers(in: displayNodes)
         )
         let sidebarProjectIDs = WorkspaceActivityMenuSlice.sessionProjectIDs(
             in: displayNodes
