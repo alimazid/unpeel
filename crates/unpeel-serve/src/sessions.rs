@@ -164,6 +164,10 @@ pub struct SessionRow {
     /// Always empty for remote-host rows — a Controller cannot reach a
     /// remote Host's loopback.
     pub detected_local_urls: Vec<String>,
+    /// Who started the Session (manifest `session.spawned_by`): an agent
+    /// Session's id, `cli`, or `schedule:<task id>` for a Scheduled Task's
+    /// Run (`run_sessions.rs`). `None` for the user's own Sessions.
+    pub spawned_by: Option<String>,
 }
 
 impl SessionRow {
@@ -843,6 +847,7 @@ pub fn scan_sidebar(
                 } else {
                     Vec::new()
                 },
+                spawned_by: manifest.session.spawned_by.clone(),
             });
         }
     }
@@ -988,6 +993,11 @@ pub fn scan_sidebar(
             .as_ref()
             .and_then(|state| state.sidebar_stopped_limit),
     );
+    // Run Sessions keep their own limit per task, across groups.
+    let expired_runs: std::collections::HashSet<String> =
+        crate::run_sessions::expired_run_sessions(&rows, keep_visible)
+            .into_iter()
+            .collect();
 
     let children = project_children(app_state.as_ref(), overlay);
     // Worktrees live behind their parent's header as inline folder rows,
@@ -1006,6 +1016,7 @@ pub fn scan_sidebar(
             &known,
             date_sorted.contains(&project_id),
             stopped_window,
+            &expired_runs,
         );
         // This project's children (worktrees and groups), in project order.
         let mut kids: Vec<(String, String, Option<String>)> = all_projects
@@ -1055,6 +1066,7 @@ pub fn scan_sidebar(
                 &known,
                 date_sorted.contains(&kid_id),
                 stopped_window,
+                &expired_runs,
             );
             items.push(SidebarItem::WorktreeHeader {
                 project_id: kid_id.clone(),
@@ -1133,6 +1145,7 @@ fn group_listing(
     known: &std::collections::HashSet<String>,
     date_sorted: bool,
     stopped_window: usize,
+    expired_runs: &std::collections::HashSet<String>,
 ) -> GroupListing {
     let member = |i: &usize| in_group(&rows[*i], project_id, known);
 
@@ -1214,11 +1227,20 @@ fn group_listing(
         stopped.sort_by_key(|&i| order_key(i));
     }
 
-    // The keep limit also keeps any stopped row the user has not read.
+    // The keep limit also keeps any stopped row the user has not read. A
+    // Scheduled Task's Run Sessions take no slot: their own keep limit is
+    // per task (`expired_runs`, `run_sessions.rs`), so Runs never push the
+    // user's out.
     let mut kept: Vec<usize> = Vec::new();
     let mut hidden: Vec<usize> = Vec::new();
-    for (inactive_rank, index) in stopped.iter().copied().enumerate() {
-        let keep = inactive_rank < stopped_window || keep_visible.contains(&rows[index].id);
+    let mut inactive_rank = 0;
+    for index in stopped.iter().copied() {
+        let keep = if crate::run_sessions::is_run_session(&rows[index]) {
+            !expired_runs.contains(&rows[index].id)
+        } else {
+            inactive_rank += 1;
+            inactive_rank <= stopped_window || keep_visible.contains(&rows[index].id)
+        };
         if keep {
             kept.push(index);
         } else {
@@ -1385,6 +1407,9 @@ pub fn model_from_bridge(
                 } else {
                     Vec::new()
                 },
+                // The bridge payload predates Scheduled Tasks; nothing keys
+                // retention off a bridged row.
+                spawned_by: None,
             });
             items.push(SidebarItem::Session(rows.len() - 1));
         }
@@ -2286,6 +2311,7 @@ mod tests {
             activity_at: lifecycle_at,
             group_id: "__recent_test_project".into(),
             detected_local_urls: Vec::new(),
+            spawned_by: None,
         }
     }
 
@@ -2312,6 +2338,7 @@ mod tests {
             &std::collections::HashSet::new(),
             true,
             5,
+            &std::collections::HashSet::new(),
         );
         let ids = |indices: &[usize]| {
             indices
@@ -2366,6 +2393,7 @@ mod tests {
             &std::collections::HashSet::new(),
             true,
             2,
+            &std::collections::HashSet::new(),
         );
         let ids = listing
             .sessions
@@ -2388,6 +2416,7 @@ mod tests {
             &std::collections::HashSet::new(),
             true,
             2,
+            &std::collections::HashSet::new(),
         );
         let expired = listing
             .hidden
@@ -2398,6 +2427,127 @@ mod tests {
             expired,
             ["stopped-14", "stopped-13", "stopped-12", "stopped-11"]
         );
+    }
+
+    /// Q17: a Scheduled Task's Runs never push the user's own stopped
+    /// Sessions out of a Project. Seven newer stopped Runs leave all five
+    /// of the user's stopped rows inside the window of five.
+    #[test]
+    fn run_sessions_do_not_count_toward_the_stopped_window() {
+        let mut rows = Vec::new();
+        for lifecycle in 10..15 {
+            rows.push(recent_test_row(
+                &format!("user-{lifecycle}"),
+                Status::Exited,
+                false,
+                lifecycle,
+                false,
+            ));
+        }
+        for lifecycle in 20..27 {
+            let mut row = recent_test_row(
+                &format!("run-{lifecycle}"),
+                Status::Exited,
+                false,
+                lifecycle,
+                false,
+            );
+            row.spawned_by = Some("schedule:sch_1".into());
+            rows.push(row);
+        }
+        let indices = (0..rows.len()).collect::<Vec<_>>();
+        let listing = group_listing(
+            "__recent_test_project",
+            &rows,
+            &indices,
+            None,
+            &std::collections::HashSet::new(),
+            &std::collections::HashSet::new(),
+            true,
+            5,
+            &std::collections::HashSet::new(),
+        );
+        let labels = |indices: &[usize]| {
+            indices
+                .iter()
+                .map(|index| rows[*index].label.as_str())
+                .collect::<Vec<_>>()
+        };
+
+        assert!(listing.hidden.is_empty(), "{:?}", labels(&listing.hidden));
+        assert_eq!(
+            labels(&listing.sessions),
+            [
+                "run-26", "run-25", "run-24", "run-23", "run-22", "run-21", "run-20", "user-14",
+                "user-13", "user-12", "user-11", "user-10",
+            ]
+        );
+
+        // The user's own rows still keep their window of five.
+        rows.push(recent_test_row("user-15", Status::Exited, false, 15, false));
+        let indices = (0..rows.len()).collect::<Vec<_>>();
+        let listing = group_listing(
+            "__recent_test_project",
+            &rows,
+            &indices,
+            None,
+            &std::collections::HashSet::new(),
+            &std::collections::HashSet::new(),
+            true,
+            5,
+            &std::collections::HashSet::new(),
+        );
+        assert_eq!(
+            listing
+                .hidden
+                .iter()
+                .map(|index| rows[*index].label.as_str())
+                .collect::<Vec<_>>(),
+            ["user-10"]
+        );
+
+        // Runs past their task's own keep limit are filed for removal with
+        // the rest, never listed.
+        let expired_runs =
+            crate::run_sessions::expired_run_sessions(&rows, &std::collections::HashSet::new())
+                .into_iter()
+                .collect::<std::collections::HashSet<_>>();
+        let listing = group_listing_with_expired_runs(
+            "__recent_test_project",
+            &rows,
+            &indices,
+            &expired_runs,
+        );
+        let mut hidden = listing
+            .hidden
+            .iter()
+            .map(|index| rows[*index].label.as_str())
+            .collect::<Vec<_>>();
+        hidden.sort();
+        assert_eq!(hidden, ["run-20", "run-21", "user-10"]);
+        assert!(listing
+            .sessions
+            .iter()
+            .all(|index| !hidden.contains(&rows[*index].label.as_str())));
+    }
+
+    fn group_listing_with_expired_runs(
+        project_id: &str,
+        rows: &[SessionRow],
+        indices: &[usize],
+        expired_runs: &std::collections::HashSet<String>,
+    ) -> GroupListing {
+        group_listing(
+            project_id,
+            rows,
+            indices,
+            None,
+            &std::collections::HashSet::new(),
+            &std::collections::HashSet::new(),
+            true,
+            5,
+            expired_runs,
+        )
     }
 
     #[test]
@@ -2774,6 +2924,7 @@ mod tests {
             activity_at: 1,
             group_id: "p2".into(),
             detected_local_urls: Vec::new(),
+            spawned_by: None,
         }];
         let items = vec![
             SidebarItem::Header("Second".into()),
@@ -2830,6 +2981,7 @@ mod tests {
             activity_at: 2,
             group_id: "project".into(),
             detected_local_urls: Vec::new(),
+            spawned_by: None,
         };
         assert_eq!(row.command, "");
         assert_eq!(row.presentation_command(), "claude");
@@ -2885,6 +3037,7 @@ mod tests {
             activity_at: 2,
             group_id: "project".into(),
             detected_local_urls: Vec::new(),
+            spawned_by: None,
         };
         let model = SidebarModel {
             rows: vec![row],
