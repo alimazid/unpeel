@@ -34,7 +34,8 @@ pub(crate) fn tool_create_worktree(args: &Value, project_id: &str) -> Result<Str
 
 /// Create (or adopt) the worktree `args` names (`branch`, `name?`,
 /// `base_ref?`) of `project_id`'s checkout and register its child project:
-/// `{path, project_id, branch, adopted}`.
+/// `{path, project_id, branch, adopted, repo_path}` (`repo_path`, the
+/// checkout, goes on the Super Agent's worktree ledger).
 pub(crate) fn create_and_register(args: &Value, project_id: &str) -> Result<Value, String> {
     let request = WorktreeRequest::from_args(args)?;
     create_worktree_at(
@@ -167,6 +168,7 @@ fn create_worktree_at(
         "project_id": child_id,
         "branch": branch,
         "adopted": adopted,
+        "repo_path": root.path,
     }))
 }
 

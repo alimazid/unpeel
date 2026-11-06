@@ -23,6 +23,8 @@ pub(super) struct Home<'a> {
     pub state: Value,
     pub sessions_root: PathBuf,
     pub inbox: Store,
+    /// The worktrees made for Workers (`supervision_worktrees`).
+    pub worktrees: crate::supervision_worktrees::Ledger,
     pub facts: &'a dyn Fn(&str) -> Option<Facts>,
     pub now_ms: u64,
 }
@@ -79,6 +81,7 @@ pub(super) fn at_home<T>(body: impl FnOnce(&Home) -> T) -> T {
         state,
         sessions_root: crate::app_paths::app_sessions_root(),
         inbox: Store::home(),
+        worktrees: crate::supervision_worktrees::Ledger::home(),
         facts: &facts,
         now_ms: now_ms(),
     })
@@ -92,6 +95,7 @@ pub(super) fn at_home_without_facts<T>(body: impl FnOnce(&Home) -> T) -> T {
         state: crate::app_state::load().unwrap_or(Value::Null),
         sessions_root: crate::app_paths::app_sessions_root(),
         inbox: Store::home(),
+        worktrees: crate::supervision_worktrees::Ledger::home(),
         facts: &no_facts,
         now_ms: now_ms(),
     })
@@ -158,6 +162,9 @@ struct PlannedWorktree {
     project_id: String,
     branch: String,
     adopted: bool,
+    /// For the cleanup ledger: the base the Router named, and the checkout.
+    base_ref: Option<String>,
+    repo_path: Option<String>,
 }
 
 /// The Super Agent half of one `sessions create` by the Router, decided
@@ -263,10 +270,13 @@ Create the session without it."
     refuse_sidebar_group(&home.state, &project_id)?;
     check_limits(home, &caller.id)?;
     let worktree = match &params.worktree {
-        Some(branch) => Some(planned_worktree(make_worktree(
-            &json!({ "branch": branch, "base_ref": params.base_ref }),
-            &project_id,
-        )?)?),
+        Some(branch) => Some(planned_worktree(
+            make_worktree(
+                &json!({ "branch": branch, "base_ref": params.base_ref }),
+                &project_id,
+            )?,
+            params.base_ref.clone(),
+        )?),
         None => None,
     };
     Ok(Some(WorkerPlan {
@@ -337,8 +347,9 @@ queued and tell the user it waits for a free Worker.",
     Ok(())
 }
 
-/// `create_and_register`'s answer, `{path, project_id, branch, adopted}`.
-fn planned_worktree(created: Value) -> Result<PlannedWorktree, String> {
+/// `create_and_register`'s answer, `{path, project_id, branch, adopted,
+/// repo_path}`.
+fn planned_worktree(created: Value, base_ref: Option<String>) -> Result<PlannedWorktree, String> {
     let field = |key: &str| {
         created
             .get(key)
@@ -354,7 +365,32 @@ fn planned_worktree(created: Value) -> Result<PlannedWorktree, String> {
             .get("adopted")
             .and_then(Value::as_bool)
             .unwrap_or(false),
+        base_ref,
+        repo_path: field("repo_path").ok(),
     })
+}
+
+impl PlannedWorktree {
+    /// Put it on the cleanup ledger as `owner`'s, so it goes when that
+    /// Worker is removed, if merged and clean (§16.4).
+    fn record(
+        &self,
+        ledger: &crate::supervision_worktrees::Ledger,
+        owner: &str,
+        now_ms: u64,
+    ) -> Result<(), String> {
+        let repo_path = self.repo_path.clone().ok_or("its checkout is unknown")?;
+        let entry = crate::supervision_worktrees::Entry {
+            path: self.path.clone(),
+            branch: self.branch.clone(),
+            base_ref: self.base_ref.clone(),
+            repo_path,
+            project_id: self.project_id.clone(),
+            owner_session_id: owner.to_owned(),
+            created_at: now_ms,
+        };
+        ledger.record(entry, self.adopted)
+    }
 }
 
 /// The real-home plan for `sessions create` by `caller`.
@@ -448,6 +484,12 @@ impl WorkerPlan {
                 "path": worktree.path,
                 "adopted": worktree.adopted,
             });
+            if let Err(error) = worktree.record(&home.worktrees, session_id, home.now_ms) {
+                warnings.push(format!(
+                    "Its worktree is not on the cleanup ledger ({error}), so removing the \
+Worker leaves it in place."
+                ));
+            }
         }
         result["note"] = Value::String(self.note());
         if !warnings.is_empty() {

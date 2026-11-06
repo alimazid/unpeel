@@ -48,6 +48,8 @@ impl Supervisor {
     /// Once per rescan, after the keep-limit sweep: drains Inboxes. Returns
     /// notifications for the user (a draft holding queued items).
     pub fn step(&mut self, model: &SidebarModel, now_ms: u64) -> Vec<Notice> {
+        // Removed Workers' merged, clean worktrees (throttled, off-thread).
+        unpeel_core::supervision_worktrees::sweep_in_background(now_ms);
         self.inbox.step(&model.rows, now_ms)
     }
 

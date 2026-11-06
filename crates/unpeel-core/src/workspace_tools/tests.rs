@@ -208,6 +208,8 @@ fn create_worktree_registers_a_child_project_once_and_then_adopts_it() {
     .expect("created");
     assert_eq!(first["adopted"], false);
     assert_eq!(first["branch"], "feature");
+    // The checkout it belongs to, for the Super Agent's cleanup ledger.
+    assert_eq!(first["repo_path"], json!(fx.repo));
     let path = first["path"].as_str().expect("path").to_string();
     assert!(
         Path::new(&path).join(".git").exists(),

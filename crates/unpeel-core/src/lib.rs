@@ -162,6 +162,9 @@ pub mod supervision_groups;
 // Fork-only
 #[cfg(feature = "native-host")]
 pub mod supervision_mcp;
+// Fork-only
+#[cfg(feature = "native-host")]
+pub mod supervision_worktrees;
 #[cfg(feature = "native-host")]
 pub mod terminal_viewport;
 #[cfg(feature = "native-host")]
