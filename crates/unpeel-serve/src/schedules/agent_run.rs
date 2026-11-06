@@ -1,4 +1,4 @@
-//! An agent Run's lifecycle (a task with instructions on an Agent Preset):
+//! An agent Run's lifecycle (a task on an Agent Preset):
 //!
 //! ```text
 //! launching ─▶ waiting_ready ─▶ prompted ─▶ working ─▶ done
@@ -7,14 +7,17 @@
 //! ```
 //!
 //! The preset launches exactly as typed; a helper thread waits for the
-//! agent's first readiness signal and types the instructions (ticket 02's
-//! `initial_text::deliver`, 120 s budget). From then on the Run follows the
-//! Host's activity rows, which the worker rebuilds every rescan whoever owns
-//! notifications. `working` starts at the first working signal after the
-//! paste; `done` is the first idle or done edge after that. No working
-//! signal within the window, or an attention edge, is `needs_you`: no
-//! timeout and no kill, and a later done edge still makes it `done`. The
-//! agent exiting first is `failed` with its exit code.
+//! agent's first readiness signal (ticket 02's wait, 120 s budget) and types
+//! the instructions the way every prompt is typed into an agent: one
+//! bracketed paste, then Enter (`initial_text::prompt_when_ready`). From
+//! then on the Run follows the Host's activity rows, which the worker
+//! rebuilds every rescan whoever owns notifications. `working` starts at the
+//! first working signal after the paste; `done` is the first idle or done
+//! edge after that. No working signal within the window, or an attention
+//! edge, is `needs_you`: no timeout and no kill, and a later done edge still
+//! makes it `done`. The agent exiting first is `failed` with its exit code.
+//! A task without instructions types nothing and is `done` once its agent
+//! is ready, its Session left to the user.
 //!
 //! A Session's default "idle" (a source that has said nothing) is never an
 //! edge: only a status from a tier that spoke counts.
@@ -61,8 +64,11 @@ pub struct AgentObservation {
 pub enum Delivery {
     /// The Session is up; the helper waits for the agent to be ready.
     Waiting,
-    /// Typed and submitted at this wall-clock ms.
+    /// Typing began at this wall-clock ms, and the text was submitted.
     Typed { at_ms: u64 },
+    /// A task without instructions: the agent was ready at this wall-clock
+    /// ms, and nothing was typed.
+    Ready { at_ms: u64 },
     /// No readiness signal within the budget; nothing was typed.
     NotReady,
     /// The Session ended before the agent was ready.
@@ -158,6 +164,14 @@ pub fn advance(
             Some(RunPhase::Prompted | RunPhase::Working) => follow(run, agent, now_ms),
             Some(RunPhase::Unknown) | None => None,
         },
+        // The Session was closed (by the user, or stopped) while it ran.
+        RunObservation::Ended => Some(ended(
+            run,
+            RunStatus::Failed,
+            None,
+            Some("the Session was closed before the agent was done".into()),
+            now_ms,
+        )),
         lost => super::step::session_lost(lost)
             .map(|reason| ended(run, RunStatus::Failed, None, Some(reason), now_ms)),
     }
@@ -176,12 +190,14 @@ fn delivered(run: &ScheduleRun, delivery: &Delivery, now_ms: u64) -> Option<Sche
             prompted_at_ms: Some(*at_ms),
             ..run.clone()
         }),
+        // Nothing to type: a ready agent is the whole Run.
+        Delivery::Ready { .. } => Some(ended(run, RunStatus::Done, None, None, now_ms)),
         Delivery::NotReady => Some(ended(
             run,
             RunStatus::FailedToStart,
             None,
             Some(
-                "the agent showed no sign of being ready, so its instructions were not typed; \
+                "the agent showed no sign of being ready, so nothing was typed; \
                  its Session is left open"
                     .into(),
             ),

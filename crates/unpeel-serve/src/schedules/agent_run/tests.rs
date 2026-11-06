@@ -54,9 +54,20 @@ fn agent_task() -> TaskState {
             cwd: "/tmp".into(),
             worktree_path: None,
             worktree_branch: None,
+            agent: true,
             instructions: Some(INSTRUCTIONS.into()),
         }),
     }
+}
+
+/// A task on an Agent Preset with no instructions.
+fn bare_agent_task() -> TaskState {
+    let mut task = agent_task();
+    task.schedule.instructions = None;
+    if let Ok(plan) = &mut task.launch {
+        plan.instructions = None;
+    }
+    task
 }
 
 fn run_in(phase: RunPhase, status: RunStatus) -> ScheduleRun {
@@ -453,6 +464,67 @@ fn a_run_that_needs_you_skips_the_next_occurrence() {
     assert_eq!(skipped.len(), 1);
     assert_eq!(skipped[0].status, RunStatus::Skipped);
     assert_eq!(skipped[0].run_id, "run_due");
+}
+
+#[test]
+fn an_agent_preset_task_without_instructions_is_done_once_its_agent_is_ready() {
+    let mut asked = bare_agent_task();
+    asked.run_now = Some("run_bare".into());
+    let actions = step(&[asked], &now(0, 0), &mut || "unused".into());
+    let started = actions
+        .iter()
+        .find_map(|action| match action {
+            Action::Start { run, .. } => Some(run),
+            _ => None,
+        })
+        .expect("the Run starts");
+    assert_eq!(
+        started.phase,
+        Some(RunPhase::Launching),
+        "it waits for its agent"
+    );
+
+    let ready = TaskState {
+        latest_run: Some(run_in(RunPhase::WaitingReady, RunStatus::Running)),
+        observation: agent(
+            Some(Delivery::Ready { at_ms: ms(0, 4) }),
+            status(AgentStatus::Idle),
+        ),
+        ..bare_agent_task()
+    };
+    let done = next_line(ready, &now(0, 5)).expect("a final line");
+    assert_eq!(done.status, RunStatus::Done);
+    assert_eq!(done.ended_at_ms, Some(ms(0, 5)));
+    assert_eq!(
+        (done.snippet, done.reason, done.prompted_at_ms),
+        (None, None, None),
+        "nothing was typed"
+    );
+
+    let never = TaskState {
+        latest_run: Some(run_in(RunPhase::WaitingReady, RunStatus::Running)),
+        observation: agent(Some(Delivery::NotReady), AgentActivity::default()),
+        ..bare_agent_task()
+    };
+    assert_eq!(
+        next_line(never, &now(2, 0)).map(|line| line.status),
+        Some(RunStatus::FailedToStart)
+    );
+}
+
+#[test]
+fn a_closed_agent_session_fails_with_a_reason_about_the_agent() {
+    for phase in [RunPhase::WaitingReady, RunPhase::Working] {
+        let closed = observing(run_in(phase, RunStatus::Running), RunObservation::Ended);
+        let line = next_line(closed, &now(3, 0)).expect("a final line");
+        assert_eq!(line.status, RunStatus::Failed);
+        let reason = line.reason.unwrap_or_default();
+        assert!(
+            reason.contains("closed") && reason.contains("agent"),
+            "{reason}"
+        );
+        assert!(!reason.contains("exit status"), "{reason}");
+    }
 }
 
 #[test]

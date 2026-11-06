@@ -110,18 +110,7 @@ pub fn screen_reply(screen: &str, prompt_markers: &[String], instructions: &str)
                 .any(|marker| !marker.is_empty() && line.starts_with(marker.as_str()))
         })
         .unwrap_or(lines.len());
-    let echo = instructions
-        .lines()
-        .map(str::trim)
-        .find(|line| !line.is_empty())
-        .map(|line| line.chars().take(40).collect::<String>());
-    let start = echo
-        .and_then(|echo| {
-            lines[..prompt]
-                .iter()
-                .rposition(|line| line.contains(&echo))
-        })
-        .map_or(0, |echo| echo + 1);
+    let start = below_echo(&lines[..prompt], instructions);
     let reply: Vec<&str> = lines[start..prompt]
         .iter()
         .map(|line| {
@@ -131,6 +120,36 @@ pub fn screen_reply(screen: &str, prompt_markers: &[String], instructions: &str)
         })
         .collect();
     snippet(&reply.join("\n"))
+}
+
+/// The index of the first line below the agent's echo of `instructions`:
+/// the last line showing their first line, then each following line that
+/// shows the next one (blank lines skipped). `0` when they are not in view.
+fn below_echo(lines: &[&str], instructions: &str) -> usize {
+    let wanted: Vec<String> = instructions
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .map(|line| line.chars().take(40).collect())
+        .collect();
+    let Some(first) = wanted.first() else {
+        return 0;
+    };
+    let Some(mut next) = lines
+        .iter()
+        .rposition(|line| line.contains(first.as_str()))
+        .map(|echo| echo + 1)
+    else {
+        return 0;
+    };
+    for want in &wanted[1..] {
+        let shown = (next..lines.len()).find(|&index| !lines[index].trim().is_empty());
+        match shown.filter(|&index| lines[index].contains(want.as_str())) {
+            Some(index) => next = index + 1,
+            None => break,
+        }
+    }
+    next
 }
 
 /// The notification text for `raw`, or `None` when nothing readable is left.
@@ -598,6 +617,17 @@ mod tests {
         assert_eq!(
             reply.as_deref(),
             Some("Morning briefing ready: 3 meetings, 2 reviews. Brewed for 3s")
+        );
+    }
+
+    #[test]
+    fn a_screen_reply_starts_below_every_line_of_echoed_instructions() {
+        let instructions =
+            "run the morning briefing\nthen file the notes:\n\n- calendar\n- reviews";
+        let screen = "❯ run the morning briefing\n  then file the notes:\n\n  - calendar\n  - reviews\n\n⏺ Filed: calendar and reviews.\n────\n❯\n────";
+        assert_eq!(
+            screen_reply(screen, &claude_prompt(), instructions).as_deref(),
+            Some("Filed: calendar and reviews.")
         );
     }
 

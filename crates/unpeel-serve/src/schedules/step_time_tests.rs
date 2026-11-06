@@ -66,6 +66,7 @@ fn task(trigger: ScheduleTrigger, created: u64) -> TaskState {
             cwd: "/tmp".into(),
             worktree_path: None,
             worktree_branch: None,
+            agent: false,
             instructions: None,
         }),
     }

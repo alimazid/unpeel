@@ -31,9 +31,11 @@ pub struct LaunchPlan {
     pub cwd: String,
     pub worktree_path: Option<String>,
     pub worktree_branch: Option<String>,
-    /// Typed into the agent once it is ready; `Some` only on an Agent
-    /// Preset. A Run with instructions follows the agent lifecycle
-    /// (`agent_run`), one without follows its command's exit.
+    /// The preset is an Agent Preset: the Run follows the agent lifecycle
+    /// (`agent_run`) instead of its command's exit.
+    pub agent: bool,
+    /// Typed into the agent once it is ready; `Some` only when `agent`.
+    /// Without them the Run is done once the agent is ready.
     pub instructions: Option<String>,
 }
 
@@ -301,7 +303,7 @@ fn launch(
         Ok(plan) => Action::Start {
             schedule_id: task.schedule.id.clone(),
             run: ScheduleRun {
-                phase: plan.instructions.as_ref().map(|_| RunPhase::Launching),
+                phase: plan.agent.then_some(RunPhase::Launching),
                 ..run
             },
             plan: plan.clone(),
@@ -378,6 +380,7 @@ mod tests {
             cwd: "/tmp".into(),
             worktree_path: None,
             worktree_branch: None,
+            agent: false,
             instructions: None,
         }
     }

@@ -59,9 +59,9 @@ pub trait Effects: Send + Sync {
     /// Start the Session and wait until it exists. Runs on a helper thread.
     fn spawn(&self, request: SpawnRequest) -> Result<(), String>;
     /// Wait for the agent in a new Session to be ready, then type and
-    /// submit its instructions. Blocks (up to the readiness budget) on the
-    /// helper thread.
-    fn deliver(&self, session_id: &str, instructions: &str) -> Delivery;
+    /// submit its instructions, if it has any. Blocks (up to the readiness
+    /// budget) on the helper thread.
+    fn deliver(&self, session_id: &str, instructions: Option<&str>) -> Delivery;
     /// The Session's state and its command's exit status, if recorded.
     fn session(&self, session_id: &str) -> (SessionSeen, Option<i32>);
     /// The agent's reply as its screen shows it, for a finished agent Run
@@ -367,7 +367,7 @@ impl Scheduler {
         schedule_id: &str,
     ) -> ScheduleRun {
         let wants_screen =
-            run.status == RunStatus::Done && run.phase.is_some() && run.snippet.is_none();
+            run.status == RunStatus::Done && run.prompted_at_ms.is_some() && run.snippet.is_none();
         let instructions = schedules
             .iter()
             .find(|schedule| schedule.id == schedule_id)
@@ -449,6 +449,7 @@ impl Scheduler {
             self.warn(&schedule_id, format!("recording its Run: {error}"), events);
             return;
         }
+        let agent = plan.agent;
         let instructions = plan.instructions.clone();
         let request = SpawnRequest {
             spawned_by: format!("{}{schedule_id}", unpeel_core::schedules::SPAWNED_BY_PREFIX),
@@ -467,14 +468,14 @@ impl Scheduler {
             .name("unpeel-schedules".into())
             .spawn(move || {
                 let error = effects.spawn(request).err();
-                let instructions = instructions.filter(|_| error.is_none());
+                let delivering = agent && error.is_none();
                 let _ = outcomes.send(HelperEvent::Spawned {
                     run_id: run_id.clone(),
                     error,
-                    delivering: instructions.is_some(),
+                    delivering,
                 });
-                if let Some(instructions) = instructions {
-                    let delivery = effects.deliver(&typing_into, &instructions);
+                if delivering {
+                    let delivery = effects.deliver(&typing_into, instructions.as_deref());
                     let _ = outcomes.send(HelperEvent::Delivered { run_id, delivery });
                 }
             });
@@ -558,26 +559,32 @@ impl Effects for HostEffects {
         wait_for_manifest(&request.session_id, MANIFEST_TIMEOUT)
     }
 
-    /// Ticket 02's create-path helper: the agent's first readiness signal
+    /// Ticket 02's readiness wait: the agent's first readiness signal
     /// (program status, a hook, or its idle prompt; never the default
-    /// idle), within its 120 s budget, then paste and submit.
-    fn deliver(&self, session_id: &str, instructions: &str) -> Delivery {
-        use unpeel_core::initial_text::{InitialTextOutcome, InitialTextWhen};
-        match unpeel_core::initial_text::deliver(
-            session_id,
-            instructions,
-            unpeel_core::session_ops::InitialTextSubmitMode::PasteAndSubmit,
-            InitialTextWhen::AgentReady,
-        ) {
-            InitialTextOutcome::Delivered { .. } => Delivery::Typed {
-                at_ms: clock::epoch_ms(&clock::now()),
+    /// idle), within its 120 s budget. Then the instructions go in as one
+    /// bracketed paste and Enter, like every prompt typed into an agent.
+    fn deliver(&self, session_id: &str, instructions: Option<&str>) -> Delivery {
+        use unpeel_core::agent_readiness::ReadinessWait;
+        use unpeel_core::initial_text::InitialTextOutcome;
+        let Some(instructions) = instructions else {
+            return match unpeel_core::initial_text::wait_for_agent(session_id) {
+                ReadinessWait::Ready(_) => Delivery::Ready {
+                    at_ms: clock::epoch_ms(&clock::now()),
+                },
+                ReadinessWait::TimedOut => Delivery::NotReady,
+                ReadinessWait::Exited => Delivery::SessionEnded,
+            };
+        };
+        match unpeel_core::initial_text::prompt_when_ready(session_id, instructions) {
+            (InitialTextOutcome::Delivered { .. }, typed_at) => Delivery::Typed {
+                at_ms: typed_at.unwrap_or_else(|| clock::epoch_ms(&clock::now())),
             },
-            InitialTextOutcome::ReadinessTimeout => Delivery::NotReady,
-            InitialTextOutcome::Exited => Delivery::SessionEnded,
-            InitialTextOutcome::HostNotReady(error) => {
+            (InitialTextOutcome::ReadinessTimeout, _) => Delivery::NotReady,
+            (InitialTextOutcome::Exited, _) => Delivery::SessionEnded,
+            (InitialTextOutcome::HostNotReady(error), _) => {
                 Delivery::Failed(format!("its Session never answered: {error}"))
             }
-            InitialTextOutcome::DeliveryFailed(error) => Delivery::Failed(error),
+            (InitialTextOutcome::DeliveryFailed(error), _) => Delivery::Failed(error),
         }
     }
 
@@ -670,8 +677,8 @@ mod tests {
         spawn_error: Option<String>,
         seen: Mutex<HashMap<String, (SessionSeen, Option<i32>)>>,
         /// (session id, instructions) per delivery, and what each returns
-        /// (default: typed at 09:00:01).
-        delivered: Mutex<Vec<(String, String)>>,
+        /// (default: typed, or ready without instructions, at 09:00:01).
+        delivered: Mutex<Vec<(String, Option<String>)>>,
         delivery: Option<Delivery>,
         /// What the agent's screen shows as its reply.
         screen: Option<String>,
@@ -689,13 +696,15 @@ mod tests {
             }
         }
 
-        fn deliver(&self, session_id: &str, instructions: &str) -> Delivery {
+        fn deliver(&self, session_id: &str, instructions: Option<&str>) -> Delivery {
             self.delivered
                 .lock()
                 .unwrap()
-                .push((session_id.to_string(), instructions.to_string()));
-            self.delivery.clone().unwrap_or(Delivery::Typed {
-                at_ms: clock::epoch_ms(&now(9, 0, 1)),
+                .push((session_id.to_string(), instructions.map(str::to_string)));
+            let at_ms = clock::epoch_ms(&now(9, 0, 1));
+            self.delivery.clone().unwrap_or(match instructions {
+                Some(_) => Delivery::Typed { at_ms },
+                None => Delivery::Ready { at_ms },
             })
         }
 
@@ -985,7 +994,11 @@ mod tests {
 
     /// Run the agent task now and wait until its helper has typed.
     fn start_agent_run(scheduler: &mut Scheduler, effects: &Recording) -> String {
-        let tasks = [agent_schedule()];
+        start_run_of(scheduler, effects, agent_schedule())
+    }
+
+    fn start_run_of(scheduler: &mut Scheduler, effects: &Recording, task: Schedule) -> String {
+        let tasks = [task];
         scheduler
             .request_run_now("sch_1", &tasks)
             .expect("accepted");
@@ -1032,7 +1045,7 @@ mod tests {
             let session_id = start_agent_run(scheduler, effects);
             assert_eq!(
                 *effects.delivered.lock().unwrap(),
-                vec![(session_id.clone(), INSTRUCTIONS.to_string())],
+                vec![(session_id.clone(), Some(INSTRUCTIONS.to_string()))],
                 "the instructions are typed into the Run's own Session"
             );
             let tasks = [agent_schedule()];
@@ -1074,6 +1087,36 @@ mod tests {
                 store.clock().unwrap().last_run_status,
                 Some(RunStatus::Done)
             );
+        });
+    }
+
+    #[test]
+    fn an_agent_preset_task_without_instructions_is_done_once_its_agent_is_ready() {
+        let effects = Recording {
+            screen: Some("✻ Welcome back".into()),
+            ..Recording::default()
+        };
+        with_scheduler(effects, |scheduler, effects| {
+            let bare = Schedule {
+                instructions: None,
+                ..agent_schedule()
+            };
+            let session_id = start_run_of(scheduler, effects, bare.clone());
+            assert_eq!(
+                *effects.delivered.lock().unwrap(),
+                vec![(session_id.clone(), None)],
+                "the helper waits for the agent and types nothing"
+            );
+            sweep_seeing(
+                scheduler,
+                &[bare],
+                &seeing(&session_id, AgentStatus::Idle),
+                &now(9, 0, 2),
+            );
+            let done = latest(scheduler);
+            assert_eq!(done.status, RunStatus::Done);
+            assert_eq!(done.snippet, None, "no reply is read off its screen");
+            assert_eq!(done.prompted_at_ms, None);
         });
     }
 

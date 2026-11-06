@@ -3,7 +3,8 @@
 A task with instructions launches its preset exactly as typed, waits for the
 agent's first readiness signal, types the instructions, and follows the Run
 through the Host's own activity rows. Four fake agents (each a `claude`, so
-the preset is an Agent Preset; no integration is installed, so no hooks):
+the preset is an Agent Preset; no integration is installed, so no hooks)
+enable bracketed paste like real agents and record every byte they get:
 
 * a screen-tier agent draws Claude's idle prompt, a spinner, then its idle
   prompt under a reply: the Run is done, with the reply as its snippet;
@@ -14,10 +15,13 @@ the preset is an Agent Preset; no integration is installed, so no hooks):
 * an agent that never becomes ready: the Run fails to start, nothing is
   typed, and its Session is left open.
 
-Then a stand-in native app takes over notification edges and the
-screen-tier agent runs again: rescan never counts a screen-tier edge as
-finished in either mode, yet the Run is done, so the Runs follow the rows.
-`schedules add --instructions` is refused for a preset that is not an agent.
+The instructions run over several lines and must reach the agent as one
+submission: one bracketed paste, then Enter. A task on an Agent Preset with
+no instructions is done once its agent is ready, with nothing typed. Then a
+stand-in native app takes over notification edges and the screen-tier agent
+runs again: rescan never counts a screen-tier edge as finished in either
+mode, yet the Run is done, so the Runs follow the rows. `add` and `edit
+--instructions` are refused for a preset that is not an agent.
 """
 
 import datetime
@@ -32,14 +36,15 @@ from harness import run, run_cli  # noqa: E402
 from hook_cancellation import control, fixture_started  # noqa: E402
 
 ZONE = "America/New_York"
-INSTRUCTIONS = "run the morning briefing"
+INSTRUCTIONS = "run the morning briefing\nthen file the notes:\n\n- calendar\n- reviews"
+PASTE_START = "\x1b[200~"
 QUIT = "QUIT-FAKE-AGENT"
 # The test Host's readiness budget (`UNPEEL_AGENT_READY_TIMEOUT_MS`, honoured
 # only under UNPEEL_TEST=1). Production waits 120 s.
 READY_TIMEOUT_MS = 15_000
 
 FAKE_AGENT = r'''
-import base64, json, os, select, termios, time, tty
+import base64, json, os, termios, time, tty
 KIND = %(kind)r
 QUIT = %(quit)r
 READY_AFTER = 3.0
@@ -60,6 +65,11 @@ def report(state, msg=None):
     os.write(1, ("\x1b]7501;" + pairs + "\x1b\\").encode())
 def prompt_box(above):
     return "Claude Code\n\n" + above + "────\n❯\n────\n  ? for shortcuts"
+def echo(text):
+    lines = text.split("\n")
+    return "❯ " + "\n  ".join(lines) + "\n\n"
+# Like a real agent TUI: ask for bracketed paste, so pasted newlines are text.
+os.write(1, b"\x1b[?2004h")
 os.write(1, b"HOOK_FIXTURE_PROCESS_STARTED\r\n")
 screen("Claude Code\n\nStarting up")
 time.sleep(READY_AFTER)
@@ -69,21 +79,15 @@ elif KIND in ("program", "question"):
     report("idle")
 if KIND != "never":
     log(event="ready")
-pending = b""
 answered = False
-while True:
-    data = os.read(0, 4096)
-    if not data or data == QUIT.encode():
-        break
-    pending += data
-    if b"\r" not in pending:
-        continue
-    text, pending = pending.decode("utf-8", "replace"), b""
-    log(event="input", data=text)
+def submit(text, raw):
+    """One Enter outside a paste: the composer's text is submitted."""
+    global answered
+    log(event="submit", text=text, raw=raw)
     if KIND == "screen":
-        screen(prompt_box("❯ " + text.strip() + "\n\n✻ Levitating… (2s · esc to interrupt)\n"))
+        screen(prompt_box(echo(text) + "✻ Levitating… (2s · esc to interrupt)\n"))
         time.sleep(4)
-        screen(prompt_box("❯ " + text.strip() + "\n\n⏺ Morning briefing ready: 3 meetings, 2 reviews.\n\n✻ Brewed for 4s\n"))
+        screen(prompt_box(echo(text) + "⏺ Morning briefing ready: 3 meetings, 2 reviews.\n\n✻ Brewed for 4s\n"))
     elif KIND == "program":
         report("working", "Reading the calendar")
         time.sleep(3)
@@ -97,6 +101,34 @@ while True:
         report("working", "Sending")
         time.sleep(2)
         report("done", "Sent after your answer")
+pending, composer, raw, pasting = b"", b"", b"", False
+while True:
+    data = os.read(0, 4096)
+    if not data or data == QUIT.encode():
+        break
+    raw += data
+    pending += data
+    while pending:
+        if pasting:
+            end = pending.find(b"\x1b[201~")
+            if end < 0:
+                composer, pending = composer + pending, b""
+                break
+            composer, pending, pasting = composer + pending[:end], pending[end + 6:], False
+            continue
+        start, enter = pending.find(b"\x1b[200~"), pending.find(b"\r")
+        if start >= 0 and (enter < 0 or start < enter):
+            composer, pending, pasting = composer + pending[:start], pending[start + 6:], True
+            continue
+        if enter < 0:
+            composer, pending = composer + pending, b""
+            break
+        text = (composer + pending[:enter]).decode("utf-8", "replace")
+        composer, pending = b"", pending[enter + 1:]
+        # A second Enter on an empty composer submits nothing, as in a real agent.
+        if text.strip():
+            submit(text, raw.decode("utf-8", "replace"))
+            raw = b""
 '''
 
 
@@ -122,6 +154,10 @@ def first(entries, event):
     return next((entry for entry in entries if entry["event"] == event), None)
 
 
+def submissions(entries):
+    return [entry for entry in entries if entry["event"] == "submit"]
+
+
 def cli(home, *args, env=None):
     return run_cli(home, list(args), env=dict({"TZ": ZONE}, **(env or {})), timeout=45)
 
@@ -136,6 +172,14 @@ def history(home, task_id):
         return json.loads(cli(home, "schedules", "history", task_id, "--json").stdout)
     except ValueError:
         return []
+
+
+def listed(home, task_id):
+    try:
+        tasks = json.loads(cli(home, "schedules", "list", "--json").stdout or "[]")
+    except ValueError:
+        return {}
+    return next((task for task in tasks if task.get("id") == task_id), {})
 
 
 def run_entry(home, task_id, run_id):
@@ -161,12 +205,13 @@ def wait_status(service, home, task_id, run_id, statuses, timeout):
     return found or run_entry(home, task_id, run_id)
 
 
-def add_agent_task(case, home, name, preset):
+def add_task(case, home, name, preset, instructions=INSTRUCTIONS):
+    extra = ["--instructions", instructions] if instructions is not None else []
     added = cli(home, "schedules", "add", name, "--project", "p", "--preset", preset,
-                "--once", tomorrow(), "--instructions", INSTRUCTIONS)
+                "--once", tomorrow(), *extra)
     task_id = added.stdout.strip()
-    case.check(f"{name}: add accepts instructions on an Agent Preset",
-               added.returncode == 0 and task_id.startswith("sch_"), added.stderr)
+    case.check(f"{name}: add accepts the task", added.returncode == 0 and task_id.startswith("sch_"),
+               added.stderr)
     return task_id
 
 
@@ -181,16 +226,55 @@ def run_now(case, home, name, task_id):
 def check_refusals(case, home):
     refused = cli(home, "schedules", "add", "Script", "--project", "p", "--preset", "ok",
                   "--once", tomorrow(), "--instructions", INSTRUCTIONS)
-    case.check("instructions on a preset that is not an agent are refused",
+    case.check("add: instructions on a preset that is not an agent are refused",
                refused.returncode != 0 and "not an Agent Preset" in refused.stderr,
                refused.stderr or refused.stdout)
     huge = cli(home, "schedules", "add", "Huge", "--project", "p", "--preset", "screen",
                "--once", tomorrow(), "--instructions", "x" * (256 * 1024 + 1))
-    case.check("instructions over 256 KiB are refused",
+    case.check("add: instructions over 256 KiB are refused",
                huge.returncode != 0 and "256 KiB" in huge.stderr, huge.stderr[:200])
     names = [task.get("name") for task in home.state().get("schedules", [])]
     case.check("neither refused task was saved", "Script" not in names and "Huge" not in names,
                str(names))
+
+
+def check_edit(case, home):
+    task_id = add_task(case, home, "Editable", "screen", instructions=None)
+    edited = cli(home, "schedules", "edit", task_id, "--instructions", "summarize the inbox")
+    case.check("edit: sets instructions on an Agent Preset task",
+               edited.returncode == 0
+               and listed(home, task_id).get("instructions") == "summarize the inbox",
+               edited.stderr or json.dumps(listed(home, task_id)))
+    huge = cli(home, "schedules", "edit", task_id, "--instructions", "x" * (256 * 1024 + 1))
+    case.check("edit: instructions over 256 KiB are refused",
+               huge.returncode != 0 and "256 KiB" in huge.stderr, huge.stderr[:200])
+    to_script = cli(home, "schedules", "edit", task_id, "--preset", "ok")
+    case.check("edit: a preset that cannot take the task's instructions is refused",
+               to_script.returncode != 0 and "not an Agent Preset" in to_script.stderr
+               and listed(home, task_id).get("preset_id") == "screen", to_script.stderr)
+    removed = cli(home, "schedules", "edit", task_id, "--instructions", "")
+    case.check("edit: --instructions '' removes them",
+               removed.returncode == 0 and listed(home, task_id).get("instructions") is None,
+               removed.stderr)
+    script_id = add_task(case, home, "Plain script", "ok", instructions=None)
+    refused = cli(home, "schedules", "edit", script_id, "--instructions", "brief me")
+    case.check("edit: instructions on a preset that is not an agent are refused",
+               refused.returncode != 0 and "not an Agent Preset" in refused.stderr
+               and listed(home, script_id).get("instructions") is None, refused.stderr)
+    cli(home, "schedules", "rm", task_id)
+    cli(home, "schedules", "rm", script_id)
+
+
+def check_typed_once(case, home, label, session_id):
+    """The instructions reach the agent as one submission, after it is ready."""
+    entries = fake_log(home, session_id)
+    sent, ready = submissions(entries), first(entries, "ready")
+    case.check(f"{label}: the instructions were typed once the agent was ready",
+               bool(sent) and bool(ready) and sent[0]["t"] >= ready["t"], str(entries)[:400])
+    case.check(f"{label}: all their lines arrive as one submission, by bracketed paste",
+               bool(sent) and sent[0]["text"] == INSTRUCTIONS and PASTE_START in sent[0]["raw"],
+               json.dumps(sent)[:400])
+    return sent
 
 
 def check_done(case, service, home, label, task_id, run_id, snippet):
@@ -205,11 +289,8 @@ def check_done(case, service, home, label, task_id, run_id, snippet):
                ordered == ["launching", "prompted", "working"]
                and seen.index("prompted") < seen.index("working"), str(phases(home, task_id, run_id)))
     session_id = done.get("session_id") or ""
-    entries = fake_log(home, session_id)
-    typed, ready = first(entries, "input"), first(entries, "ready")
-    case.check(f"{label}: the instructions were typed once the agent was ready",
-               bool(typed) and bool(ready) and typed["t"] >= ready["t"]
-               and typed["data"] == INSTRUCTIONS + "\r", str(entries))
+    sent = check_typed_once(case, home, label, session_id)
+    case.check(f"{label}: nothing else was submitted", len(sent) == 1, json.dumps(sent)[:400])
     return session_id
 
 
@@ -229,6 +310,7 @@ def check_needs_you(case, service, home, task_id, run_id):
     case.check("question: answering it lets a later done edge finish the Run",
                done.get("status") == "done" and done.get("snippet") == "Sent after your answer",
                json.dumps(done))
+    check_typed_once(case, home, "question", asked.get("session_id") or "")
 
 
 def check_never_ready(case, service, home, task_id, run_id):
@@ -239,7 +321,25 @@ def check_never_ready(case, service, home, task_id, run_id):
     session_id = never.get("session_id") or ""
     case.check("never ready: its Session is left open",
                home.manifests().get(session_id, {}).get("state") == "running")
-    case.check("never ready: nothing was typed", first(fake_log(home, session_id), "input") is None,
+    case.check("never ready: nothing was typed", not submissions(fake_log(home, session_id)),
+               str(fake_log(home, session_id)))
+
+
+def check_without_instructions(case, service, home, task_id, run_id):
+    done = wait_status(service, home, task_id, run_id, ("done", "failed", "failed_to_start"),
+                       timeout=30)
+    case.check("no instructions: the Run is done once the agent is ready",
+               done.get("status") == "done" and done.get("snippet") is None
+               and done.get("prompted_at_ms") is None, json.dumps(done))
+    session_id = done.get("session_id") or ""
+    entries = fake_log(home, session_id)
+    ready = first(entries, "ready")
+    case.check("no instructions: it finished after the agent's readiness signal",
+               bool(ready) and done.get("ended_at_ms", 0) / 1000 >= ready["t"] - 0.5, str(entries))
+    service.read_for(1.5)
+    case.check("no instructions: nothing was typed and its Session stays live for the user",
+               not submissions(fake_log(home, session_id))
+               and home.manifests().get(session_id, {}).get("state") == "running",
                str(fake_log(home, session_id)))
 
 
@@ -273,12 +373,13 @@ def body(case):
         return
     try:
         check_refusals(case, home)
-        tasks = {kind: add_agent_task(case, home, kind.title(), kind)
+        check_edit(case, home)
+        tasks = {kind: add_task(case, home, kind.title(), kind)
                  for kind in ("screen", "program", "question", "never")}
-        listed = json.loads(cli(home, "schedules", "list", "--json").stdout or "[]")
-        case.check("list shows a task's instructions",
-                   any(t.get("id") == tasks["screen"] and t.get("instructions") == INSTRUCTIONS
-                       for t in listed), json.dumps(listed)[:300])
+        tasks["bare"] = add_task(case, home, "Bare", "screen", instructions=None)
+        case.check("list shows a task's instructions, lines and all",
+                   listed(home, tasks["screen"]).get("instructions") == INSTRUCTIONS,
+                   json.dumps(listed(home, tasks["screen"]))[:300])
         runs = {kind: run_now(case, home, kind, task_id) for kind, task_id in tasks.items()}
         for kind, run_id in runs.items():
             entry = wait_status(service, home, tasks[kind], run_id, ("running", "done", "failed",
@@ -290,6 +391,7 @@ def body(case):
                    "Morning briefing ready: 3 meetings, 2 reviews.")
         check_done(case, service, home, "program", tasks["program"], runs["program"],
                    "Briefing sent to the team")
+        check_without_instructions(case, service, home, tasks["bare"], runs["bare"])
         check_needs_you(case, service, home, tasks["question"], runs["question"])
         check_never_ready(case, service, home, tasks["never"], runs["never"])
         check_native_owner(case, service, home, tasks["screen"])

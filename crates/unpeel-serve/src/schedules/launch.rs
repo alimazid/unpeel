@@ -40,6 +40,7 @@ pub fn resolve(
         cwd,
         worktree_path: project.worktree_path.clone(),
         worktree_branch: project.worktree_branch.clone(),
+        agent: unpeel_core::agent_readiness::is_agent_command(&preset.command),
         instructions: instructions(schedule, preset)?,
     })
 }
@@ -187,12 +188,13 @@ mod tests {
         .expect("launchable");
         assert_eq!(plan.instructions.as_deref(), Some("brief me"));
         assert_eq!(plan.command, "claude --model opus", "launched as typed");
+        assert!(plan.agent);
 
-        // Blank instructions are none: the Run follows its command's exit.
+        // Blank instructions are none: the Run is done once the agent is ready.
         let blank = resolve(&with_instructions("claude", "  \n"), &projects, &presets).unwrap();
-        assert_eq!(blank.instructions, None);
+        assert_eq!((blank.agent, blank.instructions), (true, None));
         let script = resolve(&schedule("p", "ok"), &projects, &presets).unwrap();
-        assert_eq!(script.instructions, None);
+        assert_eq!((script.agent, script.instructions), (false, None));
     }
 
     #[test]
