@@ -37,6 +37,11 @@ const MAX_STATUS_CHARS: usize = 32;
 /// Pending caps: past either, reports get "inbox full".
 pub const MAX_PENDING_ITEMS: usize = 200;
 pub const MAX_PENDING_BYTES: u64 = 2 * 1024 * 1024;
+/// Delivered history, so `item_id` reads keep working after a paste.
+pub const DELIVERED_KEEP_ITEMS: usize = 200;
+pub const DELIVERED_KEEP_MS: u64 = 24 * 60 * 60 * 1000;
+/// Deliveries `list` shows.
+pub const LIST_DELIVERED: usize = 20;
 
 /// Who queued an item. `Host` is reachable only from Host code; an MCP
 /// enqueue only ever names the calling Session.
@@ -348,6 +353,7 @@ impl Store {
             mark_delivered(&dir, item_id, now_ms)?;
         }
         remove_if_present(&dir.join(INFLIGHT_FILE))?;
+        prune_delivered(&dir, now_ms)?;
         Ok(true)
     }
 
@@ -363,14 +369,45 @@ impl Store {
         Ok(true)
     }
 
+    /// Pull mode: mark every pending item up to and including `item_id`
+    /// consumed, so it is never pasted. Returns how many it consumed (0 when
+    /// `item_id` was already delivered).
+    pub fn ack_through(&self, session_id: &str, item_id: &str, now_ms: u64) -> Result<usize> {
+        let dir = self.dir(session_id)?;
+        if !valid_id(item_id) {
+            return Err(InboxError::Invalid(format!("invalid item id {item_id:?}")));
+        }
+        let _lock = self.lock(session_id)?;
+        let pending = settled_pending(&dir)?;
+        let Some(position) = pending.iter().position(|item| item.id == item_id) else {
+            if dir.join(DELIVERED_DIR).join(file_name(item_id)).exists() {
+                return Ok(0);
+            }
+            return Err(InboxError::Invalid(format!(
+                "no item {item_id} in the inbox of {session_id}"
+            )));
+        };
+        for item in &pending[..=position] {
+            mark_delivered(&dir, &item.id, now_ms)?;
+        }
+        prune_delivered(&dir, now_ms)?;
+        Ok(position + 1)
+    }
+
+    /// Pending headers (FIFO) and the last `LIST_DELIVERED` deliveries
+    /// (newest first).
     pub fn list(&self, session_id: &str) -> Result<Listing> {
         let dir = self.dir(session_id)?;
         let pending = read_items(&dir.join(PENDING_DIR));
-        let mut delivered = read_items(&dir.join(DELIVERED_DIR));
-        delivered.reverse();
+        let delivered = read_items(&dir.join(DELIVERED_DIR));
         Ok(Listing {
             pending: pending.iter().map(header).collect(),
-            delivered: delivered.iter().map(header).collect(),
+            delivered: delivered
+                .iter()
+                .rev()
+                .take(LIST_DELIVERED)
+                .map(header)
+                .collect(),
         })
     }
 
@@ -789,6 +826,20 @@ fn mark_delivered(dir: &Path, item_id: &str, now_ms: u64) -> Result<()> {
     };
     write_item(&dir.join(DELIVERED_DIR), &delivered)?;
     remove_if_present(&pending_path)
+}
+
+/// Delivered history keeps at most `DELIVERED_KEEP_ITEMS` items, none
+/// older than `DELIVERED_KEEP_MS`.
+fn prune_delivered(dir: &Path, now_ms: u64) -> Result<()> {
+    let delivered = read_items(&dir.join(DELIVERED_DIR));
+    let excess = delivered.len().saturating_sub(DELIVERED_KEEP_ITEMS);
+    for (index, item) in delivered.iter().enumerate() {
+        let delivered_at = item.delivered_at.unwrap_or(0);
+        if index < excess || now_ms.saturating_sub(delivered_at) > DELIVERED_KEEP_MS {
+            remove_if_present(&dir.join(DELIVERED_DIR).join(file_name(&item.id)))?;
+        }
+    }
+    Ok(())
 }
 
 fn read_claim(dir: &Path) -> Option<Claim> {
@@ -1396,5 +1447,69 @@ mod tests {
         // Every item, collapsed or not, is part of the batch that completes.
         assert!(store.complete("router", &batch.batch_id, 5).unwrap());
         assert_eq!(store.list("router").unwrap().delivered.len(), 5);
+    }
+
+    fn enqueue_reports(store: &Store, range: std::ops::Range<usize>, now_ms: u64) -> Vec<String> {
+        range
+            .map(|n| {
+                store
+                    .enqueue("router", report("w1", &format!("r{n}")), now_ms)
+                    .unwrap()
+                    .item_id
+            })
+            .collect()
+    }
+
+    #[test]
+    fn ack_through_consumes_pending_items_in_pull_mode() {
+        let (_tmp, store) = store();
+        let ids = enqueue_reports(&store, 0..5, 1);
+        assert_eq!(store.ack_through("router", &ids[2], 10).unwrap(), 3);
+        assert_eq!(pending_summaries(&store, "router"), ["r3", "r4"]);
+        let delivered: Vec<String> = store
+            .list("router")
+            .unwrap()
+            .delivered
+            .into_iter()
+            .map(|h| h.summary)
+            .collect();
+        assert_eq!(delivered, ["r2", "r1", "r0"]);
+        // Already consumed: nothing to do. Unknown or malformed: an error.
+        assert_eq!(store.ack_through("router", &ids[1], 11).unwrap(), 0);
+        assert!(matches!(
+            store.ack_through("router", "1-nope", 12),
+            Err(InboxError::Invalid(_))
+        ));
+        assert!(store.ack_through("router", "../x", 12).is_err());
+        // Consumed items never go out in a paste.
+        let batch = store.claim_batch("router", 13).unwrap().unwrap();
+        assert_eq!(summaries(&batch.items), ["r3", "r4"]);
+    }
+
+    #[test]
+    fn the_listing_shows_the_last_20_deliveries_and_history_is_kept_200_items_for_a_day() {
+        let (_tmp, store) = store();
+        let first = enqueue_reports(&store, 0..150, 1);
+        store.ack_through("router", &first[149], 1_000).unwrap();
+        let second = enqueue_reports(&store, 150..230, 2);
+        store.ack_through("router", &second[79], 2_000).unwrap();
+
+        let listing = store.list("router").unwrap();
+        assert!(listing.pending.is_empty());
+        assert_eq!(listing.delivered.len(), LIST_DELIVERED);
+        assert_eq!(listing.delivered[0].summary, "r229");
+        assert_eq!(listing.delivered[19].summary, "r210");
+        // Past 200 delivered items the oldest go.
+        assert!(store.item("router", &first[29]).unwrap().is_none());
+        assert!(store.item("router", &first[30]).unwrap().is_some());
+
+        // A day later, everything delivered before then goes too.
+        let later = 2_000 + DELIVERED_KEEP_MS + 1;
+        let fresh = enqueue_reports(&store, 230..231, later);
+        store.ack_through("router", &fresh[0], later).unwrap();
+        let delivered = store.list("router").unwrap().delivered;
+        assert_eq!(delivered.len(), 1);
+        assert_eq!(delivered[0].summary, "r230");
+        assert!(store.item("router", &second[79]).unwrap().is_none());
     }
 }
