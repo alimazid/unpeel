@@ -7222,6 +7222,52 @@ final class UnpeelStore: ObservableObject {
         }
     }
 
+    /// Fork-only: the Session the Host marked as this workspace's Super
+    /// Agent (the Router), if any.
+    var superAgentSessionID: String? {
+        SuperAgentMenu.routerID(in: remoteSummariesByID.values)
+    }
+
+    /// Fork-only: which Super Agent items a Session's menu offers. All three
+    /// are Host verbs, each behind its own advertised operation.
+    func superAgentMenu(forSession sessionID: String) -> SuperAgentMenu {
+        guard routesSessionVerbThroughHost(sessionID),
+              let session = (displaysHostProjection ? remoteSessionsByID : sessionsByID)[sessionID]
+        else { return .none }
+        let runtime = remoteHostRuntime
+        return SuperAgentMenu(
+            session: session,
+            routerID: superAgentSessionID,
+            supports: { runtime.supportsHostOperation($0) }
+        )
+    }
+
+    /// Fork-only: Make Super Agent. The Host moves a previous Super Agent's
+    /// Workers to this Session; the menu and badge follow its next snapshot.
+    func makeSuperAgent(_ sessionID: String) {
+        guard superAgentMenu(forSession: sessionID).canMake else { return }
+        performRemoteVerb("Couldn't make the session the Super Agent") { runtime in
+            try await runtime.setSuperAgent(sessionID)
+        }
+    }
+
+    /// Fork-only: Stop Being Super Agent. Its Workers become the user's.
+    func stopBeingSuperAgent(_ sessionID: String) {
+        guard superAgentMenu(forSession: sessionID).canStopBeing else { return }
+        performRemoteVerb("Couldn't stop the session being the Super Agent") { runtime in
+            try await runtime.clearSuperAgent(sessionID)
+        }
+    }
+
+    /// Fork-only: Hand to Super Agent. The Session becomes the Super
+    /// Agent's Worker and is asked to brief it.
+    func handToSuperAgent(_ sessionID: String) {
+        guard superAgentMenu(forSession: sessionID).canHandOver else { return }
+        performRemoteVerb("Couldn't hand the session to the Super Agent") { runtime in
+            try await runtime.handOverToSuperAgent(sessionID)
+        }
+    }
+
     /// Whether a Session can expose Pin/Unpin in its context menu. Remote
     /// scopes require the Host-advertised operation; local pins use the
     /// shared app-state contract directly.

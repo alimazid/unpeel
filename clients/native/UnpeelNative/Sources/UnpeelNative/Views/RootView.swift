@@ -686,7 +686,8 @@ struct ActivityMenuSessions {
     let jobs: [SessionEntry]
     let blockers: [SessionEntry]
     let finished: [SessionEntry]
-    /// Fork-only: pinned sessions in none of the groups above.
+    /// Fork-only: pinned sessions and the Super Agent in none of the
+    /// groups above.
     let pinned: [SessionEntry]
 
     init(
@@ -835,8 +836,8 @@ struct ActivityMenuList: View {
     let jobs: [GlobalActivityMenuItem]
     let blockers: [GlobalActivityMenuItem]
     let finished: [GlobalActivityMenuItem]
-    /// Fork-only: the AGENTS section's always-visible pinned sessions,
-    /// after every activity group. The dropdowns leave it empty.
+    /// Fork-only: the AGENTS section's always-visible pinned sessions and
+    /// Super Agent, after every activity group. The dropdowns leave it empty.
     var pinned: [GlobalActivityMenuItem] = []
     let onSelect: (GlobalActivityMenuItem) -> Void
     /// Footer link to the app-wide "All recent" page.
@@ -966,7 +967,8 @@ struct ActivityMenuList: View {
             unread: style.unread,
             working: style.working,
             blocked: style.blocked,
-            pinned: style.pinned
+            pinned: style.pinned,
+            superAgent: item.session.superAgent
         ) {
             onSelect(item)
         }
@@ -1046,6 +1048,10 @@ private struct TitlebarActivityMenuRow: View {
     /// Fork-only: an idle pinned row in the AGENTS section — the CLI logo
     /// (left) and the sidebar's pin glyph (right).
     var pinned = false
+    /// Fork-only: the workspace's Super Agent — its badge leads the trailing
+    /// slot in every group, and replaces the pin glyph (an idle Super Agent
+    /// rides the pinned group whether or not it is pinned).
+    var superAgent = false
     let onSelect: () -> Void
 
     @State private var hovering = false
@@ -1106,6 +1112,10 @@ private struct TitlebarActivityMenuRow: View {
                 }
                 Spacer(minLength: 0)
 
+                if superAgent {
+                    SuperAgentBadge(tint: Theme.mutedForeground)
+                        .frame(width: 16, height: 16)
+                }
                 // Trailing: CLI logo while working or finished, else status.
                 if blocked {
                     Text("Blocked")
@@ -1118,7 +1128,7 @@ private struct TitlebarActivityMenuRow: View {
                 } else if working || unread {
                     ToolIconView(command: command, size: 16)
                         .frame(width: 16, height: 16)
-                } else if pinned {
+                } else if pinned, !superAgent {
                     ChromeIconView(icon: .pin, size: 12)
                         .foregroundStyle(Theme.mutedForeground)
                         .frame(width: 16, height: 16)

@@ -4,10 +4,10 @@
 //
 //  Fork-only: sidebar sections. AGENTS: the titlebar activity dropdown —
 //  blocked, working, then recently finished agents, and the "All recent"
-//  link — as a section below PROJECTS. Pinned sessions follow, so they
-//  never drop out of it. Unlike the bell (which stays, across every
-//  workspace), it lists the current workspace only, and its rows carry the
-//  PROJECTS session menu (`AgentsSessionRow`).
+//  link — as a section below PROJECTS. Pinned sessions and the Super Agent
+//  follow, so they never drop out of it. Unlike the bell (which stays,
+//  across every workspace), it lists the current workspace only, and its
+//  rows carry the PROJECTS session menu (`AgentsSessionRow`).
 //
 
 import SwiftUI

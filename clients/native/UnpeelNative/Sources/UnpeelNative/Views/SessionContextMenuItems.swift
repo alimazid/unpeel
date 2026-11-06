@@ -43,6 +43,10 @@ struct SessionContextMenuItems: View {
     let onRestartApp: (() -> Void)?
     let onSetNotifyWhenDone: (Bool) -> Void
     let onSetAgentAccessRole: (McpRole) -> Void
+    /// Fork-only: the Super Agent items (Host verbs). Nil hides each one.
+    let onMakeSuperAgent: (() -> Void)?
+    let onStopBeingSuperAgent: (() -> Void)?
+    let onHandToSuperAgent: (() -> Void)?
     let onCopyTranscript: (String, Int) -> Void
     let onStop: () -> Void
     let onRequestRemove: () -> Void
@@ -129,6 +133,24 @@ struct SessionContextMenuItems: View {
             ))
         }
         Divider()
+        // Fork-only: the Super Agent runs other agent Sessions for the
+        // user. Only a Claude Code Session can become it; any agent can be
+        // handed to it.
+        if let onMakeSuperAgent {
+            Button("Make Super Agent") {
+                onMakeSuperAgent()
+            }
+        }
+        if let onStopBeingSuperAgent {
+            Button("Stop Being Super Agent") {
+                onStopBeingSuperAgent()
+            }
+        }
+        if let onHandToSuperAgent {
+            Button("Hand to Super Agent") {
+                onHandToSuperAgent()
+            }
+        }
         if let agentAccessRole {
             agentAccessMenu(current: agentAccessRole)
         }
