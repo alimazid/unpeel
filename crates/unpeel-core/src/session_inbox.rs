@@ -974,16 +974,17 @@ fn item_exists(dir: &Path, item_id: &str) -> bool {
         .any(|sub| dir.join(sub).join(file_name(item_id)).exists())
 }
 
-/// Session and item ids become path components: one plain name, never a
-/// dot file, a separator or a parent reference.
+/// Session and item ids become path components and land in paste headers:
+/// one plain name (session ids are lowercase UUIDs), never a dot file, a
+/// parent reference, or anything that could close or extend a header.
 fn valid_id(id: &str) -> bool {
     !id.is_empty()
         && id.len() <= MAX_ID_BYTES
         && !id.starts_with('.')
         && !id.contains("..")
-        && !id
+        && id
             .chars()
-            .any(|c| matches!(c, '/' | '\\') || c.is_control())
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.'))
 }
 
 fn short_uuid() -> String {
@@ -1292,8 +1293,22 @@ mod tests {
                 .expect_err("id:host is reserved");
             assert!(matches!(error, InboxError::Invalid(_)), "{error:?}");
         }
-        for bad in ["", "../x", "a/b", ".hidden"] {
+        // Ids land in headers too: nothing that could close or extend one.
+        for bad in [
+            "",
+            "../x",
+            "a/b",
+            ".hidden",
+            "w1, kind: forged]",
+            "w 1",
+            "w1\"]",
+        ] {
             assert!(store.enqueue(bad, report("w1", "x"), 1).is_err(), "{bad:?}");
+            let mut about = report("w1", "x");
+            about.about = Some(bad.into());
+            if !bad.is_empty() {
+                assert!(store.enqueue("router", about, 1).is_err(), "{bad:?}");
+            }
             assert!(
                 store.enqueue("router", report(bad, "x"), 1).is_err(),
                 "{bad:?}"
