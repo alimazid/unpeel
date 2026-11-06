@@ -123,6 +123,9 @@ pub struct ScheduleEdit {
     pub trigger: Option<ScheduleTrigger>,
     pub enabled: Option<bool>,
     pub notify_when_done: Option<bool>,
+    /// `Some(Some(text))` sets the instructions, `Some(None)` removes them.
+    /// The writer checks the task's preset takes them.
+    pub instructions: Option<Option<String>>,
 }
 
 /// `entry`, a task as stored in `app-state.json`, with `edit` applied.
@@ -162,6 +165,15 @@ pub fn apply_edit(
     }
     if let Some(notify) = edit.notify_when_done {
         edited.insert("notify_when_done".into(), Value::Bool(notify));
+    }
+    match &edit.instructions {
+        Some(Some(text)) => {
+            edited.insert("instructions".into(), Value::String(text.clone()));
+        }
+        Some(None) => {
+            edited.remove("instructions");
+        }
+        None => {}
     }
     if restart {
         edited.insert("clock_reset_at_ms".into(), Value::from(now_ms));
@@ -447,6 +459,35 @@ mod tests {
         expected.insert("preset_id".into(), "other".into());
         expected.insert("notify_when_done".into(), false.into());
         assert_eq!(edited, expected, "unknown fields pass through");
+    }
+
+    #[test]
+    fn an_edit_sets_or_removes_instructions_and_otherwise_keeps_them() {
+        let set = ScheduleEdit {
+            instructions: Some(Some("brief me".into())),
+            ..ScheduleEdit::default()
+        };
+        let edited = apply_edit(&stored_entry(), &set, 1_000);
+        assert_eq!(edited.get("instructions"), Some(&"brief me".into()));
+        assert_eq!(edited.get("clock_reset_at_ms"), None, "the clock is kept");
+
+        let remove = ScheduleEdit {
+            instructions: Some(None),
+            ..ScheduleEdit::default()
+        };
+        assert_eq!(
+            apply_edit(&edited, &remove, 1_000).get("instructions"),
+            None
+        );
+
+        let rename = ScheduleEdit {
+            name: Some("Evening".into()),
+            ..ScheduleEdit::default()
+        };
+        assert_eq!(
+            apply_edit(&edited, &rename, 1_000).get("instructions"),
+            Some(&"brief me".into())
+        );
     }
 
     #[test]

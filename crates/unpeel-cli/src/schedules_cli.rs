@@ -18,7 +18,7 @@ usage: unpeel schedules [list] [--json]
        unpeel schedules add <name> --project <id|name> --preset <id|label>
                             <trigger> [--instructions <text>] [--no-notify] [--json]
        unpeel schedules edit <id|name> [--name <name>] [--project <id|name>]
-                             [--preset <id|label>] [<trigger>]
+                             [--preset <id|label>] [<trigger>] [--instructions <text>]
                              [--notify | --no-notify] [--json]
        unpeel schedules pause|resume <id|name>
        unpeel schedules run <id|name> [--json]
@@ -47,7 +47,9 @@ refuse inside a Session.
 
 --instructions is for an Agent Preset (one that starts an agent Unpeel can
 tell is ready): each Run launches it as typed, types the instructions once
-the agent is ready, and follows it to done or needs you. Up to 256 KiB.";
+the agent is ready, and follows it to done or needs you. Up to 256 KiB.
+`edit --instructions ''` removes them. An Agent Preset task without
+instructions is done once its agent is ready.";
 
 /// Most characters a task name keeps.
 const MAX_NAME_CHARS: usize = 200;
@@ -566,6 +568,7 @@ fn edit(args: &Args, json: bool) -> Result<(), String> {
             None
         }
     };
+    let instructions = edit_instructions(args, &schedule, preset.as_ref(), in_project)?;
     let change = ScheduleEdit {
         name: args
             .values
@@ -577,10 +580,12 @@ fn edit(args: &Args, json: bool) -> Result<(), String> {
         trigger: trigger_flags(args)?,
         enabled: None,
         notify_when_done: notify_flag(args)?,
+        instructions,
     };
     if change == ScheduleEdit::default() {
         return Err(format!(
-            "nothing to change: give --name, --project, --preset, a Trigger, --notify or --no-notify\n\n{HELP}"
+            "nothing to change: give --name, --project, --preset, a Trigger, --instructions, \
+             --notify or --no-notify\n\n{HELP}"
         ));
     }
     let edited = save_edit(&schedule.id, &change)?;
@@ -597,6 +602,37 @@ fn edit(args: &Args, json: bool) -> Result<(), String> {
         );
     }
     Ok(())
+}
+
+/// `edit --instructions`: new text is checked against the preset the task
+/// will have (add's rules), an empty value removes them, and a new preset
+/// that cannot take the instructions the task keeps is refused.
+fn edit_instructions(
+    args: &Args,
+    schedule: &Schedule,
+    new_preset: Option<&(String, String)>,
+    in_project: &str,
+) -> Result<Option<Option<String>>, String> {
+    let given = args.values.get("instructions");
+    if given.is_some_and(|text| text.trim().is_empty()) {
+        return Ok(Some(None));
+    }
+    let kept = schedule
+        .instructions
+        .as_deref()
+        .filter(|text| !text.trim().is_empty() && new_preset.is_some());
+    let Some(text) = given.map(String::as_str).or(kept) else {
+        return Ok(None);
+    };
+    let (preset_id, command) = match new_preset {
+        Some(preset) => preset.clone(),
+        None => resolve_preset(&schedule.preset_id, in_project)?,
+    };
+    checked_instructions(text, &preset_id, &command).map_err(|error| match given {
+        Some(_) => error,
+        None => format!("{error}; the task has instructions: remove them with --instructions ''"),
+    })?;
+    Ok(given.map(|text| Some(text.clone())))
 }
 
 fn pause(args: &Args) -> Result<(), String> {

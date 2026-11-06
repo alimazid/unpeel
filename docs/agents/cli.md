@@ -95,7 +95,7 @@ unpeel schedules [list] [--json]
 unpeel schedules add <name> --project <id|name> --preset <id|label> <trigger>
                      [--instructions <text>] [--no-notify]
 unpeel schedules edit <id|name> [--name …] [--project …] [--preset …] [<trigger>]
-                      [--notify|--no-notify]
+                      [--instructions <text>] [--notify|--no-notify]
 unpeel schedules pause|resume|run|history|rm <id|name>
 
 <trigger>: --hourly <minute> | --daily <HH:MM[:SS]> | --weekdays <HH:MM[:SS]>
@@ -106,7 +106,10 @@ unpeel schedules pause|resume|run|history|rm <id|name>
 `--instructions` is accepted only for an Agent Preset — a preset whose command
 names a catalog runtime declaring a readiness signal (hooks, program status,
 or a `[screen]` idle prompt; `agent_readiness::is_agent_command`) — and capped
-at 256 KiB; any other preset is refused with the reason.
+at 256 KiB; any other preset is refused with the reason. `edit` checks new
+instructions against the preset the task will have, removes them with
+`--instructions ''`, and refuses a new preset that cannot take the
+instructions the task keeps.
 
 `add`, `edit`, `pause`, `resume` and `rm` edit the raw `schedules` array
 through `app_state::edit` (unknown entries and fields pass through; an edit
