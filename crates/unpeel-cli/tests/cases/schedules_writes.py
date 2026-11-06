@@ -120,17 +120,21 @@ def check_create(case, home, phone):
                and saved.get("notify_when_done") is True, json.dumps(saved))
 
     before = json.dumps(home.state().get("schedules"))
-    for what, change, expected in (
-        ("a past Once", {"trigger": {"kind": "once", "at": "2001-01-01T09:00"}}, "past"),
-        ("instructions on a script preset", {"instructions": "hello"}, "Agent Preset"),
-        ("an unknown preset", {"presetID": "gone"}, "preset"),
+    for what, change, code in (
+        ("a past Once", {"trigger": {"kind": "once", "at": "2001-01-01T09:00"}}, "trigger_in_past"),
+        ("a Trigger that never reads", {"trigger": {"kind": "daily", "time": "25:00"}},
+         "invalid_trigger"),
+        ("instructions on a script preset", {"instructions": "hello"}, "not_agent_preset"),
+        ("an unknown preset", {"presetID": "gone"}, "preset_missing"),
+        ("an unknown Project", {"projectID": "gone"}, "project_missing"),
     ):
         body = {"name": "Bad", "projectID": "p", "presetID": "ok",
                 "trigger": {"kind": "daily", "time": "10:00"}}
         body.update(change)
         status, answer = phone.call("POST", "/mobile/schedules", body)
-        case.check(f"{what} is refused with a reason",
-                   status == 400 and expected in (answer.get("error") or ""), json.dumps(answer))
+        case.check(f"{what} is refused with its code and a reason",
+                   status == 400 and answer.get("code") == code and bool(answer.get("error")),
+                   json.dumps(answer))
     case.check("nothing refused was saved", json.dumps(home.state().get("schedules")) == before)
 
     status, body = phone.call("POST", "/mobile/schedules", {
@@ -195,10 +199,11 @@ def check_run_now(case, service, home, phone, local):
     case.check("the Run is in progress", bool(running), json.dumps(listed(phone, slow)))
     status, refused = phone.call("POST", "/mobile/schedules/run", {"scheduleID": slow})
     case.check("a second Run now is refused while it runs",
-               status == 409 and "in progress" in (refused.get("error") or ""),
+               status == 409 and refused.get("code") == "run_in_progress",
                json.dumps([status, refused]))
-    status, _ = phone.call("POST", "/mobile/schedules/run", {"scheduleID": "sch_gone"})
-    case.check("Run now of an unknown task is 404", status == 404, str(status))
+    status, gone = phone.call("POST", "/mobile/schedules/run", {"scheduleID": "sch_gone"})
+    case.check("Run now of an unknown task is 404",
+               status == 404 and gone.get("code") == "unknown_task", json.dumps([status, gone]))
     return slow, running.get("sessionID")
 
 

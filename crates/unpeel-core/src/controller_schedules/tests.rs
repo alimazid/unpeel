@@ -90,7 +90,7 @@ fn run_history_names_what_is_wrong_with_its_query() {
                 .collect();
             runs_at(state, root, &query)
                 .map(|_| 200)
-                .unwrap_or_else(|f| f.0)
+                .unwrap_or_else(|f| f.status)
         };
         assert_eq!(status(&[]), 400, "no schedule id");
         assert_eq!(status(&[("scheduleID", "../escape")]), 400);

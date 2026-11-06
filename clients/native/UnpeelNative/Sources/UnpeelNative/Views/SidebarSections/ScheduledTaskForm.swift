@@ -288,49 +288,40 @@ enum ScheduledTaskForm {
     }
 }
 
-/// The Host's refusals as a person reads them. The bridge words a refused
-/// write as "… returned <status>: <Host text>"; anything else keeps its
-/// own words (it is already the app's, e.g. "Update Unpeel on the Host").
+/// The Host's refusals as a person reads them, by the machine-readable code
+/// a write route answers with (`scheduleWriteRefusals` in
+/// `protocol/host-conformance-v1.json`), never by its English text. A code
+/// this build does not know shows the Host's own message; anything that is
+/// not a Host refusal keeps its own words (it is already the app's, e.g.
+/// "Update Unpeel on the Host").
 enum ScheduledTaskErrorText {
     static func message(for error: Error) -> String {
         let raw = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
-        guard let (status, text) = hostAnswer(in: raw) else { return raw }
-        switch status {
-        case 409: return "A Run of this task is still in progress. Try again once it finishes."
-        case 404: return "This Scheduled Task no longer exists on the Host."
-        case 403: return "Only you can change Scheduled Tasks on this Host."
-        default: break
-        }
-        if text.contains("in the past") { return "That time has already passed. Pick a time in the future." }
-        if text.contains("not an Agent Preset") {
-            return "This preset doesn't start an agent Unpeel can tell is ready, so it can't take instructions. "
-                + "Clear them or pick an agent preset."
-        }
-        if let detail = text.removingPrefix("invalid Trigger: ") {
-            return "That schedule isn't valid: \(sentence(detail, capitalized: false))"
-        }
-        return sentence(text, capitalized: true)
+        guard let refusal = error as? NativeRemoteBackendError, refusal.hostStatus != nil else { return raw }
+        if let code = refusal.hostCode, let text = byCode[code] { return text }
+        return refusal.hostMessage.map(sentence) ?? raw
     }
 
-    /// `(status, Host text)` from a bridge message, if it carries one.
-    private static func hostAnswer(in message: String) -> (Int, String)? {
-        guard let marker = message.range(of: "returned ", options: .backwards) else { return nil }
-        let rest = message[marker.upperBound...]
-        let digits = rest.prefix(3)
-        guard digits.count == 3, let status = Int(digits), rest.dropFirst(3).hasPrefix(": ") else { return nil }
-        let text = rest.dropFirst(5).trimmingCharacters(in: .whitespacesAndNewlines)
-        return text.isEmpty ? nil : (status, text)
-    }
+    /// One sentence per code a Controller words itself.
+    static let byCode: [String: String] = [
+        "run_in_progress": "A Run of this task is still in progress. Try again once it finishes.",
+        "run_no_answer": "The Host didn't answer in time. The Run may still start; check its history.",
+        "unknown_task": "This Scheduled Task no longer exists on the Host.",
+        "forbidden": "Only you can change Scheduled Tasks on this Host.",
+        "trigger_in_past": "That time has already passed. Pick a time in the future.",
+        "invalid_trigger": "That Trigger isn't valid. Check its time and how often it repeats.",
+        "not_agent_preset": "This preset doesn't start an agent Unpeel can tell is ready, so it can't take "
+            + "instructions. Clear them or pick an agent preset.",
+        "instructions_too_large": "The instructions are too long for one Run. Shorten them.",
+        "project_missing": "That Project isn't on the Host, or has no folder for a Run to start in. "
+            + "Pick another Project.",
+        "preset_missing": "That preset isn't available in this Project, or it's turned off. Pick another preset.",
+        "host_unavailable": "The Host service isn't ready to change Scheduled Tasks yet. Try again in a moment.",
+    ]
 
-    private static func sentence(_ text: String, capitalized: Bool) -> String {
-        var words = text
-        if capitalized, let first = words.first { words = first.uppercased() + words.dropFirst() }
+    private static func sentence(_ text: String) -> String {
+        var words = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        if let first = words.first { words = first.uppercased() + words.dropFirst() }
         return words.hasSuffix(".") ? words : words + "."
-    }
-}
-
-private extension String {
-    func removingPrefix(_ prefix: String) -> String? {
-        hasPrefix(prefix) ? String(dropFirst(prefix.count)) : nil
     }
 }

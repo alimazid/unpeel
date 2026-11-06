@@ -24,7 +24,8 @@ protocol ScheduledTasksSource: AnyObject, Sendable {
 }
 
 /// The Host's write routes (`RemoteHostRuntime` in the app). A refusal is
-/// thrown as the bridge words it; `ScheduledTaskErrorText` rewords it.
+/// thrown as the bridge's error, carrying the route's code;
+/// `ScheduledTaskErrorText` words it from that code.
 @MainActor
 protocol ScheduledTasksWriter: AnyObject {
     func createSchedule(_ request: RemoteScheduleCreate) async throws -> RemoteScheduledTask

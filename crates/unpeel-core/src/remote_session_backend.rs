@@ -587,6 +587,9 @@ pub enum RemoteSessionBackendError {
         operation: &'static str,
         status: u16,
         message: Option<String>,
+        /// The machine-readable reason a route gave (`code` in its error
+        /// body), for Controllers to branch on instead of the message.
+        code: Option<String>,
     },
     InvalidResponse {
         operation: &'static str,
@@ -627,6 +630,7 @@ impl fmt::Display for RemoteSessionBackendError {
                 operation,
                 status,
                 message,
+                ..
             } => match message {
                 Some(message) => write!(formatter, "Host {operation} returned {status}: {message}"),
                 None => write!(formatter, "Host {operation} returned {status}"),
@@ -4046,8 +4050,9 @@ fn connection_error_invalidates_generation(error: &HostConnectionError) -> bool 
 }
 
 fn host_status(operation: &'static str, status: u16, body: &[u8]) -> RemoteSessionBackendError {
-    let message = serde_json::from_slice::<Value>(body)
-        .ok()
+    let parsed = serde_json::from_slice::<Value>(body).ok();
+    let message = parsed
+        .as_ref()
         .and_then(|value| {
             value
                 .get("error")
@@ -4060,7 +4065,20 @@ fn host_status(operation: &'static str, status: u16, body: &[u8]) -> RemoteSessi
         operation,
         status,
         message,
+        code: parsed.as_ref().and_then(host_error_code),
     }
+}
+
+/// A route's machine-readable error code: a short lowercase identifier, or
+/// nothing (anything else is not a code a Controller could branch on).
+fn host_error_code(body: &Value) -> Option<String> {
+    let code = body.get("code")?.as_str()?;
+    let well_formed = !code.is_empty()
+        && code.len() <= 64
+        && code
+            .bytes()
+            .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'_');
+    well_formed.then(|| code.to_owned())
 }
 
 fn invalid_output(message: &str) -> RemoteSessionBackendError {
@@ -4100,6 +4118,40 @@ mod tests {
     use serde_json::json;
 
     use crate::host_connection::{DeliveryState, HostReply, PreparedHostCall, RequestSemantics};
+
+    /// A route's refusal keeps its machine-readable `code` beside the
+    /// message, so a Controller never has to read the message to word it.
+    #[test]
+    fn a_host_refusal_keeps_its_machine_readable_code() {
+        let error = host_status(
+            "Host resource",
+            400,
+            br#"{"error":"invalid Trigger: 2020-01-01T09:00 is in the past","code":"trigger_in_past"}"#,
+        );
+        assert!(
+            matches!(&error, RemoteSessionBackendError::HostStatus { status: 400, code: Some(code), .. } if code == "trigger_in_past"),
+            "{error:?}"
+        );
+        assert_eq!(
+            error.to_string(),
+            "Host Host resource returned 400: invalid Trigger: 2020-01-01T09:00 is in the past"
+        );
+        for body in [
+            br#"{"error":"no code"}"#.as_slice(),
+            br#"{"error":"x","code":"Not A Code"}"#,
+            br#"{"error":"x","code":7}"#,
+            b"plain text",
+        ] {
+            assert!(
+                matches!(
+                    host_status("op", 500, body),
+                    RemoteSessionBackendError::HostStatus { code: None, .. }
+                ),
+                "{}",
+                String::from_utf8_lossy(body)
+            );
+        }
+    }
 
     #[derive(Debug, Clone)]
     struct ExpectedCall {

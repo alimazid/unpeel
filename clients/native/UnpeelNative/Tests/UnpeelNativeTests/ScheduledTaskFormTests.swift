@@ -199,31 +199,65 @@ struct ScheduledTaskFormTests {
     // MARK: The Host's refusals
 
     @Test
-    func hostRefusalsReadAsSentences() {
-        let wrapped = { (status: Int, text: String) -> Error in
-            ScheduledTaskFormTestError(message:
-                "Host resource was not sent: Host Host resource returned \(status): \(text)")
+    func hostRefusalsReadByTheirCodeNeverTheirText() {
+        let refused = { (status: Int, code: String?, text: String) -> Error in
+            NativeRemoteBackendError(
+                result: -1, code: "host_operation_rejected",
+                message: "Host Host resource returned \(status): \(text)",
+                kind: "notApplied", operation: "Host resource",
+                hostStatus: status, hostCode: code, hostMessage: text
+            )
         }
-        #expect(ScheduledTaskErrorText.message(for: wrapped(409, "a Run of Morning is still in progress"))
+        #expect(ScheduledTaskErrorText.message(for: refused(409, "run_in_progress", "a Run of Morning is still in progress"))
             == "A Run of this task is still in progress. Try again once it finishes.")
-        #expect(ScheduledTaskErrorText.message(for: wrapped(400,
-            "invalid Trigger: 2026-11-06T09:00 is in the past"))
+        // The code decides, whatever the text says.
+        #expect(ScheduledTaskErrorText.message(for: refused(400, "trigger_in_past", "cannot resume: something else"))
             == "That time has already passed. Pick a time in the future.")
-        #expect(ScheduledTaskErrorText.message(for: wrapped(400, "cannot resume: 2026-11-06T09:00 is in the past"))
-            == "That time has already passed. Pick a time in the future.")
-        #expect(ScheduledTaskErrorText.message(for: wrapped(400,
-            "this preset is not an Agent Preset: it does not start an agent Unpeel can tell is ready, so it cannot take instructions"))
-            == "This preset doesn't start an agent Unpeel can tell is ready, so it can't take instructions. Clear them or pick an agent preset.")
-        #expect(ScheduledTaskErrorText.message(for: wrapped(400,
-            "invalid Trigger: \"25:00\" is not a local time HH:MM or HH:MM:SS"))
-            == "That schedule isn't valid: \"25:00\" is not a local time HH:MM or HH:MM:SS.")
-        #expect(ScheduledTaskErrorText.message(for: wrapped(404, "no Scheduled Task sch_1; it may have been deleted"))
+        #expect(ScheduledTaskErrorText.message(for: refused(400, "invalid_trigger", "invalid Trigger: \"25:00\" is not a local time"))
+            == "That Trigger isn't valid. Check its time and how often it repeats.")
+        #expect(ScheduledTaskErrorText.message(for: refused(404, "unknown_task", "no Scheduled Task sch_1"))
             == "This Scheduled Task no longer exists on the Host.")
-        #expect(ScheduledTaskErrorText.message(for: wrapped(400, "the preset ok does not exist in that Project or is turned off"))
-            == "The preset ok does not exist in that Project or is turned off.")
-        // Anything that is not a Host answer keeps its own words.
+        // A code this build does not know, or none, shows the Host's message.
+        #expect(ScheduledTaskErrorText.message(for: refused(400, "a_future_code", "the moon is not up"))
+            == "The moon is not up.")
+        #expect(ScheduledTaskErrorText.message(for: refused(500, nil, "could not read Scheduled Tasks"))
+            == "Could not read Scheduled Tasks.")
+        // Anything that is not a Host refusal keeps its own words, even if
+        // it reads like one.
         let plain = ScheduledTaskFormTestError(message: "This Host does not support Scheduled Tasks yet. Update Unpeel on the Host.")
         #expect(ScheduledTaskErrorText.message(for: plain) == plain.message)
+        let lookalike = ScheduledTaskFormTestError(message: "Host resource returned 409: in progress")
+        #expect(ScheduledTaskErrorText.message(for: lookalike) == lookalike.message)
+    }
+
+    /// Every code in the Host's refusal vocabulary the app should word is
+    /// worded (`invalid_request` and `internal` show the Host's message).
+    @Test
+    func everyRefusalCodeTheHostListsIsWorded() throws {
+        let fixture = try JSONSerialization.jsonObject(
+            with: Data(contentsOf: try Self.protocolFile("host-conformance-v1.json"))
+        ) as? [String: Any]
+        let refusals = fixture?["scheduleWriteRefusals"] as? [String: Any]
+        let codes = (refusals?["codes"] as? [[String: Any]] ?? []).compactMap { $0["code"] as? String }
+        #expect(!codes.isEmpty)
+        for code in codes where !["invalid_request", "internal"].contains(code) {
+            #expect(ScheduledTaskErrorText.byCode[code] != nil, "\(code)")
+        }
+    }
+
+    /// `protocol/<name>` of this checkout (UNPEEL_PROTOCOL_DIR points at
+    /// another copy), as the other conformance tests find it.
+    private static func protocolFile(_ name: String) throws -> URL {
+        if let override = ProcessInfo.processInfo.environment["UNPEEL_PROTOCOL_DIR"] {
+            return URL(fileURLWithPath: override).appendingPathComponent(name)
+        }
+        var directory = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
+        for _ in 0..<10 {
+            let candidate = directory.appendingPathComponent("protocol").appendingPathComponent(name)
+            if FileManager.default.fileExists(atPath: candidate.path) { return candidate }
+            directory.deleteLastPathComponent()
+        }
+        throw CocoaError(.fileNoSuchFile)
     }
 
     // MARK: Fixtures

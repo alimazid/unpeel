@@ -640,14 +640,89 @@ fn run_now_answers_the_new_run_or_why_not() {
         run(Some(&busy), "sch_1"),
         (
             409,
-            json!({"error": "a Run of Morning is still in progress"})
+            json!({"error": "a Run of Morning is still in progress", "code": "run_in_progress"})
         )
     );
+    let code = |(status, body): (u16, Value)| (status, body["code"].as_str().map(str::to_owned));
     let away = FakeHost::refusing_run_now(RunNowRefusal::Unavailable("not running".into()));
-    assert_eq!(run(Some(&away), "sch_1").0, 503);
+    assert_eq!(code(run(Some(&away), "sch_1")), (503, Some("host_unavailable".into())));
     let slow = FakeHost::refusing_run_now(RunNowRefusal::NoAnswer("timed out".into()));
-    assert_eq!(run(Some(&slow), "sch_1").0, 504, "it may still start");
+    assert_eq!(
+        code(run(Some(&slow), "sch_1")),
+        (504, Some("run_no_answer".into())),
+        "it may still start"
+    );
     assert_eq!(run(None, "sch_1").0, 503, "Run now needs the worker");
-    assert_eq!(run(None, "sch_gone").0, 404);
-    assert_eq!(run(None, "").0, 400);
+    assert_eq!(code(run(None, "sch_gone")), (404, Some("unknown_task".into())));
+    assert_eq!(code(run(None, "")), (400, Some("invalid_request".into())));
+}
+
+// ── error codes ──
+
+/// The conformance fixture's write refusals, against this fake worker:
+/// each answers its status and its machine-readable code.
+#[test]
+fn every_write_refusal_in_the_conformance_fixture_carries_its_code() {
+    let fixture: Value =
+        serde_json::from_str(include_str!("../../../../../protocol/host-conformance-v1.json"))
+            .expect("conformance fixture");
+    let refusals = &fixture["scheduleWriteRefusals"];
+    let codes: Vec<&str> = refusals["codes"]
+        .as_array()
+        .expect("codes")
+        .iter()
+        .filter_map(|code| code["code"].as_str())
+        .collect();
+    for case in refusals["cases"].as_array().expect("cases") {
+        let private = Private::new(stored());
+        let host = FakeHost::new();
+        let host: Option<&dyn ScheduleHost> = if case["withoutHost"].as_bool() == Some(true) {
+            None
+        } else {
+            Some(&host)
+        };
+        let path = case["path"].as_str().expect("path");
+        let (status, body) = answer_with(&post(path, case["body"].clone()), host, &private);
+        let id = case["id"].as_str().unwrap_or_default();
+        assert_eq!(Some(u64::from(status)), case["status"].as_u64(), "{id}: {body}");
+        assert_eq!(body["code"], case["code"], "{id}: {body}");
+        assert!(codes.contains(&body["code"].as_str().unwrap_or_default()), "{id}");
+    }
+}
+
+/// Every code a refusal can carry is in the fixture's vocabulary, so a
+/// Controller can word each one.
+#[test]
+fn every_refusal_code_is_in_the_conformance_vocabulary() {
+    let fixture: Value =
+        serde_json::from_str(include_str!("../../../../../protocol/host-conformance-v1.json"))
+            .expect("conformance fixture");
+    let listed: Vec<&str> = fixture["scheduleWriteRefusals"]["codes"]
+        .as_array()
+        .expect("codes")
+        .iter()
+        .filter_map(|code| code["code"].as_str())
+        .collect();
+    let save_codes = [
+        SaveRefusal::NoProject,
+        SaveRefusal::PresetMissing("x".into()),
+        SaveRefusal::NotAgentPreset("x".into()),
+        SaveRefusal::InstructionsTooLarge,
+        SaveRefusal::InvalidTrigger("x".into()),
+        SaveRefusal::TriggerInPast("x".into()),
+        SaveRefusal::CatalogUnavailable,
+    ]
+    .map(|refusal| refusal.code());
+    let route_codes = [
+        codes::INVALID_REQUEST,
+        codes::FORBIDDEN,
+        codes::UNKNOWN_TASK,
+        codes::RUN_IN_PROGRESS,
+        codes::RUN_NO_ANSWER,
+        codes::HOST_UNAVAILABLE,
+        codes::INTERNAL,
+    ];
+    for code in save_codes.iter().chain(route_codes.iter()) {
+        assert!(listed.contains(code), "{code} is not in the fixture");
+    }
 }

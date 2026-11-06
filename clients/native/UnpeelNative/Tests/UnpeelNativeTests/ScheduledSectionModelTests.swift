@@ -317,10 +317,15 @@ struct ScheduledSectionModelTests {
         ])
         #expect(model.actionError == nil)
 
-        writer.failure = "Host resource was not sent: Host Host resource returned 409: a Run of A is still in progress"
+        writer.refusal = NativeRemoteBackendError(
+            result: -1, code: "host_operation_rejected",
+            message: "Host Host resource returned 409: a Run of A is still in progress",
+            kind: "notApplied", operation: "Host resource",
+            hostStatus: 409, hostCode: "run_in_progress", hostMessage: "a Run of A is still in progress"
+        )
         await model.runNow("sch_a", writer: writer).value
         #expect(model.actionError == "A Run of this task is still in progress. Try again once it finishes.")
-        writer.failure = nil
+        writer.refusal = nil
         await model.runNow("sch_a", writer: writer).value
         #expect(model.actionError == nil, "a later success clears it")
     }
@@ -424,7 +429,8 @@ private final class FakeSchedulesSource: ScheduledTasksSource {
 /// The Host's write routes, scripted: each call is recorded in words.
 @MainActor
 private final class FakeSchedulesWriter: ScheduledTasksWriter {
-    var failure: String?
+    /// The refusal the next write throws, as the bridge hands it over.
+    var refusal: NativeRemoteBackendError?
     private(set) var calls: [String] = []
 
     func createSchedule(_ request: RemoteScheduleCreate) async throws -> RemoteScheduledTask {
@@ -451,7 +457,7 @@ private final class FakeSchedulesWriter: ScheduledTasksWriter {
     }
 
     private func fail() throws {
-        if let failure { throw ScheduledTasksReadError(message: failure) }
+        if let refusal { throw refusal }
     }
 }
 

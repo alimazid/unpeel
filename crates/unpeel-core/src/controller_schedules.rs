@@ -52,9 +52,43 @@ pub const WRITE_CAPABILITIES: [&str; 4] = [
 const LIST_PATH: &str = "/mobile/schedules";
 const RUNS_PATH: &str = "/mobile/schedules/runs";
 
-/// A refused request: HTTP status and the message Controllers show.
+/// A refused request: its HTTP status, the machine-readable reason
+/// Controllers branch on (`code` in the error body; never the message),
+/// and the message a person reads.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Failure(pub u16, pub String);
+pub struct Failure {
+    pub status: u16,
+    pub code: &'static str,
+    pub message: String,
+}
+
+/// The error codes of the schedules routes beyond the save rules' own
+/// (`schedules::save::SaveRefusal::code`). Additive: a Controller that does
+/// not know a code shows the message.
+pub mod codes {
+    pub const INVALID_REQUEST: &str = "invalid_request";
+    pub const FORBIDDEN: &str = "forbidden";
+    pub const UNKNOWN_TASK: &str = "unknown_task";
+    pub const RUN_IN_PROGRESS: &str = "run_in_progress";
+    pub const RUN_NO_ANSWER: &str = "run_no_answer";
+    pub const HOST_UNAVAILABLE: &str = "host_unavailable";
+    pub const INTERNAL: &str = "internal";
+}
+
+impl Failure {
+    pub fn new(status: u16, code: &'static str, message: impl Into<String>) -> Self {
+        Self {
+            status,
+            code,
+            message: message.into(),
+        }
+    }
+
+    /// `{"error": message, "code": code}`.
+    pub fn body(&self) -> Value {
+        json!({ "error": self.message, "code": self.code })
+    }
+}
 
 /// Every bootstrap preset row says whether it is an Agent Preset (one that
 /// starts an agent Unpeel can tell is ready), so a Controller shows a
@@ -105,7 +139,11 @@ pub fn route(request: &ControllerRequest) -> Option<ControllerResponse> {
         return None;
     }
     let answer = if !principal_can_read_schedules(&request.principal) {
-        Err(Failure(403, "not allowed to read Scheduled Tasks".into()))
+        Err(Failure::new(
+            403,
+            codes::FORBIDDEN,
+            "not allowed to read Scheduled Tasks",
+        ))
     } else if request.path == LIST_PATH {
         load_state().map(|state| list_at(&state, &schedule_store::schedules_root()))
     } else {
@@ -116,7 +154,7 @@ pub fn route(request: &ControllerRequest) -> Option<ControllerResponse> {
     };
     let (status, body) = match answer {
         Ok(body) => (200, body),
-        Err(Failure(status, message)) => (status, json!({ "error": message })),
+        Err(failure) => (failure.status, failure.body()),
     };
     Some(ControllerResponse {
         id: request.id.clone(),
@@ -180,14 +218,20 @@ fn parse_runs_query(query: &HashMap<String, String>) -> Result<RunsQuery, Failur
         .get("scheduleID")
         .map(|id| id.trim())
         .filter(|id| schedules::is_valid_id(id))
-        .ok_or_else(|| Failure(400, "valid scheduleID required".into()))?;
+        .ok_or_else(|| Failure::new(400, codes::INVALID_REQUEST, "valid scheduleID required"))?;
     let limit = match query.get("limit").map(|limit| limit.trim()) {
         None | Some("") => None,
         Some(raw) => Some(
             raw.parse::<usize>()
                 .ok()
                 .filter(|limit| *limit > 0)
-                .ok_or_else(|| Failure(400, "limit must be a positive whole number".into()))?,
+                .ok_or_else(|| {
+                    Failure::new(
+                        400,
+                        codes::INVALID_REQUEST,
+                        "limit must be a positive whole number",
+                    )
+                })?,
         ),
     };
     Ok(RunsQuery {
@@ -200,7 +244,7 @@ fn runs_for(state: &Value, root: &Path, query: &RunsQuery) -> Result<Value, Fail
     let task = tasks_at(state, root)
         .into_iter()
         .find(|task| task.schedule.id == query.schedule_id)
-        .ok_or_else(|| Failure(404, "unknown Scheduled Task".into()))?;
+        .ok_or_else(|| Failure::new(404, codes::UNKNOWN_TASK, "unknown Scheduled Task"))?;
     let runs: Vec<Value> = task
         .runs
         .iter()
@@ -213,7 +257,13 @@ fn runs_for(state: &Value, root: &Path, query: &RunsQuery) -> Result<Value, Fail
 
 fn load_state() -> Result<Value, Failure> {
     crate::app_state::load()
-        .map_err(|error| Failure(500, format!("could not read Scheduled Tasks: {error}")))
+        .map_err(|error| {
+            Failure::new(
+                500,
+                codes::INTERNAL,
+                format!("could not read Scheduled Tasks: {error}"),
+            )
+        })
 }
 
 /// One task as its definition and its files say.

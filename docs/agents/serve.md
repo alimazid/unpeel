@@ -301,6 +301,12 @@ the Trigger in its stored shape: `/mobile/schedules` (`schedules.create`),
 never its Run Sessions) and `/mobile/schedules/run` (`schedules.run`: Run
 now, 409 while a Run is in progress). They edit `app-state.json` raw under
 its flock and announce, like `unpeel schedules`, and are replay-protected.
+Every refusal of the schedules routes answers `{"error": <message>, "code":
+<code>}`; the codes (`trigger_in_past`, `not_agent_preset`,
+`run_in_progress`, …) are listed with their statuses in
+`scheduleWriteRefusals` of `protocol/host-conformance-v1.json`, and
+Controllers word a refusal from its code, never its message (the bridge
+hands the Mac app `hostStatus`, `hostCode` and `hostMessage`).
 They check a task with the same save rules as the CLI and a starting Run
 (`unpeel_core::schedules::save`). What they cannot do from the disk comes
 from the `ScheduleHost` the workspace worker installs at start

@@ -3369,6 +3369,9 @@ mod tests {
         #[serde(default)]
         body: serde_json::Value,
         expected: ConformanceExpected,
+        /// The error body's machine-readable `code`, where the case pins one.
+        #[serde(default, rename = "expectedCode")]
+        expected_code: Option<String>,
     }
 
     #[derive(serde::Deserialize)]
@@ -4154,6 +4157,16 @@ non-ephemeral ports — a product regression, not a port race. Attempts: {failur
                 None,
             );
             assert_eq!(status, case.expected.tui, "conformance case {}", case.id);
+            if let Some(code) = &case.expected_code {
+                let answer: serde_json::Value =
+                    serde_json::from_str(&body).expect("error body json");
+                assert_eq!(
+                    answer.get("code").and_then(serde_json::Value::as_str),
+                    Some(code.as_str()),
+                    "conformance case {} code",
+                    case.id
+                );
+            }
             if case.id == "bootstrap.valid" {
                 let response: serde_json::Value =
                     serde_json::from_str(&body).expect("bootstrap response json");

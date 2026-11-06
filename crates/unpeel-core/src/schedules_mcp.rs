@@ -15,7 +15,7 @@ use std::path::Path;
 
 use serde_json::{json, Value};
 
-use crate::controller_schedules::{self, Failure};
+use crate::controller_schedules;
 use crate::schedule_store;
 use crate::schedules;
 
@@ -74,11 +74,11 @@ fn runs_at(arguments: &Value, state: &Value, root: &Path) -> Result<Value, Strin
         ("scheduleID".to_string(), schedule_id.to_string()),
         ("limit".to_string(), limit_word(arguments.get("limit"))?),
     ]);
-    controller_schedules::runs_at(state, root, &query).map_err(|Failure(status, message)| {
-        if status == 404 {
+    controller_schedules::runs_at(state, root, &query).map_err(|failure| {
+        if failure.status == 404 {
             unknown()
         } else {
-            message
+            failure.message
         }
     })
 }

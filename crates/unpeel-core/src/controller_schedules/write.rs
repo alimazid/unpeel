@@ -24,7 +24,7 @@ use std::sync::{Arc, Mutex};
 
 use serde_json::{json, Map, Value};
 
-use super::Failure;
+use super::{codes, Failure};
 use crate::controller_api::{ControllerPrincipal, ControllerRequest};
 use crate::schedule_store::TaskStore;
 use crate::schedules::save::{self, SaveHost, SaveRefusal};
@@ -120,7 +120,11 @@ pub(super) fn answer(
         _ => return None,
     };
     let answer = if !principal_can_write_schedules(&request.principal) {
-        Err(Failure(403, "only the user changes Scheduled Tasks".into()))
+        Err(Failure::new(
+            403,
+            codes::FORBIDDEN,
+            "only the user changes Scheduled Tasks",
+        ))
     } else {
         request
             .body
@@ -130,7 +134,7 @@ pub(super) fn answer(
     };
     Some(match answer {
         Ok(body) => (200, body),
-        Err(Failure(status, message)) => (status, json!({ "error": message })),
+        Err(failure) => (failure.status, failure.body()),
     })
 }
 
@@ -147,9 +151,10 @@ pub fn principal_can_write_schedules(principal: &ControllerPrincipal) -> bool {
 
 fn require(host: Option<&dyn ScheduleHost>) -> Result<&dyn ScheduleHost, Failure> {
     host.ok_or_else(|| {
-        Failure(
+        Failure::new(
             503,
-            "Scheduled Tasks change only while the Host service runs".into(),
+            codes::HOST_UNAVAILABLE,
+            "Scheduled Tasks change only while the Host service runs",
         )
     })
 }
@@ -269,7 +274,10 @@ fn edited_trigger(
     if enabled && !current.enabled {
         save::check_trigger(host, &current.trigger, true).map_err(|refusal| {
             let failure = refused(refusal);
-            Failure(failure.0, format!("cannot resume: {}", failure.1))
+            Failure {
+                message: format!("cannot resume: {}", failure.message),
+                ..failure
+            }
         })?;
     }
     Ok(None)
@@ -297,8 +305,9 @@ fn delete(
     TaskStore::open(&workspace.root, &schedule_id)
         .and_then(|store| store.remove())
         .map_err(|error| {
-            Failure(
+            Failure::new(
                 500,
+                codes::INTERNAL,
                 format!("deleted the task but not its history: {error}"),
             )
         })?;
@@ -317,9 +326,15 @@ fn run_now(
     workspace.stored_entry(&schedule_id)?;
     match require(host)?.run_now(&schedule_id) {
         Ok(run_id) => Ok(json!({ "scheduleID": schedule_id, "runID": run_id })),
-        Err(RunNowRefusal::InProgress(message)) => Err(Failure(409, message)),
-        Err(RunNowRefusal::Unavailable(message)) => Err(Failure(503, message)),
-        Err(RunNowRefusal::NoAnswer(message)) => Err(Failure(504, message)),
+        Err(RunNowRefusal::InProgress(message)) => {
+            Err(Failure::new(409, codes::RUN_IN_PROGRESS, message))
+        }
+        Err(RunNowRefusal::Unavailable(message)) => {
+            Err(Failure::new(503, codes::HOST_UNAVAILABLE, message))
+        }
+        Err(RunNowRefusal::NoAnswer(message)) => {
+            Err(Failure::new(504, codes::RUN_NO_ANSWER, message))
+        }
     }
 }
 
@@ -332,7 +347,7 @@ fn refused(refusal: SaveRefusal) -> Failure {
         SaveRefusal::CatalogUnavailable => 503,
         _ => 400,
     };
-    Failure(status, refusal.to_string())
+    Failure::new(status, refusal.code(), refusal.to_string())
 }
 
 /// A Trigger from a body. A shape that does not decode reads as `Unknown`,
@@ -383,12 +398,13 @@ fn schedule_id(body: &Map<String, Value>) -> Result<String, Failure> {
 }
 
 fn invalid(message: impl Into<String>) -> Failure {
-    Failure(400, message.into())
+    Failure::new(400, codes::INVALID_REQUEST, message)
 }
 
 fn gone(schedule_id: &str) -> Failure {
-    Failure(
+    Failure::new(
         404,
+        codes::UNKNOWN_TASK,
         format!("no Scheduled Task {schedule_id}; it may have been deleted"),
     )
 }
@@ -401,14 +417,20 @@ fn entry_id(entry: &Value) -> Option<&str> {
 fn decode(entry: &Map<String, Value>) -> Result<Schedule, Failure> {
     schedules::schedules_from_value(Some(&Value::Array(vec![Value::Object(entry.clone())])))
         .pop()
-        .ok_or_else(|| Failure(500, "the Scheduled Task does not read".into()))
+        .ok_or_else(|| Failure::new(500, codes::INTERNAL, "the Scheduled Task does not read"))
 }
 
 /// `{"schedule": <row>}` for an entry as saved, as the list route lists it.
 fn saved_row(workspace: &Workspace, entry: &Value) -> Result<Value, Failure> {
     let entry = entry
         .as_object()
-        .ok_or_else(|| Failure(500, "the saved Scheduled Task is not an object".into()))?;
+        .ok_or_else(|| {
+            Failure::new(
+                500,
+                codes::INTERNAL,
+                "the saved Scheduled Task is not an object",
+            )
+        })?;
     Ok(json!({ "schedule": super::row_at(decode(entry)?, &workspace.root) }))
 }
 
@@ -441,7 +463,13 @@ impl Workspace {
             None => crate::app_state::load(),
             Some(path) => crate::app_state::load_for_edit_at(path),
         }
-        .map_err(|error| Failure(500, format!("could not read Scheduled Tasks: {error}")))
+        .map_err(|error| {
+            Failure::new(
+                500,
+                codes::INTERNAL,
+                format!("could not read Scheduled Tasks: {error}"),
+            )
+        })
     }
 
     /// The task's raw entry, read without the flock: a write route refuses
@@ -468,7 +496,7 @@ impl Workspace {
         let mutate = |state: &mut Map<String, Value>| {
             let list = save::schedules_list_mut(state)?;
             change(list).map_err(|failure| {
-                let message = failure.1.clone();
+                let message = failure.message.clone();
                 refused = Some(failure);
                 message
             })
@@ -477,7 +505,11 @@ impl Workspace {
             None => crate::app_state::edit(mutate),
             Some(path) => crate::app_state::edit_at(path, mutate),
         };
-        saved.map_err(|error| refused.take().unwrap_or(Failure(500, error)))
+        saved.map_err(|error| {
+            refused
+                .take()
+                .unwrap_or_else(|| Failure::new(500, codes::INTERNAL, error))
+        })
     }
 }
 

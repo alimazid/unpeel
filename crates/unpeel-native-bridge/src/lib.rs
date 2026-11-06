@@ -125,6 +125,17 @@ struct NativeRemoteEffectError {
     code: &'static str,
     operation: &'static str,
     message: String,
+    /// Set when a Host route refused the effect itself.
+    host: Option<NativeHostRejection>,
+}
+
+/// A Host route's refusal: its HTTP status, machine-readable `code`, and
+/// its own message (what to show for a code a Controller does not know).
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct NativeHostRejection {
+    status: u16,
+    code: Option<String>,
+    message: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -201,6 +212,7 @@ trait RegisteredRemoteBackend: Send + Sync {
             code: "git_settings_unavailable",
             operation: "Git settings",
             message: "Git settings are unavailable on this Host".into(),
+            host: None,
         })
     }
     fn read_plugin_updates(&self) -> Result<serde_json::Value, NativeRemoteError> {
@@ -251,6 +263,7 @@ trait RegisteredRemoteBackend: Send + Sync {
             code: "notify_when_done_unavailable",
             operation: "notify when done",
             message: "Notify when done is unavailable on this backend".into(),
+            host: None,
         })
     }
     fn answer_approval(
@@ -264,6 +277,7 @@ trait RegisteredRemoteBackend: Send + Sync {
             code: "approval_answer_unavailable",
             operation: "approval answer",
             message: "Approval answering is unavailable on this backend".into(),
+            host: None,
         })
     }
     fn set_session_project(
@@ -277,6 +291,7 @@ trait RegisteredRemoteBackend: Send + Sync {
             code: "session_project_unavailable",
             operation: "session project",
             message: "Session project moves are unavailable on this backend".into(),
+            host: None,
         })
     }
     fn session_verb(
@@ -304,6 +319,7 @@ trait RegisteredRemoteBackend: Send + Sync {
             code: "workspace_settings_unavailable",
             operation: "workspace settings",
             message: "Workspace settings are unavailable on this backend".into(),
+            host: None,
         })
     }
     fn set_opener(&self, _selector: &str, _opener: &str) -> Result<u64, NativeRemoteEffectError> {
@@ -313,6 +329,7 @@ trait RegisteredRemoteBackend: Send + Sync {
             code: "opener_unavailable",
             operation: "resource opener",
             message: "Resource opener settings are unavailable on this backend".into(),
+            host: None,
         })
     }
     fn install_app(&self, _app_id: &str) -> Result<u64, NativeRemoteEffectError> {
@@ -322,6 +339,7 @@ trait RegisteredRemoteBackend: Send + Sync {
             code: "app_install_unavailable",
             operation: "App install",
             message: "App installation is unavailable on this backend".into(),
+            host: None,
         })
     }
     fn install_integration(&self, _runtime_id: &str) -> Result<u64, NativeRemoteEffectError> {
@@ -331,6 +349,7 @@ trait RegisteredRemoteBackend: Send + Sync {
             code: "integration_install_unavailable",
             operation: "integration install",
             message: "Integration installation is unavailable on this backend".into(),
+            host: None,
         })
     }
     fn open_app(
@@ -348,6 +367,7 @@ trait RegisteredRemoteBackend: Send + Sync {
             code: "app_open_unavailable",
             operation: "App open",
             message: "Opening Apps is unavailable on this backend".into(),
+            host: None,
         })
     }
     fn set_preset(&self, _patch: &RemotePresetPatch) -> Result<u64, NativeRemoteEffectError> {
@@ -357,6 +377,7 @@ trait RegisteredRemoteBackend: Send + Sync {
             code: "preset_edit_unavailable",
             operation: "preset edit",
             message: "Preset editing is unavailable on this backend".into(),
+            host: None,
         })
     }
     fn create_session(
@@ -370,6 +391,7 @@ trait RegisteredRemoteBackend: Send + Sync {
             code: "pairing_invitation_unavailable",
             operation: "pairing invitation",
             message: "Pairing invitations are unavailable on this backend".into(),
+            host: None,
         })
     }
     fn resource_request(
@@ -384,6 +406,7 @@ trait RegisteredRemoteBackend: Send + Sync {
             code: "resource_unavailable",
             operation: "Host resource",
             message: "Host resources are unavailable".into(),
+            host: None,
         })
     }
     fn upload_attachment(
@@ -398,6 +421,7 @@ trait RegisteredRemoteBackend: Send + Sync {
             code: "upload_unavailable",
             operation: "attachment upload",
             message: "Attachment upload is unavailable on this backend".into(),
+            host: None,
         })
     }
     fn read_transcript_markdown(
@@ -2416,6 +2440,7 @@ fn create_remote_session(
         code: "created_session_serialization_failed",
         operation: "session create",
         message: format!("The Session was created, but its receipt could not be encoded: {error}"),
+        host: None,
     })
 }
 
@@ -2585,6 +2610,24 @@ fn native_remote_effect_error(error: RemoteEffectFailure) -> NativeRemoteEffectE
         code: remote_backend_error_code(error.error()),
         operation: error.operation(),
         message: error.to_string(),
+        host: host_rejection(error.error()),
+    }
+}
+
+/// A Host route's own refusal, carried beside the bridge's `code`.
+fn host_rejection(error: &RemoteSessionBackendError) -> Option<NativeHostRejection> {
+    match error {
+        RemoteSessionBackendError::HostStatus {
+            status,
+            code,
+            message,
+            ..
+        } => Some(NativeHostRejection {
+            status: *status,
+            code: code.clone(),
+            message: message.clone(),
+        }),
+        _ => None,
     }
 }
 
@@ -2597,6 +2640,7 @@ fn native_not_applied_effect_error(
         code: error.code,
         operation,
         message: error.message,
+        host: None,
     }
 }
 
@@ -2613,6 +2657,7 @@ fn encode_effect_receipt(
             message: format!(
                 "{operation} succeeded, but its Host receipt could not be encoded: {error}"
             ),
+            host: None,
         }
     })
 }
@@ -2679,14 +2724,24 @@ fn encode_remote_error(error: NativeRemoteError) -> Vec<u8> {
 }
 
 fn encode_remote_effect_error(error: NativeRemoteEffectError) -> Vec<u8> {
-    serde_json::json!({
+    let mut body = serde_json::json!({
         "kind": error.kind,
         "code": error.code,
         "operation": error.operation,
         "message": error.message,
-    })
-    .to_string()
-    .into_bytes()
+    });
+    // Additive: the Host route's own status and reason code, for a
+    // Controller to word a refusal without reading the message.
+    if let Some(host) = error.host {
+        body["hostStatus"] = host.status.into();
+        if let Some(code) = host.code {
+            body["hostCode"] = code.into();
+        }
+        if let Some(message) = host.message {
+            body["hostMessage"] = message.into();
+        }
+    }
+    body.to_string().into_bytes()
 }
 
 fn remote_effect_panic_error(operation: &'static str) -> Vec<u8> {
@@ -5071,6 +5126,36 @@ pub unsafe extern "C" fn unpeel_native_bridge_free(pointer: *mut u8, length: usi
 
 #[cfg(test)]
 mod tests {
+    /// A Host route's own refusal reaches Swift as `hostStatus` and
+    /// `hostCode` beside the bridge's `code`; any other failure adds none.
+    #[test]
+    fn a_host_refusal_crosses_the_ffi_with_its_status_and_code() {
+        let refused = |host| super::NativeRemoteEffectError {
+            result: super::ERROR_REMOTE,
+            kind: "notApplied",
+            code: "host_operation_rejected",
+            operation: "Host resource",
+            message: "Host Host resource returned 400: invalid Trigger".into(),
+            host,
+        };
+        let encoded: serde_json::Value =
+            serde_json::from_slice(&super::encode_remote_effect_error(refused(Some(
+                super::NativeHostRejection {
+                    status: 400,
+                    code: Some("trigger_in_past".into()),
+                    message: Some("invalid Trigger".into()),
+                },
+            ))))
+            .unwrap();
+        assert_eq!(encoded["code"], "host_operation_rejected");
+        assert_eq!(encoded["hostStatus"], 400);
+        assert_eq!(encoded["hostCode"], "trigger_in_past");
+        assert_eq!(encoded["hostMessage"], "invalid Trigger");
+        let plain: serde_json::Value =
+            serde_json::from_slice(&super::encode_remote_effect_error(refused(None))).unwrap();
+        assert!(plain.get("hostStatus").is_none() && plain.get("hostCode").is_none());
+    }
+
     #[test]
     fn plugin_activation_is_not_dropped_at_the_ffi_json_boundary() {
         let patch: super::NativeWorkspaceSettingsWire = serde_json::from_slice(
@@ -5619,6 +5704,7 @@ mod tests {
                     code: "host_connection_disconnected",
                     operation: "terminal write",
                     message: "terminal write may have landed; refresh before retrying".into(),
+                    host: None,
                 });
             }
             self.effects
@@ -5745,6 +5831,7 @@ mod tests {
                     code: "host_connection_disconnected",
                     operation: verb.operation(),
                     message: "verb may have landed; refresh before retrying".into(),
+                    host: None,
                 });
             }
             self.effects
