@@ -603,7 +603,8 @@ impl Store {
     /// so the next paste is a fresh batch.
     pub fn transfer(&self, old: &str, new: &str) -> Result<()> {
         let (source, target) = (self.dir(old)?, self.dir(new)?);
-        if old == new {
+        // Nothing queued under the old id: not even a lock file is made.
+        if old == new || !source.is_dir() {
             return Ok(());
         }
         let _locks = self.lock_pair(old, new)?;
@@ -677,6 +678,9 @@ impl Store {
     /// The session is gone for good: so is its Inbox.
     pub fn remove(&self, session_id: &str) -> Result<()> {
         let dir = self.dir(session_id)?;
+        if !dir.exists() {
+            return Ok(());
+        }
         let _lock = self.lock(session_id)?;
         match fs::remove_dir_all(&dir) {
             Err(error) if error.kind() != std::io::ErrorKind::NotFound => {
@@ -1935,6 +1939,15 @@ mod tests {
         assert!(store.list("gone").unwrap().pending.is_empty());
         store.remove("gone").unwrap();
         assert!(store.remove("../x").is_err());
+    }
+
+    #[test]
+    fn removing_or_moving_a_session_without_an_inbox_leaves_nothing_behind() {
+        let (_tmp, store) = store();
+        store.remove("never").unwrap();
+        store.transfer("never", "other").unwrap();
+        // Not even a lock file: every removal and Resume passes through here.
+        assert!(!store.root.exists(), "{:?}", store.root);
     }
 
     fn ids(list: &[&str]) -> std::collections::HashSet<String> {

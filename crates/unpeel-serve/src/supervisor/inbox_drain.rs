@@ -20,6 +20,9 @@ use crate::sessions::{SessionRow, Status};
 /// A paste with no prompt submit or Busy edge this long after it is pasted
 /// again, as a redelivery of the same batch.
 pub const CONFIRM_TIMEOUT_MS: u64 = 30_000;
+/// Pastes of one batch before it counts as delivered unconfirmed: a target
+/// whose hooks never fire must not get the same batch every 30 s forever.
+pub const MAX_PASTE_ATTEMPTS: u32 = 3;
 /// A failed paste is retried (as a fresh batch) after this long.
 pub const RETRY_MS: u64 = 10_000;
 /// A suspected draft holding items this long notifies the user, once.
@@ -493,7 +496,19 @@ fn deliver(
         let _ = store.release(id, &batch.batch_id);
         return Outcome::Failed(error);
     }
-    let delivered = !confident && matches!(store.complete(id, &batch.batch_id, now), Ok(true));
+    // Nothing will confirm a best guess; a last attempt stops the loop.
+    let last_attempt = batch.attempt >= MAX_PASTE_ATTEMPTS;
+    let delivered = (!confident || last_attempt)
+        && matches!(store.complete(id, &batch.batch_id, now), Ok(true));
+    if confident && last_attempt {
+        crate::tracelog::trace(
+            "supervisor",
+            &format!(
+                "inbox batch {} for {id} never confirmed; delivered after {} pastes",
+                batch.batch_id, batch.attempt
+            ),
+        );
+    }
     Outcome::Pasted {
         batch_id: batch.batch_id,
         pasted_at: now,
@@ -854,6 +869,31 @@ mod tests {
         assert_eq!(batch(&pastes[0]), batch(&pastes[1]), "the same batch");
         assert!(pastes[1].contains("(redelivery)"));
         assert!(!pastes[0].contains("(redelivery)"));
+        assert_eq!(fx.pending(), 1);
+    }
+
+    #[test]
+    fn a_batch_that_is_never_confirmed_stops_at_its_last_attempt() {
+        let mut fx = fixture();
+        report(&fx, "result", T0 - 10_000);
+        let idle = router(Status::Idle);
+        // Hooks that never fire: each cycle times out and pastes again.
+        let mut now = T0;
+        for _ in 1..MAX_PASTE_ATTEMPTS {
+            fx.step_and_settle(&idle, now);
+            now += CONFIRM_TIMEOUT_MS;
+            fx.step(&idle, now);
+            now += 100;
+        }
+        assert_eq!(fx.pending(), 1);
+        fx.step_and_settle(&idle, now);
+        assert_eq!(fx.pastes().len() as u32, MAX_PASTE_ATTEMPTS);
+        assert_eq!(fx.pending(), 0, "the last attempt counts as delivered");
+        for _ in 0..3 {
+            now += CONFIRM_TIMEOUT_MS;
+            fx.step(&idle, now);
+        }
+        assert_eq!(fx.pastes().len() as u32, MAX_PASTE_ATTEMPTS);
     }
 
     #[test]
