@@ -100,11 +100,8 @@ impl Ledger {
         let _lock = crate::app_state::lock_exclusive(&self.path)?;
         let mut document = self.load()?;
         let outcome = change(&mut document);
-        let body = serde_json::to_vec_pretty(&document).map_err(|error| error.to_string())?;
-        let tmp = self.path.with_extension("json.tmp");
-        std::fs::write(&tmp, body).map_err(|error| format!("write {}: {error}", tmp.display()))?;
-        std::fs::rename(&tmp, &self.path)
-            .map_err(|error| format!("rename {}: {error}", tmp.display()))?;
+        let body = serde_json::to_string_pretty(&document).map_err(|error| error.to_string())?;
+        crate::hook_assets::write_file_atomic(&self.path, &body, "worktree ledger")?;
         Ok(outcome)
     }
 }

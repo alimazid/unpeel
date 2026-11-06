@@ -187,11 +187,12 @@ fn every_router_write_to_its_worker_is_stamped() {
     let home = TestHome::new()
         .worker("w1", true, WorkerOrigin::Created, 1)
         .session("plain", true);
-    home.run(|ctx| note_write_at(ctx, ROUTER, "w1"));
+    // `true`: a stamp was written, so the real-home wrapper announces it.
+    assert!(home.run(|ctx| note_write_at(ctx, ROUTER, "w1")));
     assert_eq!(home.inbox.router_touched_at("w1"), Some(NOW));
     // Only the Router's writes to its own Workers.
-    home.run(|ctx| note_write_at(ctx, ROUTER, "plain"));
-    home.run(|ctx| note_write_at(ctx, "user-1", "plain"));
+    assert!(!home.run(|ctx| note_write_at(ctx, ROUTER, "plain")));
+    assert!(!home.run(|ctx| note_write_at(ctx, "user-1", "plain")));
     assert_eq!(home.inbox.router_touched_at("plain"), None);
 }
 

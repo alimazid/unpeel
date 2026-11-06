@@ -15,11 +15,13 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use serde_json::{Map, Value};
 
 mod config;
-pub use config::{config_from_state, load_config, SupervisorConfig};
+pub use config::{
+    config_from_state, load_config, SupervisorConfig, SupervisorSetting, SUPERVISOR_SETTINGS,
+};
 mod controller;
 pub use controller::{
     clear_super_agent, hand_over_to_super_agent, set_super_agent, with_summary_fields,
-    SessionFacts, VerbError, VerbOutcome, CLAUDE_CODE_RUNTIME_ID,
+    SessionFacts, VerbError, VerbOutcome,
 };
 
 /// App-state key holding the Router mark.
@@ -35,14 +37,30 @@ pub fn router_id() -> Option<String> {
 /// the Host's supervisor wants them once per sweep.
 pub fn router_and_config() -> (Option<String>, SupervisorConfig) {
     let state = crate::app_state::load().unwrap_or(Value::Null);
-    let seconds_mode = config::seconds_mode_from(
-        std::env::var("UNPEEL_TEST").ok().as_deref(),
-        std::env::var("UNPEEL_SUPERVISOR_SECONDS").ok().as_deref(),
-    );
     (
         router_id_in(&state),
-        config_from_state(&state, seconds_mode),
+        config_from_state(&state, config::seconds_mode()),
     )
+}
+
+/// The supervisor's settings and whether the app-wide write policy is
+/// Deny, from one app-state read, as the Inbox drain wants them per step.
+pub fn config_and_write_deny() -> (SupervisorConfig, bool) {
+    let state = crate::app_state::load().unwrap_or(Value::Null);
+    (
+        config_from_state(&state, config::seconds_mode()),
+        writes_denied_in(&state),
+    )
+}
+
+/// "Writing to other sessions: Deny", read as the MCP host reads it
+/// (`McpNonChildWriteAccess::from_state_str`; missing or junk is Ask).
+pub fn writes_denied_in(state: &Value) -> bool {
+    state
+        .get("mcp_nonchild_write_access")
+        .and_then(Value::as_str)
+        .map(crate::state::McpNonChildWriteAccess::from_state_str)
+        == Some(crate::state::McpNonChildWriteAccess::Deny)
 }
 
 /// The Router id in a raw app-state document. A malformed mark is no mark.
@@ -143,16 +161,21 @@ pub fn host_worker_running() -> bool {
     host_worker_running_at(&crate::app_paths::unpeel_home())
 }
 
-/// The lease is the worker's flock on `<home>/serve.lock` (see
-/// `unpeel-serve` `driver::is_running_at`); stale files never count. The
-/// probe takes a *shared* lock, so concurrent probes never see each other
-/// as a Host, and releases it at once.
-pub(crate) fn host_worker_running_at(home: &std::path::Path) -> bool {
+/// The lease is the worker's exclusive flock on `<home>/serve.lock`
+/// (`unpeel-serve` `ServeLease`, whose `driver::is_running_at` delegates
+/// here); stale files never count. The probe takes a *shared* lock, so
+/// concurrent probes never see each other as a Host, and releases it at
+/// once.
+pub fn host_worker_running_at(home: &std::path::Path) -> bool {
     use std::os::fd::AsRawFd;
     let Ok(file) = std::fs::File::open(home.join("serve.lock")) else {
         return false;
     };
+    // SAFETY: `file` owns a valid open descriptor for this whole call, and
+    // flock(2) only reads it; no memory is shared with the kernel.
     if unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_SH | libc::LOCK_NB) } == 0 {
+        // SAFETY: as above; this releases the shared lock just taken (the
+        // descriptor closing would release it too).
         let _ = unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_UN) };
         false
     } else {
@@ -182,8 +205,9 @@ pub fn on_session_replaced(old_id: &str, replacement_id: Option<&str>) -> Result
     // The Inbox follows its Session: it lives outside the session dir that
     // Resume tears down.
     let inbox = transfer_inbox(&crate::session_inbox::Store::home(), old_id, replacement_id);
+    let inbox_moved = inbox.as_ref().is_ok_and(|moved| *moved);
     let outcome = match (outcome, inbox) {
-        (Ok(changed), Ok(())) => Ok(changed),
+        (Ok(changed), Ok(_)) => Ok(changed),
         (outcome, inbox) => Err([outcome.err(), inbox.err()]
             .into_iter()
             .flatten()
@@ -192,7 +216,10 @@ pub fn on_session_replaced(old_id: &str, replacement_id: Option<&str>) -> Result
     };
     // A partial failure may still have changed something: announce both.
     let (mark_moved, markers_changed) = match &outcome {
-        Ok(changed) => (changed.mark_moved, changed.markers_changed > 0),
+        Ok(changed) => (
+            changed.mark_moved,
+            changed.markers_changed > 0 || inbox_moved,
+        ),
         Err(_) => (true, true),
     };
     if mark_moved {
@@ -238,12 +265,13 @@ pub(crate) fn on_session_replaced_at(
 }
 
 /// Resume moves the Inbox to the new id (dropping any in-flight claim);
-/// removal deletes it. A same-id Reload keeps it where it is.
+/// removal deletes it. A same-id Reload keeps it where it is. `true` when
+/// an Inbox moved or was removed.
 fn transfer_inbox(
     store: &crate::session_inbox::Store,
     old_id: &str,
     replacement_id: Option<&str>,
-) -> Result<(), String> {
+) -> Result<bool, String> {
     let moved = match replacement_id {
         Some(new_id) => store.transfer(old_id, new_id),
         None => store.remove(old_id),
@@ -399,11 +427,8 @@ pub(crate) fn write_worker_marker_in(
     if !dir.is_dir() {
         return Err(format!("no session dir {}", dir.display()));
     }
-    let tmp = dir.join(".supervision.json.tmp");
-    let body = serde_json::to_vec(marker).map_err(|e| e.to_string())?;
-    std::fs::write(&tmp, body).map_err(|e| format!("write {}: {e}", tmp.display()))?;
-    std::fs::rename(&tmp, dir.join(WORKER_MARKER_FILE))
-        .map_err(|e| format!("rename {}: {e}", tmp.display()))
+    let body = serde_json::to_string(marker).map_err(|e| e.to_string())?;
+    crate::hook_assets::write_file_atomic(&dir.join(WORKER_MARKER_FILE), &body, "Worker marker")
 }
 
 /// `Ok(true)` when a marker was removed.
@@ -435,9 +460,11 @@ pub(crate) fn workers_of_in(sessions_root: &std::path::Path, router_id: &str) ->
     workers
 }
 
-/// No in-process channel follows a marker write, so the announce includes
-/// this process (port `None`), as `session_ops::mark_unread` does.
-fn announce_markers() {
+/// Session markers or an Inbox changed on disk. No in-process channel
+/// follows such a write, so the announce includes this process (port
+/// `None`), as `session_ops::mark_unread` does. Every Super Agent write
+/// announces through this.
+pub fn announce_markers() {
     crate::state_bus::announce(crate::state_bus::Change::SessionMarkers, None);
 }
 
@@ -450,7 +477,8 @@ pub(crate) fn valid_session_id(id: &str) -> bool {
     !id.trim().is_empty() && !id.contains('/') && !id.contains('\\') && !id.contains("..")
 }
 
-fn now_ms() -> u64 {
+/// Wall-clock unix ms, the time base of every Super Agent record.
+pub fn now_ms() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map_or(0, |elapsed| elapsed.as_millis() as u64)
@@ -721,6 +749,29 @@ mod tests {
     }
 
     #[test]
+    fn only_an_explicit_deny_denies_writes() {
+        for (stored, denied) in [
+            (
+                serde_json::json!({ "mcp_nonchild_write_access": "deny" }),
+                true,
+            ),
+            (
+                serde_json::json!({ "mcp_nonchild_write_access": " DENY " }),
+                true,
+            ),
+            (
+                serde_json::json!({ "mcp_nonchild_write_access": "allow" }),
+                false,
+            ),
+            (serde_json::json!({ "mcp_nonchild_write_access": 3 }), false),
+            (serde_json::json!({}), false),
+            (Value::Null, false),
+        ] {
+            assert_eq!(writes_denied_in(&stored), denied, "{stored}");
+        }
+    }
+
+    #[test]
     fn a_running_session_without_activity_reads_unknown_while_a_host_runs() {
         assert_eq!(running_status_without_activity(true), "unknown");
         // No Host publishes activity at all: today's answer.
@@ -791,17 +842,19 @@ mod tests {
         let store = crate::session_inbox::Store::at(tmp.path().join("session-inboxes"));
         store.enqueue("old", inbox_report("r0"), 1).unwrap();
 
-        transfer_inbox(&store, "old", Some("old")).unwrap();
+        // `true` when an Inbox moved or went, so the caller announces it
+        // even for an ordinary Session (no Router mark, no Worker markers).
+        assert!(!transfer_inbox(&store, "old", Some("old")).unwrap());
         assert_eq!(pending(&store, "old"), ["r0"], "a same-id Reload keeps it");
 
-        transfer_inbox(&store, "old", Some("new")).unwrap();
+        assert!(transfer_inbox(&store, "old", Some("new")).unwrap());
         assert!(pending(&store, "old").is_empty());
         assert_eq!(pending(&store, "new"), ["r0"]);
 
-        transfer_inbox(&store, "new", None).unwrap();
+        assert!(transfer_inbox(&store, "new", None).unwrap());
         assert!(store.inbox_ids().is_empty());
         // Nothing queued: nothing to move or remove.
-        transfer_inbox(&store, "never", Some("other")).unwrap();
-        transfer_inbox(&store, "never", None).unwrap();
+        assert!(!transfer_inbox(&store, "never", Some("other")).unwrap());
+        assert!(!transfer_inbox(&store, "never", None).unwrap());
     }
 }

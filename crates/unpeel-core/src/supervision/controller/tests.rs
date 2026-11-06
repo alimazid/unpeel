@@ -140,8 +140,8 @@ fn set_refuses_sessions_that_cannot_be_the_router_and_writes_nothing() {
     for (id, refusal) in [
         ("never-created", VerbError::UnknownSession),
         ("stopped-claude", VerbError::NotRunning),
-        ("codex-1", VerbError::NotClaudeCode),
-        ("shell-1", VerbError::NotClaudeCode),
+        ("codex-1", VerbError::CannotBeSuperAgent),
+        ("shell-1", VerbError::CannotBeSuperAgent),
     ] {
         assert_eq!(home.run(1, |ctx| set_at(ctx, id)), Err(refusal), "{id}");
         assert!(home.pending(id).is_empty(), "{id}");
@@ -390,22 +390,36 @@ fn hand_over_refuses_without_a_router_or_a_running_agent_and_writes_nothing() {
 }
 
 #[test]
-fn hand_over_is_accepted_even_at_the_worker_limit() {
-    let mut home = claude_home();
-    for index in 0..3 {
-        home = home.session(&format!("busy-{index}"), true, None, "claude");
-    }
+fn hand_over_takes_the_one_slot_past_the_worker_limit_and_no_more() {
+    let home = claude_home()
+        .session("busy-0", true, None, "claude")
+        .session("done-0", false, None, "claude")
+        .session("codex-2", true, None, "codex");
     home.run(100, |ctx| set_at(ctx, "router-1")).unwrap();
     crate::app_state::edit_at(&home.state_path(), |state| {
         state.insert("supervisor_max_children".into(), 1.into());
         Ok(())
     })
     .unwrap();
-    for index in 0..3 {
-        home.mark_worker(&format!("busy-{index}"), "router-1", WorkerOrigin::Created);
-    }
+    home.mark_worker("busy-0", "router-1", WorkerOrigin::Created);
+    // A stopped Worker holds no slot.
+    home.mark_worker("done-0", "router-1", WorkerOrigin::Created);
+
+    // At the limit, a hand-over still fits: one over it (§17.6).
     assert!(home.run(2, |ctx| hand_over_at(ctx, "codex-1")).is_ok());
     assert_eq!(home.marker("codex-1").unwrap().router_id, "router-1");
+
+    // Past that slot, a hand-over is refused before anything is written.
+    let refused = home.run(3, |ctx| hand_over_at(ctx, "codex-2"));
+    assert_eq!(refused, Err(VerbError::WorkerLimit(1)));
+    assert_eq!(VerbError::WorkerLimit(1).status(), 409);
+    let message = VerbError::WorkerLimit(1).to_string();
+    assert!(
+        message.contains("supervisor_max_children") && message.contains("2 running Workers"),
+        "{message}"
+    );
+    assert!(home.marker("codex-2").is_none());
+    assert!(home.pending("codex-2").is_empty());
 }
 
 #[test]
@@ -493,7 +507,8 @@ fn refusals_carry_the_controller_statuses() {
         (VerbError::NotRunning, 409),
         (VerbError::NoRouter, 409),
         (VerbError::IsTheRouter, 409),
-        (VerbError::NotClaudeCode, 422),
+        (VerbError::WorkerLimit(8), 409),
+        (VerbError::CannotBeSuperAgent, 422),
         (VerbError::NotAnAgent, 422),
         (VerbError::Failed("disk".into()), 500),
     ] {
@@ -534,20 +549,38 @@ fn facts(observed: Option<&str>, command: &str) -> SessionFacts {
 }
 
 #[test]
-fn claude_code_is_recognized_by_observation_first_then_by_command() {
+fn only_runtimes_declaring_super_agent_may_be_the_router() {
+    let catalog = crate::runtime_catalog::builtin_runtime_catalog();
+    let capable: Vec<&str> = catalog
+        .descriptors()
+        .iter()
+        .filter(|runtime| {
+            runtime
+                .capabilities
+                .contains(&crate::runtime_catalog::RuntimeCapability::SuperAgent)
+        })
+        .map(|runtime| runtime.slug.as_str())
+        .collect();
+    // The package declares it (runtimes/claude-code/runtime.toml); the Host
+    // names no provider.
+    assert_eq!(capable, ["claude-code"]);
+}
+
+#[test]
+fn the_router_runtime_is_recognized_by_observation_first_then_by_command() {
     // Observed Claude Code wins whatever was launched.
-    assert!(facts(Some("claude"), "zsh").is_claude_code());
-    assert!(facts(Some("claude"), "").is_claude_code());
+    assert!(facts(Some("claude"), "zsh").can_be_super_agent());
+    assert!(facts(Some("claude"), "").can_be_super_agent());
     // Nothing observed: the launch command decides.
-    assert!(facts(None, "claude --dangerously-skip-permissions").is_claude_code());
-    assert!(facts(None, "claude").is_claude_code());
+    assert!(facts(None, "claude --dangerously-skip-permissions").can_be_super_agent());
+    assert!(facts(None, "claude").can_be_super_agent());
     // An observation of something else beats a `claude` launch.
-    assert!(!facts(Some("codex"), "claude").is_claude_code());
-    assert!(!facts(Some("unpeel.app.markdown"), "claude").is_claude_code());
+    assert!(!facts(Some("codex"), "claude").can_be_super_agent());
+    assert!(!facts(Some("unpeel.app.markdown"), "claude").can_be_super_agent());
     // Other agents and plain commands are not Claude Code.
-    assert!(!facts(None, "codex").is_claude_code());
-    assert!(!facts(None, "cat").is_claude_code());
-    assert!(!facts(None, "").is_claude_code());
+    assert!(!facts(None, "codex").can_be_super_agent());
+    assert!(!facts(None, "cat").can_be_super_agent());
+    assert!(!facts(None, "").can_be_super_agent());
 }
 
 #[test]

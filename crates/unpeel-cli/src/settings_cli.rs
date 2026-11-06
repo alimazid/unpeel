@@ -27,6 +27,15 @@ Script this workspace's allowlisted settings:
   auto_stop_archive_minutes            0 | 30 | 60 | 120 | 240 | 480 | 1440
   sidebar_stopped_limit                0 | 3 | 5 | 10 | 15 | 25 (stopped sessions kept per group)
   theme                                system | light | dark
+  supervisor_stall_minutes             0 | 5 | 10 | 15 | 20 | 30 | 60 (Super Agent watchdog)
+  supervisor_blocked_minutes           0 | 5 | 10 | 15 | 30 | 60
+  supervisor_escalate_minutes          0 | 1 | 2 | 5 | 10 | 15 | 30 | 60
+  supervisor_max_turn_minutes          0 | 30 | 60 | 120 | 240
+  supervisor_max_children              1-32 (running Workers)
+  supervisor_max_spawns_per_minute     1 or more
+  supervisor_max_deliveries_per_hour   1 or more
+  supervisor_notify_started            true | false
+  supervisor_inbox_low_confidence      true | false
 
 The Sessions and Browser MCP gates are captured when a Session launches.
 Start or restart a Session after changing either of them.";
@@ -44,6 +53,8 @@ enum SettingKey {
     AutoStopArchiveMinutes,
     SidebarStoppedLimit,
     Theme,
+    /// Fork-only: a Super Agent `supervisor_*` key (`supervision/config.rs`).
+    Supervisor(&'static unpeel_core::supervision::SupervisorSetting),
 }
 
 /// The same value sets the Host's `settings.workspace.set` whitelist accepts
@@ -64,7 +75,17 @@ impl SettingKey {
         Self::Theme,
     ];
 
+    /// Fork-only: `ALL` and the `supervisor_*` keys.
+    fn listed() -> Vec<Self> {
+        let supervisor = unpeel_core::supervision::SUPERVISOR_SETTINGS.map(Self::Supervisor);
+        Self::ALL.into_iter().chain(supervisor).collect()
+    }
+
     fn parse(raw: &str) -> Result<Self, String> {
+        // Fork-only: the supervisor's keys.
+        if let Some(setting) = unpeel_core::supervision::SupervisorSetting::named(raw) {
+            return Ok(Self::Supervisor(setting));
+        }
         match raw {
             "experimental_features.sessions_mcp" => Ok(Self::SessionsMcp),
             "experimental_features.browser_mcp" => Ok(Self::BrowserMcp),
@@ -80,7 +101,7 @@ impl SettingKey {
             "theme" => Ok(Self::Theme),
             _ => Err(format!(
                 "unknown setting {raw:?}; supported keys: {}",
-                Self::ALL
+                Self::listed() // Fork-only
                     .iter()
                     .map(|key| key.name())
                     .collect::<Vec<_>>()
@@ -102,6 +123,7 @@ impl SettingKey {
             Self::AutoStopArchiveMinutes => "auto_stop_archive_minutes",
             Self::SidebarStoppedLimit => "sidebar_stopped_limit",
             Self::Theme => "theme",
+            Self::Supervisor(setting) => setting.key, // Fork-only
         }
     }
 
@@ -115,6 +137,7 @@ impl SettingKey {
             Self::AutoStopArchiveMinutes => "0, 30, 60, 120, 240, 480, or 1440 (0 = off)",
             Self::SidebarStoppedLimit => "0, 3, 5, 10, 15, or 25",
             Self::Theme => "system, light, or dark",
+            Self::Supervisor(setting) => setting.allowed, // Fork-only
         }
     }
 
@@ -158,6 +181,11 @@ impl SettingKey {
             Self::Theme => match normalized.as_str() {
                 "system" | "light" | "dark" => Value::String(normalized),
                 _ => return self.invalid_value(raw),
+            },
+            // Fork-only: the supervisor's own value sets.
+            Self::Supervisor(setting) => match setting.parse(raw) {
+                Ok(value) => value,
+                Err(_) => return self.invalid_value(raw),
             },
         };
         Ok(value)
@@ -243,6 +271,7 @@ impl SettingKey {
                     .unwrap_or("system");
                 Value::String(theme.into())
             }
+            Self::Supervisor(setting) => setting.effective(state.get(setting.key)), // Fork-only
         }
     }
 
@@ -290,6 +319,10 @@ impl SettingKey {
             }
             Self::Theme => {
                 state.insert("theme".into(), value);
+            }
+            // Fork-only
+            Self::Supervisor(setting) => {
+                state.insert(setting.key.into(), value);
             }
         }
         Ok(())
@@ -339,7 +372,7 @@ pub fn run(args: &[String], json: bool) -> Result<(), String> {
                 .as_object()
                 .ok_or_else(|| "app-state.json is not an object".to_string())?;
             if json {
-                let values: Map<String, Value> = SettingKey::ALL
+                let values: Map<String, Value> = SettingKey::listed() // Fork-only
                     .iter()
                     .map(|key| (key.name().into(), key.read(state)))
                     .collect();
@@ -348,7 +381,8 @@ pub fn run(args: &[String], json: bool) -> Result<(), String> {
                     serde_json::to_string(&values).map_err(|e| e.to_string())?
                 );
             } else {
-                for key in SettingKey::ALL {
+                // Fork-only: `listed`, with the supervisor keys.
+                for key in SettingKey::listed() {
                     println!("{:<42} {}", key.name(), display_value(&key.read(state)));
                 }
             }
@@ -478,5 +512,47 @@ mod tests {
         assert!(parse_command(&invalid_access)
             .unwrap_err()
             .contains("expected on, ask, or off"));
+    }
+
+    /// Fork-only: the Super Agent's `supervisor_*` keys are scriptable.
+    #[test]
+    fn supervisor_settings_are_listed_parsed_read_and_written() {
+        let args = |raw: &[&str]| raw.iter().map(|arg| arg.to_string()).collect::<Vec<_>>();
+        let names: Vec<&str> = SettingKey::listed().iter().map(|key| key.name()).collect();
+        for key in unpeel_core::supervision::SUPERVISOR_SETTINGS {
+            assert!(names.contains(&key.key), "{} is listed", key.key);
+        }
+        assert!(HELP.contains("supervisor_max_children"));
+
+        let SettingsCommand::Set { key, value } =
+            parse_command(&args(&["set", "supervisor_max_children", "4"])).unwrap()
+        else {
+            panic!("a set command");
+        };
+        assert_eq!(key.name(), "supervisor_max_children");
+        assert_eq!(value, Value::from(4));
+        let mut state = Map::new();
+        assert_eq!(key.read(&state), Value::from(8), "the default");
+        key.write(&mut state, value).unwrap();
+        assert_eq!(state["supervisor_max_children"], 4);
+        assert_eq!(key.read(&state), Value::from(4));
+
+        for (raw, wanted) in [
+            (["set", "supervisor_max_children", "33"], "from 1 to 32"),
+            (
+                ["set", "supervisor_stall_minutes", "7"],
+                "0, 5, 10, 15, 20, 30, or 60",
+            ),
+            (["set", "supervisor_notify_started", "yes"], "true or false"),
+        ] {
+            let error = parse_command(&args(&raw)).unwrap_err();
+            assert!(
+                error.contains(raw[1]) && error.contains(wanted),
+                "{raw:?}: {error}"
+            );
+        }
+        assert!(parse_command(&args(&["get", "supervisor_bogus"]))
+            .unwrap_err()
+            .contains("supervisor_max_children"));
     }
 }

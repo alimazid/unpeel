@@ -10,11 +10,8 @@
 
 use std::path::Path;
 
-use crate::runtime_catalog::RuntimeDescriptor;
+use crate::runtime_catalog::{RuntimeCapability, RuntimeDescriptor};
 use crate::session_inbox::{ItemKind, NewItem, Priority, Sender, Store};
-
-/// The catalog id of the one runtime that may be the Router.
-pub const CLAUDE_CODE_RUNTIME_ID: &str = "com.anthropic.claude-code";
 
 /// What a verb needs to know about one Session, read from its manifest by
 /// the real-home wrappers.
@@ -29,11 +26,15 @@ pub struct SessionFacts {
 }
 
 impl SessionFacts {
-    /// Claude Code by observation, or — when nothing is observed — by the
-    /// catalog match on the launch command. The same rule the Mac menu uses.
-    pub fn is_claude_code(&self) -> bool {
-        self.runtime()
-            .is_some_and(|runtime| runtime.id == CLAUDE_CODE_RUNTIME_ID)
+    /// Its runtime declares the `super_agent` capability in its package, by
+    /// observation or — when nothing is observed — by the catalog match on
+    /// the launch command. The same rule the Mac menu uses.
+    pub fn can_be_super_agent(&self) -> bool {
+        self.runtime().is_some_and(|runtime| {
+            runtime
+                .capabilities
+                .contains(&RuntimeCapability::SuperAgent)
+        })
     }
 
     /// Any catalog agent runtime, by the same observed-first rule.
@@ -58,10 +59,13 @@ pub enum VerbError {
     InvalidId,
     UnknownSession,
     NotRunning,
-    NotClaudeCode,
+    CannotBeSuperAgent,
     NotAnAgent,
     NoRouter,
     IsTheRouter,
+    /// The Router already runs `supervisor_max_children` (the value held)
+    /// Workers plus the one hand-over slot.
+    WorkerLimit(usize),
     Failed(String),
 }
 
@@ -71,8 +75,11 @@ impl VerbError {
         match self {
             VerbError::InvalidId => 400,
             VerbError::UnknownSession => 404,
-            VerbError::NotRunning | VerbError::NoRouter | VerbError::IsTheRouter => 409,
-            VerbError::NotClaudeCode | VerbError::NotAnAgent => 422,
+            VerbError::NotRunning
+            | VerbError::NoRouter
+            | VerbError::IsTheRouter
+            | VerbError::WorkerLimit(_) => 409,
+            VerbError::CannotBeSuperAgent | VerbError::NotAnAgent => 422,
             VerbError::Failed(_) => 500,
         }
     }
@@ -80,16 +87,26 @@ impl VerbError {
 
 impl std::fmt::Display for VerbError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(match self {
+        let text = match self {
             VerbError::InvalidId => "invalid session id",
             VerbError::UnknownSession => "unknown session",
             VerbError::NotRunning => "the session is not running",
-            VerbError::NotClaudeCode => "only a Claude Code session can be the Super Agent",
+            VerbError::CannotBeSuperAgent => "this session's agent cannot be the Super Agent",
             VerbError::NotAnAgent => "only an agent session can be handed to the Super Agent",
             VerbError::NoRouter => "this workspace has no Super Agent",
             VerbError::IsTheRouter => "this session is the Super Agent",
+            VerbError::WorkerLimit(limit) => {
+                return write!(
+                    f,
+                    "the Super Agent already has {} running Workers: its limit \
+                     (supervisor_max_children = {limit}) plus the one hand-over slot. Stop one \
+                     of its Workers first",
+                    limit + 1
+                );
+            }
             VerbError::Failed(message) => message,
-        })
+        };
+        f.write_str(text)
     }
 }
 
@@ -207,7 +224,8 @@ fn announce(outcome: &Result<VerbOutcome, VerbError>) {
     }
 }
 
-/// `session.super_agent.set`: make a running Claude Code Session the Router.
+/// `session.super_agent.set`: make a running Session whose runtime declares
+/// `super_agent` (Claude Code today) the Router.
 /// A previous Router's Workers move with the mark, and the new Router is
 /// told what it took over. Idempotent for the current Router.
 pub(crate) fn set_at(ctx: &Ctx, session_id: &str) -> Result<VerbOutcome, VerbError> {
@@ -215,8 +233,8 @@ pub(crate) fn set_at(ctx: &Ctx, session_id: &str) -> Result<VerbOutcome, VerbErr
     if !facts.running {
         return Err(VerbError::NotRunning);
     }
-    if !facts.is_claude_code() {
-        return Err(VerbError::NotClaudeCode);
+    if !facts.can_be_super_agent() {
+        return Err(VerbError::CannotBeSuperAgent);
     }
     if current_router(ctx)?.as_deref() == Some(session_id) {
         return Ok(VerbOutcome::default());
@@ -290,7 +308,7 @@ fn instructions_item(router_id: &str, since: u64) -> NewItem {
         summary: format!(
             "You are now the Super Agent. Read your instructions with skills read {}, \
              then call sessions current.",
-            crate::skills_mcp::ROUTER_SKILL_ID
+            crate::skills_builtin::ROUTER_SKILL_ID
         ),
         body: String::new(),
         dedupe_key: Some(format!("{INSTRUCTIONS_KEY_PREFIX}{router_id}:{since}")),
@@ -383,11 +401,14 @@ pub(crate) fn clear_at(ctx: &Ctx, session_id: &str) -> Result<VerbOutcome, VerbE
 
 /// `session.super_agent.hand_over`: make a running agent Session the
 /// Router's Worker and ask it to summarise itself into the Router's Inbox.
-/// No Worker limit applies: a hand-over is the user's free slot (§17.6).
-/// Idempotent for a Session already working for this Router.
+/// A hand-over is the user's free slot (§17.6): accepted at
+/// `supervisor_max_children` running Workers, one over the limit, and
+/// refused past that. Idempotent for a Session already working for this
+/// Router.
 pub(crate) fn hand_over_at(ctx: &Ctx, session_id: &str) -> Result<VerbOutcome, VerbError> {
     let facts = (ctx.facts)(session_id).ok_or(VerbError::UnknownSession)?;
-    let router_id = current_router(ctx)?.ok_or(VerbError::NoRouter)?;
+    let state = load_state(ctx)?;
+    let router_id = super::router_id_in(&state).ok_or(VerbError::NoRouter)?;
     if router_id == session_id {
         return Err(VerbError::IsTheRouter);
     }
@@ -400,6 +421,10 @@ pub(crate) fn hand_over_at(ctx: &Ctx, session_id: &str) -> Result<VerbOutcome, V
     let dir = ctx.sessions_root.join(session_id);
     if super::read_worker_marker_in(&dir).is_some_and(|marker| marker.router_id == router_id) {
         return Ok(VerbOutcome::default());
+    }
+    let limit = super::config_from_state(&state, false).max_children;
+    if running_workers(ctx, &router_id) > limit {
+        return Err(VerbError::WorkerLimit(limit));
     }
     let marker = super::WorkerMarker {
         router_id: router_id.clone(),
@@ -494,9 +519,20 @@ fn enqueue(ctx: &Ctx, target: &str, item: NewItem) -> Result<(), String> {
 }
 
 fn current_router(ctx: &Ctx) -> Result<Option<String>, VerbError> {
+    load_state(ctx).map(|state| super::router_id_in(&state))
+}
+
+fn load_state(ctx: &Ctx) -> Result<serde_json::Value, VerbError> {
     crate::app_state::load_for_edit_at(ctx.state_path)
-        .map(|state| super::router_id_in(&state))
         .map_err(|error| VerbError::Failed(format!("Super Agent mark: {error}")))
+}
+
+/// `router_id`'s Workers that are running now.
+fn running_workers(ctx: &Ctx, router_id: &str) -> usize {
+    super::workers_of_in(ctx.sessions_root, router_id)
+        .iter()
+        .filter(|id| (ctx.facts)(id).is_some_and(|facts| facts.running))
+        .count()
 }
 
 #[cfg(test)]

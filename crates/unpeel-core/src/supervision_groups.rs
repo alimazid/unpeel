@@ -43,7 +43,7 @@ pub(crate) fn schema_properties() -> Vec<(&'static str, Value)> {
     vec![
         (
             "name",
-            json!({ "type": "string", "description": "create_worktree: sidebar name; create_group/rename_group: group name" }),
+            json!({ "type": "string", "description": "create_worktree: folder name; create_group/rename_group: group name" }),
         ),
         (
             "session_id",
@@ -79,9 +79,8 @@ pub(crate) fn help_docs() -> Vec<(String, Value)> {
         (
             "rename_group".into(),
             doc(
-                "Super Agent only. Rename a sidebar group: {project_id, name}. Not a Project or \
-        worktree, not a root's Sidebar group, and not a group the Mac app keeps itself (id native-…): \
-        ask the user for those.",
+                "Super Agent only. Rename a sidebar group you created with create_group (id \
+        sa-…): {project_id, name}. Any other group, a Project or a worktree: ask the user.",
                 json!({
                     "project_id": project("The group (workspace list_projects)"),
                     "name": project("New name, at most 80 characters"),
@@ -92,10 +91,10 @@ pub(crate) fn help_docs() -> Vec<(String, Value)> {
         (
             "remove_group".into(),
             doc(
-                "Super Agent only. Remove an empty sidebar group: {project_id, name, removed}. \
-        Refused while any Session, stopped ones included, was started in or moved into it, while it \
-        holds other groups, and for a root's Sidebar group or a group the Mac app keeps itself (id \
-        native-…). Move your Workers out first with move_session.",
+                "Super Agent only. Remove an empty sidebar group you created with create_group (id \
+        sa-…): {project_id, name, removed}. Refused while any Session, stopped ones included, was \
+        started in or moved into it, and while it holds other groups. Move your Workers out first \
+        with move_session.",
                 json!({ "project_id": project("The group (workspace list_projects)") }),
                 &["project_id"],
             ),
@@ -175,11 +174,8 @@ impl Home {
         if kept.len() == order.len() {
             return Ok(());
         }
-        let body = serde_json::to_vec_pretty(&kept).map_err(|error| error.to_string())?;
-        let tmp = path.with_extension("json.tmp");
-        std::fs::write(&tmp, body).map_err(|error| format!("write {}: {error}", tmp.display()))?;
-        std::fs::rename(&tmp, &path)
-            .map_err(|error| format!("rename {}: {error}", tmp.display()))?;
+        let body = serde_json::to_string_pretty(&kept).map_err(|error| error.to_string())?;
+        crate::hook_assets::write_file_atomic(&path, &body, "project order")?;
         if self.shared {
             crate::state_bus::announce(
                 crate::state_bus::Change::Order,
@@ -364,19 +360,31 @@ working for you."
     let launched_in = manifest_project(&dir)
         .ok_or_else(|| format!("Session '{session_id}' has no launch manifest yet."))?;
     if target == launched_in {
-        clear_filed_project(&dir)?;
+        refile(home, session_id, None)?;
     } else {
         check_move_target(&home.state()?, &launched_in, target)
             .map_err(|error| format!("Can't move '{session_id}' to '{target}': {error}"))?;
-        file_project(&dir, target)?;
-    }
-    if home.shared {
-        crate::state_bus::announce(
-            crate::state_bus::Change::SessionMarkers,
-            crate::session_ops::own_listener_port_public(),
-        );
+        refile(home, session_id, Some(target))?;
     }
     Ok(json!({ "session_id": session_id, "project_id": target }))
+}
+
+/// File the Worker under `target`, or (`None`) back under its launch
+/// Project. The real home uses `session_ops`' own marker writers, which
+/// announce; a test home writes the same `{project_id, moved_at}` marker
+/// under its own root.
+fn refile(home: &Home, session_id: &str, target: Option<&str>) -> Result<(), String> {
+    if home.shared {
+        return match target {
+            Some(target) => crate::session_ops::set_project_override(session_id, target),
+            None => crate::session_ops::clear_project_override(session_id),
+        };
+    }
+    let dir = home.sessions_root().join(session_id);
+    match target {
+        Some(target) => file_project(&dir, target),
+        None => clear_filed_project(&dir),
+    }
 }
 
 /// The Host's rule (`controller_host::validate_session_project_target`),
@@ -400,18 +408,14 @@ fn check_move_target(state: &Value, launched_in: &str, target: &str) -> Result<(
         .map_err(|error| format!("{error}. Call workspace list_projects for the targets."))
 }
 
-/// Write `project-override.json` like `session_ops::set_project_override`:
-/// same-dir temp + rename, the desktop's `{project_id, moved_at}` shape.
+/// `session_ops::set_project_override`'s marker, under a test home.
 fn file_project(dir: &Path, project_id: &str) -> Result<(), String> {
-    let moved_at = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map_or(0, |elapsed| elapsed.as_millis() as u64);
-    let body = serde_json::to_vec(&json!({ "project_id": project_id, "moved_at": moved_at }))
-        .map_err(|error| error.to_string())?;
-    let tmp = dir.join(".project-override.json.tmp");
-    std::fs::write(&tmp, body).map_err(|error| format!("write {}: {error}", tmp.display()))?;
-    std::fs::rename(&tmp, dir.join(crate::session_ops::PROJECT_OVERRIDE_MARKER))
-        .map_err(|error| format!("rename {}: {error}", tmp.display()))
+    let body = json!({ "project_id": project_id, "moved_at": crate::supervision::now_ms() });
+    crate::hook_assets::write_file_atomic(
+        &dir.join(crate::session_ops::PROJECT_OVERRIDE_MARKER),
+        &body.to_string(),
+        "project override",
+    )
 }
 
 /// Back to the launch Project: no marker. Absent is not an error.
@@ -457,10 +461,11 @@ fn manifest_project(dir: &Path) -> Option<String> {
         .map(str::to_string)
 }
 
-/// `project_id` as a group the Router may rename or remove: a plain group,
-/// not a root's Sidebar group (it holds the side-panel panes), and not one
-/// the Mac app keeps in its own records — its mirror would put back the old
-/// row (`UnpeelStore.mirrorProjectsToSharedState`).
+/// `project_id` as a group the Router may rename or remove: a plain group it
+/// created (`sa-` id, §16.2), never a root's Sidebar group (it holds the
+/// side-panel panes) and never one the Mac app keeps in its own records —
+/// its mirror would put back the old row
+/// (`UnpeelStore.mirrorProjectsToSharedState`).
 fn managed_group<'a>(
     projects: &'a [Project],
     project_id: &str,
@@ -484,6 +489,13 @@ be {verb}.",
         return Err(format!(
             "Group '{}' is kept in the Mac app's own records, which would undo this change. \
 Ask the user to do it in the sidebar.",
+            group.name
+        ));
+    }
+    if !group.id.starts_with(GROUP_PREFIX) {
+        return Err(format!(
+            "Group '{}' was not made with workspace create_group: you rename and remove only \
+groups you created (id {GROUP_PREFIX}…). Ask the user to do it in the sidebar.",
             group.name
         ));
     }

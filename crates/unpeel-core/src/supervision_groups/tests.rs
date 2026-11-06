@@ -15,11 +15,15 @@ fn with_home<T>(body: impl FnOnce(&Home) -> T) -> T {
         "projects": [
             { "id": "p", "name": "P", "path": "/work/p", "workspace_id": "ws", "sort_order": 0 },
             { "id": "sidebar-p", "name": "Sidebar", "path": "/work/p", "parent_project_id": "p", "is_folder": true, "sort_order": 0, "pinned_at": 5 },
-            { "id": "g", "name": "Docs", "path": "/work/p", "parent_project_id": "p", "is_folder": true, "sort_order": 1 },
+            { "id": "sa-g", "name": "Docs", "path": "/work/p", "parent_project_id": "p", "is_folder": true, "sort_order": 1 },
             { "id": "wt", "name": "feature", "path": "/work/wt", "parent_project_id": "p", "worktree_branch": "feature", "sort_order": 2 },
             { "id": "q", "name": "Q", "path": "/work/q", "sort_order": 1 },
             // A group the Mac app keeps in its own records.
             { "id": "native-1", "name": "Mine", "path": "/work/p", "parent_project_id": "p", "is_folder": true, "sort_order": 3 },
+            // Groups other frontends and migrations made: never the Router's.
+            { "id": "legacy-pinned-p", "name": "Pinned", "path": "/work/p", "parent_project_id": "p", "is_folder": true, "sort_order": 4 },
+            { "id": "tui-1", "name": "TUI", "path": "/work/p", "parent_project_id": "p", "is_folder": true, "sort_order": 5 },
+            { "id": "host-1", "name": "Host", "path": "/work/p", "parent_project_id": "p", "is_folder": true, "sort_order": 6 },
         ]
     });
     std::fs::write(root.join("app-state.json"), state.to_string()).unwrap();
@@ -60,7 +64,7 @@ fn the_router_creates_a_group_at_the_top_of_a_project() {
         );
         // Its siblings move down one; other Projects keep their place.
         assert_eq!(project(&state, "sidebar-p").unwrap()["sort_order"], 1);
-        assert_eq!(project(&state, "g").unwrap()["sort_order"], 2);
+        assert_eq!(project(&state, "sa-g").unwrap()["sort_order"], 2);
         assert_eq!(project(&state, "wt").unwrap()["sort_order"], 3);
         assert_eq!(project(&state, "q").unwrap()["sort_order"], 1);
         // Unmodelled fields pass through.
@@ -71,7 +75,7 @@ fn the_router_creates_a_group_at_the_top_of_a_project() {
 #[test]
 fn a_group_is_always_created_under_its_root_project() {
     with_home(|home| {
-        for inside in ["g", "wt", " p "] {
+        for inside in ["sa-g", "wt", " p "] {
             let created = create_group_at(
                 home,
                 Some(ROUTER),
@@ -123,18 +127,18 @@ fn the_router_renames_a_group() {
         let renamed = rename_group_at(
             home,
             Some(ROUTER),
-            &json!({ "project_id": "g", "name": " Specs " }),
+            &json!({ "project_id": "sa-g", "name": " Specs " }),
         )
         .unwrap();
-        assert_eq!(renamed, json!({ "project_id": "g", "name": "Specs" }));
+        assert_eq!(renamed, json!({ "project_id": "sa-g", "name": "Specs" }));
         let state = home.state().unwrap();
-        assert_eq!(project(&state, "g").unwrap()["name"], "Specs");
-        assert_eq!(project(&state, "g").unwrap()["sort_order"], 1);
+        assert_eq!(project(&state, "sa-g").unwrap()["name"], "Specs");
+        assert_eq!(project(&state, "sa-g").unwrap()["sort_order"], 1);
     });
 }
 
 #[test]
-fn the_sidebar_group_and_non_groups_are_never_renamed() {
+fn only_groups_the_router_created_are_renamed() {
     with_home(|home| {
         let before = std::fs::read(home.state_path()).unwrap();
         for (project_id, wanted) in [
@@ -143,6 +147,9 @@ fn the_sidebar_group_and_non_groups_are_never_renamed() {
             ("wt", "not a group"),
             ("nope", "Unknown group"),
             ("native-1", "Mac app"),
+            ("legacy-pinned-p", "only groups you created"),
+            ("tui-1", "only groups you created"),
+            ("host-1", "only groups you created"),
         ] {
             let error = rename_group_at(
                 home,
@@ -180,17 +187,17 @@ fn remove(home: &Home, project_id: &str) -> Result<Value, String> {
 #[test]
 fn the_router_removes_an_empty_group() {
     with_home(|home| {
-        std::fs::write(order_path(home), r#"["p","sidebar-p","g","wt","q"]"#).unwrap();
+        std::fs::write(order_path(home), r#"["p","sidebar-p","sa-g","wt","q"]"#).unwrap();
         // Sessions elsewhere don't keep it.
         session(home, "s1", "p", None);
         session(home, "s2", "p", Some("sidebar-p"));
 
-        let removed = remove(home, "g").unwrap();
-        assert_eq!(removed["project_id"], "g");
+        let removed = remove(home, "sa-g").unwrap();
+        assert_eq!(removed["project_id"], "sa-g");
         assert_eq!(removed["removed"], true);
 
         let state = home.state().unwrap();
-        assert!(project(&state, "g").is_none());
+        assert!(project(&state, "sa-g").is_none());
         // Later siblings close the gap; earlier ones and other roots stay.
         assert_eq!(project(&state, "sidebar-p").unwrap()["sort_order"], 0);
         assert_eq!(project(&state, "wt").unwrap()["sort_order"], 1);
@@ -205,7 +212,7 @@ fn the_router_removes_an_empty_group() {
 #[test]
 fn removing_writes_no_project_order_when_there_is_none() {
     with_home(|home| {
-        remove(home, "g").unwrap();
+        remove(home, "sa-g").unwrap();
         assert!(!order_path(home).exists());
     });
 }
@@ -214,14 +221,14 @@ fn removing_writes_no_project_order_when_there_is_none() {
 fn a_group_with_sessions_or_children_is_not_removed() {
     with_home(|home| {
         // A stopped or running session launched in it, or one filed into it.
-        let launched = session(home, "s1", "g", None);
+        let launched = session(home, "s1", "sa-g", None);
         let before = std::fs::read(home.state_path()).unwrap();
-        let error = remove(home, "g").unwrap_err();
+        let error = remove(home, "sa-g").unwrap_err();
         assert!(error.contains("not empty"), "{error}");
         std::fs::remove_dir_all(launched).unwrap();
 
-        session(home, "s2", "p", Some("g"));
-        let error = remove(home, "g").unwrap_err();
+        session(home, "s2", "p", Some("sa-g"));
+        let error = remove(home, "sa-g").unwrap_err();
         assert!(error.contains("not empty"), "{error}");
         assert_eq!(std::fs::read(home.state_path()).unwrap(), before);
     });
@@ -232,21 +239,21 @@ fn a_group_holding_other_projects_is_not_removed() {
     with_home(|home| {
         home.edit_state(|state| {
             project_rows(state)?.push(json!({
-                "id": "inner", "name": "Inner", "path": "", "parent_project_id": "g", "is_folder": true,
+                "id": "inner", "name": "Inner", "path": "", "parent_project_id": "sa-g", "is_folder": true,
             }));
             Ok(())
         })
         .unwrap();
-        let error = remove(home, "g").unwrap_err();
+        let error = remove(home, "sa-g").unwrap_err();
         assert!(error.contains("holds"), "{error}");
-        assert!(project(&home.state().unwrap(), "g").is_some());
+        assert!(project(&home.state().unwrap(), "sa-g").is_some());
     });
 }
 
 #[test]
-fn the_sidebar_group_and_non_groups_are_never_removed() {
+fn only_empty_groups_the_router_created_are_removed() {
     with_home(|home| {
-        std::fs::write(order_path(home), r#"["p","sidebar-p","g"]"#).unwrap();
+        std::fs::write(order_path(home), r#"["p","sidebar-p","sa-g"]"#).unwrap();
         let before = std::fs::read(home.state_path()).unwrap();
         for (project_id, wanted) in [
             ("sidebar-p", "Sidebar group"),
@@ -254,6 +261,10 @@ fn the_sidebar_group_and_non_groups_are_never_removed() {
             ("wt", "not a group"),
             ("nope", "Unknown group"),
             ("native-1", "Mac app"),
+            // Empty, but made by another frontend or a migration.
+            ("legacy-pinned-p", "only groups you created"),
+            ("tui-1", "only groups you created"),
+            ("host-1", "only groups you created"),
         ] {
             let error = remove(home, project_id).unwrap_err();
             assert!(error.contains(wanted), "{project_id}: {error}");
@@ -261,7 +272,7 @@ fn the_sidebar_group_and_non_groups_are_never_removed() {
         assert_eq!(std::fs::read(home.state_path()).unwrap(), before);
         assert_eq!(
             std::fs::read_to_string(order_path(home)).unwrap(),
-            r#"["p","sidebar-p","g"]"#
+            r#"["p","sidebar-p","sa-g"]"#
         );
     });
 }
@@ -290,16 +301,27 @@ fn move_to(home: &Home, session_id: &str, project_id: &str) -> Result<Value, Str
 fn the_router_files_its_worker_into_a_group_and_back() {
     with_home(|home| {
         let dir = worker(home, "w1", ROUTER, "p");
-        let moved = move_to(home, "w1", "g").unwrap();
-        assert_eq!(moved, json!({ "session_id": "w1", "project_id": "g" }));
-        assert_eq!(filed_project(&dir).as_deref(), Some("g"));
+        let moved = move_to(home, "w1", "sa-g").unwrap();
+        assert_eq!(moved, json!({ "session_id": "w1", "project_id": "sa-g" }));
+        assert_eq!(filed_project(&dir).as_deref(), Some("sa-g"));
         // The launch manifest is never rewritten.
         assert_eq!(manifest_project(&dir).as_deref(), Some("p"));
 
         // Back to the Project it was started in: the marker goes.
         move_to(home, "w1", "p").unwrap();
         assert!(!dir.join("project-override.json").exists());
-        assert_eq!(sessions_in_group(&home.sessions_root(), "g"), 0);
+        assert_eq!(sessions_in_group(&home.sessions_root(), "sa-g"), 0);
+    });
+}
+
+#[test]
+fn a_worker_is_filed_into_any_group_not_only_the_routers() {
+    with_home(|home| {
+        let dir = worker(home, "w1", ROUTER, "p");
+        for group in ["tui-1", "legacy-pinned-p", "native-1"] {
+            move_to(home, "w1", group).unwrap();
+            assert_eq!(filed_project(&dir).as_deref(), Some(group));
+        }
     });
 }
 
@@ -312,7 +334,7 @@ fn a_worker_started_in_a_group_moves_to_its_root_or_a_sibling() {
             &json!({ "project_id": "p", "name": "A" }),
         )
         .unwrap();
-        let dir = worker(home, "w1", ROUTER, "g");
+        let dir = worker(home, "w1", ROUTER, "sa-g");
         move_to(home, "w1", "p").unwrap();
         assert_eq!(filed_project(&dir).as_deref(), Some("p"));
         let sibling = group["project_id"].as_str().unwrap();
@@ -334,7 +356,7 @@ fn only_the_routers_own_workers_are_moved() {
             ("gone", "Unknown session"),
             ("../mine", "not a session id"),
         ] {
-            let error = move_to(home, session_id, "g").unwrap_err();
+            let error = move_to(home, session_id, "sa-g").unwrap_err();
             assert!(error.contains(wanted), "{session_id}: {error}");
         }
         for dir in [users, others] {
@@ -353,7 +375,7 @@ fn a_worker_stays_inside_its_own_checkout() {
             ("w1", "q", "outside the session's project"),
             ("w1", "wt", "outside the session's project"),
             ("w1", "sidebar-p", "Sidebar group"),
-            ("w2", "g", "worktree"),
+            ("w2", "sa-g", "worktree"),
         ] {
             let error = move_to(home, session_id, target).unwrap_err();
             assert!(error.contains(wanted), "{session_id} → {target}: {error}");
@@ -371,7 +393,7 @@ fn the_workspace_tool_advertises_and_documents_the_group_actions() {
         "inputSchema": { "type": "object", "properties": {
             "action": { "type": "string" },
             "project_id": { "type": "string" },
-            "name": { "type": "string", "description": "create_worktree: sidebar name" },
+            "name": { "type": "string", "description": "create_worktree: folder name" },
         } }
     });
     let schema = crate::supervision_mcp::extend_schema("workspace", base);
@@ -415,11 +437,14 @@ fn only_the_router_manages_groups_and_moves_workers() {
         let dir = worker(home, "w1", ROUTER, "p");
         let calls: [(Action, Value); 4] = [
             (create_group_at, json!({ "project_id": "p", "name": "X" })),
-            (rename_group_at, json!({ "project_id": "g", "name": "X" })),
-            (remove_group_at, json!({ "project_id": "g" })),
+            (
+                rename_group_at,
+                json!({ "project_id": "sa-g", "name": "X" }),
+            ),
+            (remove_group_at, json!({ "project_id": "sa-g" })),
             (
                 move_session_at,
-                json!({ "session_id": "w1", "project_id": "g" }),
+                json!({ "session_id": "w1", "project_id": "sa-g" }),
             ),
         ];
         let refuse_all = |callers: &[Option<&str>]| {

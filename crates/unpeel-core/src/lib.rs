@@ -145,6 +145,9 @@ pub mod session_input;
 pub mod session_ops;
 #[cfg(feature = "native-host")]
 pub mod setup;
+// Fork-only
+#[cfg(feature = "native-host")]
+pub mod skills_builtin;
 #[cfg(feature = "native-host")]
 pub mod skills_mcp;
 #[cfg(feature = "native-host")]

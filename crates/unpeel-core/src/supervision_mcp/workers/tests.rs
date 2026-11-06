@@ -114,6 +114,8 @@ fn creator(id: &str) -> Creator {
         id: id.into(),
         label: format!("{id} label"),
         project_id: "p".into(),
+        observed_runtime: None,
+        command: "claude".into(),
     }
 }
 
@@ -386,4 +388,96 @@ fn a_failed_marker_write_is_reported_not_hidden() {
         "{result}"
     );
     assert!(result.get("worker").is_none());
+}
+
+/// A Router running `command`, with `observed` in the foreground.
+fn agent_router(observed: Option<&str>, command: &str) -> Creator {
+    Creator {
+        observed_runtime: observed.map(str::to_owned),
+        command: command.into(),
+        ..creator(ROUTER)
+    }
+}
+
+fn with_presets(home: TestHome) -> TestHome {
+    home.with_state(
+        "presets",
+        json!([
+            { "id": "codex", "label": "Codex", "command": "codex", "project_id": null },
+            { "id": "off", "label": "Claude off", "command": "claude --model haiku", "project_id": "p", "enabled": false },
+            { "id": "opus", "label": "Claude Opus", "command": "claude --model opus", "project_id": "p" },
+            { "id": "q-claude", "label": "Q Claude", "command": "claude", "project_id": "q" },
+        ]),
+    )
+}
+
+/// The command (and source preset) a Router create with `args` launches
+/// in place of upstream's choice.
+fn default_agent(
+    home: &TestHome,
+    router: &Creator,
+    args: Value,
+) -> Option<(String, Option<String>)> {
+    home.run(|ctx| plan_create(ctx, &args, router, &no_worktree))
+        .unwrap()
+        .expect("a Router create is a Worker")
+        .default_command()
+}
+
+#[test]
+fn a_worker_defaults_to_the_target_projects_preset_for_the_routers_agent() {
+    let home = with_presets(TestHome::new());
+    let router = agent_router(Some("claude"), "zsh");
+    // The enabled preset of the target Project that runs the Router's agent.
+    assert_eq!(
+        default_agent(&home, &router, json!({ "project_id": "p" })),
+        Some(("claude --model opus".into(), Some("opus".into())))
+    );
+    // A group resolves to its root Project's presets.
+    assert_eq!(
+        default_agent(&home, &router, json!({ "project_id": "g" })),
+        Some(("claude --model opus".into(), Some("opus".into())))
+    );
+    assert_eq!(
+        default_agent(&home, &router, json!({ "project_id": "q" })),
+        Some(("claude".into(), Some("q-claude".into())))
+    );
+}
+
+#[test]
+fn without_a_matching_preset_a_worker_runs_the_runtimes_plain_command() {
+    let home = TestHome::new().with_state(
+        "presets",
+        json!([{ "id": "codex", "label": "Codex", "command": "codex", "project_id": null }]),
+    );
+    // Never the Router's own launch line (a resume or its flags).
+    let router = agent_router(None, "claude --resume 1234 --dangerously-skip-permissions");
+    assert_eq!(
+        default_agent(&home, &router, json!({ "project_id": "p" })),
+        Some(("claude".into(), None))
+    );
+    // The observed runtime wins over the launch command.
+    let codex_router = agent_router(Some("codex"), "claude");
+    assert_eq!(
+        default_agent(&home, &codex_router, json!({ "project_id": "p" })),
+        Some(("codex".into(), Some("codex".into())))
+    );
+}
+
+#[test]
+fn an_explicit_preset_or_command_or_an_unknown_router_runtime_keeps_upstreams_choice() {
+    let home = with_presets(TestHome::new());
+    let router = agent_router(Some("claude"), "claude");
+    for args in [
+        json!({ "project_id": "p", "preset": "codex" }),
+        json!({ "project_id": "p", "command": "bash" }),
+    ] {
+        assert_eq!(default_agent(&home, &router, args.clone()), None, "{args}");
+    }
+    // A Router whose agent the catalog does not know: a plain shell, as before.
+    let shell = agent_router(None, "zsh");
+    assert_eq!(
+        default_agent(&home, &shell, json!({ "project_id": "p" })),
+        None
+    );
 }

@@ -27,6 +27,9 @@ use crate::platform_adapter::PlatformAdapterHub;
 use crate::relay::RelayUplink;
 use crate::sessions::{scan_sidebar, ScanCache, SessionRow, SidebarItem, SidebarModel, Status};
 
+// Fork-only: the Super Agent plumbing (`driver/super_agent.rs`).
+mod super_agent;
+
 const LOOP_INTERVAL: Duration = Duration::from_millis(100);
 const RESCAN_INTERVAL: Duration = Duration::from_secs(1);
 const NATIVE_PROBE_INTERVAL: Duration = Duration::from_secs(1);
@@ -353,21 +356,9 @@ pub fn is_running() -> bool {
 /// It cannot change `UNPEEL_HOME` inside the supervisor process just to
 /// inspect another workspace.
 pub fn is_running_at(home: &Path) -> bool {
-    let path = home.join("serve.lock");
-    let Ok(file) = std::fs::OpenOptions::new()
-        .read(true)
-        .write(true)
-        .truncate(false)
-        .open(path)
-    else {
-        return false;
-    };
-    if unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } == 0 {
-        let _ = unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_UN) };
-        false
-    } else {
-        std::io::Error::last_os_error().kind() == std::io::ErrorKind::WouldBlock
-    }
+    // Fork-only: one lease probe, shared with the MCP host (a shared lock,
+    // so two probes never mistake each other for a Host).
+    unpeel_core::supervision::host_worker_running_at(home)
 }
 
 struct NativeProbe {
@@ -1257,24 +1248,11 @@ impl HostRuntime {
         if canonical_activity_owner {
             for (row, kind, edge_msg) in events {
                 self.append_activity(&row, kind, now, None);
-                // Fork-only: a Finished edge's reply is taken first, so it is
-                // consumed even when the edge goes to a Router instead.
-                let finished_body = (kind == unpeel_core::activity_log::ActivityLogKind::Finished)
-                    .then(|| {
-                        let hook_message = self.completion_messages.take(&row.id, now);
-                        crate::completion_snippet::finished_body(
-                            edge_msg.as_deref(),
-                            hook_message.as_deref(),
-                        )
-                    })
-                    .flatten();
-                // Fork-only: a Worker's edge goes to its Router, not the user.
-                let diverted =
-                    self.supervisor
-                        .divert_edge(&row, kind, finished_body.as_deref(), now);
+                // Fork-only: the Finished reply, and whether the edge goes to a Router.
+                let edge = self.supervise_edge(&row, kind, edge_msg.as_deref(), now);
                 let observed = match kind {
                     // Fork-only: diverted reads as observed, so it is marked read.
-                    _ if diverted => true,
+                    _ if edge.diverted => true,
                     unpeel_core::activity_log::ActivityLogKind::NeedsInput => self
                         .deliver_notification(
                             &row,
@@ -1285,12 +1263,12 @@ impl HostRuntime {
                         ),
                     unpeel_core::activity_log::ActivityLogKind::Finished => {
                         // Fork-only: show what the agent said, not just
-                        // "Finished".
+                        // "Finished"; the Router's own turns always notify.
                         self.deliver_notification(
                             &row,
                             crate::notifications::NotificationKind::Done,
-                            finished_body.as_deref(),
-                            true,
+                            edge.finished_body.as_deref(),
+                            edge.requires_notify_when_done,
                             now,
                         )
                     }
@@ -1945,31 +1923,6 @@ impl HostRuntime {
             self.unread_ids.remove(session_id);
         } else {
             self.unread_ids.insert(session_id.to_string());
-        }
-    }
-
-    /// Fork-only: a supervisor notice for the user. A Worker prompt the
-    /// Router left unanswered is the "needs input" its edge was not; the
-    /// rest are alerts. The edge itself was already logged as activity.
-    fn deliver_supervisor_notice(&mut self, notice: crate::supervisor::Notice) {
-        if notice.kind != crate::supervisor::NoticeKind::NeedsInput {
-            return self.record_alert(&notice.session_id, notice.body, SystemTime::now());
-        }
-        let Some(row) = self
-            .model
-            .rows
-            .iter()
-            .find(|row| row.id == notice.session_id)
-            .cloned()
-        else {
-            return;
-        };
-        let kind = crate::notifications::NotificationKind::NeedsInput;
-        if self.deliver_notification(&row, kind, Some(&notice.body), false, now_ms()) {
-            let _ = unpeel_core::session_ops::mark_read(&row.id);
-            self.unread_ids.remove(&row.id);
-        } else {
-            self.unread_ids.insert(row.id.clone());
         }
     }
 

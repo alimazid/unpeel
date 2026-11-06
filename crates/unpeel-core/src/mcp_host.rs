@@ -1836,7 +1836,7 @@ fn base_workspace_tool_definition() -> Value {
                 "action": { "type": "string", "enum": workspace_action_names(), "description": "What to do; see help" },
                 "project_id": { "type": "string", "description": "Project (default: caller's)" },
                 "branch": { "type": "string", "description": "create_worktree: branch" },
-                "name": { "type": "string", "description": "create_worktree: sidebar name" },
+                "name": { "type": "string", "description": "create_worktree: folder name" },
                 "base_ref": { "type": "string", "description": "create_worktree: base ref" },
                 "help_for": { "type": "string", "description": "help: docs for one action" }
             },
@@ -2283,7 +2283,7 @@ pub(crate) fn legacy_sessions_tool_definitions() -> Vec<Value> {
                 "properties": {
                     "branch": { "type": "string", "description": "Branch to create or adopt" },
                     "project_id": { "type": "string", "description": "Project to branch from (default: the calling session's)" },
-                    "name": { "type": "string", "description": "Sidebar name of the worktree project (default: the branch)" },
+                    "name": { "type": "string", "description": "Worktree folder name (default: branch slug)" },
                     "base_ref": { "type": "string", "description": "Base ref for a new branch (default: the repo mainline)" },
                 },
                 "required": ["branch"],
@@ -3494,7 +3494,10 @@ fn tool_create_session(args: &Value) -> Result<String, String> {
     let project_id = optional_trimmed_str(args, "project_id")
         .map(str::to_string)
         .unwrap_or_else(|| caller.session.project_id.clone());
-    let (command, source_preset_id) = resolve_create_command(args, &project_id)?;
+    // Fork-only: a Worker with neither preset nor command runs the Router's own agent.
+    let (command, source_preset_id) = hooks
+        .default_command()
+        .map_or_else(|| resolve_create_command(args, &project_id), Ok)?;
     let cwd = optional_trimmed_str(args, "cwd")
         .map(str::to_string)
         .or_else(|| hooks.default_cwd()) // Fork-only: the named Project's folder

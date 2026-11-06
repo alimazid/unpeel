@@ -17,9 +17,6 @@ struct SuperAgentMenu: Equatable {
 
     static let none = SuperAgentMenu()
 
-    /// The catalog id of the one runtime that may be the Super Agent.
-    static let claudeCodeRuntimeID = "com.anthropic.claude-code"
-
     init(canMake: Bool = false, canStopBeing: Bool = false, canHandOver: Bool = false) {
         self.canMake = canMake
         self.canStopBeing = canStopBeing
@@ -37,7 +34,8 @@ struct SuperAgentMenu: Equatable {
         guard !isRouter, session.isLive,
               let runtime = Self.runtime(of: session), runtime.kind == .agent
         else { return }
-        canMake = runtime.stableID == Self.claudeCodeRuntimeID
+        // The runtime package says whether it may be the Super Agent.
+        canMake = runtime.capabilities.contains(.superAgent)
             && supports(Operation.superAgentSet)
         canHandOver = routerID != nil
             && session.superAgentRouterID != routerID

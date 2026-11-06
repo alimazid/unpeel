@@ -42,7 +42,7 @@ pub(crate) fn create_and_register(args: &Value, project_id: &str) -> Result<Valu
         StateFile::Shared,
         project_id,
         &request,
-        crate::worktrees::create,
+        crate::worktrees::create_in_folder,
     )
 }
 
@@ -140,28 +140,30 @@ const WORKTREE_PROJECT_PREFIX: &str = "mcp-wt-";
 
 /// Create (or adopt) a worktree of `project_id`'s checkout and register it
 /// as a child project, once per (root, branch). `make` is
-/// `worktrees::create` outside tests.
+/// `worktrees::create_in_folder` outside tests: `(checkout, branch,
+/// base_ref, folder)`. As the Mac app does, `name` picks the new worktree's
+/// folder and its sidebar name; both default to the branch.
 fn create_worktree_at(
     file: StateFile,
     project_id: &str,
     request: &WorktreeRequest,
-    make: impl FnOnce(&str, &str, Option<&str>) -> Result<Worktree, String>,
+    make: impl FnOnce(&str, &str, Option<&str>, &str) -> Result<Worktree, String>,
 ) -> Result<Value, String> {
     let state = file.load()?;
     let tree = Tree::from_state(&state);
     let root = checkout_root(&tree, project_id)?;
     let branch = request.branch.as_str();
+    let name = request.name.clone().unwrap_or_else(|| branch.to_string());
     let (path, adopted) = match tree.registered_worktree(&root.id, branch) {
         Some(child) if Path::new(&child.path).is_dir() => (child.path.clone(), true),
         _ => match existing_worktree(&root.path, branch)? {
             Some(found) => (found, true),
             None => (
-                make(&root.path, branch, request.base_ref.as_deref())?.path,
+                make(&root.path, branch, request.base_ref.as_deref(), &name)?.path,
                 false,
             ),
         },
     };
-    let name = request.name.clone().unwrap_or_else(|| branch.to_string());
     let child_id = file.edit(|state| register_worktree(state, &root.id, branch, &path, &name))?;
     Ok(json!({
         "path": path,

@@ -13,7 +13,7 @@ pub(crate) fn stop_action(args: &Value) -> Result<String, String> {
     let caller = crate::mcp_host::self_session_id()
         .ok_or("sessions stop needs to know the calling session; run it inside a session.")?;
     let stopped = at_home(|home| stop_at(home, &caller, args, &crate::session_ops::stop_session))?;
-    crate::state_bus::announce(crate::state_bus::Change::SessionMarkers, None);
+    crate::supervision::announce_markers();
     serde_json::to_string_pretty(&stopped).map_err(|e| format!("Failed to encode stop: {e}"))
 }
 
@@ -94,7 +94,7 @@ pub(crate) fn route_close(
     };
     let closed = at_home(|home| close_at(home, &closing, &crate::session_ops::remove_session))?;
     if closed.is_ok() {
-        crate::state_bus::announce(crate::state_bus::Change::SessionMarkers, None);
+        crate::supervision::announce_markers();
     }
     Some(closed)
 }
@@ -153,23 +153,29 @@ to {verb} it."
 }
 
 /// The supervisor reads the stamp to tell an edge the Router caused from
-/// the Worker's own; a failed stamp only costs a spurious notice.
-fn touch(home: &Home, worker: &str) {
-    if let Err(error) = home.inbox.touch_router(worker, home.now_ms) {
-        log::warn!("router-touch for {worker}: {error}");
+/// the Worker's own; a failed stamp only costs a spurious notice. `true`
+/// when the stamp was written.
+fn touch(home: &Home, worker: &str) -> bool {
+    match home.inbox.touch_router(worker, home.now_ms) {
+        Ok(()) => true,
+        Err(error) => {
+            log::warn!("router-touch for {worker}: {error}");
+            false
+        }
     }
 }
 
 /// A write from `caller` into `target` passed the write gate: stamp it when
-/// the Router wrote to one of its Workers.
+/// the Router wrote to one of its Workers, and announce the stamp.
 pub(crate) fn note_write(caller: &str, target: &str) {
-    super::at_home_without_facts(|home| note_write_at(home, caller, target));
+    if super::at_home_without_facts(|home| note_write_at(home, caller, target)) {
+        crate::supervision::announce_markers();
+    }
 }
 
-pub(super) fn note_write_at(home: &Home, caller: &str, target: &str) {
-    if home.is_router(caller) && home.works_for(target, caller) {
-        touch(home, target);
-    }
+/// `true` when a router-touch stamp was written.
+pub(super) fn note_write_at(home: &Home, caller: &str, target: &str) -> bool {
+    home.is_router(caller) && home.works_for(target, caller) && touch(home, target)
 }
 
 /// The Router's longest wait (§17.1): a Busy turn holds its own Inbox.

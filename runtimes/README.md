@@ -124,6 +124,12 @@ Current capabilities are `lifecycle_hooks`, `resume`, `restart_agent`,
 `mcp_sessions`, `mcp_browser`, `mcp_computer`, `transcript`, and
 `notify_when_done`.
 
+Fork-only: `super_agent` (declarative, no adapter code) marks a runtime whose
+Session the user may make the workspace's Super Agent. The Host's
+`session.super_agent.set` verb and the Mac app's Make Super Agent menu item
+read only this capability; declare it only for an agent that reliably calls
+the `unpeel` MCP tools and reports idle (Claude Code today).
+
 `restart_agent` is the v1 source-schema spelling retained for built-in package
 compatibility. It enables the user-facing **Resume Agent** recipe only after a
 managed runtime returns to its owned shell; it never authorizes interrupting an

@@ -59,9 +59,9 @@ def super_agent_verbs(case, home, driver, port, token):
     )
     status, refused = verb("set", "fixture-slow")
     case.check(
-        "only a Claude Code session can be made the Super Agent",
+        "only a runtime declaring super_agent can be made the Super Agent",
         status == 422
-        and refused.get("error") == "only a Claude Code session can be the Super Agent"
+        and refused.get("error") == "this session's agent cannot be the Super Agent"
         and (home.state().get("super_agent") or {}).get("session_id") is None,
         repr((status, refused, home.state().get("super_agent"))),
     )

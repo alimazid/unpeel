@@ -110,7 +110,11 @@ pub struct WorkerAlerts {
 
 impl Default for WorkerAlerts {
     fn default() -> Self {
-        Self::starting_at(Store::home(), Arc::new(HostWorkers), now_ms())
+        Self::starting_at(
+            Store::home(),
+            Arc::new(HostWorkers),
+            unpeel_core::supervision::now_ms(),
+        )
     }
 }
 
@@ -616,10 +620,6 @@ fn finished_stamp(row: &SessionRow) -> Option<u64> {
     let finished = program.last_finished_at?;
     (program.state.is_finished() || program.last_non_idle_at.is_none_or(|at| finished >= at))
         .then_some(finished)
-}
-
-fn now_ms() -> u64 {
-    super::unix_ms(std::time::SystemTime::now())
 }
 
 #[cfg(test)]

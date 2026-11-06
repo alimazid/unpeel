@@ -291,7 +291,7 @@ fn queue(home: &Home, target_id: &str, item: NewItem, what: &str) -> Result<Valu
 
 /// Pending items changed: other frontends re-read session markers.
 fn announced(result: &Value, what: &str) -> Result<String, String> {
-    crate::state_bus::announce(crate::state_bus::Change::SessionMarkers, None);
+    crate::supervision::announce_markers();
     serde_json::to_string_pretty(result).map_err(|e| format!("Failed to encode {what}: {e}"))
 }
 
@@ -309,12 +309,10 @@ pub(super) fn immediate_report_result(message: String) -> String {
 pub(super) fn inbox_action(args: &Value) -> Result<String, String> {
     let caller = crate::mcp_host::self_session_id()
         .ok_or("sessions inbox needs to know the calling session; run it inside a session.")?;
-    let now = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map_or(0, |elapsed| elapsed.as_millis() as u64);
+    let now = crate::supervision::now_ms();
     let reply = inbox_reply(&Store::home(), &caller, args, now)?;
     if reply["acked"].as_u64().is_some_and(|acked| acked > 0) {
-        crate::state_bus::announce(crate::state_bus::Change::SessionMarkers, None);
+        crate::supervision::announce_markers();
     }
     serde_json::to_string_pretty(&reply).map_err(|e| format!("Failed to encode inbox: {e}"))
 }

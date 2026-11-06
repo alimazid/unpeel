@@ -248,7 +248,8 @@ the same Session's other row never mounts a second editor or dismiss monitor.
 
 Fork-only: **the Super Agent** (the Router; MCP side and Host verbs in
 `docs/agents/sessions-mcp.md`). The session menu (PROJECTS and AGENTS rows)
-offers Make Super Agent on a running Claude Code Session, Stop Being Super
+offers Make Super Agent on a running Session whose runtime declares the
+`super_agent` capability (Claude Code today), Stop Being Super
 Agent on the Super Agent (stopped or not), and Hand to Super Agent on any
 other running agent Session while a Super Agent exists and the Session is not
 already its Worker (`SuperAgentMenu`, the Host's rules; each item also needs
@@ -287,8 +288,11 @@ in the recently-finished group). The Finished body is still taken from
 `completion_messages`, so the reply reaches the Super Agent. A Worker that
 only the screen tier speaks for never produces a Finished edge; the end of
 its turn is sent as a screen-detected finished notice instead. The user is
-notified when the Super Agent itself finishes a turn or needs input, as for
-any agent, and once per wait when a Worker's prompt has gone unanswered for
+notified when the Super Agent itself finishes a turn or needs input — its
+Finished edge is delivered as always eligible (`requiresNotifyWhenDone:
+false`, `supervisor::route_edge`), so it notifies even with "notify when
+done" off for that Session — and once per wait when a Worker's prompt has
+gone unanswered for
 `supervisor_escalate_minutes` (default 5): the Host then delivers that
 Worker's "needs input" with "Waiting for your input for 5 min; the Super
 Agent has not answered." Once the Super Agent is stopped, or cleared, its

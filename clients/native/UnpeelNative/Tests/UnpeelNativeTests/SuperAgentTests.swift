@@ -42,6 +42,15 @@ struct SuperAgentTests {
     }
 
     @Test
+    func eligibilityIsTheCatalogsSuperAgentCapability() {
+        // The runtime package declares it; the menu names no provider.
+        let capable = UnpeelRuntimeCatalog.runtimes
+            .filter { $0.capabilities.contains(.superAgent) }
+            .map(\.slug)
+        #expect(capable == ["claude-code"])
+    }
+
+    @Test
     func otherAgentsCanOnlyBeHandedToTheSuperAgent() {
         #expect(menu(entry("codex", command: "codex"), routerID: nil) == offers())
         #expect(menu(entry("codex", command: "codex"), routerID: "router")

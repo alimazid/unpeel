@@ -25,23 +25,154 @@ pub struct SupervisorConfig {
     pub inbox_low_confidence: bool,
 }
 
-const STALL_MINUTES: (&str, &[u64], u64) =
-    ("supervisor_stall_minutes", &[0, 5, 10, 15, 20, 30, 60], 20);
-const BLOCKED_MINUTES: (&str, &[u64], u64) =
-    ("supervisor_blocked_minutes", &[0, 5, 10, 15, 30, 60], 10);
-const ESCALATE_MINUTES: (&str, &[u64], u64) = (
-    "supervisor_escalate_minutes",
-    &[0, 1, 2, 5, 10, 15, 30, 60],
-    5,
-);
-const MAX_TURN_MINUTES: (&str, &[u64], u64) =
-    ("supervisor_max_turn_minutes", &[0, 30, 60, 120, 240], 0);
-const MAX_CHILDREN: (&str, std::ops::RangeInclusive<u64>, usize) =
-    ("supervisor_max_children", 1..=32, 8);
-const MAX_SPAWNS_PER_MINUTE: (&str, u32) = ("supervisor_max_spawns_per_minute", 6);
-const MAX_DELIVERIES_PER_HOUR: (&str, u32) = ("supervisor_max_deliveries_per_hour", 60);
-const NOTIFY_STARTED: (&str, bool) = ("supervisor_notify_started", false);
-const INBOX_LOW_CONFIDENCE: (&str, bool) = ("supervisor_inbox_low_confidence", true);
+/// One `supervisor_*` app-state key: the values it accepts and its default.
+/// The supervisor reads it through this, and `unpeel settings` sets it
+/// through this, so both agree on every value.
+#[derive(Debug, PartialEq, Eq)]
+pub struct SupervisorSetting {
+    pub key: &'static str,
+    values: Values,
+    /// A number, or `1`/`0` for a flag.
+    default: u64,
+    /// The accepted values, for an error message.
+    pub allowed: &'static str,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Values {
+    /// Minutes from a fixed menu; `0` turns that alarm off.
+    Minutes(&'static [u64]),
+    /// A whole number in `low..=high`.
+    Range(u64, u64),
+    /// A whole number from 1 to `u32::MAX`.
+    Positive,
+    Flag,
+}
+
+const STALL_MINUTES: SupervisorSetting = SupervisorSetting {
+    key: "supervisor_stall_minutes",
+    values: Values::Minutes(&[0, 5, 10, 15, 20, 30, 60]),
+    default: 20,
+    allowed: "0, 5, 10, 15, 20, 30, or 60 (0 = off)",
+};
+const BLOCKED_MINUTES: SupervisorSetting = SupervisorSetting {
+    key: "supervisor_blocked_minutes",
+    values: Values::Minutes(&[0, 5, 10, 15, 30, 60]),
+    default: 10,
+    allowed: "0, 5, 10, 15, 30, or 60 (0 = off)",
+};
+const ESCALATE_MINUTES: SupervisorSetting = SupervisorSetting {
+    key: "supervisor_escalate_minutes",
+    values: Values::Minutes(&[0, 1, 2, 5, 10, 15, 30, 60]),
+    default: 5,
+    allowed: "0, 1, 2, 5, 10, 15, 30, or 60 (0 = off)",
+};
+const MAX_TURN_MINUTES: SupervisorSetting = SupervisorSetting {
+    key: "supervisor_max_turn_minutes",
+    values: Values::Minutes(&[0, 30, 60, 120, 240]),
+    default: 0,
+    allowed: "0, 30, 60, 120, or 240 (0 = no limit)",
+};
+const MAX_CHILDREN: SupervisorSetting = SupervisorSetting {
+    key: "supervisor_max_children",
+    values: Values::Range(1, 32),
+    default: 8,
+    allowed: "a whole number from 1 to 32",
+};
+const MAX_SPAWNS_PER_MINUTE: SupervisorSetting = SupervisorSetting {
+    key: "supervisor_max_spawns_per_minute",
+    values: Values::Positive,
+    default: 6,
+    allowed: "a whole number of at least 1",
+};
+const MAX_DELIVERIES_PER_HOUR: SupervisorSetting = SupervisorSetting {
+    key: "supervisor_max_deliveries_per_hour",
+    values: Values::Positive,
+    default: 60,
+    allowed: "a whole number of at least 1",
+};
+const NOTIFY_STARTED: SupervisorSetting = SupervisorSetting {
+    key: "supervisor_notify_started",
+    values: Values::Flag,
+    default: 0,
+    allowed: "true or false",
+};
+const INBOX_LOW_CONFIDENCE: SupervisorSetting = SupervisorSetting {
+    key: "supervisor_inbox_low_confidence",
+    values: Values::Flag,
+    default: 1,
+    allowed: "true or false",
+};
+
+/// Every `supervisor_*` key, in `unpeel settings list` order.
+pub const SUPERVISOR_SETTINGS: [&SupervisorSetting; 9] = [
+    &STALL_MINUTES,
+    &BLOCKED_MINUTES,
+    &ESCALATE_MINUTES,
+    &MAX_TURN_MINUTES,
+    &MAX_CHILDREN,
+    &MAX_SPAWNS_PER_MINUTE,
+    &MAX_DELIVERIES_PER_HOUR,
+    &NOTIFY_STARTED,
+    &INBOX_LOW_CONFIDENCE,
+];
+
+impl SupervisorSetting {
+    pub fn named(key: &str) -> Option<&'static SupervisorSetting> {
+        SUPERVISOR_SETTINGS
+            .iter()
+            .copied()
+            .find(|setting| setting.key == key)
+    }
+
+    /// `raw` (as typed, e.g. on the command line) as the value to store;
+    /// `Err` carries [`Self::allowed`].
+    pub fn parse(&self, raw: &str) -> Result<Value, String> {
+        let normalized = raw.trim().to_ascii_lowercase();
+        let parsed = match self.values {
+            Values::Flag => match normalized.as_str() {
+                "true" => Some(Value::Bool(true)),
+                "false" => Some(Value::Bool(false)),
+                _ => None,
+            },
+            _ => normalized
+                .parse::<u64>()
+                .ok()
+                .filter(|number| self.accepts(*number))
+                .map(Value::from),
+        };
+        parsed.ok_or_else(|| self.allowed.to_owned())
+    }
+
+    /// The stored value as the supervisor reads it: valid, else the
+    /// default — never something shorter (§10).
+    pub fn effective(&self, stored: Option<&Value>) -> Value {
+        match self.values {
+            Values::Flag => Value::Bool(self.flag(stored)),
+            _ => Value::from(self.number(stored)),
+        }
+    }
+
+    fn accepts(&self, number: u64) -> bool {
+        match self.values {
+            Values::Minutes(options) => options.contains(&number),
+            Values::Range(low, high) => (low..=high).contains(&number),
+            Values::Positive => number > 0 && u32::try_from(number).is_ok(),
+            Values::Flag => false,
+        }
+    }
+
+    fn number(&self, stored: Option<&Value>) -> u64 {
+        stored
+            .and_then(Value::as_u64)
+            .filter(|number| self.accepts(*number))
+            .unwrap_or(self.default)
+    }
+
+    fn flag(&self, stored: Option<&Value>) -> bool {
+        stored.and_then(Value::as_bool).unwrap_or(self.default != 0)
+    }
+}
 
 impl Default for SupervisorConfig {
     fn default() -> Self {
@@ -52,50 +183,35 @@ impl Default for SupervisorConfig {
 /// The settings on disk; a missing or unreadable file is all defaults.
 pub fn load_config() -> SupervisorConfig {
     let state = crate::app_state::load().unwrap_or(Value::Null);
-    let seconds_mode = seconds_mode_from(
+    config_from_state(&state, seconds_mode())
+}
+
+/// Whether this process counts minute settings in seconds (tests only).
+pub(crate) fn seconds_mode() -> bool {
+    seconds_mode_from(
         std::env::var("UNPEEL_TEST").ok().as_deref(),
         std::env::var("UNPEEL_SUPERVISOR_SECONDS").ok().as_deref(),
-    );
-    config_from_state(&state, seconds_mode)
+    )
 }
 
 /// Lenient: junk falls back to the default, never to something shorter.
 /// `seconds_mode` (tests only) counts minute settings as seconds.
 pub fn config_from_state(state: &Value, seconds_mode: bool) -> SupervisorConfig {
     let unit_ms = if seconds_mode { 1_000 } else { 60_000 };
-    let minutes = |(key, options, default): (&str, &[u64], u64)| {
-        let value = state
-            .get(key)
-            .and_then(Value::as_u64)
-            .filter(|minutes| options.contains(minutes))
-            .unwrap_or(default);
-        value * unit_ms
-    };
-    let rate = |(key, default): (&str, u32)| {
-        state
-            .get(key)
-            .and_then(Value::as_u64)
-            .and_then(|value| u32::try_from(value).ok())
-            .filter(|value| *value > 0)
-            .unwrap_or(default)
-    };
-    let flag =
-        |(key, default): (&str, bool)| state.get(key).and_then(Value::as_bool).unwrap_or(default);
-    let (children_key, children_range, children_default) = MAX_CHILDREN;
+    let number = |setting: &SupervisorSetting| setting.number(state.get(setting.key));
+    // `Positive` and `Range` values were checked to fit.
+    let rate = |setting: &SupervisorSetting| u32::try_from(number(setting)).unwrap_or(u32::MAX);
+    let flag = |setting: &SupervisorSetting| setting.flag(state.get(setting.key));
     SupervisorConfig {
-        stall_ms: minutes(STALL_MINUTES),
-        blocked_ms: minutes(BLOCKED_MINUTES),
-        escalate_ms: minutes(ESCALATE_MINUTES),
-        max_turn_ms: minutes(MAX_TURN_MINUTES),
-        max_children: state
-            .get(children_key)
-            .and_then(Value::as_u64)
-            .filter(|count| children_range.contains(count))
-            .map_or(children_default, |count| count as usize),
-        max_spawns_per_minute: rate(MAX_SPAWNS_PER_MINUTE),
-        max_deliveries_per_hour: rate(MAX_DELIVERIES_PER_HOUR),
-        notify_started: flag(NOTIFY_STARTED),
-        inbox_low_confidence: flag(INBOX_LOW_CONFIDENCE),
+        stall_ms: number(&STALL_MINUTES) * unit_ms,
+        blocked_ms: number(&BLOCKED_MINUTES) * unit_ms,
+        escalate_ms: number(&ESCALATE_MINUTES) * unit_ms,
+        max_turn_ms: number(&MAX_TURN_MINUTES) * unit_ms,
+        max_children: usize::try_from(number(&MAX_CHILDREN)).unwrap_or(usize::MAX),
+        max_spawns_per_minute: rate(&MAX_SPAWNS_PER_MINUTE),
+        max_deliveries_per_hour: rate(&MAX_DELIVERIES_PER_HOUR),
+        notify_started: flag(&NOTIFY_STARTED),
+        inbox_low_confidence: flag(&INBOX_LOW_CONFIDENCE),
     }
 }
 
@@ -191,6 +307,114 @@ mod tests {
         // Counts and rates are not minute settings.
         assert_eq!(config.max_children, 8);
         assert_eq!(config.max_spawns_per_minute, 6);
+    }
+
+    fn setting(key: &str) -> &'static SupervisorSetting {
+        SupervisorSetting::named(key).expect("a supervisor setting")
+    }
+
+    #[test]
+    fn every_supervisor_key_is_a_named_setting() {
+        let keys: Vec<&str> = SUPERVISOR_SETTINGS.iter().map(|s| s.key).collect();
+        assert_eq!(
+            keys,
+            [
+                "supervisor_stall_minutes",
+                "supervisor_blocked_minutes",
+                "supervisor_escalate_minutes",
+                "supervisor_max_turn_minutes",
+                "supervisor_max_children",
+                "supervisor_max_spawns_per_minute",
+                "supervisor_max_deliveries_per_hour",
+                "supervisor_notify_started",
+                "supervisor_inbox_low_confidence",
+            ]
+        );
+        assert!(SupervisorSetting::named("supervisor_bogus").is_none());
+        assert!(SupervisorSetting::named("theme").is_none());
+    }
+
+    #[test]
+    fn a_setting_accepts_exactly_the_values_the_supervisor_reads() {
+        use serde_json::json;
+        for (key, good, bad) in [
+            (
+                "supervisor_stall_minutes",
+                vec![("20", json!(20)), ("0", json!(0))],
+                vec!["7", "ten", "-5"],
+            ),
+            (
+                "supervisor_escalate_minutes",
+                vec![("1", json!(1))],
+                vec!["3"],
+            ),
+            (
+                "supervisor_max_children",
+                vec![("1", json!(1)), (" 32 ", json!(32))],
+                vec!["0", "33"],
+            ),
+            (
+                "supervisor_max_spawns_per_minute",
+                vec![("1", json!(1)), ("100", json!(100))],
+                vec!["0", "1.5", "99999999999"],
+            ),
+            (
+                "supervisor_notify_started",
+                vec![("TRUE", json!(true)), ("false", json!(false))],
+                vec!["yes", "1"],
+            ),
+        ] {
+            let setting = setting(key);
+            for (raw, value) in good {
+                assert_eq!(setting.parse(raw), Ok(value.clone()), "{key}={raw}");
+                // What is accepted is what the supervisor reads back.
+                assert_eq!(setting.effective(Some(&value)), value, "{key}={raw}");
+            }
+            for raw in bad {
+                let error = setting.parse(raw).unwrap_err();
+                assert_eq!(error, setting.allowed, "{key}={raw}");
+            }
+        }
+    }
+
+    #[test]
+    fn a_settings_effective_value_is_the_default_for_junk() {
+        use serde_json::json;
+        assert_eq!(
+            setting("supervisor_stall_minutes").effective(None),
+            json!(20)
+        );
+        assert_eq!(
+            setting("supervisor_stall_minutes").effective(Some(&json!(7))),
+            json!(20)
+        );
+        assert_eq!(
+            setting("supervisor_max_children").effective(Some(&json!(0))),
+            json!(8)
+        );
+        assert_eq!(
+            setting("supervisor_inbox_low_confidence").effective(Some(&json!("x"))),
+            json!(true)
+        );
+        assert_eq!(
+            setting("supervisor_max_deliveries_per_hour").effective(None),
+            json!(60)
+        );
+    }
+
+    #[test]
+    fn each_settings_allowed_text_names_its_menu() {
+        for setting in SUPERVISOR_SETTINGS {
+            if let Values::Minutes(options) = setting.values {
+                for option in options {
+                    assert!(
+                        setting.allowed.contains(&option.to_string()),
+                        "{}: {option}",
+                        setting.key
+                    );
+                }
+            }
+        }
     }
 
     #[test]

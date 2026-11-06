@@ -153,33 +153,29 @@ struct WorkspaceActivityMenuSlice: Equatable {
         in nodes: [ProjectNode],
         isPinned: (_ sessionID: String, _ projectID: String) -> Bool
     ) -> [SessionEntry] {
-        var result: [SessionEntry] = []
-        func collect(_ nodes: [ProjectNode]) {
-            for node in nodes {
-                result.append(contentsOf: node.sessions.filter {
-                    $0.superAgent || isPinned($0.id, node.id)
-                })
-                collect(node.worktrees)
-            }
+        sessions(in: nodes) { session, projectID in
+            session.superAgent || isPinned(session.id, projectID)
         }
-        collect(nodes)
-        return result
     }
 
     /// Fork-only: the running Workers, in sidebar order — candidates for
     /// `workers`.
     static func runningWorkers(in nodes: [ProjectNode]) -> [SessionEntry] {
-        var result: [SessionEntry] = []
-        func collect(_ nodes: [ProjectNode]) {
-            for node in nodes {
-                result.append(contentsOf: node.sessions.filter {
-                    $0.isLive && !$0.superAgent && $0.superAgentRouterID != nil
-                })
-                collect(node.worktrees)
-            }
+        sessions(in: nodes) { session, _ in
+            session.isLive && !session.superAgent && session.superAgentRouterID != nil
         }
-        collect(nodes)
-        return result
+    }
+
+    /// Fork-only: every session `included` accepts (with the id of the node
+    /// listing it), walking the sidebar tree in render order.
+    private static func sessions(
+        in nodes: [ProjectNode],
+        where included: (_ session: SessionEntry, _ projectID: String) -> Bool
+    ) -> [SessionEntry] {
+        nodes.flatMap { node in
+            node.sessions.filter { included($0, node.id) }
+                + sessions(in: node.worktrees, where: included)
+        }
     }
 
     private static func title(_ raw: String, fallback: String) -> String {

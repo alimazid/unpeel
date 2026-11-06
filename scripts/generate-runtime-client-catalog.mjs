@@ -175,7 +175,9 @@ const capabilityCases = new Map([
   ['mcp_computer', 'mcpComputer'],
   ['transcript', 'transcript'],
   ['notify_when_done', 'notifyWhenDone'],
-  ['semantic_terminal_title', 'semanticTerminalTitle']
+  ['semantic_terminal_title', 'semanticTerminalTitle'],
+  // Fork-only: the runtime may be the Super Agent (Router).
+  ['super_agent', 'superAgent']
 ])
 
 const platformCases = new Map([
