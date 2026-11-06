@@ -88,8 +88,9 @@ fn expired_runs_of_task(runs: &[&SessionRow]) -> Vec<String> {
         .collect()
 }
 
-/// Q16: a task's latest Run Session stays live so the user can follow up;
-/// once the Run in `new_session_id` starts, the task's earlier Run
+/// A task's latest Run Session stays live so the user can follow up; once
+/// the Session `new_session_id` of the next Run has started (never before:
+/// a failed start leaves the previous Run as it is), the task's earlier Run
 /// Sessions that sit idle are stopped (they stay as stopped rows). One
 /// that is busy with a follow-up, waits on the user, is still starting, or
 /// is pinned stays live; auto-stop still applies to it.

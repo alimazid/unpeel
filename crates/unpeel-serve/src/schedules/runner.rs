@@ -74,9 +74,16 @@ pub trait Effects: Send + Sync {
 /// What a sweep did, for the worker's trace and warnings.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SweepEvent {
+    /// A Run was recorded and its Session is being started.
     Started {
         schedule_id: String,
         run_id: String,
+        session_id: String,
+    },
+    /// A Run's Session did start: only now may the task's earlier Run
+    /// Sessions be stopped (a failed start leaves them alone).
+    Spawned {
+        schedule_id: String,
         session_id: String,
     },
     /// A Run line was appended: `run` as recorded, and `previous` the
@@ -95,7 +102,9 @@ enum HelperEvent {
     /// The Session started (or could not); `delivering` when the helper
     /// goes on to type the Run's instructions.
     Spawned {
+        schedule_id: String,
         run_id: String,
+        session_id: String,
         error: Option<String>,
         delivering: bool,
     },
@@ -206,7 +215,7 @@ impl Scheduler {
         now: &Zoned,
     ) -> Vec<SweepEvent> {
         let mut events = Vec::new();
-        self.drain_helpers();
+        self.drain_helpers(&mut events);
         self.run_now
             .retain(|id, _| schedules.iter().any(|schedule| schedule.id == *id));
 
@@ -233,20 +242,28 @@ impl Scheduler {
         events
     }
 
-    fn drain_helpers(&mut self) {
+    fn drain_helpers(&mut self, events: &mut Vec<SweepEvent>) {
         while let Ok(event) = self.outcomes_rx.try_recv() {
             match event {
                 HelperEvent::Spawned {
+                    schedule_id,
                     run_id,
+                    session_id,
                     error,
                     delivering,
                 } => {
                     self.launching.remove(&run_id);
                     if let Some(error) = error {
                         self.spawn_failures.insert(run_id, error);
-                    } else if delivering {
+                        continue;
+                    }
+                    if delivering {
                         self.delivering.insert(run_id);
                     }
+                    events.push(SweepEvent::Spawned {
+                        schedule_id,
+                        session_id,
+                    });
                 }
                 HelperEvent::Delivered { run_id, delivery } => {
                     self.delivering.remove(&run_id);
@@ -488,6 +505,7 @@ impl Scheduler {
         let outcomes = self.outcomes_tx.clone();
         let run_id = run.run_id.clone();
         let typing_into = session_id.clone();
+        let owner = schedule_id.clone();
         self.launching.insert(run_id.clone());
         let spawned = std::thread::Builder::new()
             .name("unpeel-schedules".into())
@@ -495,7 +513,9 @@ impl Scheduler {
                 let error = effects.spawn(request).err();
                 let delivering = agent && error.is_none();
                 let _ = outcomes.send(HelperEvent::Spawned {
+                    schedule_id: owner,
                     run_id: run_id.clone(),
+                    session_id: typing_into.clone(),
                     error,
                     delivering,
                 });
@@ -864,6 +884,48 @@ mod tests {
             assert_eq!(request.plan.command, "true");
             assert_eq!(request.hook_port, Some(4321));
             assert!(root_of(scheduler).join("sch_1").join("runs.jsonl").exists());
+        });
+    }
+
+    /// The Sessions of a sweep that came up (what lets the worker stop the
+    /// task's earlier Runs).
+    fn spawned(events: &[SweepEvent]) -> Vec<String> {
+        events
+            .iter()
+            .filter_map(|event| match event {
+                SweepEvent::Spawned { session_id, .. } => Some(session_id.clone()),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// Only a Session that actually started says so: a failed spawn leaves
+    /// the task's earlier Runs alone.
+    #[test]
+    fn a_run_says_its_session_is_up_only_once_it_started() {
+        with_scheduler(Recording::default(), |scheduler, effects| {
+            let tasks = [schedule(ScheduleTrigger::Daily {
+                time: "09:00".into(),
+            })];
+            let first = sweep(scheduler, &tasks, &now(9, 0, 0));
+            assert!(spawned(&first).is_empty(), "not up yet: {first:?}");
+            settle(effects, 1);
+            let session_id = effects.spawned.lock().unwrap()[0].0.session_id.clone();
+            let next = sweep(scheduler, &tasks, &now(9, 0, 1));
+            assert_eq!(spawned(&next), vec![session_id]);
+        });
+        let failing = Recording {
+            spawn_error: Some("unpeel-host exited with 1".into()),
+            ..Recording::default()
+        };
+        with_scheduler(failing, |scheduler, effects| {
+            let tasks = [schedule(ScheduleTrigger::Daily {
+                time: "09:00".into(),
+            })];
+            sweep(scheduler, &tasks, &now(9, 0, 0));
+            settle(effects, 1);
+            let next = sweep(scheduler, &tasks, &now(9, 0, 1));
+            assert!(spawned(&next).is_empty(), "{next:?}");
         });
     }
 
