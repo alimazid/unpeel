@@ -79,9 +79,8 @@ pub(crate) fn help_docs() -> Vec<(String, Value)> {
         (
             "rename_group".into(),
             doc(
-                "Super Agent only. Rename a sidebar group: {project_id, name}. Not a Project or \
-        worktree, not a root's Sidebar group, and not a group the Mac app keeps itself (id native-…): \
-        ask the user for those.",
+                "Super Agent only. Rename a sidebar group you created with create_group (id \
+        sa-…): {project_id, name}. Any other group, a Project or a worktree: ask the user.",
                 json!({
                     "project_id": project("The group (workspace list_projects)"),
                     "name": project("New name, at most 80 characters"),
@@ -92,10 +91,10 @@ pub(crate) fn help_docs() -> Vec<(String, Value)> {
         (
             "remove_group".into(),
             doc(
-                "Super Agent only. Remove an empty sidebar group: {project_id, name, removed}. \
-        Refused while any Session, stopped ones included, was started in or moved into it, while it \
-        holds other groups, and for a root's Sidebar group or a group the Mac app keeps itself (id \
-        native-…). Move your Workers out first with move_session.",
+                "Super Agent only. Remove an empty sidebar group you created with create_group (id \
+        sa-…): {project_id, name, removed}. Refused while any Session, stopped ones included, was \
+        started in or moved into it, and while it holds other groups. Move your Workers out first \
+        with move_session.",
                 json!({ "project_id": project("The group (workspace list_projects)") }),
                 &["project_id"],
             ),
@@ -457,10 +456,11 @@ fn manifest_project(dir: &Path) -> Option<String> {
         .map(str::to_string)
 }
 
-/// `project_id` as a group the Router may rename or remove: a plain group,
-/// not a root's Sidebar group (it holds the side-panel panes), and not one
-/// the Mac app keeps in its own records — its mirror would put back the old
-/// row (`UnpeelStore.mirrorProjectsToSharedState`).
+/// `project_id` as a group the Router may rename or remove: a plain group it
+/// created (`sa-` id, §16.2), never a root's Sidebar group (it holds the
+/// side-panel panes) and never one the Mac app keeps in its own records —
+/// its mirror would put back the old row
+/// (`UnpeelStore.mirrorProjectsToSharedState`).
 fn managed_group<'a>(
     projects: &'a [Project],
     project_id: &str,
@@ -484,6 +484,13 @@ be {verb}.",
         return Err(format!(
             "Group '{}' is kept in the Mac app's own records, which would undo this change. \
 Ask the user to do it in the sidebar.",
+            group.name
+        ));
+    }
+    if !group.id.starts_with(GROUP_PREFIX) {
+        return Err(format!(
+            "Group '{}' was not made with workspace create_group: you rename and remove only \
+groups you created (id {GROUP_PREFIX}…). Ask the user to do it in the sidebar.",
             group.name
         ));
     }

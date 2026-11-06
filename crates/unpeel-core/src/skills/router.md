@@ -63,7 +63,8 @@ is a Session you started, or one the user handed to you.
 
 - Organise Workers with groups: `workspace create_group`, `rename_group`,
   `remove_group` (empty groups only) and `move_session`.
-- Move only your own Workers. Never touch the "Sidebar" group.
+- Rename and remove only the groups you created. Move only your own Workers.
+  Never touch the "Sidebar" group.
 
 ## After a compaction or a Resume
 
