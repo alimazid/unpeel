@@ -167,12 +167,7 @@ fn step_task(
 
     let trigger = Trigger::parse(&task.schedule.trigger).filter(|_| task.schedule.enabled);
     let zone = now.time_zone();
-    let mut after = task
-        .clock
-        .last_occurrence
-        .as_deref()
-        .and_then(clock::parse_datetime)
-        .or_else(|| clock::civil_at_ms(task.schedule.created_at_ms, zone));
+    let mut after = super::trigger::counts_from(&task.schedule, &task.clock, zone);
     let mut last_occurrence = task.clock.last_occurrence.clone();
     if let Some((trigger, occurrence)) = trigger.zip(after).and_then(|(trigger, after)| {
         trigger
@@ -193,7 +188,7 @@ fn step_task(
                 ),
             )
         } else {
-            let late = clock::ms_of(occurrence, zone)
+            let late = clock::due_ms(occurrence, zone)
                 .is_some_and(|due_ms| now_ms.saturating_sub(due_ms) > LATE_AFTER_MS);
             launch(task, new_run_id(), Some(scheduled_for), late, now_ms)
         };
@@ -212,7 +207,7 @@ fn step_task(
     let clock = ScheduleClock {
         last_occurrence,
         next_occurrence: next.map(clock::format_datetime),
-        next_occurrence_ms: next.and_then(|next| clock::ms_of(next, zone)),
+        next_occurrence_ms: next.and_then(|next| clock::due_ms(next, zone)),
         last_run_id: latest.id,
         last_run_status: latest.status,
     };
@@ -374,6 +369,7 @@ mod tests {
                 enabled: true,
                 notify_when_done: true,
                 created_at_ms: ms(1, 8, 0, 0),
+                clock_reset_at_ms: None,
             },
             clock: ScheduleClock::default(),
             latest_run: None,

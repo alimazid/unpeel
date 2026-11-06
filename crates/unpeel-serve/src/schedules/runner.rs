@@ -532,6 +532,7 @@ mod tests {
             enabled: true,
             notify_when_done: true,
             created_at_ms: clock::epoch_ms(&now(8, 0, 0)),
+            clock_reset_at_ms: None,
         }
     }
 
