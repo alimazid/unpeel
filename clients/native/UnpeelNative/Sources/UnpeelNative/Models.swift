@@ -1139,6 +1139,12 @@ struct SessionEntry: Codable, Identifiable, Hashable, Sendable {
     /// the pane's cwd (`UnpeelStore.paneWorkingDirectory`); nil on rows from
     /// older Hosts, which fall back to the project path.
     var cwd: String? = nil
+    /// Fork-only: this Session is the workspace's Super Agent (the Router),
+    /// from the Host's wire `superAgent`. Host-published rows only.
+    var superAgent: Bool = false
+    /// Fork-only: the Super Agent this Session works for (a Worker), from
+    /// the Host's wire `superAgentRouterID`. Host-published rows only.
+    var superAgentRouterID: String? = nil
 
     var isLive: Bool { status != .exited }
     var isAttachable: Bool { status != .starting && status != .exited }

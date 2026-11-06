@@ -23,6 +23,10 @@ struct WorkspaceActivityMenuSession: Equatable {
     let status: String
     /// Latest App alert when it is this Session's newest activity.
     let alertBody: String?
+    /// Fork-only: the Session is the workspace's Super Agent (the Router).
+    var superAgent: Bool = false
+    /// Fork-only: the Super Agent this Session works for (a Worker).
+    var superAgentRouterID: String? = nil
 }
 
 struct WorkspaceActivityMenuSlice: Equatable {
@@ -72,7 +76,9 @@ struct WorkspaceActivityMenuSlice: Equatable {
                 command: summary.command,
                 projectPath: projectPath(summary.projectID),
                 status: Self.statusLabel(summary),
-                alertBody: summary.latestAlertBody
+                alertBody: summary.latestAlertBody,
+                superAgent: summary.superAgent,
+                superAgentRouterID: summary.superAgentRouterID
             )
             if summary.status == .running, summary.activity == .blocked {
                 blockers.append(item)
@@ -102,7 +108,9 @@ struct WorkspaceActivityMenuSlice: Equatable {
                 command: session.presentationCommand,
                 projectPath: projectName(session.projectID),
                 status: statusLabel(session),
-                alertBody: alertBody(session)
+                alertBody: alertBody(session),
+                superAgent: session.superAgent,
+                superAgentRouterID: session.superAgentRouterID
             )
         }
         jobs = activity.jobs.map(item)

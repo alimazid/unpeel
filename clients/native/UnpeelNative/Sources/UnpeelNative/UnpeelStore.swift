@@ -16066,6 +16066,9 @@ extension UnpeelStore {
         entry.worktreePath = summary.worktreePath
         entry.worktreeBranch = summary.worktreeBranch
         entry.cwd = summary.cwd
+        // Fork-only
+        entry.superAgent = summary.superAgent
+        entry.superAgentRouterID = summary.superAgentRouterID
         return entry
     }
 
