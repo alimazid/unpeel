@@ -31,6 +31,8 @@ struct AgentsSessionRowState: Equatable {
     let canStop: Bool
     let canRestartApp: Bool
     let agentAccessRole: McpRole?
+    /// Make / Stop Being / Hand to Super Agent.
+    let superAgentMenu: SuperAgentMenu
     let moveTargets: [SessionMoveTarget]
     let canMoveToProjectSidebar: Bool
     let isInProjectSidebar: Bool
@@ -65,6 +67,7 @@ struct AgentsSessionRowState: Equatable {
         canStop = store.sessionCanStop(id)
         canRestartApp = store.sessionCanRestartApp(id)
         agentAccessRole = store.canSetAgentAccess(id) ? store.agentAccessRole(for: id) : nil
+        superAgentMenu = store.superAgentMenu(forSession: id)
         moveTargets = store.isExperimentalEnabled(.worktrees)
             ? store.moveDestinations(forSession: id)
                 .map { SessionMoveTarget(id: $0.id, name: $0.name) }
@@ -202,6 +205,15 @@ struct AgentsSessionRow: View {
             onRestartApp: state.canRestartApp ? { [store] in store.restartApp(id) } : nil,
             onSetNotifyWhenDone: { [store] in store.setNotifyWhenDone(id, enabled: $0) },
             onSetAgentAccessRole: { [store] in store.setAgentAccessRole($0, for: id) },
+            onMakeSuperAgent: state.superAgentMenu.canMake
+                ? { [store] in store.makeSuperAgent(id) }
+                : nil,
+            onStopBeingSuperAgent: state.superAgentMenu.canStopBeing
+                ? { [store] in store.stopBeingSuperAgent(id) }
+                : nil,
+            onHandToSuperAgent: state.superAgentMenu.canHandOver
+                ? { [store] in store.handToSuperAgent(id) }
+                : nil,
             onCopyTranscript: { [store] in store.copyTranscriptMarkdown($0, entries: $1) },
             onStop: { [store] in store.requestStopSession(id, on: .agentsSection) },
             onRequestRemove: { [store] in store.requestRemoveSession(id, on: .agentsSection) }

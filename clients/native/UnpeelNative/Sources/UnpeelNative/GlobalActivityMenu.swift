@@ -23,14 +23,18 @@ struct WorkspaceActivityMenuSession: Equatable {
     let status: String
     /// Latest App alert when it is this Session's newest activity.
     let alertBody: String?
+    /// Fork-only: the Session is the workspace's Super Agent (the Router).
+    var superAgent: Bool = false
+    /// Fork-only: the Super Agent this Session works for (a Worker).
+    var superAgentRouterID: String? = nil
 }
 
 struct WorkspaceActivityMenuSlice: Equatable {
     var jobs: [WorkspaceActivityMenuSession] = []
     var blockers: [WorkspaceActivityMenuSession] = []
     var finished: [WorkspaceActivityMenuSession] = []
-    /// Fork-only: pinned sessions in none of the groups above, so the
-    /// AGENTS section always shows them.
+    /// Fork-only: pinned sessions and the Super Agent in none of the groups
+    /// above, so the AGENTS section always shows them.
     var pinned: [WorkspaceActivityMenuSession] = []
 
     init() {}
@@ -72,7 +76,9 @@ struct WorkspaceActivityMenuSlice: Equatable {
                 command: summary.command,
                 projectPath: projectPath(summary.projectID),
                 status: Self.statusLabel(summary),
-                alertBody: summary.latestAlertBody
+                alertBody: summary.latestAlertBody,
+                superAgent: summary.superAgent,
+                superAgentRouterID: summary.superAgentRouterID
             )
             if summary.status == .running, summary.activity == .blocked {
                 blockers.append(item)
@@ -81,7 +87,7 @@ struct WorkspaceActivityMenuSlice: Equatable {
                 jobs.append(item)
             } else if summary.unread {
                 finished.append(item)
-            } else if summary.pinned {
+            } else if summary.pinned || summary.superAgent {
                 pinned.append(item)
             }
         }
@@ -102,7 +108,9 @@ struct WorkspaceActivityMenuSlice: Equatable {
                 command: session.presentationCommand,
                 projectPath: projectName(session.projectID),
                 status: statusLabel(session),
-                alertBody: alertBody(session)
+                alertBody: alertBody(session),
+                superAgent: session.superAgent,
+                superAgentRouterID: session.superAgentRouterID
             )
         }
         jobs = activity.jobs.map(item)
@@ -121,6 +129,25 @@ struct WorkspaceActivityMenuSlice: Equatable {
                 for session in node.sessions where result[session.id] == nil {
                     result[session.id] = node.id
                 }
+                collect(node.worktrees)
+            }
+        }
+        collect(nodes)
+        return result
+    }
+
+    /// Fork-only: the sessions the AGENTS section lists whatever their
+    /// activity — pinned ones and the Super Agent — in sidebar order.
+    static func alwaysListedSessions(
+        in nodes: [ProjectNode],
+        isPinned: (_ sessionID: String, _ projectID: String) -> Bool
+    ) -> [SessionEntry] {
+        var result: [SessionEntry] = []
+        func collect(_ nodes: [ProjectNode]) {
+            for node in nodes {
+                result.append(contentsOf: node.sessions.filter {
+                    $0.superAgent || isPinned($0.id, node.id)
+                })
                 collect(node.worktrees)
             }
         }
