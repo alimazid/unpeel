@@ -51,6 +51,10 @@ const WRITE_CAPABILITY: &str = "session.input.write";
 const RESIZE_DESKTOP_CAPABILITY: &str = "session.resize_desktop";
 const MARK_READ_CAPABILITY: &str = "session.mark_read";
 const MARK_UNREAD_CAPABILITY: &str = "session.mark_unread";
+// Fork-only: the Super Agent verbs.
+const SUPER_AGENT_SET_CAPABILITY: &str = "session.super_agent.set";
+const SUPER_AGENT_CLEAR_CAPABILITY: &str = "session.super_agent.clear";
+const SUPER_AGENT_HAND_OVER_CAPABILITY: &str = "session.super_agent.hand_over";
 const APPROVAL_ANSWER_CAPABILITY: &str = "approval.answer";
 const TITLE_SET_CAPABILITY: &str = "session.title.set";
 const PIN_SET_CAPABILITY: &str = "session.pin.set";
@@ -80,6 +84,9 @@ pub const REMOTE_CAPABILITY_INPUT_WRITE: &str = WRITE_CAPABILITY;
 pub const REMOTE_CAPABILITY_RESIZE_DESKTOP: &str = RESIZE_DESKTOP_CAPABILITY;
 pub const REMOTE_CAPABILITY_MARK_READ: &str = MARK_READ_CAPABILITY;
 pub const REMOTE_CAPABILITY_MARK_UNREAD: &str = MARK_UNREAD_CAPABILITY;
+pub const REMOTE_CAPABILITY_SUPER_AGENT_SET: &str = SUPER_AGENT_SET_CAPABILITY;
+pub const REMOTE_CAPABILITY_SUPER_AGENT_CLEAR: &str = SUPER_AGENT_CLEAR_CAPABILITY;
+pub const REMOTE_CAPABILITY_SUPER_AGENT_HAND_OVER: &str = SUPER_AGENT_HAND_OVER_CAPABILITY;
 pub const REMOTE_CAPABILITY_TITLE_SET: &str = TITLE_SET_CAPABILITY;
 pub const REMOTE_CAPABILITY_PIN_SET: &str = PIN_SET_CAPABILITY;
 pub const REMOTE_CAPABILITY_NOTIFY_WHEN_DONE_SET: &str = NOTIFY_WHEN_DONE_CAPABILITY;
@@ -107,6 +114,9 @@ const WRITE_PATH: &str = "/mobile/write";
 const RESIZE_DESKTOP_PATH: &str = "/mobile/resize-desktop";
 const MARK_READ_PATH: &str = "/mobile/mark-read";
 const MARK_UNREAD_PATH: &str = "/mobile/mark-unread";
+const SUPER_AGENT_SET_PATH: &str = "/mobile/super-agent/set";
+const SUPER_AGENT_CLEAR_PATH: &str = "/mobile/super-agent/clear";
+const SUPER_AGENT_HAND_OVER_PATH: &str = "/mobile/super-agent/hand-over";
 const APPROVAL_ANSWER_PATH: &str = "/mobile/approvals/answer";
 const SESSION_ORGANIZATION_PATH: &str = "/mobile/session-organization";
 const SESSION_ACTION_PATH: &str = "/mobile/session-action";
@@ -343,6 +353,17 @@ pub struct RemoteSessionSummary {
     /// round-trip here or the native bridge strips it from the snapshot.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cwd: Option<String>,
+    /// Fork-only: this Session is the workspace's Super Agent (Router).
+    /// Additive; older Hosts omit it. Must round-trip, as `cwd`.
+    #[serde(default)]
+    pub super_agent: bool,
+    /// Fork-only: the Router this Session works for, from its Worker marker.
+    #[serde(
+        default,
+        rename = "superAgentRouterID",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub super_agent_router_id: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -1838,6 +1859,63 @@ impl RemoteSessionBackend {
             MARK_UNREAD_PATH,
             body,
         )
+    }
+
+    /// Fork-only: make a Claude Code Session the workspace's Super Agent
+    /// (`session.super_agent.set`). Never replayed.
+    pub fn set_super_agent(
+        &self,
+        session_id: &str,
+    ) -> Result<RemoteEffectReceipt, RemoteEffectFailure> {
+        self.super_agent_effect(
+            "make Session the Super Agent",
+            SUPER_AGENT_SET_CAPABILITY,
+            SUPER_AGENT_SET_PATH,
+            session_id,
+        )
+    }
+
+    /// Fork-only: stop a Session being the Super Agent
+    /// (`session.super_agent.clear`); its Workers become the user's.
+    pub fn clear_super_agent(
+        &self,
+        session_id: &str,
+    ) -> Result<RemoteEffectReceipt, RemoteEffectFailure> {
+        self.super_agent_effect(
+            "stop Session being the Super Agent",
+            SUPER_AGENT_CLEAR_CAPABILITY,
+            SUPER_AGENT_CLEAR_PATH,
+            session_id,
+        )
+    }
+
+    /// Fork-only: hand an agent Session to the Super Agent
+    /// (`session.super_agent.hand_over`).
+    pub fn hand_over_to_super_agent(
+        &self,
+        session_id: &str,
+    ) -> Result<RemoteEffectReceipt, RemoteEffectFailure> {
+        self.super_agent_effect(
+            "hand Session to the Super Agent",
+            SUPER_AGENT_HAND_OVER_CAPABILITY,
+            SUPER_AGENT_HAND_OVER_PATH,
+            session_id,
+        )
+    }
+
+    /// The three Super Agent verbs share `mark_session_unread`'s shape.
+    fn super_agent_effect(
+        &self,
+        operation: &'static str,
+        capability: &'static str,
+        path: &'static str,
+        session_id: &str,
+    ) -> Result<RemoteEffectReceipt, RemoteEffectFailure> {
+        let effect_turn = self.inner.begin_effect();
+        effect_preflight(operation, || validate_session_id(session_id))?;
+        let body = encode_effect_body(operation, &MarkReadWire { session_id })?;
+        self.inner
+            .perform_effect(&effect_turn, operation, capability, path, body)
     }
 
     /// Rename a Session (`session.title.set`). The Host trims the title and
@@ -4461,6 +4539,43 @@ mod tests {
         assert!(serde_json::to_value(&bare).unwrap().get("cwd").is_none());
     }
 
+    /// Fork-only: the native bridge re-encodes the snapshot, so the Super
+    /// Agent fields must survive a decode/encode or the app never sees them.
+    #[test]
+    fn session_summary_round_trips_the_super_agent_fields() {
+        let worker: RemoteSessionSummary = serde_json::from_value(json!({
+            "id": "s1", "projectID": "p1", "title": "t", "command": "codex",
+            "createdAtUnixMs": 1, "status": "running", "activity": "idle",
+            "superAgent": false, "superAgentRouterID": "router-1"
+        }))
+        .unwrap();
+        assert!(!worker.super_agent);
+        assert_eq!(worker.super_agent_router_id.as_deref(), Some("router-1"));
+        let wire = serde_json::to_value(&worker).unwrap();
+        assert_eq!(wire["superAgent"], false);
+        assert_eq!(wire["superAgentRouterID"], "router-1");
+
+        let router: RemoteSessionSummary = serde_json::from_value(json!({
+            "id": "router-1", "projectID": "p1", "title": "t", "command": "claude",
+            "createdAtUnixMs": 1, "status": "running", "activity": "idle",
+            "superAgent": true
+        }))
+        .unwrap();
+        assert!(router.super_agent);
+        let wire = serde_json::to_value(&router).unwrap();
+        assert_eq!(wire["superAgent"], true);
+        assert!(wire.get("superAgentRouterID").is_none());
+
+        // An older Host omits both.
+        let bare: RemoteSessionSummary = serde_json::from_value(json!({
+            "id": "s1", "projectID": "p1", "title": "t", "command": "zsh",
+            "createdAtUnixMs": 1, "status": "running", "activity": "idle"
+        }))
+        .unwrap();
+        assert!(!bare.super_agent);
+        assert_eq!(bare.super_agent_router_id, None);
+    }
+
     #[test]
     fn bootstrap_is_typed_versioned_and_pins_host_identity() {
         let connection = ScriptedConnection::new();
@@ -5408,6 +5523,85 @@ mod tests {
         backend.bootstrap().unwrap();
         assert!(backend.mark_session_unread("s1").is_ok());
         assert_eq!(connection.remaining(), 0);
+    }
+
+    /// Fork-only: each Super Agent verb posts `{sessionID}` to its own route,
+    /// and only once its own capability is advertised.
+    #[test]
+    fn super_agent_verbs_post_their_own_routes_only_when_advertised() {
+        type Verb =
+            fn(&RemoteSessionBackend, &str) -> Result<RemoteEffectReceipt, RemoteEffectFailure>;
+        let verbs: [(Verb, &str, &str); 3] = [
+            (
+                RemoteSessionBackend::set_super_agent,
+                SUPER_AGENT_SET_CAPABILITY,
+                SUPER_AGENT_SET_PATH,
+            ),
+            (
+                RemoteSessionBackend::clear_super_agent,
+                SUPER_AGENT_CLEAR_CAPABILITY,
+                SUPER_AGENT_CLEAR_PATH,
+            ),
+            (
+                RemoteSessionBackend::hand_over_to_super_agent,
+                SUPER_AGENT_HAND_OVER_CAPABILITY,
+                SUPER_AGENT_HAND_OVER_PATH,
+            ),
+        ];
+        for (verb, capability, path) in verbs {
+            let connection = ScriptedConnection::new();
+            let generation = connection.generation(1);
+            add_bootstrap(
+                &connection,
+                generation,
+                bootstrap_json(
+                    Some("host-1"),
+                    HOST_PROTOCOL_MAJOR,
+                    Some(&[BOOTSTRAP_CAPABILITY, MARK_UNREAD_CAPABILITY]),
+                ),
+            );
+            let backend = RemoteSessionBackend::new(connection.clone());
+            backend.bootstrap().unwrap();
+            let failure = verb(&backend, "s1").unwrap_err();
+            assert_eq!(
+                failure.kind(),
+                RemoteEffectFailureKind::NotApplied,
+                "{path}"
+            );
+            assert!(
+                matches!(
+                    failure.error(),
+                    RemoteSessionBackendError::MissingCapability(missing) if missing == capability
+                ),
+                "{path}"
+            );
+            assert_eq!(connection.calls().len(), 1, "{path}");
+            let invalid = verb(&backend, "../s1").unwrap_err();
+            assert_eq!(
+                invalid.kind(),
+                RemoteEffectFailureKind::NotApplied,
+                "{path}"
+            );
+
+            add_bootstrap(
+                &connection,
+                generation,
+                bootstrap_json(
+                    Some("host-1"),
+                    HOST_PROTOCOL_MAJOR,
+                    Some(&[BOOTSTRAP_CAPABILITY, capability]),
+                ),
+            );
+            connection.push(reply_step(
+                expected_effect(generation, path, json!({ "sessionID": "s1" })),
+                generation,
+                200,
+                br#"{"ok":true,"changed":true}"#.to_vec(),
+            ));
+            backend.bootstrap().unwrap();
+            assert!(verb(&backend, "s1").is_ok(), "{path}");
+            assert_eq!(connection.remaining(), 0, "{path}");
+        }
     }
 
     #[test]

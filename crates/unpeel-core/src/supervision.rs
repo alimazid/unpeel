@@ -16,6 +16,11 @@ use serde_json::{Map, Value};
 
 mod config;
 pub use config::{config_from_state, load_config, SupervisorConfig};
+mod controller;
+pub use controller::{
+    clear_super_agent, hand_over_to_super_agent, set_super_agent, with_summary_fields,
+    SessionFacts, VerbError, VerbOutcome, CLAUDE_CODE_RUNTIME_ID,
+};
 
 /// App-state key holding the Router mark.
 pub const ROUTER_MARK_KEY: &str = "super_agent";
@@ -160,6 +165,17 @@ pub fn on_session_replaced(old_id: &str, replacement_id: Option<&str>) -> Result
         old_id,
         replacement_id,
     );
+    // The Inbox follows its Session: it lives outside the session dir that
+    // Resume tears down.
+    let inbox = transfer_inbox(&crate::session_inbox::Store::home(), old_id, replacement_id);
+    let outcome = match (outcome, inbox) {
+        (Ok(changed), Ok(())) => Ok(changed),
+        (outcome, inbox) => Err([outcome.err(), inbox.err()]
+            .into_iter()
+            .flatten()
+            .collect::<Vec<_>>()
+            .join("; ")),
+    };
     // A partial failure may still have changed something: announce both.
     let (mark_moved, markers_changed) = match &outcome {
         Ok(changed) => (changed.mark_moved, changed.markers_changed > 0),
@@ -173,6 +189,11 @@ pub fn on_session_replaced(old_id: &str, replacement_id: Option<&str>) -> Result
     }
     if markers_changed {
         announce_markers();
+    }
+    // A resumed Router is a new process: it is sent its instructions again.
+    let router_resumed = outcome.as_ref().is_ok_and(|changed| changed.mark_moved);
+    if let Some(new_id) = replacement_id.filter(|_| router_resumed) {
+        controller::router_resumed(new_id);
     }
     outcome.map(|_| ())
 }
@@ -189,13 +210,12 @@ pub(crate) fn on_session_replaced_at(
     }
     let mark = move_router_mark_at(state_path, old_id, replacement_id);
     let markers = rewrite_worker_markers_in(sessions_root, old_id, replacement_id);
-    let inbox = transfer_inbox(old_id, replacement_id);
-    match (mark, markers, inbox) {
-        (Ok(mark_moved), Ok(markers_changed), Ok(())) => Ok(Replaced {
+    match (mark, markers) {
+        (Ok(mark_moved), Ok(markers_changed)) => Ok(Replaced {
             mark_moved,
             markers_changed,
         }),
-        (mark, markers, inbox) => Err([mark.err(), markers.err(), inbox.err()]
+        (mark, markers) => Err([mark.err(), markers.err()]
             .into_iter()
             .flatten()
             .collect::<Vec<_>>()
@@ -203,10 +223,18 @@ pub(crate) fn on_session_replaced_at(
     }
 }
 
-/// The Inbox follows its Session (ticket 02): `session_inbox::transfer(old,
-/// new)` on Resume and `session_inbox::remove(old)` on removal go here.
-fn transfer_inbox(_old_id: &str, _replacement_id: Option<&str>) -> Result<(), String> {
-    Ok(())
+/// Resume moves the Inbox to the new id (dropping any in-flight claim);
+/// removal deletes it. A same-id Reload keeps it where it is.
+fn transfer_inbox(
+    store: &crate::session_inbox::Store,
+    old_id: &str,
+    replacement_id: Option<&str>,
+) -> Result<(), String> {
+    let moved = match replacement_id {
+        Some(new_id) => store.transfer(old_id, new_id),
+        None => store.remove(old_id),
+    };
+    moved.map_err(|error| format!("Inbox of {old_id}: {error}"))
 }
 
 /// Move or drop the mark when `old_id` holds it. Reads first so the common
@@ -718,5 +746,48 @@ mod tests {
         ] {
             assert_eq!(router_id_in(&junk), None, "{junk}");
         }
+    }
+
+    fn inbox_report(summary: &str) -> crate::session_inbox::NewItem {
+        crate::session_inbox::NewItem {
+            sender: crate::session_inbox::Sender::Session("w1".into()),
+            kind: crate::session_inbox::ItemKind::Report,
+            priority: crate::session_inbox::Priority::Wake,
+            about: None,
+            status: Some("done".into()),
+            label: None,
+            summary: summary.into(),
+            body: String::new(),
+            dedupe_key: None,
+        }
+    }
+
+    fn pending(store: &crate::session_inbox::Store, id: &str) -> Vec<String> {
+        let listing = store.list(id).unwrap();
+        listing
+            .pending
+            .into_iter()
+            .map(|item| item.summary)
+            .collect()
+    }
+
+    #[test]
+    fn the_inbox_follows_a_resumed_session_and_goes_with_a_removed_one() {
+        let tmp = tempfile::tempdir().unwrap();
+        let store = crate::session_inbox::Store::at(tmp.path().join("session-inboxes"));
+        store.enqueue("old", inbox_report("r0"), 1).unwrap();
+
+        transfer_inbox(&store, "old", Some("old")).unwrap();
+        assert_eq!(pending(&store, "old"), ["r0"], "a same-id Reload keeps it");
+
+        transfer_inbox(&store, "old", Some("new")).unwrap();
+        assert!(pending(&store, "old").is_empty());
+        assert_eq!(pending(&store, "new"), ["r0"]);
+
+        transfer_inbox(&store, "new", None).unwrap();
+        assert!(store.inbox_ids().is_empty());
+        // Nothing queued: nothing to move or remove.
+        transfer_inbox(&store, "never", Some("other")).unwrap();
+        transfer_inbox(&store, "never", None).unwrap();
     }
 }

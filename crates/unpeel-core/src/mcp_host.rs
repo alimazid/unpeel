@@ -3398,20 +3398,23 @@ fn tool_report(args: &Value) -> Result<String, String> {
     let target_session_id = required_str(args, "session_id")?;
     let target = load_manifest(target_session_id)
         .ok_or_else(|| format!("Session '{target_session_id}' is no longer available."))?;
-    // Fork-only: a Worker's report to its Router is queued, not pasted.
-    if let Some(routed) = crate::supervision_mcp::route_report(args, &caller, &target) {
+    // Fork-only: with a Host worker the report is queued in the target's
+    // Inbox, after the same write gate as below.
+    let gate = || require_session(target_session_id, WriteAccess::Write);
+    if let Some(routed) = crate::supervision_mcp::route_report(args, &caller, &target, &gate) {
         return routed;
     }
     require_session(target_session_id, WriteAccess::Write)?;
     let report = build_session_report(args, &caller, &target)?;
     let submit = args.get("submit").and_then(Value::as_bool).unwrap_or(true);
     send_initial_text_to_session(target_session_id, &report, submit)?;
-    Ok(format!(
+    // Fork-only: the result says it was pasted at once.
+    Ok(crate::supervision_mcp::immediate_report_result(format!(
         "Reported {} characters to session {}{}",
         sanitize_paste_text(&report).chars().count(),
         target_session_id,
         if submit { " and pressed Enter" } else { "" }
-    ))
+    )))
 }
 
 fn tool_list_presets(args: &Value) -> Result<String, String> {

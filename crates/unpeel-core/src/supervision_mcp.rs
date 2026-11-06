@@ -8,12 +8,14 @@ use serde_json::Value;
 use crate::session_host::HostedSessionManifest;
 use crate::state::SessionInfo;
 
+mod inbox;
+
 /// An extra domain action: arguments in, the tool's text result out.
 pub(crate) type Handler = fn(&Value) -> Result<String, String>;
 
 /// Extra `sessions` actions (name, handler). Their names join the advertised
 /// action enum; each runs behind the same gate as upstream's actions.
-const SESSIONS_ACTIONS: &[(&str, Handler)] = &[];
+const SESSIONS_ACTIONS: &[(&str, Handler)] = &[("inbox", inbox::inbox_action)];
 
 /// Extra `workspace` actions, as `SESSIONS_ACTIONS`.
 const WORKSPACE_ACTIONS: &[(&str, Handler)] = &[
@@ -70,10 +72,11 @@ pub(crate) fn extend_schema(tool: &str, definition: Value) -> Value {
 
 /// Extra schema properties per tool.
 fn extra_properties(tool: &str) -> Vec<(&'static str, Value)> {
-    if tool == "workspace" {
-        return crate::supervision_groups::schema_properties();
+    match tool {
+        "sessions" => inbox::schema_properties(),
+        "workspace" => crate::supervision_groups::schema_properties(),
+        _ => Vec::new(),
     }
-    Vec::new()
 }
 
 fn merge_properties(definition: Value, properties: Vec<(&'static str, Value)>) -> Value {
@@ -100,19 +103,28 @@ pub(crate) fn help_docs(tool: &str) -> Vec<(String, Value)> {
         docs.extend(crate::supervision_groups::help_docs());
         return docs;
     }
+    if tool == "sessions" {
+        return inbox::help_doc();
+    }
     Vec::new()
 }
 
-/// `report` from `caller` to `target`, taken over before the write gate (a
-/// Worker's report to its Router is queued in the Router's Inbox and needs
-/// no approval). `None`: upstream's paste path.
+/// `report` from `caller` to `target`, taken over before upstream's write
+/// gate; `gate` is that gate. While a Host worker runs the report passes
+/// it and is queued in the target's Inbox (`inbox.rs`). `None`: upstream's
+/// paste path.
 pub(crate) fn route_report(
     args: &Value,
     caller: &HostedSessionManifest,
     target: &HostedSessionManifest,
+    gate: &dyn Fn() -> Result<(), String>,
 ) -> Option<Result<String, String>> {
-    let _ = (args, caller, target);
-    None
+    inbox::route_report(args, caller, target, gate)
+}
+
+/// Upstream's immediate-paste `report` result, marked as such.
+pub(crate) fn immediate_report_result(message: String) -> String {
+    inbox::immediate_report_result(message)
 }
 
 /// `send_text` to `target_id`, taken over before the write gate, as
@@ -309,7 +321,7 @@ mod tests {
             workspace_action("list_presets", &json!({}), gate_open),
             None
         );
-        assert_eq!(sessions_action_names().count(), 0);
+        assert_eq!(sessions_action_names().collect::<Vec<_>>(), ["inbox"]);
         assert_eq!(
             workspace_action_names().collect::<Vec<_>>(),
             [
