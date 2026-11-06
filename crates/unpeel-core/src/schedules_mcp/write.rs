@@ -110,19 +110,19 @@ fn edit_body(arguments: &Value, state: &Value) -> Result<Value, String> {
     if let Some(name) = optional_text(arguments, "name")? {
         body.insert("name".into(), json!(name));
     }
-    let project_id = optional_text(arguments, "project_id")?.filter(|id| !id.trim().is_empty());
-    if let Some(preset) = optional_text(arguments, "preset")?.filter(|id| !id.trim().is_empty()) {
+    let project_id = optional_id(arguments, "project_id")?;
+    if let Some(preset) = optional_id(arguments, "preset")? {
         let in_project = project_id
             .clone()
             .or_else(|| stored_project(state, &schedule_id))
             .unwrap_or_default();
         body.insert(
             "presetID".into(),
-            json!(resolve_preset(state, &in_project, preset.trim())?),
+            json!(resolve_preset(state, &in_project, &preset)?),
         );
     }
     if let Some(project_id) = project_id {
-        body.insert("projectID".into(), json!(project_id.trim()));
+        body.insert("projectID".into(), json!(project_id));
     }
     if let Some(trigger) = trigger(arguments)? {
         body.insert("trigger".into(), trigger);
@@ -225,6 +225,15 @@ fn required<'a>(arguments: &'a Value, key: &str, from: &str) -> Result<&'a str, 
         .map(str::trim)
         .filter(|value| !value.is_empty())
         .ok_or_else(|| format!("Missing required parameter: {key} ({from})."))
+}
+
+/// An id an edit may change: absent is unchanged, blank is refused (an
+/// edit cannot leave a task without one).
+fn optional_id(arguments: &Value, key: &str) -> Result<Option<String>, String> {
+    match optional_text(arguments, key)? {
+        Some(id) if id.trim().is_empty() => Err(format!("{key} cannot be empty")),
+        id => Ok(id.map(|id| id.trim().to_owned())),
+    }
 }
 
 fn optional_text(arguments: &Value, key: &str) -> Result<Option<String>, String> {

@@ -262,6 +262,36 @@ fn an_edited_preset_resolves_in_the_project_the_task_will_have() {
 }
 
 #[test]
+fn an_edited_project_is_trimmed_before_its_preset_resolves() {
+    let host = FakeHost::ok();
+    host.call(
+        "edit_schedule",
+        json!({ "schedule_id": "sch_daily", "project_id": " p ", "preset": " Backup " }),
+        Some(ROUTER),
+    )
+    .expect("edited");
+    let body = host.only_request().1;
+    assert_eq!(
+        (&body["projectID"], &body["presetID"]),
+        (&json!("p"), &json!("p-script"))
+    );
+}
+
+#[test]
+fn a_blank_project_or_preset_is_refused_not_ignored() {
+    for (key, blank) in [("project_id", json!("")), ("preset", json!("  "))] {
+        let host = FakeHost::ok();
+        let mut arguments = json!({ "schedule_id": "sch_daily", "name": "Kept" });
+        arguments[key] = blank;
+        let refused = host
+            .call("edit_schedule", arguments, Some(ROUTER))
+            .expect_err("refused");
+        assert!(refused.contains(key), "{key}: {refused}");
+        assert!(host.nothing_sent(), "{key}");
+    }
+}
+
+#[test]
 fn an_edit_with_nothing_to_change_is_refused() {
     let host = FakeHost::ok();
     let refused = host

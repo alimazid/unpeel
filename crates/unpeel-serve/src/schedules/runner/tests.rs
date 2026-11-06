@@ -516,7 +516,9 @@ fn a_saved_clock_is_published_once() {
         };
         assert_eq!(
             crate::schedules::trigger::published_next_run(&task, &before_the_sweep, &zone),
-            clock.next_occurrence.zip(clock.next_occurrence_ms)
+            clock
+                .next_occurrence
+                .map(|at| (at, clock.next_occurrence_ms))
         );
     });
 }

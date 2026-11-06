@@ -62,7 +62,7 @@ impl FakeHost {
         Self {
             next_run: Some(NextRun {
                 at: at.into(),
-                at_ms,
+                at_ms: Some(at_ms),
             }),
             ..Self::new()
         }

@@ -48,11 +48,12 @@ pub enum RunNowRefusal {
 }
 
 /// A task's next run as its row lists it: the local date-time and its
-/// instant (`nextRun.at`, `nextRun.atMs`).
+/// instant (`nextRun.at`, `nextRun.atMs`; null when the clock cannot place
+/// it, as the worker publishes it).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NextRun {
     pub at: String,
-    pub at_ms: u64,
+    pub at_ms: Option<u64>,
 }
 
 /// What only the workspace worker can do for the write routes: the save
