@@ -36,6 +36,12 @@ public enum RemoteControlProtocol {
     /// and whether it is installed.
     public static let integrationsInstallCapability = "integrations.install"
     public static let appsOpenCapability = "apps.open"
+    /// Fork-only: Scheduled Tasks. `GET /mobile/schedules` lists every task
+    /// with its next run and latest Run (`RemoteSchedulesList`).
+    public static let schedulesCapability = "schedules"
+    /// Fork-only: `GET /mobile/schedules/runs`, one task's Run history
+    /// (`RemoteScheduleRunHistory`).
+    public static let scheduleRunsCapability = "schedules.runs"
 }
 
 /// Additive Host-level capability contract carried by bootstrap.
@@ -1363,6 +1369,10 @@ public struct RemoteBootstrapSnapshot: Codable, Equatable, Sendable {
     /// `hostProtocol`'s `host.mobile.tls` capability this decides whether a
     /// Controller sends Direct `/mobile` requests over pinned HTTPS.
     public let serverVersion: String?
+    /// Fork-only: Scheduled Tasks. Opaque; moves whenever the `schedules`
+    /// routes would answer differently, so a Controller refetches them on
+    /// the bootstrap refresh instead of polling. Nil on older Hosts.
+    public let schedulesRevision: String?
 
     public init(
         protocolVersion: Int = RemoteControlProtocol.version,
@@ -1392,7 +1402,8 @@ public struct RemoteBootstrapSnapshot: Codable, Equatable, Sendable {
         hostIsolationTier: String? = nil,
         hostEnvironment: RemoteHostEnvironment? = nil,
         hostWorkspaces: [RemoteWorkspaceSummary]? = nil,
-        serverVersion: String? = nil
+        serverVersion: String? = nil,
+        schedulesRevision: String? = nil
     ) {
         self.protocolVersion = protocolVersion
         self.hostProtocol = hostProtocol
@@ -1422,6 +1433,7 @@ public struct RemoteBootstrapSnapshot: Codable, Equatable, Sendable {
         self.hostEnvironment = hostEnvironment
         self.hostWorkspaces = hostWorkspaces
         self.serverVersion = serverVersion
+        self.schedulesRevision = schedulesRevision
     }
 }
 
