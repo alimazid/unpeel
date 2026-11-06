@@ -2019,6 +2019,10 @@ fn rewrite_shared_session_references(
 ) -> Result<(), String> {
     let app_state_result = crate::app_state::edit(|state| {
         rewrite_app_state_session_references(state, old_id, replacement_id)
+    })
+    // Fork-only: the Super Agent mark and its Workers' markers follow the id.
+    .and_then(|changed| {
+        crate::supervision::on_session_replaced(old_id, replacement_id).map(|()| changed)
     });
     let order_result =
         rewrite_session_order_references_at(&session_order_path(), old_id, replacement_id);

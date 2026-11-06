@@ -150,6 +150,10 @@ pub mod state;
 #[cfg(feature = "native-host")]
 pub mod state_bus;
 #[cfg(feature = "native-host")]
+pub mod supervision; // Fork-only
+#[cfg(feature = "native-host")]
+pub mod supervision_mcp; // Fork-only
+#[cfg(feature = "native-host")]
 pub mod terminal_viewport;
 #[cfg(feature = "native-host")]
 pub mod transcripts;
