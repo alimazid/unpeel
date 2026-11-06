@@ -1115,14 +1115,26 @@ impl HostRuntime {
         let (projects, presets) = crate::mobile::create_catalog(&self.snapshot).unwrap_or_default();
         let activity = self.run_activity();
         let now = crate::schedules::clock::now();
-        for event in self.schedules.sweep(
+        let events = self.schedules.sweep(
             &schedules,
             &projects,
             &presets,
             &activity,
             Some(self.hook_port),
             &now,
-        ) {
+        );
+        // Run events reach Controllers through the schedules projection;
+        // the ping only says "re-read it now" (one per sweep).
+        if events
+            .iter()
+            .any(|event| !matches!(event, crate::schedules::SweepEvent::Warning(_)))
+        {
+            unpeel_core::state_bus::announce(
+                unpeel_core::state_bus::Change::Schedules,
+                unpeel_core::session_ops::own_listener_port_public(),
+            );
+        }
+        for event in events {
             match event {
                 crate::schedules::SweepEvent::Started {
                     schedule_id,
@@ -1238,8 +1250,7 @@ impl HostRuntime {
                 (
                     row.id.clone(),
                     (
-                        program
-                            .is_some_and(|program| program.state.is_finished()),
+                        program.is_some_and(|program| program.state.is_finished()),
                         program.map_or(0, |program| program.finished_edges),
                     ),
                 )
@@ -1272,13 +1283,11 @@ impl HostRuntime {
                 .as_ref()
                 .is_some_and(|program| program.finished_edges > edges_before)
                 || (program_finished && !finished_before);
-            let newly_completed = completed_at
-                .is_some_and(|at| {
-                    self.completed_turns
-                        .get(&row.id)
-                        .is_none_or(|previous| at > *previous)
-                })
-                && (!program_finished || completion_edge);
+            let newly_completed = completed_at.is_some_and(|at| {
+                self.completed_turns
+                    .get(&row.id)
+                    .is_none_or(|previous| at > *previous)
+            }) && (!program_finished || completion_edge);
             let kind = if old.is_none() && row.running {
                 Some(unpeel_core::activity_log::ActivityLogKind::Started)
             } else if row.status == Status::Attention && old != Some(Status::Attention) {

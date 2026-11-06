@@ -3390,6 +3390,9 @@ final class RemoteHostRuntime: ObservableObject {
             && lhs.hostTintHue == rhs.hostTintHue
             && lhs.hostDeviceKind == rhs.hostDeviceKind
             && lhs.hostDeviceModel == rhs.hostDeviceModel
+            // Fork-only: Scheduled Tasks. The SCHEDULED section rereads the
+            // `schedules` routes when this moves.
+            && lhs.schedulesRevision == rhs.schedulesRevision
             && lhs.sessions.count == rhs.sessions.count
             && zip(lhs.sessions, rhs.sessions).allSatisfy(Self.sessionRenderEqual)
     }

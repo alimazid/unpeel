@@ -67,6 +67,9 @@ pub const NATIVE_HOST_CAPABILITIES: &[&str] = &[
     "integrations.install",
     "settings.git.read",
     "settings.git.set",
+    // Fork-only: Scheduled Tasks (`controller_schedules`).
+    "schedules",
+    "schedules.runs",
 ];
 
 pub const HEADLESS_HOST_CAPABILITIES: &[&str] = &[
@@ -120,6 +123,9 @@ pub const HEADLESS_HOST_CAPABILITIES: &[&str] = &[
     "integrations.install",
     "settings.git.read",
     "settings.git.set",
+    // Fork-only: Scheduled Tasks (`controller_schedules`).
+    "schedules",
+    "schedules.runs",
 ];
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

@@ -19,13 +19,13 @@ import UnpeelGit
 enum SidebarSectionFocus {
     private static let retryNanoseconds: UInt64 = 50_000_000
 
-    /// The view that takes a section's keyboard focus; PROJECTS and AGENTS
-    /// have none.
+    /// The view that takes a section's keyboard focus; PROJECTS, AGENTS and
+    /// SCHEDULED have none.
     static func listType(for section: SidebarSectionID) -> NSView.Type? {
         switch section {
         case .explorer: return ExplorerNSOutlineView.self
         case .gitHistory: return GitHistoryNSOutlineView.self
-        case .projects, .agents: return nil
+        case .projects, .agents, .scheduled: return nil
         }
     }
 

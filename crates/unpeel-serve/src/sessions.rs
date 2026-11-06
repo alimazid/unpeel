@@ -2190,6 +2190,9 @@ pub fn mobile_snapshot(
             "experimentalWorktreesEnabled": experimental_worktrees_enabled,
             "hostTintHue": host_tint_hue,
             "hostDeviceKind": if cfg!(target_os = "linux") { "linux" } else { "unknown" },
+            // Fork-only: Scheduled Tasks. Controllers refetch the
+            // `schedules` routes when this moves.
+            "schedulesRevision": unpeel_core::controller_schedules::revision(&workspace_state),
         }),
         create_presets,
     }
