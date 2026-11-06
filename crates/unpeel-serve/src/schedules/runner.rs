@@ -260,8 +260,8 @@ impl Scheduler {
         hook_port: Option<u16>,
         events: &mut Vec<SweepEvent>,
     ) {
-        // A task whose clock did not save must start nothing this sweep: the
-        // occurrence would fire again on the next one.
+        // A task whose clock did not save must start, record and disable
+        // nothing this sweep: the occurrence would fire again on the next.
         let mut held: HashSet<String> = HashSet::new();
         for action in actions {
             match action {
@@ -272,7 +272,9 @@ impl Scheduler {
                         self.warn(&schedule_id, format!("saving its clock: {error}"), events);
                     }
                 }
-                Action::Start { schedule_id, .. } | Action::Record { schedule_id, .. }
+                Action::Start { schedule_id, .. }
+                | Action::Record { schedule_id, .. }
+                | Action::Disable { schedule_id }
                     if held.contains(&schedule_id) => {}
                 Action::Start {
                     schedule_id,
@@ -695,6 +697,29 @@ mod tests {
             sweep(scheduler, &tasks, &now(9, 0, 5));
             settle(effects, 1);
             assert_eq!(*effects.disabled.lock().unwrap(), vec!["sch_1".to_string()]);
+        });
+    }
+
+    /// An occurrence whose clock could not be saved would fire again on the
+    /// next sweep, so it starts nothing and a Once task stays enabled.
+    #[test]
+    fn a_task_whose_clock_cannot_be_saved_starts_nothing() {
+        use std::os::unix::fs::PermissionsExt;
+        with_scheduler(Recording::default(), |scheduler, effects| {
+            let tasks = [schedule(ScheduleTrigger::Once {
+                at: "2026-11-06T09:00:05".into(),
+            })];
+            let dir = root_of(scheduler).join("sch_1");
+            std::fs::create_dir_all(&dir).unwrap();
+            std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o555)).unwrap();
+            let events = sweep(scheduler, &tasks, &now(9, 0, 5));
+            std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o755)).unwrap();
+            settle(effects, 0);
+            assert!(effects.spawned.lock().unwrap().is_empty(), "{events:?}");
+            assert!(effects.disabled.lock().unwrap().is_empty(), "{events:?}");
+            assert!(events.iter().any(
+                |event| matches!(event, SweepEvent::Warning(warning) if warning.contains("clock"))
+            ));
         });
     }
 
