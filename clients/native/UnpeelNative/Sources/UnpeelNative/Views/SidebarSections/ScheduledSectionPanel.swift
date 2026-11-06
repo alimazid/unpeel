@@ -123,8 +123,6 @@ private struct ScheduledTaskRowView: View {
         }
         .buttonStyle(.plain)
         .onHover { hovering = $0 }
-        .accessibilityElement(children: .ignore)
-        .accessibilityAddTraits(.isButton)
         .accessibilityLabel(accessibilityLabel)
         .help(row.isExpanded ? "Hide recent Runs" : "Show recent Runs")
     }
@@ -189,8 +187,6 @@ private struct ScheduledRunRowView: View {
         .buttonStyle(.plain)
         .disabled(!canOpen)
         .onHover { hovering = $0 }
-        .accessibilityElement(children: .ignore)
-        .accessibilityAddTraits(.isButton)
         .accessibilityLabel(accessibilityLabel)
         .help(canOpen ? "Open this Run's Session" : "This Run's Session is no longer kept")
     }
