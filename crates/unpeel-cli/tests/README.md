@@ -97,6 +97,7 @@ printed only when the check fails.
 | `ctrlc_fallback` | Ctrl-C into a fresh preset Session lands in the fallback shell |
 | `startup_exit` | a launch command's exit status (0, 3, 128 + signal, a quit agent) lands in `startup-exit` before the fallback shell |
 | `schedules` | Scheduled Tasks on script presets: Run now records done / failed with the exit code, a Once task fires on its own with no app and disables itself, overlap is skipped, verbs refuse inside a Session |
+| `schedules_retention` | Run Sessions after a Run: each Run's start stops the previous Run's idle Session, the latest stays live, Runs never push the user's own stopped Sessions out of a Project, each task keeps its newest 5 stopped Run Sessions, deleting the task leaves them |
 | `schedules_edit` | every Trigger kind (hourly, daily, weekdays, weekly, once, cron) stored canonically with its next run published; invalid cron and impossible times refused at save time; `edit` changes each field and passes unknown ones through; `pause` stops firing, `resume` restarts the clock with no catch-up, then a weekly task fires on its own; verbs refuse inside a Session |
 | `schedules_routes` | Scheduled Tasks over `/mobile`: bootstrap advertises `schedules` / `schedules.runs` and a moving `schedulesRevision`; the list shows next run and last Run, history is newest first; a recorded Run pings the state bus (`schedules`); both routes read the files on disk |
 | `pty_core_*` | the shared PTY core: parity, adoption, in-place handoff |

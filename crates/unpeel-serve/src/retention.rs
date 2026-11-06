@@ -3,7 +3,9 @@
 //! group) is also the keep limit. Stopped rows past it — never pinned or
 //! unread ones — are removed by this Host-owned sweep, so the sidebar is the
 //! whole list and stopped Sessions never pile up on disk. The provider's own
-//! history still holds each conversation.
+//! history still holds each conversation. A Scheduled Task's Run Sessions
+//! take no slot in that window; they expire past their task's own keep
+//! limit instead (`run_sessions.rs`) and are removed by this same sweep.
 //!
 //! One batch is in flight at a time, each removal re-checks under the
 //! Session's lifecycle lock that it is still stopped (a Resume wins), and a

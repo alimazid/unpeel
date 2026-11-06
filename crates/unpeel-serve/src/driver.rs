@@ -1096,10 +1096,10 @@ impl HostRuntime {
         }
     }
 
-    /// Once per rescan: remove stopped Sessions past their group's keep limit.
     /// Step the Scheduled Tasks against the wall clock. Definitions are
     /// re-read from `app-state.json` every sweep, so an edit takes effect on
-    /// the next one; a file that will not read changes nothing.
+    /// the next one; a file that will not read changes nothing. A Run that
+    /// starts stops its task's earlier idle Run Sessions (`run_sessions.rs`).
     fn sweep_schedules(&mut self, emitted: &mut Vec<ServeEvent>) {
         let schedules = match unpeel_core::schedule_store::load_schedules() {
             Ok(schedules) => schedules,
@@ -1134,10 +1134,19 @@ impl HostRuntime {
                     schedule_id,
                     run_id,
                     session_id,
-                } => crate::tracelog::trace(
-                    "host-worker",
-                    &format!("schedule {schedule_id} started Run {run_id} in session {session_id}"),
-                ),
+                } => {
+                    crate::tracelog::trace(
+                        "host-worker",
+                        &format!(
+                            "schedule {schedule_id} started Run {run_id} in session {session_id}"
+                        ),
+                    );
+                    crate::run_sessions::stop_superseded(
+                        &self.model.rows,
+                        &schedule_id,
+                        &session_id,
+                    );
+                }
                 crate::schedules::SweepEvent::Recorded {
                     schedule_id,
                     run_id,
@@ -1153,6 +1162,8 @@ impl HostRuntime {
         }
     }
 
+    /// Once per rescan: remove stopped Sessions past their group's keep
+    /// limit, and Run Sessions past their task's (`run_sessions.rs`).
     fn sweep_retention(&mut self, emitted: &mut Vec<ServeEvent>) {
         for event in self.retention.step(&self.model.expired, now_ms()) {
             match event {
