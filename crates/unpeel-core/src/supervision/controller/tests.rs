@@ -593,3 +593,36 @@ fn any_catalog_runtime_is_an_agent_session() {
     // An App in the foreground is not an agent, whatever was launched.
     assert!(!facts(Some("unpeel.app.markdown"), "claude").is_agent());
 }
+
+impl Home {
+    /// The Session's title as a frontend would read it right now.
+    fn retitle(mut self, id: &str, label: &str) -> Self {
+        self.sessions.get_mut(id).unwrap().label = label.into();
+        self
+    }
+
+    fn title_marker(&self, id: &str) -> Option<String> {
+        let raw = std::fs::read(self.sessions_root().join(id).join("title.json")).ok()?;
+        let value: serde_json::Value = serde_json::from_slice(&raw).ok()?;
+        value.get("title")?.as_str().map(str::to_owned)
+    }
+}
+
+#[test]
+fn set_names_a_session_that_has_no_title_yet_super_agent() {
+    // Still titled by its launch command: its first prompt (the Router
+    // instructions) would otherwise become its name.
+    let home = claude_home().retitle("router-1", "claude");
+    home.run(100, |ctx| set_at(ctx, "router-1")).unwrap();
+    assert_eq!(
+        home.title_marker("router-1").as_deref(),
+        Some("Super Agent")
+    );
+}
+
+#[test]
+fn set_keeps_the_title_of_a_session_the_user_or_agent_already_named() {
+    let home = claude_home().retitle("router-1", "hubspot integration");
+    home.run(100, |ctx| set_at(ctx, "router-1")).unwrap();
+    assert_eq!(home.title_marker("router-1"), None);
+}

@@ -251,7 +251,27 @@ pub(crate) fn set_at(ctx: &Ctx, session_id: &str) -> Result<VerbOutcome, VerbErr
         markers_written: true,
     };
     take_over(ctx, session_id, previous.as_deref()).map_err(VerbError::Failed)?;
+    name_untitled_router(ctx, session_id, &facts).map_err(VerbError::Failed)?;
     Ok(written)
+}
+
+/// The title a Router gets when it has none of its own yet.
+const ROUTER_TITLE: &str = "Super Agent";
+
+/// A Session still titled by its launch command would take its name from
+/// its first prompt, which is now the Router instructions ("Unpeel inbox
+/// notice"). Name it instead, through the shared `title.json` override a
+/// rename writes; a title the user or the agent already chose stays.
+fn name_untitled_router(ctx: &Ctx, session_id: &str, facts: &SessionFacts) -> Result<(), String> {
+    if !facts.command.starts_with(facts.label.as_str()) {
+        return Ok(());
+    }
+    let body = serde_json::json!({ "title": ROUTER_TITLE, "updated_at": ctx.now_ms }).to_string();
+    crate::hook_assets::write_file_atomic(
+        &ctx.sessions_root.join(session_id).join("title.json"),
+        &body,
+        "Router title",
+    )
 }
 
 /// Everything after the mark: the new Router stops being anyone's Worker,
