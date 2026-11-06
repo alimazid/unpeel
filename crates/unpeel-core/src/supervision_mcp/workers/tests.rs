@@ -10,6 +10,7 @@ pub(crate) struct TestHome {
     _root: tempfile::TempDir,
     pub sessions_root: PathBuf,
     pub inbox: Store,
+    pub worktrees: crate::supervision_worktrees::Ledger,
     pub state: Value,
     pub sessions: HashMap<String, Facts>,
 }
@@ -24,6 +25,9 @@ impl TestHome {
         std::fs::create_dir_all(&sessions_root).unwrap();
         Self {
             inbox: Store::at(root.path().join("session-inboxes")),
+            worktrees: crate::supervision_worktrees::Ledger::at(
+                root.path().join("supervision").join("worktrees.json"),
+            ),
             sessions_root,
             _root: root,
             state: json!({
@@ -86,6 +90,7 @@ impl TestHome {
             state: self.state.clone(),
             sessions_root: self.sessions_root.clone(),
             inbox: self.inbox.clone(),
+            worktrees: self.worktrees.clone(),
             facts: &lookup,
             now_ms: NOW,
         })
@@ -330,6 +335,43 @@ fn the_create_result_names_the_worktree_project() {
     assert_eq!(
         result["worktree"],
         json!({ "branch": "fix", "path": "/wt/fix", "adopted": true })
+    );
+}
+
+#[test]
+fn a_worktree_the_router_creates_is_recorded_for_cleanup() {
+    let home = TestHome::new().session("w-new", true);
+    let make = |_: &Value, _: &str| {
+        Ok(json!({
+            "path": "/wt/fix", "project_id": "mcp-wt-1", "branch": "fix",
+            "adopted": false, "repo_path": "/work/p",
+        }))
+    };
+    let worker = home
+        .run(|ctx| {
+            plan_create(
+                ctx,
+                &json!({ "worktree": "fix", "base_ref": "main" }),
+                &creator(ROUTER),
+                &make,
+            )
+        })
+        .unwrap()
+        .unwrap();
+    let result = home.run(|ctx| worker.record_at(ctx, "w-new", json!({ "project_id": "p" })));
+
+    assert!(result.get("warning").is_none(), "{result}");
+    assert_eq!(
+        home.worktrees.entries().unwrap(),
+        vec![crate::supervision_worktrees::Entry {
+            path: "/wt/fix".into(),
+            branch: "fix".into(),
+            base_ref: Some("main".into()),
+            repo_path: "/work/p".into(),
+            project_id: "mcp-wt-1".into(),
+            owner_session_id: "w-new".into(),
+            created_at: NOW,
+        }]
     );
 }
 
