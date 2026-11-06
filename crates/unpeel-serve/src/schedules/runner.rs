@@ -176,6 +176,12 @@ impl Scheduler {
         let store = TaskStore::open(&self.root, &schedule.id)?;
         let latest_in_progress = store
             .current_run()
+            .map_err(|error| {
+                format!(
+                    "cannot tell whether a Run of {} is in progress: {error}",
+                    display_name(schedule)
+                )
+            })?
             .is_some_and(|run| run.status.is_in_progress());
         if latest_in_progress || self.run_now.contains_key(&schedule.id) {
             return Err(format!(
@@ -208,7 +214,12 @@ impl Scheduler {
         for schedule in schedules {
             match self.task_state(schedule, projects, presets, activity, now, &mut events) {
                 Ok(task) => tasks.push(task),
-                Err(error) => self.warn(&schedule.id, error, &mut events),
+                Err(error) => {
+                    // A Run now accepted before the task stopped reading
+                    // does not wait for it.
+                    self.run_now.remove(&schedule.id);
+                    self.warn(&schedule.id, error, &mut events)
+                }
             }
         }
         self.forget_settled_deliveries(&tasks);
@@ -291,7 +302,11 @@ impl Scheduler {
                 }
             }
         };
-        let latest_run = store.current_run();
+        // A Run log that will not read could be hiding the Run in progress:
+        // the task is not stepped, so nothing starts on a guess.
+        let latest_run = store
+            .current_run()
+            .map_err(|error| format!("{error}; starting nothing until it reads"))?;
         let observation = latest_run
             .as_ref()
             .map(|run| self.observe(run, activity, now_ms))
@@ -698,7 +713,7 @@ mod tests {
         fn spawn(&self, request: SpawnRequest) -> Result<(), String> {
             let store = TaskStore::open(&self.root, &request.schedule_id).unwrap();
             let clock = store.clock().unwrap();
-            let run = store.current_run();
+            let run = store.current_run().unwrap();
             self.spawned.lock().unwrap().push((request, clock, run));
             match &self.spawn_error {
                 Some(error) => Err(error.clone()),
@@ -866,7 +881,7 @@ mod tests {
             settle(effects, 1);
             sweep(scheduler, &tasks, &now(9, 0, 1));
             let store = TaskStore::open(root_of(scheduler), "sch_1").unwrap();
-            let run = store.current_run().expect("a Run");
+            let run = store.current_run().unwrap().expect("a Run");
             assert_eq!(run.status, RunStatus::Failed);
             assert!(run.reason.unwrap().contains("unpeel-host exited with 1"));
         });
@@ -944,7 +959,10 @@ mod tests {
                 .insert(session_id.clone(), (SessionSeen::Live, None));
             sweep(scheduler, &tasks, &now(9, 0, 1));
             let store = TaskStore::open(root_of(scheduler), "sch_1").unwrap();
-            assert_eq!(store.current_run().unwrap().status, RunStatus::Running);
+            assert_eq!(
+                store.current_run().unwrap().unwrap().status,
+                RunStatus::Running
+            );
 
             effects
                 .seen
@@ -952,7 +970,7 @@ mod tests {
                 .unwrap()
                 .insert(session_id, (SessionSeen::Live, Some(3)));
             sweep(scheduler, &tasks, &now(9, 0, 2));
-            let run = store.current_run().unwrap();
+            let run = store.current_run().unwrap().unwrap();
             assert_eq!((run.status, run.exit_code), (RunStatus::Failed, Some(3)));
             assert_eq!(
                 store.clock().unwrap().last_run_status,
@@ -990,6 +1008,33 @@ mod tests {
         });
     }
 
+    /// A Run log that will not read could be hiding a Run in progress: the
+    /// task starts nothing, and Run now says why instead of starting one.
+    #[test]
+    fn a_task_whose_runs_cannot_be_read_starts_nothing() {
+        with_scheduler(Recording::default(), |scheduler, _| {
+            let tasks = [schedule(ScheduleTrigger::Daily {
+                time: "09:00".into(),
+            })];
+            std::fs::create_dir_all(root_of(scheduler).join("sch_1").join("runs.jsonl")).unwrap();
+            let refused = scheduler.request_run_now("sch_1", &tasks).unwrap_err();
+            assert!(refused.contains("runs.jsonl"), "{refused}");
+            let events = sweep(scheduler, &tasks, &now(9, 0, 0));
+            assert!(
+                !events
+                    .iter()
+                    .any(|event| matches!(event, SweepEvent::Started { .. })),
+                "{events:?}"
+            );
+            assert!(
+                events.iter().any(
+                    |event| matches!(event, SweepEvent::Warning(warning) if warning.contains("runs.jsonl"))
+                ),
+                "{events:?}"
+            );
+        });
+    }
+
     /// A skip recorded behind a live Run must not make the scheduler forget
     /// it: it still blocks Run now, and its finish is still recorded.
     #[test]
@@ -1012,10 +1057,10 @@ mod tests {
             seen((SessionSeen::Live, None));
             sweep(scheduler, &tasks, &now(9, 0, 0));
             let store = TaskStore::open(root_of(scheduler), "sch_1").unwrap();
-            let statuses: Vec<_> = store.runs().iter().map(|run| run.status).collect();
+            let statuses: Vec<_> = store.runs().unwrap().iter().map(|run| run.status).collect();
             assert_eq!(statuses, vec![RunStatus::Running, RunStatus::Skipped]);
             assert_eq!(
-                store.current_run().map(|run| run.run_id),
+                store.current_run().unwrap().map(|run| run.run_id),
                 Some(run_id.clone())
             );
             let refused = scheduler.request_run_now("sch_1", &tasks).unwrap_err();
@@ -1023,7 +1068,7 @@ mod tests {
 
             seen((SessionSeen::Live, Some(0)));
             sweep(scheduler, &tasks, &now(9, 0, 30));
-            let finished = store.current_run().expect("a Run");
+            let finished = store.current_run().unwrap().expect("a Run");
             assert_eq!(
                 (finished.run_id.as_str(), finished.status),
                 (run_id.as_str(), RunStatus::Done)
@@ -1144,6 +1189,7 @@ mod tests {
         TaskStore::open(root_of(scheduler), "sch_1")
             .unwrap()
             .current_run()
+            .unwrap()
             .expect("a Run")
     }
 

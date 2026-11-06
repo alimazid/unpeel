@@ -109,17 +109,22 @@ impl TaskStore {
         Ok(())
     }
 
-    /// Every Run's latest line, oldest Run first.
-    pub fn runs(&self) -> Vec<ScheduleRun> {
-        fs::read(self.dir.join(RUNS_FILE))
-            .map(|raw| parse_runs(&raw))
-            .unwrap_or_default()
+    /// Every Run's latest line, oldest Run first. A missing log is a task
+    /// that never ran; a log that exists but will not read is an error,
+    /// never "no Runs": it could be hiding the Run in progress.
+    pub fn runs(&self) -> Result<Vec<ScheduleRun>, String> {
+        let path = self.dir.join(RUNS_FILE);
+        match fs::read(&path) {
+            Ok(raw) => Ok(parse_runs(&raw)),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(Vec::new()),
+            Err(error) => Err(format!("read {}: {error}", path.display())),
+        }
     }
 
     /// The Run that speaks for the task (`schedules::current_run`): the one
     /// in progress, else the newest outcome.
-    pub fn current_run(&self) -> Option<ScheduleRun> {
-        schedules::current_run(&self.runs()).cloned()
+    pub fn current_run(&self) -> Result<Option<ScheduleRun>, String> {
+        Ok(schedules::current_run(&self.runs()?).cloned())
     }
 
     /// Delete the task's clock and Run log. Its Run Sessions are untouched.
@@ -166,7 +171,15 @@ pub fn latest_run_sessions_in<'a>(
     tasks
         .into_iter()
         .filter_map(|task| {
-            let current = TaskStore::open(root, task).ok()?.current_run()?;
+            // A log that will not read counts as no log: the task supersedes
+            // nothing, so every one of its Run Sessions stays listed.
+            let current = match TaskStore::open(root, task).ok()?.current_run() {
+                Ok(current) => current?,
+                Err(error) => {
+                    log::warn!("Run Sessions of {task} all stay listed: {error}");
+                    return None;
+                }
+            };
             Some((task.to_string(), current.session_id))
         })
         .collect()
@@ -235,8 +248,8 @@ mod tests {
     fn a_task_that_never_fired_has_an_empty_clock() {
         with_store(|store| {
             assert_eq!(store.clock(), Ok(ScheduleClock::default()));
-            assert!(store.runs().is_empty());
-            assert_eq!(store.current_run(), None);
+            assert!(store.runs().unwrap().is_empty());
+            assert_eq!(store.current_run(), Ok(None));
         });
     }
 
@@ -259,6 +272,15 @@ mod tests {
     }
 
     #[test]
+    fn a_run_log_that_will_not_read_is_an_error_never_no_runs() {
+        with_store(|store| {
+            fs::create_dir_all(store.dir().join("runs.jsonl")).unwrap();
+            assert!(store.runs().is_err());
+            assert!(store.current_run().is_err());
+        });
+    }
+
+    #[test]
     fn a_runs_later_line_is_its_state() {
         with_store(|store| {
             store.append_run(&run("run_1", RunStatus::Running)).unwrap();
@@ -266,14 +288,17 @@ mod tests {
             let mut finished = run("run_1", RunStatus::Done);
             finished.exit_code = Some(0);
             store.append_run(&finished).unwrap();
-            let runs = store.runs();
+            let runs = store.runs().unwrap();
             let ids: Vec<_> = runs.iter().map(|r| (r.run_id.as_str(), r.status)).collect();
             assert_eq!(
                 ids,
                 vec![("run_1", RunStatus::Done), ("run_2", RunStatus::Skipped)]
             );
             // Both say they ended at once: the later Run is the task's.
-            assert_eq!(store.current_run().map(|r| r.run_id), Some("run_2".into()));
+            assert_eq!(
+                store.current_run().unwrap().map(|r| r.run_id),
+                Some("run_2".into())
+            );
         });
     }
 
@@ -292,14 +317,18 @@ mod tests {
                     ..run("run_skipped", RunStatus::Skipped)
                 })
                 .unwrap();
-            assert_eq!(store.current_run(), Some(live.clone()));
+            assert_eq!(store.current_run(), Ok(Some(live.clone())));
             let done = ScheduleRun {
                 status: RunStatus::Done,
                 ended_at_ms: Some(30),
                 ..live
             };
             store.append_run(&done).unwrap();
-            assert_eq!(store.current_run(), Some(done), "its outcome is the newest");
+            assert_eq!(
+                store.current_run(),
+                Ok(Some(done)),
+                "its outcome is the newest"
+            );
         });
     }
 
@@ -312,12 +341,12 @@ mod tests {
                     .unwrap();
             }
             assert_eq!(
-                store.runs().len(),
+                store.runs().unwrap().len(),
                 COMPACT_AFTER_LINES,
                 "no trim at 100 lines"
             );
             store.append_run(&run("run_101", RunStatus::Done)).unwrap();
-            let runs = store.runs();
+            let runs = store.runs().unwrap();
             assert_eq!(runs.len(), MAX_RUNS);
             assert_eq!(runs.first().map(|r| r.run_id.as_str()), Some("run_052"));
             assert_eq!(runs.last().map(|r| r.run_id.as_str()), Some("run_101"));
@@ -335,7 +364,7 @@ mod tests {
             raw.extend_from_slice(b"{\"half a line\n");
             fs::write(&path, raw).unwrap();
             store.append_run(&run("run_2", RunStatus::Failed)).unwrap();
-            let ids: Vec<_> = store.runs().into_iter().map(|r| r.run_id).collect();
+            let ids: Vec<_> = store.runs().unwrap().into_iter().map(|r| r.run_id).collect();
             assert_eq!(ids, vec!["run_1", "run_2"]);
         });
     }

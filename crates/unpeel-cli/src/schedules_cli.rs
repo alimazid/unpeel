@@ -183,7 +183,14 @@ fn list(json: bool) -> Result<(), String> {
 fn schedule_json(schedule: &Schedule) -> Value {
     let store = TaskStore::for_schedule(&schedule.id).ok();
     let clock_state = store.as_ref().and_then(|store| store.clock().ok());
-    let latest = store.as_ref().and_then(TaskStore::current_run);
+    let latest = match store.as_ref().map(TaskStore::current_run) {
+        Some(Ok(latest)) => latest,
+        Some(Err(error)) => {
+            eprintln!("warning: {}: {error}", schedule.id);
+            None
+        }
+        None => None,
+    };
     let next = trigger::next_run(
         schedule,
         &clock_state.unwrap_or_default(),
@@ -207,7 +214,7 @@ fn schedule_json(schedule: &Schedule) -> Value {
 
 fn history(args: &Args, json: bool) -> Result<(), String> {
     let schedule = select(args)?;
-    let mut runs = TaskStore::for_schedule(&schedule.id)?.runs();
+    let mut runs = TaskStore::for_schedule(&schedule.id)?.runs()?;
     runs.reverse();
     if json {
         println!(

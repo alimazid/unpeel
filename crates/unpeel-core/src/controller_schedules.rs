@@ -202,7 +202,8 @@ struct TaskOnDisk {
     schedule: Schedule,
     /// `None` when the clock is missing or will not read: no next run.
     clock: Option<ScheduleClock>,
-    /// Oldest first, each Run's latest line.
+    /// Oldest first, each Run's latest line; empty (and logged) when the
+    /// Run log will not read.
     runs: Vec<ScheduleRun>,
 }
 
@@ -217,9 +218,17 @@ impl TaskOnDisk {
     fn at(schedule: Schedule, root: &Path) -> Self {
         // Every listed id is valid, so the store always opens.
         let store = TaskStore::open(root, &schedule.id).ok();
+        let runs = match store.as_ref().map(TaskStore::runs) {
+            Some(Ok(runs)) => runs,
+            Some(Err(error)) => {
+                log::warn!("Scheduled Task {} lists no Runs: {error}", schedule.id);
+                Vec::new()
+            }
+            None => Vec::new(),
+        };
         Self {
             clock: store.as_ref().and_then(|store| store.clock().ok()),
-            runs: store.as_ref().map(TaskStore::runs).unwrap_or_default(),
+            runs,
             schedule,
         }
     }
