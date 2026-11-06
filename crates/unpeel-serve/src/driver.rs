@@ -2154,7 +2154,7 @@ impl HostRuntime {
         any_controller || outcome.mac_observed
     }
 
-    /// Fork-only: Scheduled Tasks §8. A Run outcome no Session edge
+    /// Fork-only: Scheduled Tasks. A Run outcome no Session edge
     /// reports (`schedules::notice`): notify, and leave a finished or
     /// waiting Run's Session unread unless someone saw it, as its own
     /// edges would. A failure leaves nothing unread.

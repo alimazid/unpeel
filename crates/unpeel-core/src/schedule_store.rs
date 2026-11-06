@@ -200,7 +200,7 @@ impl TaskStore {
     }
 }
 
-/// Each named task's latest Run Session (Q32, `schedules::run_sessions`):
+/// Each named task's latest Run Session (`schedules::run_sessions`):
 /// the Session of its current Run. A task without a Run log is left out.
 /// Both Host session-row builders read it, so they agree with the worker on
 /// which Run is the task's.
@@ -428,7 +428,7 @@ mod tests {
         });
     }
 
-    /// Q32: a task's latest Run Session is the Session of its current Run;
+    /// A task's latest Run Session is the Session of its current Run;
     /// a task with no Run log is left out, and so is an id with no store.
     #[test]
     fn each_tasks_latest_run_session_is_its_current_runs() {

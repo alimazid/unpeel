@@ -327,7 +327,7 @@ Session rows carry two additive fields on a Run Session (`spawned_by`
 `schedule:<id>`), from both builders (`sessions.rs` `mobile_snapshot` and
 `controller_host.rs` `DiskCatalog`): `scheduleID` (the task; the app's clock
 badge) and `superseded`. A Run Session is superseded when it is not the
-Session of its task's `current_run` (Q32); a pinned Run never is, and a task
+Session of its task's `current_run`; a pinned Run never is, and a task
 with no Run log supersedes nothing (`schedules::run_sessions`). Once the
 logged Session is gone, the task's newest Run Session stands in: Resume
 replaces a Session under a new id but keeps its `spawned_by` and

@@ -1833,7 +1833,7 @@ pub fn mobile_snapshot(
     extra_unread: &std::collections::HashSet<String>,
     activity_log: Option<&unpeel_core::activity_log::ActivityLogStore>,
 ) -> MobileSnapshot {
-    // Fork-only: Scheduled Tasks (Q32). Each task's latest Run Session,
+    // Fork-only: Scheduled Tasks. Each task's latest Run Session,
     // from its Run log, marks the task's other Runs superseded.
     let run_rows: Vec<_> = model
         .rows
@@ -2461,7 +2461,7 @@ mod tests {
         );
     }
 
-    /// Q17: a Scheduled Task's Runs never push the user's own stopped
+    /// A Scheduled Task's Runs never push the user's own stopped
     /// Sessions out of a Project. Seven newer stopped Runs leave all five
     /// of the user's stopped rows inside the window of five.
     #[test]
@@ -3139,7 +3139,7 @@ mod tests {
         std::fs::remove_dir_all(directory).unwrap();
     }
 
-    /// Q32: the snapshot iOS and Link/LAN Controllers read carries each Run
+    /// The snapshot iOS and Link/LAN Controllers read carries each Run
     /// Session's task and whether a newer Run superseded it (the Session of
     /// the task's current Run is the latest); other rows carry neither.
     #[test]

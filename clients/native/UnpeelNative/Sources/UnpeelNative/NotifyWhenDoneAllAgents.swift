@@ -22,7 +22,7 @@ enum NotifyWhenDoneAllAgents {
     /// reports a finished turn for Sessions with a lifecycle source, and the
     /// startup catalog misses Sessions created after launch.
     ///
-    /// Scheduled Tasks (Q19): for a Run, `runNotifyWhenDone` is its task's
+    /// Scheduled Tasks: for a Run, `runNotifyWhenDone` is its task's
     /// "Notify when done" and takes the all-agents knob's place, both ways.
     /// The Session's own toggle still counts: it was turned on by hand for
     /// that Session. Needs-input and failure notices still always notify.

@@ -2,7 +2,7 @@ import Foundation
 import Testing
 @testable import UnpeelShared
 
-/// Fork-only: Scheduled Tasks (Q32). The two additive session-row fields
+/// Fork-only: Scheduled Tasks. The two additive session-row fields
 /// both Host builders publish on a Run Session: `scheduleID` and
 /// `superseded`. Absent on every other row and on older Hosts.
 struct RemoteRunSessionRowTests {

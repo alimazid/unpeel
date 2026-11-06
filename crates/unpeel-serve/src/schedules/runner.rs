@@ -621,7 +621,7 @@ impl Effects for HostEffects {
         wait_for_manifest(&request.session_id, MANIFEST_TIMEOUT)
     }
 
-    /// Ticket 02's readiness wait: the agent's first readiness signal
+    /// The `agentReady` wait of `initial_text`: the agent's first readiness signal
     /// (program status, a hook, or its idle prompt; never the default
     /// idle), within its 120 s budget. Then the instructions go in as one
     /// bracketed paste and Enter, like every prompt typed into an agent.

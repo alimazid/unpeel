@@ -5166,7 +5166,7 @@ mod tests {
         assert!(one.contains("### list_schedule_runs") && one.contains("schedule_id"));
         assert!(!one.contains("### list_schedules") && !one.contains("### list_presets"));
 
-        // Read-only (decision Q8): the two reads are the only schedule
+        // Read-only (agents never change Scheduled Tasks): the two reads are the only schedule
         // actions advertised, and a write spelling is an unknown action.
         let definition = workspace_tool_definition();
         let scheduled: Vec<&str> = definition["inputSchema"]["properties"]["action"]["enum"]

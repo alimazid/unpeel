@@ -744,7 +744,7 @@ public struct RemoteSessionSummary: Codable, Equatable, Identifiable, Sendable {
     /// actually runs, before any OSC 7 report arrives. Additive; absent on
     /// older Hosts ⇒ nil (fall back to the project path).
     public let cwd: String?
-    /// Fork-only: Scheduled Tasks (Q32). The task this Session is a Run of
+    /// Fork-only: Scheduled Tasks. The task this Session is a Run of
     /// (the clock badge keys off it); nil for every other Session and on
     /// older Hosts.
     public let scheduleID: String?

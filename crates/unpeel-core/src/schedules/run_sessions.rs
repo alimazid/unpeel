@@ -1,4 +1,4 @@
-//! Run Sessions in a Project's listings (Scheduled Tasks, Q32).
+//! Run Sessions in a Project's listings (Scheduled Tasks).
 //!
 //! A Project lists only each task's latest Run Session: the Session of the
 //! task's current Run ([`super::current_run`], the one rule the worker, Run
@@ -153,7 +153,7 @@ mod tests {
         );
     }
 
-    /// Q32: only the Session of the task's current Run stays listed; the
+    /// Only the Session of the task's current Run stays listed; the
     /// task's other Runs are superseded, and other tasks are their own.
     #[test]
     fn every_run_session_but_the_current_runs_is_superseded() {

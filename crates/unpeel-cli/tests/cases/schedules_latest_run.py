@@ -1,4 +1,4 @@
-"""PROJECTS lists only each task's latest Run (Q32), as the Host publishes it.
+"""PROJECTS lists only each task's latest Run, as the Host publishes it.
 
 A Project holds five of the user's own stopped Sessions (the default
 stopped window is five). One script task then runs three times via Run now.

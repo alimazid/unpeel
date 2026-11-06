@@ -1,4 +1,4 @@
-//! What the user hears about a Run (Scheduled Tasks §8, Q19).
+//! What the user hears about a Run of a Scheduled Task.
 //!
 //! A Run Session's own edges notify as every Session's do: its NeedsInput
 //! edge always, its Finished edge when the task's "Notify when done" says
@@ -10,7 +10,7 @@
 //!   reason; they leave nothing unread (the SCHEDULED row's status shows
 //!   them).
 //! - `needs_you` while the Session itself asks nothing: no working signal
-//!   after the instructions (D1). An agent's question is its Session's
+//!   after the instructions, past the working window. An agent's question is its Session's
 //!   NeedsInput edge.
 //! - `done` for a Run that typed nothing (a script, a bare Agent Preset),
 //!   or whose agent only its screen saw finish (the screen tier never

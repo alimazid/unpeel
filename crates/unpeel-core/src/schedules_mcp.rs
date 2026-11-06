@@ -1,5 +1,5 @@
-//! Fork-only: Scheduled Tasks in the `workspace` MCP tool, read-only
-//! (decisions Q8, Q26).
+//! Fork-only: Scheduled Tasks in the `workspace` MCP tool, read-only:
+//! only the user changes Scheduled Tasks, and reads are open in Unpeel.
 //!
 //! An agent lists the workspace's tasks and reads one task's Run history;
 //! creating, editing, running and removing tasks stays the user's, so there

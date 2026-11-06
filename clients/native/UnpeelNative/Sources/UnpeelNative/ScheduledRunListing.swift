@@ -2,7 +2,7 @@
 //  ScheduledRunListing.swift
 //  UnpeelNative
 //
-//  Fork-only: Scheduled Tasks (Q32). A Project lists only each task's latest
+//  Fork-only: Scheduled Tasks. A Project lists only each task's latest
 //  Run Session. The Host decides which Runs are superseded (the Session of
 //  the task's current Run is the latest) and publishes it on each row
 //  (`scheduleID`, `superseded`); every listing here (PROJECTS, AGENTS, ⌘K,
@@ -22,7 +22,8 @@ struct ScheduledRunMark: Codable, Hashable, Sendable {
 }
 
 enum ScheduledRunListing {
-    /// A Run Session's `spawned_by` (spec §4.3).
+    /// A Run Session's `spawned_by` prefix (`schedules::SPAWNED_BY_PREFIX` on
+    /// the Host).
     static let spawnedByPrefix = "schedule:"
 
     /// The mark a Host-published row carries; nil for any other Session.

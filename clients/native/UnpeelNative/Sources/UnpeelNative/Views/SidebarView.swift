@@ -3123,7 +3123,7 @@ struct SessionRowView: View {
                     if isPinned {
                         SidebarPinnedIndicator()
                     }
-                    // Fork-only: a Scheduled Task's Run (Q32).
+                    // Fork-only: a Scheduled Task's Run wears the clock badge.
                     if session.scheduledRun != nil {
                         SidebarScheduledRunIndicator()
                     }

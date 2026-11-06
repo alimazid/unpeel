@@ -1,4 +1,4 @@
-//! Run Sessions after a Run (Scheduled Tasks, Q16/Q17). A Session whose
+//! Run Sessions after a Run (Scheduled Tasks). A Session whose
 //! `spawned_by` is `schedule:<task id>` is one Run of that task.
 //!
 //! Run Sessions never count toward a Project's stopped-Session window
@@ -16,7 +16,7 @@ use std::collections::HashMap;
 
 use crate::sessions::{SessionRow, Status};
 
-/// Stopped Run Sessions a task keeps (Q17). The task's live latest Run
+/// Stopped Run Sessions a task keeps. The task's live latest Run
 /// takes no slot.
 pub const RUN_SESSIONS_KEPT_PER_TASK: usize = 5;
 
@@ -260,7 +260,7 @@ mod tests {
         assert_eq!(expired_run_sessions(&rows), ["a-2"]);
     }
 
-    /// Q16: the next Run stops the task's earlier Run Sessions that sit
+    /// The next Run stops the task's earlier Run Sessions that sit
     /// idle, and nothing else.
     #[test]
     fn a_new_run_stops_its_tasks_idle_earlier_runs() {

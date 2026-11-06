@@ -7,7 +7,7 @@
 //! ```
 //!
 //! The preset launches exactly as typed; a helper thread waits for the
-//! agent's first readiness signal (ticket 02's wait, 120 s budget) and types
+//! agent's first readiness signal (`initial_text`'s wait, 120 s budget) and types
 //! the instructions the way every prompt is typed into an agent: one
 //! bracketed paste, then Enter (`initial_text::prompt_when_ready`). From
 //! then on the Run follows the Host's activity rows, which the worker

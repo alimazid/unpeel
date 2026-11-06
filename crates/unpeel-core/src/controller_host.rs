@@ -371,7 +371,7 @@ impl DiskCatalog {
                 .cmp(&left.session.created_at)
                 .then_with(|| left.session.id.cmp(&right.session.id))
         });
-        // Fork-only: Scheduled Tasks (Q32). Each task's latest Run Session,
+        // Fork-only: Scheduled Tasks. Each task's latest Run Session,
         // from its Run log, marks the task's other Runs superseded.
         let run_rows: Vec<crate::schedules::run_sessions::RunSessionRow<'_>> = manifests
             .iter()
@@ -3113,7 +3113,7 @@ mod tests {
         );
     }
 
-    /// Q17/Q32: Run Sessions take no slot in a Project's stopped window, so
+    /// Run Sessions take no slot in a Project's stopped window, so
     /// a task's Runs never push the user's stopped rows off the wire, and
     /// every kept Run stays on it (Run retention bounds them per task) for
     /// the SCHEDULED section to open.

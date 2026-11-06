@@ -1,5 +1,5 @@
 //! Fork-only: Scheduled Tasks. The Controller write routes, the user's only
-//! (decision Q8: PairedDevice / OwnerTransport principals):
+//! (PairedDevice / OwnerTransport principals; never an agent):
 //!
 //! - `POST /mobile/schedules` (`schedule.create`): a new task.
 //! - `POST /mobile/schedules/edit` (`schedule.edit`): change any field;
@@ -38,7 +38,7 @@ pub(super) const RUN_PATH: &str = "/mobile/schedules/run";
 /// Why the worker did not start a Run now.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RunNowRefusal {
-    /// A Run of the task is still in progress (D5): 409.
+    /// A Run of the task is still in progress (Runs never overlap): 409.
     InProgress(String),
     /// The request never reached the worker: 503 (not applied).
     Unavailable(String),
@@ -139,7 +139,7 @@ pub(super) fn answer(
 }
 
 /// Who may change Scheduled Tasks: the user's paired devices and owner
-/// transports, never an agent (Q8). Exhaustive on purpose, like
+/// transports, never an agent. Exhaustive on purpose, like
 /// `principal_can_read_schedules`.
 pub fn principal_can_write_schedules(principal: &ControllerPrincipal) -> bool {
     match principal {

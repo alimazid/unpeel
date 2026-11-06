@@ -1941,7 +1941,8 @@ extension RemoteSessionSummary {
     /// ("listable session"), and a future gate would slot back in here.
     var supportsIOSSessionAPI: Bool { true }
 
-    /// Fork-only: Scheduled Tasks (Q32). Rows the sidebar, its count and the
+    /// Fork-only: Scheduled Tasks (a Project lists each task's latest Run
+    /// only). Rows the sidebar, its count and the
     /// bell list: a superseded Run (the Host's `superseded`) is in none of
     /// them, though its id still opens like any other Session's.
     var isListedInIOSSidebar: Bool { supportsIOSSessionAPI && !superseded }

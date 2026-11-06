@@ -3,7 +3,7 @@ import Testing
 import UnpeelShared
 @testable import UnpeelNative
 
-/// Fork-only: Scheduled Tasks (Q32). Every listing of a Project's Sessions
+/// Fork-only: Scheduled Tasks. Every listing of a Project's Sessions
 /// hides a superseded Run from the Host's one field, `superseded`, while the
 /// row stays openable by id; the latest Run keeps its clock badge mark.
 @MainActor

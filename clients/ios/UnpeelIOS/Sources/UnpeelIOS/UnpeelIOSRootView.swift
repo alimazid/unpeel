@@ -1374,8 +1374,8 @@ struct IOSSidebarProjectTree {
             },
             by: { $0.parentProjectID ?? "" }
         )
-        // Fork-only: a superseded Scheduled Task Run leaves the sidebar
-        // (Q32); it stays in the snapshot, so its id still opens.
+        // Fork-only: a superseded Scheduled Task Run (not its task's latest)
+        // leaves the sidebar; it stays in the snapshot, so its id still opens.
         let supportedSessions = snapshot.sessions.filter(\.isListedInIOSSidebar)
         sidebarGroupSessionIDs = Set(
             supportedSessions.compactMap { session in

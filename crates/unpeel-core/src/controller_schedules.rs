@@ -164,7 +164,7 @@ pub fn route(request: &ControllerRequest) -> Option<ControllerResponse> {
 }
 
 /// Who may read the workspace's Scheduled Tasks: the user's own paired
-/// devices and owner transports (decision Q8). Keep this match exhaustive,
+/// devices and owner transports, never an agent. Keep this match exhaustive,
 /// like `principal_can_create_session`: a scoped principal added later must
 /// get an explicit decision here, never owner reads through a wildcard.
 pub fn principal_can_read_schedules(principal: &ControllerPrincipal) -> bool {
