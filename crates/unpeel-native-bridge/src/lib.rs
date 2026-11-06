@@ -125,8 +125,9 @@ struct NativeRemoteEffectError {
     code: &'static str,
     operation: &'static str,
     message: String,
-    /// Set when a Host route refused the effect itself.
-    host: Option<NativeHostRejection>,
+    /// Set when a Host route refused the effect itself (boxed: most
+    /// failures carry none, and the error travels in every `Result`).
+    host: Option<Box<NativeHostRejection>>,
 }
 
 /// A Host route's refusal: its HTTP status, machine-readable `code`, and
@@ -2615,18 +2616,18 @@ fn native_remote_effect_error(error: RemoteEffectFailure) -> NativeRemoteEffectE
 }
 
 /// A Host route's own refusal, carried beside the bridge's `code`.
-fn host_rejection(error: &RemoteSessionBackendError) -> Option<NativeHostRejection> {
+fn host_rejection(error: &RemoteSessionBackendError) -> Option<Box<NativeHostRejection>> {
     match error {
         RemoteSessionBackendError::HostStatus {
             status,
             code,
             message,
             ..
-        } => Some(NativeHostRejection {
+        } => Some(Box::new(NativeHostRejection {
             status: *status,
             code: code.clone(),
             message: message.clone(),
-        }),
+        })),
         _ => None,
     }
 }
@@ -5140,11 +5141,11 @@ mod tests {
         };
         let encoded: serde_json::Value =
             serde_json::from_slice(&super::encode_remote_effect_error(refused(Some(
-                super::NativeHostRejection {
+                Box::new(super::NativeHostRejection {
                     status: 400,
                     code: Some("trigger_in_past".into()),
                     message: Some("invalid Trigger".into()),
-                },
+                }),
             ))))
             .unwrap();
         assert_eq!(encoded["code"], "host_operation_rejected");
