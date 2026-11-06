@@ -245,3 +245,32 @@ fn the_wait_times_out_when_nothing_says_ready() {
         ReadinessWait::Ready(ReadinessSignal::Program)
     );
 }
+
+#[test]
+fn an_agent_command_names_a_runtime_that_can_say_it_is_ready() {
+    // Hooks (and a declared screen idle prompt) for Claude Code and Codex,
+    // however the preset spells the executable.
+    for command in [
+        "claude",
+        "claude --model opus",
+        "/usr/local/bin/claude",
+        "codex --dangerously-bypass-approvals-and-sandbox",
+        "gemini --yolo",
+        "cursor-agent --force",
+    ] {
+        assert!(is_agent_command(command), "{command}");
+    }
+    // Plain commands, and runtimes whose only lifecycle is output growth,
+    // give no readiness signal to wait for.
+    for command in [
+        "",
+        "  ",
+        "true",
+        "npm run dev",
+        "sleep 60",
+        "pi",
+        "antigravity",
+    ] {
+        assert!(!is_agent_command(command), "{command:?}");
+    }
+}

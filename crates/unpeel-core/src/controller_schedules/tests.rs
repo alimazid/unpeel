@@ -125,7 +125,7 @@ fn a_damaged_clock_costs_only_its_next_run() {
         let body = list_at(state, root);
         assert_eq!(body["schedules"][0]["nextRun"], Value::Null);
         assert_eq!(body["schedules"][0]["lastRun"]["runID"], "run_skipped");
-        assert_eq!(body["schedules"].as_array().map(Vec::len), Some(5));
+        assert_eq!(body["schedules"].as_array().map(Vec::len), Some(6));
     });
 }
 

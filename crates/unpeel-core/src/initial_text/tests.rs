@@ -111,6 +111,17 @@ fn text_over_the_cap_is_refused_before_touching_the_session() {
 }
 
 #[test]
+fn a_prompt_over_the_cap_is_refused_before_touching_the_session() {
+    let prompt = "x".repeat(MAX_INITIAL_TEXT_BYTES + 1);
+    let (outcome, typed_at) = prompt_when_ready("no-such-session-for-cap-test", &prompt);
+    assert_eq!(
+        outcome,
+        InitialTextOutcome::DeliveryFailed("initial text too large".into())
+    );
+    assert_eq!(typed_at, None);
+}
+
+#[test]
 fn the_ready_timeout_is_two_minutes_unless_a_test_host_shortens_it() {
     assert_eq!(
         agent_ready_timeout_from(None, None),

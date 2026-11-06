@@ -1113,10 +1113,16 @@ impl HostRuntime {
             return;
         }
         let (projects, presets) = crate::mobile::create_catalog(&self.snapshot).unwrap_or_default();
+        let activity = self.run_activity();
         let now = crate::schedules::clock::now();
-        let events =
-            self.schedules
-                .sweep(&schedules, &projects, &presets, Some(self.hook_port), &now);
+        let events = self.schedules.sweep(
+            &schedules,
+            &projects,
+            &presets,
+            &activity,
+            Some(self.hook_port),
+            &now,
+        );
         // Run events reach Controllers through the schedules projection;
         // the ping only says "re-read it now" (one per sweep).
         if events
@@ -1160,6 +1166,25 @@ impl HostRuntime {
                 }
             }
         }
+    }
+
+    /// Agent Runs follow the rows this worker rebuilt in its last rescan,
+    /// which it rebuilds whoever owns notification edges: they never wait
+    /// on rescan's own "finished" rule, which skips screen-tier edges.
+    fn run_activity(&self) -> HashMap<String, crate::schedules::agent_run::AgentActivity> {
+        self.model
+            .rows
+            .iter()
+            .filter(|row| row.running)
+            .map(|row| {
+                let activity = crate::schedules::agent_run::AgentActivity::from_row(
+                    row,
+                    row.completed_at(&self.engine),
+                    self.completion_messages.last_reply(&row.id),
+                );
+                (row.id.clone(), activity)
+            })
+            .collect()
     }
 
     /// Once per rescan: remove stopped Sessions past their group's keep

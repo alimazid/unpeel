@@ -279,7 +279,10 @@ stopped session <id> past the keep limit`).
 `unpeel_core::controller_schedules` serves two read routes from the core
 router, so `/mobile`, the local gateway and SSH answer alike, to paired
 devices and owner transports only: `GET /mobile/schedules` (capability
-`schedules`: every task with its next run and latest Run) and `GET
+`schedules`: every task with its next run and latest Run — the Run in
+progress if there is one, else the newest outcome, `schedules::current_run`,
+the same Run the worker follows, so an occurrence skipped behind a live Run
+never hides it) and `GET
 /mobile/schedules/runs?scheduleID=<id>[&limit=<n>]` (`schedules.runs`: the
 history, newest first). Both read the disk, never the scheduler: definitions
 from `app-state.json`, the next run from the `clock.json` the worker

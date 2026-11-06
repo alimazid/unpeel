@@ -167,6 +167,23 @@ termination output is drained first. Never signal an unverified process group.
   typed. The outcome lands in `<session dir>/initial-text.json` (`state`:
   `waiting`, `delivered` with its `signal`, `readiness_timeout`, `exited`,
   `host_not_ready`, `delivery_failed`).
+- A Scheduled Task with instructions runs its Agent Preset as typed and
+  types them through the same `agentReady` wait
+  (`unpeel_serve::schedules::agent_run`). Its Run line records the phase —
+  `launching`, `waiting_ready`, `prompted` (with `prompted_at_ms`),
+  `working` — and the worker follows it on its own activity rows, rebuilt
+  every rescan in both notification-ownership modes, never on rescan's
+  "finished" rule (which skips screen-tier edges). `working` is the first
+  working signal after the paste (a program's `last_non_idle_at` counts, so
+  a turn between two scans is not missed); `done` is the first idle or done
+  edge after it, with the program's done summary, the Stop hook's reply, or
+  else the reply on screen as its snippet. No readiness in 120 s is
+  `failed_to_start` (the Session stays open); no working signal within 60 s
+  of the paste, or an attention edge, is `needs_you` — in progress, never
+  timed out or killed, still finished by a later done edge; the agent
+  exiting first is `failed` with its exit code. A Host restart while a Run
+  starts fails it. `UNPEEL_AGENT_WORKING_TIMEOUT_MS` shortens the 60 s
+  window on test Hosts (`UNPEEL_TEST=1`).
 
 ### Recent ordering (sidebar + shared ⌘K/^K contract)
 

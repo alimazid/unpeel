@@ -13,7 +13,8 @@ struct RemoteScheduledTasksTests {
             from: try sampleData(["responses", "list"])
         )
         #expect(list.revision == "0000000000000000")
-        #expect(list.schedules.map(\.id) == ["sch_daily", "sch_paused", "sch_future", "sch_weekly", "sch_cron"])
+        #expect(list.schedules.map(\.id)
+            == ["sch_daily", "sch_paused", "sch_future", "sch_weekly", "sch_cron", "sch_overlap"])
 
         let daily = list.schedules[0]
         #expect(daily.name == "Morning briefing")
@@ -37,6 +38,12 @@ struct RemoteScheduledTasksTests {
         #expect(list.schedules[3].trigger
             == RemoteScheduleTrigger(kind: "weekly", time: "08:15", weekday: "monday"))
         #expect(list.schedules[4].trigger == RemoteScheduleTrigger(kind: "cron", expr: "*/15 9-17 * * 1-5"))
+
+        // An occurrence skipped behind a Run in progress never hides it.
+        let overlap = list.schedules[5]
+        #expect(overlap.lastRun?.runID == "run_overnight")
+        #expect(overlap.lastRun?.status == .needsYou)
+        #expect(overlap.lastRun?.sessionID == "9a1c2b3d-4e5f-4a6b-8c7d-0e1f2a3b4c5d")
     }
 
     @Test func runHistoryDecodesNewestFirstWithItsOpenStatuses() throws {
