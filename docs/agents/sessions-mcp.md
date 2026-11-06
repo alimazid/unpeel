@@ -202,6 +202,14 @@ other session** (reworked 2026-08-31):
   write approval, offers the app-wide write policy and gallery toggle, and lists both approved
   Session-write pairs and approved App launches with per-entry Revoke. Changes
   apply live; nothing here drives a restart banner.
+- **A running Session with no published activity (fork-only).** While a Host
+  worker holds this workspace's serve lease (`supervision::host_worker_running`,
+  a shared-lock probe of `serve.lock`), a running Session with no
+  `activity-state.json` entry reads activity `unknown`, not `idle`
+  (`mcp_host::activity_status_for_manifest` → `supervision::running_status_without_activity`),
+  and an `agents wait` / `wait_for_status` for `idle` keeps waiting on
+  `unknown`. Without a Host worker it reads `idle`, as upstream: nothing would
+  ever publish an entry, so a wait would never end.
 
 - **Super Agent Workers (fork-only, `supervision_mcp/workers.rs`, `workers/control.rs`, `workers/cards.rs`).** Only the Session marked in app-state `super_agent` (the Router) gets these; a plain Create & remove caller keeps the behavior above and is refused `role`/`task`/`text`/`worktree`.
   - `create` from the Router starts a Worker: `role` and `task` are plain labels (control characters stripped, trimmed, at most 120 characters, `"app-panel"` refused; never the Agent access role); `text` is the first task, queued as a waking `task` item in the Worker's own Inbox (sender: the Router) and pasted the first time the Worker is idle; `worktree=<branch>` (+ `base_ref`, not with `cwd`) creates or adopts the worktree through `workspace_tools::create_and_register` and launches in its child project (`mcp-wt-<uuid>`, `worktree_path`/`worktree_branch` set). With neither `preset` nor `command` the Worker runs the Router's own agent (its observed runtime, else the catalog match on its command): the first enabled preset of the target Project (a group or worktree uses its root's) whose command runs that runtime, else the runtime's plain command (its first command alias), never the Router's own launch line. A root's Sidebar group (`sidebar-<root>`) is refused. Limits, counted from the markers alone: `supervisor_max_children` running Workers (default 8) and `supervisor_max_spawns_per_minute` `sessions create` starts (default 6; Hand-overs don't count). After the spawn the Worker gets `app-sessions/<id>/supervision.json` `{router_id, since, origin: "created"}`; the result adds `worker`, `task_item_id`, `worktree` and a Router `note` (a failed marker or task write becomes `warning`).

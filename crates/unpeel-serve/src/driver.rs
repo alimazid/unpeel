@@ -356,21 +356,9 @@ pub fn is_running() -> bool {
 /// It cannot change `UNPEEL_HOME` inside the supervisor process just to
 /// inspect another workspace.
 pub fn is_running_at(home: &Path) -> bool {
-    let path = home.join("serve.lock");
-    let Ok(file) = std::fs::OpenOptions::new()
-        .read(true)
-        .write(true)
-        .truncate(false)
-        .open(path)
-    else {
-        return false;
-    };
-    if unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } == 0 {
-        let _ = unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_UN) };
-        false
-    } else {
-        std::io::Error::last_os_error().kind() == std::io::ErrorKind::WouldBlock
-    }
+    // Fork-only: one lease probe, shared with the MCP host (a shared lock,
+    // so two probes never mistake each other for a Host).
+    unpeel_core::supervision::host_worker_running_at(home)
 }
 
 struct NativeProbe {

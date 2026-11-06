@@ -145,16 +145,21 @@ pub fn host_worker_running() -> bool {
     host_worker_running_at(&crate::app_paths::unpeel_home())
 }
 
-/// The lease is the worker's flock on `<home>/serve.lock` (see
-/// `unpeel-serve` `driver::is_running_at`); stale files never count. The
-/// probe takes a *shared* lock, so concurrent probes never see each other
-/// as a Host, and releases it at once.
-pub(crate) fn host_worker_running_at(home: &std::path::Path) -> bool {
+/// The lease is the worker's exclusive flock on `<home>/serve.lock`
+/// (`unpeel-serve` `ServeLease`, whose `driver::is_running_at` delegates
+/// here); stale files never count. The probe takes a *shared* lock, so
+/// concurrent probes never see each other as a Host, and releases it at
+/// once.
+pub fn host_worker_running_at(home: &std::path::Path) -> bool {
     use std::os::fd::AsRawFd;
     let Ok(file) = std::fs::File::open(home.join("serve.lock")) else {
         return false;
     };
+    // SAFETY: `file` owns a valid open descriptor for this whole call, and
+    // flock(2) only reads it; no memory is shared with the kernel.
     if unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_SH | libc::LOCK_NB) } == 0 {
+        // SAFETY: as above; this releases the shared lock just taken (the
+        // descriptor closing would release it too).
         let _ = unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_UN) };
         false
     } else {
