@@ -6,12 +6,13 @@
 //! stopped Sessions out. Each task keeps its newest
 //! [`RUN_SESSIONS_KEPT_PER_TASK`] stopped Runs instead; older ones join the
 //! sidebar's `expired` list and the same retention sweep removes them
-//! (`retention.rs`), with today's exemptions: pinned and unread Runs are
-//! never expired, and a Session holding artifacts or managed storage is
-//! kept by the removal itself. The rule keys off `spawned_by` alone, so a
-//! deleted task's Runs keep it.
+//! (`retention.rs`). Pinned Runs and the task's latest Run are never
+//! expired, and a Session holding artifacts or managed storage is kept by
+//! the removal itself; unread is no exemption for a Run, since every
+//! finished Run is unread until someone looks. The rule keys off
+//! `spawned_by` alone, so a deleted task's Runs keep it.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 
 use crate::sessions::{SessionRow, Status};
 
@@ -39,31 +40,51 @@ pub fn is_run_session(row: &SessionRow) -> bool {
 }
 
 /// Stopped Run Sessions past their task's keep limit, bound for removal.
-/// Pinned Runs take no slot; a `keep_visible` (unread) Run takes its slot
-/// but is never returned, as in the stopped window.
-pub fn expired_run_sessions(rows: &[SessionRow], keep_visible: &HashSet<String>) -> Vec<String> {
+/// Pinned Runs take no slot and are never returned, and neither is the
+/// task's latest Run (its newest Session; Runs never overlap). Unread does
+/// not exempt a Run as it does the user's own stopped rows: every finished
+/// Run is unread until someone looks, so it would defeat the limit.
+pub fn expired_run_sessions(rows: &[SessionRow]) -> Vec<String> {
     let mut by_task: HashMap<&str, Vec<&SessionRow>> = HashMap::new();
-    for row in rows.iter().filter(|row| !row.running && !row.pinned) {
+    for row in rows {
         if let Some(task) = schedule_id(row) {
             by_task.entry(task).or_default().push(row);
         }
     }
-    let mut expired = Vec::new();
-    for runs in by_task.values_mut() {
-        // Newest first by the stopped window's own stamp.
-        runs.sort_by(|left, right| {
-            lifecycle(right)
-                .cmp(&lifecycle(left))
+    by_task
+        .values()
+        .flat_map(|runs| expired_runs_of_task(runs))
+        .collect()
+}
+
+/// One task's Run Sessions past the keep limit.
+fn expired_runs_of_task(runs: &[&SessionRow]) -> Vec<String> {
+    let latest = runs
+        .iter()
+        .max_by(|left, right| {
+            left.created_at
+                .cmp(&right.created_at)
+                .then_with(|| lifecycle(left).cmp(&lifecycle(right)))
                 .then_with(|| left.id.cmp(&right.id))
-        });
-        expired.extend(
-            runs.iter()
-                .skip(RUN_SESSIONS_KEPT_PER_TASK)
-                .filter(|row| !keep_visible.contains(&row.id))
-                .map(|row| row.id.clone()),
-        );
-    }
-    expired
+        })
+        .map(|row| row.id.as_str());
+    let mut stopped: Vec<&SessionRow> = runs
+        .iter()
+        .copied()
+        .filter(|row| !row.running && !row.pinned)
+        .collect();
+    // Newest first by the stopped window's own stamp.
+    stopped.sort_by(|left, right| {
+        lifecycle(right)
+            .cmp(&lifecycle(left))
+            .then_with(|| left.id.cmp(&right.id))
+    });
+    stopped
+        .into_iter()
+        .skip(RUN_SESSIONS_KEPT_PER_TASK)
+        .filter(|row| Some(row.id.as_str()) != latest)
+        .map(|row| row.id.clone())
+        .collect()
 }
 
 /// Q16: a task's latest Run Session stays live so the user can follow up;
@@ -118,7 +139,6 @@ fn lifecycle(row: &SessionRow) -> u64 {
 mod tests {
     use super::*;
     use crate::sessions::StatusSource;
-    use std::collections::HashSet;
 
     /// A Session started at `stamp`: a Run of `task`, or the user's own.
     fn row(id: &str, task: Option<&str>, running: bool, stamp: u64) -> SessionRow {
@@ -184,28 +204,47 @@ mod tests {
         rows.extend((1..=9).map(|n| row(&format!("user-{n}"), None, false, n)));
 
         assert_eq!(
-            sorted(expired_run_sessions(&rows, &HashSet::new())),
+            sorted(expired_run_sessions(&rows)),
             ["a-1", "a-2"]
         );
     }
 
-    /// Today's exemptions still win: a pinned Run is never removed and
-    /// takes no slot; an unread Run takes its slot but is never removed.
+    /// A pinned Run is never removed and takes no slot. Unread does not
+    /// exempt a Run: every finished Run is unread until someone looks, so
+    /// it would defeat the limit.
     #[test]
-    fn pinned_and_unread_runs_are_never_expired() {
+    fn pinned_runs_are_never_expired_and_unread_ones_are() {
         let mut rows: Vec<SessionRow> = (1..=8)
             .map(|n| row(&format!("a-{n}"), Some("sch_a"), false, n))
             .collect();
         rows[7].pinned = true; // a-8
         rows[0].pinned = true; // a-1
-        let unread = HashSet::from(["a-2".to_string()]);
+        for row in &mut rows {
+            row.unread = true;
+        }
 
-        // Unpinned: a-2..a-7; the newest five are a-3..a-7, a-2 is unread.
-        assert!(expired_run_sessions(&rows, &unread).is_empty());
+        // Unpinned: a-2..a-7; the newest five are a-3..a-7.
+        assert_eq!(expired_run_sessions(&rows), ["a-2"]);
 
         rows[0].pinned = false;
-        // Unpinned: a-1..a-7; a-1 and a-2 are past five, a-2 is unread.
-        assert_eq!(expired_run_sessions(&rows, &unread), ["a-1"]);
+        assert_eq!(
+            sorted(expired_run_sessions(&rows)),
+            ["a-1", "a-2"],
+            "unpinned, a-1 is past five too"
+        );
+    }
+
+    /// The task's latest Run (its newest Session) is never removed, even
+    /// when five older Runs were used after it.
+    #[test]
+    fn a_tasks_latest_run_is_never_expired() {
+        let mut rows: Vec<SessionRow> = (1..=6)
+            .map(|n| row(&format!("a-{n}"), Some("sch_a"), false, n))
+            .collect();
+        for (offset, row) in rows.iter_mut().take(5).enumerate() {
+            row.activity_at = 100 + offset as u64;
+        }
+        assert!(expired_run_sessions(&rows).is_empty(), "a-6 is the latest Run");
     }
 
     /// The newest is what the user touched last: a resumed-then-stopped
@@ -216,7 +255,7 @@ mod tests {
             .map(|n| row(&format!("a-{n}"), Some("sch_a"), false, n))
             .collect();
         rows[0].activity_at = 100; // a-1 was used again after a-6
-        assert_eq!(expired_run_sessions(&rows, &HashSet::new()), ["a-2"]);
+        assert_eq!(expired_run_sessions(&rows), ["a-2"]);
     }
 
     /// Q16: the next Run stops the task's earlier Run Sessions that sit
@@ -260,6 +299,6 @@ mod tests {
         let rows: Vec<SessionRow> = (1..=6)
             .map(|n| row(&format!("gone-{n}"), Some("sch_deleted"), false, n))
             .collect();
-        assert_eq!(expired_run_sessions(&rows, &HashSet::new()), ["gone-1"]);
+        assert_eq!(expired_run_sessions(&rows), ["gone-1"]);
     }
 }

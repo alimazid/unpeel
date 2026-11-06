@@ -993,9 +993,10 @@ pub fn scan_sidebar(
             .as_ref()
             .and_then(|state| state.sidebar_stopped_limit),
     );
-    // Run Sessions keep their own limit per task, across groups.
+    // Run Sessions keep their own limit per task, across groups; unread is
+    // no exemption for them (`run_sessions::expired_run_sessions`).
     let expired_runs: std::collections::HashSet<String> =
-        crate::run_sessions::expired_run_sessions(&rows, keep_visible)
+        crate::run_sessions::expired_run_sessions(&rows)
             .into_iter()
             .collect();
 
@@ -2539,10 +2540,9 @@ mod tests {
 
         // Runs past their task's own keep limit are filed for removal with
         // the rest, never listed.
-        let expired_runs =
-            crate::run_sessions::expired_run_sessions(&rows, &std::collections::HashSet::new())
-                .into_iter()
-                .collect::<std::collections::HashSet<_>>();
+        let expired_runs = crate::run_sessions::expired_run_sessions(&rows)
+            .into_iter()
+            .collect::<std::collections::HashSet<_>>();
         let listing = group_listing_with_expired_runs(
             "__recent_test_project",
             &rows,
