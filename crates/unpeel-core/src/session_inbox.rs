@@ -231,9 +231,96 @@ fn io_error(context: &Path, error: std::io::Error) -> InboxError {
     InboxError::Io(format!("{}: {error}", context.display()))
 }
 
-/// The Inbox store under one root. Tests use `Store::at` against a temp
-/// directory; `Store::home` is the real one and the only one that announces
-/// on the state bus.
+/// `<UNPEEL_HOME>/session-inboxes`, a sibling of `app-sessions/`.
+pub fn inboxes_root() -> PathBuf {
+    crate::app_paths::unpeel_home().join("session-inboxes")
+}
+
+fn now_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|elapsed| elapsed.as_millis() as u64)
+        .unwrap_or(0)
+}
+
+/// Pending items changed: other frontends re-read session markers. The
+/// announce includes this process, like `session_ops::mark_unread`, so the
+/// workspace worker rescans at once.
+fn announce() {
+    crate::state_bus::announce(crate::state_bus::Change::SessionMarkers, None);
+}
+
+// The real store, for Host and MCP code. These are the only callers that
+// announce on the state bus: tests use `Store::at` against a temp root and
+// never ping this machine's registry (as `app_state::save` vs `save_at`).
+
+pub fn enqueue(target: &str, item: NewItem) -> Result<Enqueued> {
+    let queued = Store::home().enqueue(target, item, now_ms())?;
+    if !queued.duplicate {
+        announce();
+    }
+    Ok(queued)
+}
+
+pub fn has_wake_pending(session_id: &str) -> bool {
+    Store::home().has_wake_pending(session_id)
+}
+
+pub fn claim_batch(session_id: &str) -> Result<Option<Batch>> {
+    Store::home().claim_batch(session_id, now_ms())
+}
+
+pub fn complete(session_id: &str, batch_id: &str) -> Result<bool> {
+    let completed = Store::home().complete(session_id, batch_id, now_ms())?;
+    if completed {
+        announce();
+    }
+    Ok(completed)
+}
+
+pub fn release(session_id: &str, batch_id: &str) -> Result<bool> {
+    Store::home().release(session_id, batch_id)
+}
+
+pub fn list(session_id: &str) -> Result<Listing> {
+    Store::home().list(session_id)
+}
+
+pub fn item(session_id: &str, item_id: &str) -> Result<Option<InboxItem>> {
+    Store::home().item(session_id, item_id)
+}
+
+pub fn ack_through(session_id: &str, item_id: &str) -> Result<usize> {
+    let acked = Store::home().ack_through(session_id, item_id, now_ms())?;
+    if acked > 0 {
+        announce();
+    }
+    Ok(acked)
+}
+
+pub fn move_pending(from: &str, to: &str) -> Result<usize> {
+    let moved = Store::home().move_pending(from, to)?;
+    if moved > 0 {
+        announce();
+    }
+    Ok(moved)
+}
+
+pub fn transfer(old: &str, new: &str) -> Result<()> {
+    Store::home().transfer(old, new)
+}
+
+pub fn remove(session_id: &str) -> Result<()> {
+    Store::home().remove(session_id)
+}
+
+pub fn gc(live_ids: &HashSet<String>) -> Result<Vec<String>> {
+    Store::home().gc(live_ids, now_ms())
+}
+
+/// The Inbox store under one root: `Store::home` for the real one,
+/// `Store::at` for a temp directory in tests. Times are passed in so tests
+/// control them.
 #[derive(Debug, Clone)]
 pub struct Store {
     root: PathBuf,
@@ -242,6 +329,10 @@ pub struct Store {
 impl Store {
     pub fn at(root: PathBuf) -> Self {
         Self { root }
+    }
+
+    pub fn home() -> Self {
+        Self::at(inboxes_root())
     }
 
     pub fn enqueue(&self, target: &str, new: NewItem, now_ms: u64) -> Result<Enqueued> {
