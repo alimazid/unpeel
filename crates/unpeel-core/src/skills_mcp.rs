@@ -195,6 +195,18 @@ pub fn action_docs() -> Vec<Value> {
                 "required": ["id"],
             },
         }),
+        // Fork-only: the alias the Super Agent's wake message uses.
+        json!({
+            "name": "read",
+            "description": "Alias for get.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "id": { "type": "string", "description": "Exact namespaced skill id, for example unpeel/router" },
+                },
+                "required": ["id"],
+            },
+        }),
     ]
 }
 
@@ -448,6 +460,17 @@ mod tests {
             "router instructions grew to {} bytes; keep them tight",
             body.len()
         );
+    }
+
+    #[test]
+    fn every_advertised_action_has_help_docs() {
+        let documented = action_docs()
+            .iter()
+            .filter_map(|doc| doc["name"].as_str().map(str::to_string))
+            .collect::<Vec<_>>();
+        for action in SKILLS_ACTIONS {
+            assert!(documented.iter().any(|name| name == action), "{action}");
+        }
     }
 
     #[test]
