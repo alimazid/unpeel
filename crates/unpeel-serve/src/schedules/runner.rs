@@ -172,7 +172,7 @@ impl Scheduler {
             .ok_or_else(|| format!("no schedule {schedule_id}"))?;
         let store = TaskStore::open(&self.root, &schedule.id)?;
         let latest_in_progress = store
-            .latest_run()
+            .current_run()
             .is_some_and(|run| run.status.is_in_progress());
         if latest_in_progress || self.run_now.contains_key(&schedule.id) {
             return Err(format!(
@@ -283,7 +283,7 @@ impl Scheduler {
                 }
             }
         };
-        let latest_run = store.latest_run();
+        let latest_run = store.current_run();
         let observation = latest_run
             .as_ref()
             .map(|run| self.observe(run, activity, now_ms))
@@ -688,7 +688,7 @@ mod tests {
         fn spawn(&self, request: SpawnRequest) -> Result<(), String> {
             let store = TaskStore::open(&self.root, &request.schedule_id).unwrap();
             let clock = store.clock().unwrap();
-            let run = store.latest_run();
+            let run = store.current_run();
             self.spawned.lock().unwrap().push((request, clock, run));
             match &self.spawn_error {
                 Some(error) => Err(error.clone()),
@@ -856,7 +856,7 @@ mod tests {
             settle(effects, 1);
             sweep(scheduler, &tasks, &now(9, 0, 1));
             let store = TaskStore::open(root_of(scheduler), "sch_1").unwrap();
-            let run = store.latest_run().expect("a Run");
+            let run = store.current_run().expect("a Run");
             assert_eq!(run.status, RunStatus::Failed);
             assert!(run.reason.unwrap().contains("unpeel-host exited with 1"));
         });
@@ -878,7 +878,7 @@ mod tests {
                 .insert(session_id.clone(), (SessionSeen::Live, None));
             sweep(scheduler, &tasks, &now(9, 0, 1));
             let store = TaskStore::open(root_of(scheduler), "sch_1").unwrap();
-            assert_eq!(store.latest_run().unwrap().status, RunStatus::Running);
+            assert_eq!(store.current_run().unwrap().status, RunStatus::Running);
 
             effects
                 .seen
@@ -886,7 +886,7 @@ mod tests {
                 .unwrap()
                 .insert(session_id, (SessionSeen::Live, Some(3)));
             sweep(scheduler, &tasks, &now(9, 0, 2));
-            let run = store.latest_run().unwrap();
+            let run = store.current_run().unwrap();
             assert_eq!((run.status, run.exit_code), (RunStatus::Failed, Some(3)));
             assert_eq!(
                 store.clock().unwrap().last_run_status,
@@ -921,6 +921,52 @@ mod tests {
             let refused = scheduler.request_run_now("sch_1", &tasks).unwrap_err();
             assert!(refused.contains("in progress"), "{refused}");
             assert!(scheduler.request_run_now("sch_missing", &tasks).is_err());
+        });
+    }
+
+    /// A skip recorded behind a live Run must not make the scheduler forget
+    /// it: it still blocks Run now, and its finish is still recorded.
+    #[test]
+    fn a_run_with_an_occurrence_skipped_behind_it_is_still_followed() {
+        with_scheduler(Recording::default(), |scheduler, effects| {
+            let tasks = [schedule(ScheduleTrigger::Daily {
+                time: "09:00".into(),
+            })];
+            let run_id = scheduler.request_run_now("sch_1", &tasks).unwrap();
+            sweep(scheduler, &tasks, &now(8, 59, 0));
+            settle(effects, 1);
+            let session_id = effects.spawned.lock().unwrap()[0].0.session_id.clone();
+            let seen = |state| {
+                effects
+                    .seen
+                    .lock()
+                    .unwrap()
+                    .insert(session_id.clone(), state);
+            };
+            seen((SessionSeen::Live, None));
+            sweep(scheduler, &tasks, &now(9, 0, 0));
+            let store = TaskStore::open(root_of(scheduler), "sch_1").unwrap();
+            let statuses: Vec<_> = store.runs().iter().map(|run| run.status).collect();
+            assert_eq!(statuses, vec![RunStatus::Running, RunStatus::Skipped]);
+            assert_eq!(
+                store.current_run().map(|run| run.run_id),
+                Some(run_id.clone())
+            );
+            let refused = scheduler.request_run_now("sch_1", &tasks).unwrap_err();
+            assert!(refused.contains("in progress"), "{refused}");
+
+            seen((SessionSeen::Live, Some(0)));
+            sweep(scheduler, &tasks, &now(9, 0, 30));
+            let finished = store.current_run().expect("a Run");
+            assert_eq!(
+                (finished.run_id.as_str(), finished.status),
+                (run_id.as_str(), RunStatus::Done)
+            );
+            assert_eq!(
+                store.clock().unwrap().last_run_status,
+                Some(RunStatus::Done)
+            );
+            assert_eq!(effects.spawned.lock().unwrap().len(), 1, "no second Run");
         });
     }
 
@@ -1031,7 +1077,7 @@ mod tests {
     fn latest(scheduler: &Scheduler) -> ScheduleRun {
         TaskStore::open(root_of(scheduler), "sch_1")
             .unwrap()
-            .latest_run()
+            .current_run()
             .expect("a Run")
     }
 

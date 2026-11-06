@@ -345,6 +345,21 @@ pub fn fold_runs(lines: impl IntoIterator<Item = ScheduleRun>) -> Vec<ScheduleRu
     runs
 }
 
+/// The Run that speaks for a task (its "latest Run"), from its folded Runs:
+/// the one in progress, if any — an occurrence skipped behind it never
+/// takes its place, so the Host keeps following it, it keeps blocking the
+/// next occurrence and Run now, and Controllers keep showing it — else the
+/// newest outcome (when it ended, or started), the later Run on a tie.
+pub fn current_run(runs: &[ScheduleRun]) -> Option<&ScheduleRun> {
+    if let Some(live) = runs.iter().rev().find(|run| run.status.is_in_progress()) {
+        return Some(live);
+    }
+    runs.iter()
+        .enumerate()
+        .max_by_key(|(index, run)| (run.ended_at_ms.or(run.started_at_ms), *index))
+        .map(|(_, run)| run)
+}
+
 /// A task's `clock.json`: the last occurrence the Host fired (the due rule's
 /// whole memory), plus facts it publishes so readers without a clock (MCP,
 /// Controllers) can show the next run and the last result.
@@ -605,6 +620,63 @@ mod tests {
     fn schedules_that_are_not_a_list_read_as_none() {
         assert!(decode(serde_json::json!({"sch_1": {}})).is_empty());
         assert!(schedules_from_value(None).is_empty());
+    }
+
+    fn run_at(
+        run_id: &str,
+        status: RunStatus,
+        started: Option<u64>,
+        ended: Option<u64>,
+    ) -> ScheduleRun {
+        ScheduleRun {
+            run_id: run_id.into(),
+            scheduled_for: None,
+            started_at_ms: started,
+            ended_at_ms: ended,
+            status,
+            late: false,
+            session_id: None,
+            exit_code: None,
+            reason: None,
+            snippet: None,
+            phase: None,
+            prompted_at_ms: None,
+        }
+    }
+
+    #[test]
+    fn the_run_in_progress_speaks_for_its_task_over_a_skipped_one_behind_it() {
+        let live = run_at("run_live", RunStatus::Running, Some(10), None);
+        let skipped = run_at("run_skipped", RunStatus::Skipped, None, Some(20));
+        let runs = vec![live.clone(), skipped.clone()];
+        assert_eq!(current_run(&runs), Some(&live));
+
+        let waiting = ScheduleRun {
+            status: RunStatus::NeedsYou,
+            ..live.clone()
+        };
+        assert_eq!(
+            current_run(&[waiting.clone(), skipped.clone()]),
+            Some(&waiting)
+        );
+
+        // Once it finishes, the newest outcome is the task's latest Run,
+        // whatever order the log first saw them in.
+        let finished = ScheduleRun {
+            status: RunStatus::Done,
+            ended_at_ms: Some(30),
+            ..live
+        };
+        assert_eq!(
+            current_run(&[finished.clone(), skipped.clone()]),
+            Some(&finished)
+        );
+        let earlier = ScheduleRun {
+            ended_at_ms: Some(15),
+            ..finished
+        };
+        assert_eq!(current_run(&[earlier, skipped.clone()]), Some(&skipped));
+        assert_eq!(current_run(&[]), None);
     }
 
     #[test]

@@ -115,8 +115,10 @@ impl TaskStore {
             .unwrap_or_default()
     }
 
-    pub fn latest_run(&self) -> Option<ScheduleRun> {
-        self.runs().pop()
+    /// The Run that speaks for the task (`schedules::current_run`): the one
+    /// in progress, else the newest outcome.
+    pub fn current_run(&self) -> Option<ScheduleRun> {
+        schedules::current_run(&self.runs()).cloned()
     }
 
     /// Delete the task's clock and Run log. Its Run Sessions are untouched.
@@ -199,7 +201,7 @@ mod tests {
         with_store(|store| {
             assert_eq!(store.clock(), Ok(ScheduleClock::default()));
             assert!(store.runs().is_empty());
-            assert_eq!(store.latest_run(), None);
+            assert_eq!(store.current_run(), None);
         });
     }
 
@@ -235,7 +237,34 @@ mod tests {
                 ids,
                 vec![("run_1", RunStatus::Done), ("run_2", RunStatus::Skipped)]
             );
-            assert_eq!(store.latest_run().map(|r| r.run_id), Some("run_2".into()));
+            // Both say they ended at once: the later Run is the task's.
+            assert_eq!(store.current_run().map(|r| r.run_id), Some("run_2".into()));
+        });
+    }
+
+    #[test]
+    fn a_skipped_occurrence_never_replaces_the_run_in_progress() {
+        with_store(|store| {
+            let live = ScheduleRun {
+                started_at_ms: Some(10),
+                ..run("run_live", RunStatus::Running)
+            };
+            store.append_run(&live).unwrap();
+            store
+                .append_run(&ScheduleRun {
+                    started_at_ms: None,
+                    ended_at_ms: Some(20),
+                    ..run("run_skipped", RunStatus::Skipped)
+                })
+                .unwrap();
+            assert_eq!(store.current_run(), Some(live.clone()));
+            let done = ScheduleRun {
+                status: RunStatus::Done,
+                ended_at_ms: Some(30),
+                ..live
+            };
+            store.append_run(&done).unwrap();
+            assert_eq!(store.current_run(), Some(done), "its outcome is the newest");
         });
     }
 

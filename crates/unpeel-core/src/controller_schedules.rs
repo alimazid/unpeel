@@ -190,7 +190,9 @@ impl TaskOnDisk {
             "notifyWhenDone": schedule.notify_when_done,
             "createdAtMs": schedule.created_at_ms,
             "nextRun": self.next_run(),
-            "lastRun": self.runs.last().map(run_wire),
+            // The Run in progress, else the newest outcome: an occurrence
+            // skipped behind a live Run never hides it.
+            "lastRun": schedules::current_run(&self.runs).map(run_wire),
         })
     }
 

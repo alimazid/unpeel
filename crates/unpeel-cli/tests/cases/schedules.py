@@ -8,8 +8,10 @@ command's exit status. Covered: Run now records done (exit 0), failed with
 the code (exit 3), and failed with a reason when the Session ends without
 an exit record (a bare `exit 4`); a Once task a few seconds ahead fires on
 its own, on time, and disables itself; an occurrence during a Run in
-progress is skipped and Run now is refused; deleting a task leaves its Run
-Sessions; and every mutating verb refuses inside a Session.
+progress is skipped and Run now is refused; the skip never takes the live
+Run's place (it still blocks Run now, stays the task's latest, and its
+finish is recorded); deleting a task leaves its Run Sessions; and every
+mutating verb refuses inside a Session.
 """
 
 import datetime
@@ -173,6 +175,47 @@ def check_overlap(case, service, home):
                home.manifests().get(session_id or "", {}).get("state") == "running")
 
 
+def last_run(home, task_id):
+    try:
+        tasks = json.loads(cli(home, "schedules", "list", "--json").stdout or "[]")
+    except ValueError:
+        return {}
+    task = next((task for task in tasks if task.get("id") == task_id), {})
+    return task.get("last_run") or {}
+
+
+def check_skip_keeps_the_live_run(case, service, home):
+    """An occurrence skipped behind a live Run never takes its place: the Run
+    keeps blocking Run now, stays the task's latest, and its finish lands."""
+    due = local_now() + datetime.timedelta(seconds=6)
+    task_id = add(case, home, "Outlives a skip", "short", "--daily", due.strftime("%H:%M:%S"))
+    run_id = cli(home, "schedules", "run", task_id).stdout.strip()
+    wait_for_run(service, home, task_id, run_id, ("running",))
+    skipped = service.wait_for(
+        lambda: [entry for entry in history(home, task_id) if entry.get("status") == "skipped"],
+        timeout=30,
+    )
+    case.check("skip behind a live Run: the occurrence is skipped", bool(skipped),
+               json.dumps(history(home, task_id)))
+    case.check("skip behind a live Run: the live Run is still the task's latest",
+               last_run(home, task_id) == {"run_id": run_id, "status": "running"},
+               json.dumps(last_run(home, task_id)))
+    refused = cli(home, "schedules", "run", task_id)
+    case.check("skip behind a live Run: Run now is still refused",
+               refused.returncode != 0 and "in progress" in refused.stderr,
+               refused.stderr or refused.stdout)
+    finished = wait_for_run(service, home, task_id, run_id, ("done", "failed"), timeout=45)
+    case.check("skip behind a live Run: its finish is still recorded",
+               finished.get("status") == "done" and finished.get("exit_code") == 0,
+               json.dumps(history(home, task_id)))
+    case.check("skip behind a live Run: its outcome is the task's latest",
+               last_run(home, task_id) == {"run_id": run_id, "status": "done"},
+               json.dumps(last_run(home, task_id)))
+    case.check("skip behind a live Run: no second Run was started",
+               [entry.get("status") for entry in history(home, task_id)] == ["skipped", "done"],
+               json.dumps(history(home, task_id)))
+
+
 def check_inside_session(case, home):
     task_id = add(case, home, "Guarded", "ok", "--once", tomorrow())
     launched = cli(home, "new", "--preset", "ok", "--project", "p")
@@ -203,6 +246,7 @@ def body(case):
     home.preset(label="three", command="/bin/sh -c 'exit 3'", preset_id="three")
     home.preset(label="bare", command="exit 4", preset_id="bare")
     home.preset(label="slow", command="sleep 60", preset_id="slow")
+    home.preset(label="short", command="sleep 14", preset_id="short")
     home.preset(
         label="env",
         command=f"printf '%s %s' \"$UNPEEL_SCHEDULE_ID\" \"$UNPEEL_SCHEDULE_RUN_ID\" > {env_seen}",
@@ -215,6 +259,7 @@ def body(case):
         check_run_now(case, service, home)
         check_once_fires(case, service, home)
         check_overlap(case, service, home)
+        check_skip_keeps_the_live_run(case, service, home)
         check_inside_session(case, home)
     finally:
         for session_id in list(home.manifests()):

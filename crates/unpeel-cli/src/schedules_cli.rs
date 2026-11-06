@@ -186,7 +186,7 @@ fn list(json: bool) -> Result<(), String> {
 fn schedule_json(schedule: &Schedule) -> Value {
     let store = TaskStore::for_schedule(&schedule.id).ok();
     let clock_state = store.as_ref().and_then(|store| store.clock().ok());
-    let latest = store.as_ref().and_then(TaskStore::latest_run);
+    let latest = store.as_ref().and_then(TaskStore::current_run);
     let next = trigger::next_run(
         schedule,
         &clock_state.unwrap_or_default(),

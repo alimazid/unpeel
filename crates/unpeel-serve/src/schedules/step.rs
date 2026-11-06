@@ -121,7 +121,13 @@ impl LatestRun {
         self.status.is_some_and(RunStatus::is_in_progress)
     }
 
+    /// A Run in progress stays the latest until its own next line: a Run
+    /// skipped behind it never takes its place (`schedules::current_run`).
     fn update(&mut self, run: &ScheduleRun) {
+        let behind = self.in_progress() && self.id.as_deref() != Some(run.run_id.as_str());
+        if behind && run.status == RunStatus::Skipped {
+            return;
+        }
         self.id = Some(run.run_id.clone());
         self.status = Some(run.status);
     }
@@ -609,6 +615,24 @@ mod tests {
             Some("2026-11-06T09:00"),
             "a skipped occurrence is spent"
         );
+    }
+
+    /// The live Run stays the task's latest Run behind a skip: it is what
+    /// the clock publishes, and what blocks a Run now in the same step.
+    #[test]
+    fn a_skip_never_replaces_the_run_in_progress() {
+        let mut busy = running(
+            fired_at(daily("09:00"), "2026-11-05T09:00"),
+            RunObservation::Live,
+        );
+        busy.run_now = Some("run_asked".into());
+        let actions = run_step(&[busy], &now(6, 9, 0, 0));
+        assert!(started(&actions).is_empty(), "{actions:?}");
+        let skipped: Vec<_> = recorded(&actions).iter().map(|run| run.status).collect();
+        assert_eq!(skipped, vec![RunStatus::Skipped, RunStatus::Skipped]);
+        let clock = saved(&actions)[0];
+        assert_eq!(clock.last_run_id.as_deref(), Some("run_prev"));
+        assert_eq!(clock.last_run_status, Some(RunStatus::Running));
     }
 
     #[test]
