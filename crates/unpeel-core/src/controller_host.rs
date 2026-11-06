@@ -444,6 +444,9 @@ impl DiskCatalog {
                 "experimentalWorktreesEnabled": experimental_worktrees_enabled,
                 "hostTintHue": host_tint_hue,
                 "hostDeviceKind": if cfg!(target_os = "linux") { "linux" } else { "unknown" },
+                // Fork-only: Scheduled Tasks. Controllers refetch the
+                // `schedules` routes when this moves.
+                "schedulesRevision": crate::controller_schedules::revision(&state),
             }),
             projects: create_projects,
             presets: create_presets,

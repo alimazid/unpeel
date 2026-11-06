@@ -1576,6 +1576,10 @@ fn route_uncached(
     if let Some(response) = crate::host_resources::route(request) {
         return Some(response);
     }
+    // Fork-only: Scheduled Tasks' read routes.
+    if let Some(response) = crate::controller_schedules::route(request) {
+        return Some(response);
+    }
     let body = match (request.method.as_str(), request.path.as_str()) {
         ("GET", "/mobile/bootstrap") => match bootstrap {
             Some(context) => bootstrap_body(context),

@@ -1,0 +1,243 @@
+//! Fork-only: Scheduled Tasks. The Controller read routes (`schedules`,
+//! `schedules.runs`) and the bootstrap's `schedulesRevision`.
+//!
+//! - `GET /mobile/schedules`: every task with its next run and its latest
+//!   Run (the Run events a Controller notices: done, needs you, failed,
+//!   failed to start, skipped).
+//! - `GET /mobile/schedules/runs?scheduleID=<id>[&limit=<n>]`: a task's Run
+//!   history, newest first.
+//!
+//! Both read the disk only: definitions from `app-state.json`, the next run
+//! and the Runs from the per-task files the workspace worker publishes
+//! (`schedule_store`). No route needs the scheduler, a clock, or a time
+//! zone, so every Host adapter serves them alike. `protocol/schedules-
+//! samples-v1.json` pins both bodies for the Rust Host and the Swift DTOs.
+
+use std::collections::HashMap;
+use std::path::Path;
+
+use serde_json::{json, Value};
+
+use crate::controller_api::{ControllerPrincipal, ControllerRequest, ControllerResponse};
+use crate::schedule_store::{self, TaskStore};
+use crate::schedules::{self, Schedule, ScheduleClock, ScheduleRun};
+
+/// `GET /mobile/schedules`.
+pub const LIST_CAPABILITY: &str = "schedules";
+/// `GET /mobile/schedules/runs`.
+pub const RUNS_CAPABILITY: &str = "schedules.runs";
+const LIST_PATH: &str = "/mobile/schedules";
+const RUNS_PATH: &str = "/mobile/schedules/runs";
+
+/// A refused read: HTTP status and the message Controllers show.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Failure(pub u16, pub String);
+
+/// The read routes, for `controller_api::route_uncached`. Any other method
+/// or path is not this module's.
+pub fn route(request: &ControllerRequest) -> Option<ControllerResponse> {
+    if request.method != "GET" || !matches!(request.path.as_str(), LIST_PATH | RUNS_PATH) {
+        return None;
+    }
+    let answer = if !principal_can_read_schedules(&request.principal) {
+        Err(Failure(403, "not allowed to read Scheduled Tasks".into()))
+    } else if request.path == LIST_PATH {
+        load_state().map(|state| list_at(&state, &schedule_store::schedules_root()))
+    } else {
+        parse_runs_query(&request.query).and_then(|query| {
+            let state = load_state()?;
+            runs_for(&state, &schedule_store::schedules_root(), &query)
+        })
+    };
+    let (status, body) = match answer {
+        Ok(body) => (200, body),
+        Err(Failure(status, message)) => (status, json!({ "error": message })),
+    };
+    Some(ControllerResponse {
+        id: request.id.clone(),
+        status,
+        body,
+    })
+}
+
+/// Who may read the workspace's Scheduled Tasks: the user's own paired
+/// devices and owner transports (decision Q8). Keep this match exhaustive,
+/// like `principal_can_create_session`: a scoped principal added later must
+/// get an explicit decision here, never owner reads through a wildcard.
+pub fn principal_can_read_schedules(principal: &ControllerPrincipal) -> bool {
+    match principal {
+        ControllerPrincipal::PairedDevice { .. } | ControllerPrincipal::OwnerTransport { .. } => {
+            true
+        }
+    }
+}
+
+/// The bootstrap's `schedulesRevision` for this workspace, from the raw
+/// `app-state.json` the bootstrap builder already holds.
+pub fn revision(state: &Value) -> String {
+    revision_at(state, &schedule_store::schedules_root())
+}
+
+/// `GET /mobile/schedules`'s body for the tasks in `state`, with per-task
+/// state under `root`.
+pub fn list_at(state: &Value, root: &Path) -> Value {
+    let tasks = tasks_at(state, root);
+    let revision = revision_of(&tasks);
+    json!({
+        "revision": revision,
+        "schedules": tasks.iter().map(TaskOnDisk::wire).collect::<Vec<_>>(),
+    })
+}
+
+/// `GET /mobile/schedules/runs`'s body for `query`.
+pub fn runs_at(
+    state: &Value,
+    root: &Path,
+    query: &HashMap<String, String>,
+) -> Result<Value, Failure> {
+    runs_for(state, root, &parse_runs_query(query)?)
+}
+
+/// An opaque value that changes whenever anything either route answers
+/// changes: a definition, a next run, or any Run line. Controllers refetch
+/// when it moves instead of polling the routes on a timer.
+pub fn revision_at(state: &Value, root: &Path) -> String {
+    revision_of(&tasks_at(state, root))
+}
+
+struct RunsQuery {
+    schedule_id: String,
+    limit: Option<usize>,
+}
+
+fn parse_runs_query(query: &HashMap<String, String>) -> Result<RunsQuery, Failure> {
+    let schedule_id = query
+        .get("scheduleID")
+        .map(|id| id.trim())
+        .filter(|id| schedules::is_valid_id(id))
+        .ok_or_else(|| Failure(400, "valid scheduleID required".into()))?;
+    let limit = match query.get("limit").map(|limit| limit.trim()) {
+        None | Some("") => None,
+        Some(raw) => Some(
+            raw.parse::<usize>()
+                .ok()
+                .filter(|limit| *limit > 0)
+                .ok_or_else(|| Failure(400, "limit must be a positive whole number".into()))?,
+        ),
+    };
+    Ok(RunsQuery {
+        schedule_id: schedule_id.to_owned(),
+        limit,
+    })
+}
+
+fn runs_for(state: &Value, root: &Path, query: &RunsQuery) -> Result<Value, Failure> {
+    let task = tasks_at(state, root)
+        .into_iter()
+        .find(|task| task.schedule.id == query.schedule_id)
+        .ok_or_else(|| Failure(404, "unknown Scheduled Task".into()))?;
+    let runs: Vec<Value> = task
+        .runs
+        .iter()
+        .rev()
+        .take(query.limit.unwrap_or(usize::MAX))
+        .map(run_wire)
+        .collect();
+    Ok(json!({ "scheduleID": task.schedule.id, "runs": runs }))
+}
+
+fn load_state() -> Result<Value, Failure> {
+    crate::app_state::load()
+        .map_err(|error| Failure(500, format!("could not read Scheduled Tasks: {error}")))
+}
+
+/// One task as its definition and its files say.
+struct TaskOnDisk {
+    schedule: Schedule,
+    /// `None` when the clock is missing or will not read: no next run.
+    clock: Option<ScheduleClock>,
+    /// Oldest first, each Run's latest line.
+    runs: Vec<ScheduleRun>,
+}
+
+fn tasks_at(state: &Value, root: &Path) -> Vec<TaskOnDisk> {
+    schedules::schedules_from_value(state.get("schedules"))
+        .into_iter()
+        .map(|schedule| {
+            // Every listed id is valid, so the store always opens.
+            let store = TaskStore::open(root, &schedule.id).ok();
+            TaskOnDisk {
+                clock: store.as_ref().and_then(|store| store.clock().ok()),
+                runs: store.as_ref().map(TaskStore::runs).unwrap_or_default(),
+                schedule,
+            }
+        })
+        .collect()
+}
+
+impl TaskOnDisk {
+    fn wire(&self) -> Value {
+        let schedule = &self.schedule;
+        json!({
+            "id": schedule.id,
+            "name": schedule.name,
+            "projectID": schedule.project_id,
+            "presetID": schedule.preset_id,
+            // The Host's reading of the Trigger: a kind this build cannot
+            // fire is `{"kind":"unknown"}`, which never has a next run.
+            "trigger": schedule.trigger,
+            "enabled": schedule.enabled,
+            "notifyWhenDone": schedule.notify_when_done,
+            "createdAtMs": schedule.created_at_ms,
+            "nextRun": self.next_run(),
+            "lastRun": self.runs.last().map(run_wire),
+        })
+    }
+
+    /// What the worker published as the next occurrence; a disabled task
+    /// has none, whatever an older clock still says.
+    fn next_run(&self) -> Value {
+        let clock = self.clock.as_ref().filter(|_| self.schedule.enabled);
+        match clock.and_then(|clock| clock.next_occurrence.as_ref().map(|at| (at, clock))) {
+            Some((at, clock)) => json!({ "at": at, "atMs": clock.next_occurrence_ms }),
+            None => Value::Null,
+        }
+    }
+}
+
+fn run_wire(run: &ScheduleRun) -> Value {
+    json!({
+        "runID": run.run_id,
+        "scheduledFor": run.scheduled_for,
+        "startedAtMs": run.started_at_ms,
+        "endedAtMs": run.ended_at_ms,
+        "status": run.status.word(),
+        "late": run.late,
+        "sessionID": run.session_id,
+        "exitCode": run.exit_code,
+        "reason": run.reason,
+        "snippet": run.snippet,
+    })
+}
+
+/// FNV-1a over every task's wire row and its whole history.
+fn revision_of(tasks: &[TaskOnDisk]) -> String {
+    let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
+    let mut feed = |bytes: &[u8]| {
+        for byte in bytes {
+            hash ^= u64::from(*byte);
+            hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
+        }
+    };
+    for task in tasks {
+        feed(task.wire().to_string().as_bytes());
+        for run in &task.runs {
+            feed(run_wire(run).to_string().as_bytes());
+        }
+        feed(b"\n");
+    }
+    format!("{hash:016x}")
+}
+
+#[cfg(test)]
+mod tests;

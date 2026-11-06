@@ -14,7 +14,7 @@ import Foundation
 struct SidebarSectionLayout: Equatable, Sendable {
     static let currentVersion = 1
     static let defaultWeights: [SidebarSectionID: Double] = [
-        .projects: 0.4, .agents: 0.25, .explorer: 0.6, .gitHistory: 0.4,
+        .projects: 0.4, .agents: 0.25, .scheduled: 0.2, .explorer: 0.6, .gitHistory: 0.4,
     ]
     /// Weight for an id with neither a stored nor a default weight.
     static let fallbackWeight = 0.5
