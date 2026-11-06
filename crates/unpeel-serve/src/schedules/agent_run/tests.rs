@@ -111,8 +111,16 @@ fn next_line(task: TaskState, at: &Zoned) -> Option<ScheduleRun> {
     line
 }
 
-fn follow(phase: RunPhase, run_status: RunStatus, activity: AgentActivity, at: &Zoned) -> Option<ScheduleRun> {
-    next_line(observing(run_in(phase, run_status), agent(None, activity)), at)
+fn follow(
+    phase: RunPhase,
+    run_status: RunStatus,
+    activity: AgentActivity,
+    at: &Zoned,
+) -> Option<ScheduleRun> {
+    next_line(
+        observing(run_in(phase, run_status), agent(None, activity)),
+        at,
+    )
 }
 
 #[test]
@@ -178,7 +186,12 @@ fn the_first_working_signal_is_working_and_the_first_idle_after_it_is_done() {
         (RunStatus::Running, Some(RunPhase::Working))
     );
     assert_eq!(
-        follow(RunPhase::Working, RunStatus::Running, status(AgentStatus::Working), &now(2, 0)),
+        follow(
+            RunPhase::Working,
+            RunStatus::Running,
+            status(AgentStatus::Working),
+            &now(2, 0)
+        ),
         None
     );
 
@@ -190,7 +203,10 @@ fn the_first_working_signal_is_working_and_the_first_idle_after_it_is_done() {
     let done = follow(RunPhase::Working, RunStatus::Running, finished, &now(2, 31)).expect("done");
     assert_eq!(done.status, RunStatus::Done);
     assert_eq!(done.ended_at_ms, Some(ms(2, 31)));
-    assert_eq!(done.snippet.as_deref(), Some("Morning briefing ready: 3 meetings."));
+    assert_eq!(
+        done.snippet.as_deref(),
+        Some("Morning briefing ready: 3 meetings.")
+    );
     assert_eq!((done.exit_code, done.reason), (None, None));
 }
 
@@ -216,7 +232,10 @@ fn the_default_idle_never_moves_a_run() {
         finished_at_ms: Some(ms(0, 55)),
         ..AgentActivity::default()
     };
-    assert_eq!(follow(RunPhase::Prompted, RunStatus::Running, stale, &now(1, 30)), None);
+    assert_eq!(
+        follow(RunPhase::Prompted, RunStatus::Running, stale, &now(1, 30)),
+        None
+    );
 }
 
 #[test]
@@ -254,7 +273,10 @@ fn no_readiness_signal_within_the_budget_fails_to_start_and_keeps_the_session() 
     assert_eq!(line.status, RunStatus::FailedToStart);
     assert_eq!(line.ended_at_ms, Some(ms(2, 0)));
     let reason = line.reason.unwrap_or_default();
-    assert!(reason.contains("ready") && reason.contains("left open"), "{reason}");
+    assert!(
+        reason.contains("ready") && reason.contains("left open"),
+        "{reason}"
+    );
     assert_eq!(line.session_id.as_deref(), Some("session-agent"));
 }
 
@@ -262,7 +284,10 @@ fn no_readiness_signal_within_the_budget_fails_to_start_and_keeps_the_session() 
 fn a_launch_that_ends_or_cannot_type_fails_with_the_reason() {
     for (delivery, expected) in [
         (Delivery::SessionEnded, "ended"),
-        (Delivery::Failed("session host rejected initial text".into()), "rejected"),
+        (
+            Delivery::Failed("session host rejected initial text".into()),
+            "rejected",
+        ),
         (Delivery::Interrupted, "restarted"),
     ] {
         let launch = observing(
@@ -271,7 +296,10 @@ fn a_launch_that_ends_or_cannot_type_fails_with_the_reason() {
         );
         let line = next_line(launch, &now(0, 30)).expect("a final line");
         assert_eq!(line.status, RunStatus::Failed, "{delivery:?}");
-        assert!(line.reason.unwrap_or_default().contains(expected), "{delivery:?}");
+        assert!(
+            line.reason.unwrap_or_default().contains(expected),
+            "{delivery:?}"
+        );
     }
 }
 
@@ -283,7 +311,8 @@ fn no_working_signal_within_60_seconds_of_the_paste_needs_you() {
         None,
         "60 s is still within the window"
     );
-    let stuck = follow(RunPhase::Prompted, RunStatus::Running, quiet(), &now(2, 1)).expect("needs you");
+    let stuck =
+        follow(RunPhase::Prompted, RunStatus::Running, quiet(), &now(2, 1)).expect("needs you");
     assert_eq!(stuck.status, RunStatus::NeedsYou);
     assert_eq!(stuck.phase, Some(RunPhase::Prompted));
     assert_eq!(stuck.ended_at_ms, None, "needs you is still in progress");
@@ -291,7 +320,12 @@ fn no_working_signal_within_60_seconds_of_the_paste_needs_you() {
 
     // It only waits on a person now: no second timeout.
     assert_eq!(
-        follow(RunPhase::Prompted, RunStatus::NeedsYou, quiet(), &now(59, 0)),
+        follow(
+            RunPhase::Prompted,
+            RunStatus::NeedsYou,
+            quiet(),
+            &now(59, 0)
+        ),
         None
     );
     // The agent was only slow: its first working signal, then idle, is done.
@@ -325,16 +359,31 @@ fn an_attention_edge_while_working_needs_you_with_no_timeout_then_done() {
 
     // Still asking an hour later: nothing times out, nothing is killed.
     assert_eq!(
-        follow(RunPhase::Working, RunStatus::NeedsYou, status(AgentStatus::Attention), &now(59, 59)),
+        follow(
+            RunPhase::Working,
+            RunStatus::NeedsYou,
+            status(AgentStatus::Attention),
+            &now(59, 59)
+        ),
         None
     );
     assert_eq!(
-        follow(RunPhase::Working, RunStatus::NeedsYou, status(AgentStatus::Working), &now(59, 59)),
+        follow(
+            RunPhase::Working,
+            RunStatus::NeedsYou,
+            status(AgentStatus::Working),
+            &now(59, 59)
+        ),
         None,
         "answered and working again: still in progress"
     );
-    let done = follow(RunPhase::Working, RunStatus::NeedsYou, status(AgentStatus::Idle), &now(59, 59))
-        .expect("a later done edge");
+    let done = follow(
+        RunPhase::Working,
+        RunStatus::NeedsYou,
+        status(AgentStatus::Idle),
+        &now(59, 59),
+    )
+    .expect("a later done edge");
     assert_eq!(done.status, RunStatus::Done);
 }
 
@@ -371,7 +420,10 @@ fn the_agent_exiting_before_done_fails_with_its_exit_code() {
             assert!(line.reason.unwrap_or_default().contains("exited"));
         }
     }
-    let gone = observing(run_in(RunPhase::Working, RunStatus::Running), RunObservation::Missing);
+    let gone = observing(
+        run_in(RunPhase::Working, RunStatus::Running),
+        RunObservation::Missing,
+    );
     let line = next_line(gone, &now(3, 0)).expect("a final line");
     assert_eq!((line.status, line.exit_code), (RunStatus::Failed, None));
 }
@@ -406,9 +458,15 @@ fn a_run_that_needs_you_skips_the_next_occurrence() {
 fn only_a_test_host_may_shorten_the_working_window() {
     assert_eq!(working_timeout_from(None, None), WORKING_TIMEOUT_MS);
     assert_eq!(working_timeout_from(None, Some("2000")), WORKING_TIMEOUT_MS);
-    assert_eq!(working_timeout_from(Some("0"), Some("2000")), WORKING_TIMEOUT_MS);
+    assert_eq!(
+        working_timeout_from(Some("0"), Some("2000")),
+        WORKING_TIMEOUT_MS
+    );
     assert_eq!(working_timeout_from(Some("1"), Some(" 2000 ")), 2_000);
-    assert_eq!(working_timeout_from(Some("1"), Some("soon")), WORKING_TIMEOUT_MS);
+    assert_eq!(
+        working_timeout_from(Some("1"), Some("soon")),
+        WORKING_TIMEOUT_MS
+    );
 }
 
 // ── The worker's rows as an agent Run sees them ──
@@ -447,12 +505,18 @@ fn row(
 fn a_rows_status_counts_only_when_a_tier_reported_it() {
     use crate::sessions::{Status, StatusSource};
     let seen = |status, source| AgentActivity::from_row(&row(status, source), None, None).status;
-    assert_eq!(seen(Status::Busy, StatusSource::Screen), AgentStatus::Working);
+    assert_eq!(
+        seen(Status::Busy, StatusSource::Screen),
+        AgentStatus::Working
+    );
     assert_eq!(seen(Status::Idle, StatusSource::Hooks), AgentStatus::Idle);
     assert_eq!(seen(Status::Idle, StatusSource::Program), AgentStatus::Idle);
     // The default idle: no tier has spoken.
     assert_eq!(seen(Status::Idle, StatusSource::None), AgentStatus::Silent);
-    assert_eq!(seen(Status::Starting, StatusSource::None), AgentStatus::Silent);
+    assert_eq!(
+        seen(Status::Starting, StatusSource::None),
+        AgentStatus::Silent
+    );
     // A select menu on screen is a question whichever tier the row has.
     assert_eq!(
         seen(Status::Attention, StatusSource::None),

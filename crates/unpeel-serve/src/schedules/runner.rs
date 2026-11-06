@@ -360,7 +360,12 @@ impl Scheduler {
 
     /// A finished agent Run whose agent reported no reply takes it from the
     /// agent's screen, which still shows it.
-    fn with_screen_reply(&self, run: ScheduleRun, schedules: &[Schedule], schedule_id: &str) -> ScheduleRun {
+    fn with_screen_reply(
+        &self,
+        run: ScheduleRun,
+        schedules: &[Schedule],
+        schedule_id: &str,
+    ) -> ScheduleRun {
         let wants_screen =
             run.status == RunStatus::Done && run.phase.is_some() && run.snippet.is_none();
         let instructions = schedules
@@ -980,7 +985,9 @@ mod tests {
     /// Run the agent task now and wait until its helper has typed.
     fn start_agent_run(scheduler: &mut Scheduler, effects: &Recording) -> String {
         let tasks = [agent_schedule()];
-        scheduler.request_run_now("sch_1", &tasks).expect("accepted");
+        scheduler
+            .request_run_now("sch_1", &tasks)
+            .expect("accepted");
         sweep(scheduler, &tasks, &now(9, 0, 0));
         settle(effects, 1);
         let deadline = Instant::now() + Duration::from_secs(5);
@@ -1028,14 +1035,32 @@ mod tests {
                 "the instructions are typed into the Run's own Session"
             );
             let tasks = [agent_schedule()];
-            sweep_seeing(scheduler, &tasks, &seeing(&session_id, AgentStatus::Idle), &now(9, 0, 2));
+            sweep_seeing(
+                scheduler,
+                &tasks,
+                &seeing(&session_id, AgentStatus::Idle),
+                &now(9, 0, 2),
+            );
             let prompted = latest(scheduler);
             assert_eq!(prompted.phase, Some(RunPhase::Prompted));
-            assert_eq!(prompted.prompted_at_ms, Some(clock::epoch_ms(&now(9, 0, 1))));
+            assert_eq!(
+                prompted.prompted_at_ms,
+                Some(clock::epoch_ms(&now(9, 0, 1)))
+            );
 
-            sweep_seeing(scheduler, &tasks, &seeing(&session_id, AgentStatus::Working), &now(9, 0, 5));
+            sweep_seeing(
+                scheduler,
+                &tasks,
+                &seeing(&session_id, AgentStatus::Working),
+                &now(9, 0, 5),
+            );
             assert_eq!(latest(scheduler).phase, Some(RunPhase::Working));
-            sweep_seeing(scheduler, &tasks, &seeing(&session_id, AgentStatus::Idle), &now(9, 1, 0));
+            sweep_seeing(
+                scheduler,
+                &tasks,
+                &seeing(&session_id, AgentStatus::Idle),
+                &now(9, 1, 0),
+            );
             let done = latest(scheduler);
             assert_eq!(done.status, RunStatus::Done);
             assert_eq!(
@@ -1044,7 +1069,10 @@ mod tests {
                 "an agent that reported no reply leaves it on its screen"
             );
             let store = TaskStore::open(root_of(scheduler), "sch_1").unwrap();
-            assert_eq!(store.clock().unwrap().last_run_status, Some(RunStatus::Done));
+            assert_eq!(
+                store.clock().unwrap().last_run_status,
+                Some(RunStatus::Done)
+            );
         });
     }
 
@@ -1057,7 +1085,12 @@ mod tests {
         with_scheduler(effects, |scheduler, effects| {
             let session_id = start_agent_run(scheduler, effects);
             let tasks = [agent_schedule()];
-            sweep_seeing(scheduler, &tasks, &seeing(&session_id, AgentStatus::Silent), &now(9, 2, 1));
+            sweep_seeing(
+                scheduler,
+                &tasks,
+                &seeing(&session_id, AgentStatus::Silent),
+                &now(9, 2, 1),
+            );
             let run = latest(scheduler);
             assert_eq!(run.status, RunStatus::FailedToStart);
             assert_eq!(run.session_id.as_deref(), Some(session_id.as_str()));
@@ -1121,8 +1154,9 @@ mod tests {
                 preset_id: "ok".into(),
                 ..agent_schedule()
             };
-            scheduler.request_run_now("sch_1", &[script.clone()]).unwrap();
-            sweep(scheduler, &[script], &now(9, 0, 0));
+            let tasks = [script];
+            scheduler.request_run_now("sch_1", &tasks).unwrap();
+            sweep(scheduler, &tasks, &now(9, 0, 0));
             settle(effects, 0);
             assert!(effects.spawned.lock().unwrap().is_empty());
             let run = latest(scheduler);

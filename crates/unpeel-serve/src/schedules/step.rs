@@ -270,9 +270,7 @@ pub(super) fn session_lost(observation: &RunObservation) -> Option<String> {
             Some("the Session ended before its command reported an exit status".to_string())
         }
         RunObservation::Missing => Some("the Run's Session no longer exists".to_string()),
-        RunObservation::SpawnFailed(error) => {
-            Some(format!("the Session could not start: {error}"))
-        }
+        RunObservation::SpawnFailed(error) => Some(format!("the Session could not start: {error}")),
         RunObservation::Idle
         | RunObservation::Launching
         | RunObservation::Live

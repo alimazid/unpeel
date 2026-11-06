@@ -178,8 +178,12 @@ mod tests {
             preset("ok", "true", None),
         ];
         let projects = [project("p", "/work")];
-        let plan = resolve(&with_instructions("claude", "brief me"), &projects, &presets)
-            .expect("launchable");
+        let plan = resolve(
+            &with_instructions("claude", "brief me"),
+            &projects,
+            &presets,
+        )
+        .expect("launchable");
         assert_eq!(plan.instructions.as_deref(), Some("brief me"));
         assert_eq!(plan.command, "claude --model opus", "launched as typed");
 

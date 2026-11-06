@@ -262,7 +262,15 @@ fn an_agent_command_names_a_runtime_that_can_say_it_is_ready() {
     }
     // Plain commands, and runtimes whose only lifecycle is output growth,
     // give no readiness signal to wait for.
-    for command in ["", "  ", "true", "npm run dev", "sleep 60", "pi", "antigravity"] {
+    for command in [
+        "",
+        "  ",
+        "true",
+        "npm run dev",
+        "sleep 60",
+        "pi",
+        "antigravity",
+    ] {
         assert!(!is_agent_command(command), "{command:?}");
     }
 }

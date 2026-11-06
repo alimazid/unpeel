@@ -116,11 +116,19 @@ pub fn screen_reply(screen: &str, prompt_markers: &[String], instructions: &str)
         .find(|line| !line.is_empty())
         .map(|line| line.chars().take(40).collect::<String>());
     let start = echo
-        .and_then(|echo| lines[..prompt].iter().rposition(|line| line.contains(&echo)))
+        .and_then(|echo| {
+            lines[..prompt]
+                .iter()
+                .rposition(|line| line.contains(&echo))
+        })
         .map_or(0, |echo| echo + 1);
     let reply: Vec<&str> = lines[start..prompt]
         .iter()
-        .map(|line| line.trim_start_matches(|c: char| c.is_whitespace() || !c.is_ascii() && !c.is_alphanumeric()))
+        .map(|line| {
+            line.trim_start_matches(|c: char| {
+                c.is_whitespace() || !c.is_ascii() && !c.is_alphanumeric()
+            })
+        })
         .collect();
     snippet(&reply.join("\n"))
 }
@@ -563,7 +571,10 @@ mod tests {
         let mut messages = CompletionMessages::default();
         assert_eq!(messages.last_reply("s1"), None);
         messages.observe("s1", "Stop", Some("Briefing sent."), 2_000);
-        assert_eq!(messages.take("s1", 2_100).as_deref(), Some("Briefing sent."));
+        assert_eq!(
+            messages.take("s1", 2_100).as_deref(),
+            Some("Briefing sent.")
+        );
         assert_eq!(messages.last_reply("s1"), Some(("Briefing sent.", 2_000)));
         // A newer turn's Stop replaces it; one without a reply forgets it.
         messages.observe("s1", "UserPromptSubmit", None, 3_000);
@@ -592,7 +603,8 @@ mod tests {
 
     #[test]
     fn a_screen_reply_without_the_instructions_in_view_reads_what_is_above_the_prompt() {
-        let codex = "• Sent the summary to the channel.\n\n› Ask Codex to do anything\n  gpt · ~/work";
+        let codex =
+            "• Sent the summary to the channel.\n\n› Ask Codex to do anything\n  gpt · ~/work";
         assert_eq!(
             screen_reply(codex, &["›".into()], "a long prompt that scrolled away").as_deref(),
             Some("Sent the summary to the channel.")

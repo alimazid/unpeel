@@ -398,9 +398,11 @@ fn resolve_preset(selector: &str, project_id: &str) -> Result<(String, String), 
         })
         .collect();
     if let Some(overlay) = unpeel_serve::overlay::load() {
-        presets.extend(overlay.presets.iter().map(|(label, command)| {
-            (format!("overlay-{label}"), label.clone(), command.clone())
-        }));
+        presets.extend(
+            overlay.presets.iter().map(|(label, command)| {
+                (format!("overlay-{label}"), label.clone(), command.clone())
+            }),
+        );
     }
     let id = pick(
         "preset",

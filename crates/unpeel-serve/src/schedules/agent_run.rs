@@ -135,7 +135,11 @@ pub enum AgentStatus {
 
 /// The agent Run's next line, if this observation changes it. `run` is in
 /// progress (`running` or `needs_you`).
-pub fn advance(run: &ScheduleRun, observation: &RunObservation, now_ms: u64) -> Option<ScheduleRun> {
+pub fn advance(
+    run: &ScheduleRun,
+    observation: &RunObservation,
+    now_ms: u64,
+) -> Option<ScheduleRun> {
     match observation {
         RunObservation::Exited(code) => Some(ended(
             run,
@@ -147,9 +151,10 @@ pub fn advance(run: &ScheduleRun, observation: &RunObservation, now_ms: u64) -> 
             now_ms,
         )),
         RunObservation::Agent(agent) => match run.phase {
-            Some(RunPhase::Launching | RunPhase::WaitingReady) => {
-                agent.delivery.as_ref().and_then(|d| delivered(run, d, now_ms))
-            }
+            Some(RunPhase::Launching | RunPhase::WaitingReady) => agent
+                .delivery
+                .as_ref()
+                .and_then(|d| delivered(run, d, now_ms)),
             Some(RunPhase::Prompted | RunPhase::Working) => follow(run, agent, now_ms),
             Some(RunPhase::Unknown) | None => None,
         },
@@ -184,9 +189,7 @@ fn delivered(run: &ScheduleRun, delivery: &Delivery, now_ms: u64) -> Option<Sche
         )),
         Delivery::SessionEnded => failed("the Session ended before the agent was ready".into()),
         Delivery::Failed(error) => failed(format!("its instructions could not be typed: {error}")),
-        Delivery::Interrupted => {
-            failed("the Host restarted before the agent was ready".into())
-        }
+        Delivery::Interrupted => failed("the Host restarted before the agent was ready".into()),
     }
 }
 
@@ -199,7 +202,10 @@ fn follow(run: &ScheduleRun, agent: &AgentObservation, now_ms: u64) -> Option<Sc
     let since_paste = |at: Option<u64>| at.is_some_and(|at| at >= prompted_at);
     let finished = since_paste(activity.finished_at_ms);
     let worked = run.phase == Some(RunPhase::Working)
-        || matches!(activity.status, AgentStatus::Working | AgentStatus::Attention)
+        || matches!(
+            activity.status,
+            AgentStatus::Working | AgentStatus::Attention
+        )
         || since_paste(activity.working_at_ms)
         || finished;
     if worked && (finished || activity.status == AgentStatus::Idle) {

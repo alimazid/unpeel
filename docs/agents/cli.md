@@ -93,9 +93,15 @@ delete. Native convergence, if chosen, is a separate product change.
 ```text
 unpeel schedules [list] [--json]
 unpeel schedules add <name> --project <id|name> --preset <id|label>
-                     (--once <YYYY-MM-DDTHH:MM[:SS]> | --daily <HH:MM[:SS]>) [--no-notify]
+                     (--once <YYYY-MM-DDTHH:MM[:SS]> | --daily <HH:MM[:SS]>)
+                     [--instructions <text>] [--no-notify]
 unpeel schedules run|history|rm <id|name>
 ```
+
+`--instructions` is accepted only for an Agent Preset — a preset whose command
+names a catalog runtime declaring a readiness signal (hooks, program status,
+or a `[screen]` idle prompt; `agent_readiness::is_agent_command`) — and capped
+at 256 KiB; any other preset is refused with the reason.
 
 `add` and `rm` edit the raw `schedules` array through `app_state::edit`
 (unknown entries and fields pass through); the workspace worker re-reads it
