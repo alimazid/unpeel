@@ -256,14 +256,13 @@ fn runs_for(state: &Value, root: &Path, query: &RunsQuery) -> Result<Value, Fail
 }
 
 fn load_state() -> Result<Value, Failure> {
-    crate::app_state::load()
-        .map_err(|error| {
-            Failure::new(
-                500,
-                codes::INTERNAL,
-                format!("could not read Scheduled Tasks: {error}"),
-            )
-        })
+    crate::app_state::load().map_err(|error| {
+        Failure::new(
+            500,
+            codes::INTERNAL,
+            format!("could not read Scheduled Tasks: {error}"),
+        )
+    })
 }
 
 /// One task as its definition and its files say.

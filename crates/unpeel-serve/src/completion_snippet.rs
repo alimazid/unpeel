@@ -642,7 +642,10 @@ mod tests {
         assert_eq!(screen_reply(banner, &claude_prompt(), "x"), None);
         assert_eq!(screen_reply(banner, &claude_prompt(), "  \n"), None);
         // Box rules and an empty screen give nothing.
-        assert_eq!(screen_reply("❯ x\n────\n❯\n────", &claude_prompt(), "x"), None);
+        assert_eq!(
+            screen_reply("❯ x\n────\n❯\n────", &claude_prompt(), "x"),
+            None
+        );
         assert_eq!(screen_reply("", &claude_prompt(), "x"), None);
     }
 }

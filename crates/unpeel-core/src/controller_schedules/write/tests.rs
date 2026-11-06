@@ -645,7 +645,10 @@ fn run_now_answers_the_new_run_or_why_not() {
     );
     let code = |(status, body): (u16, Value)| (status, body["code"].as_str().map(str::to_owned));
     let away = FakeHost::refusing_run_now(RunNowRefusal::Unavailable("not running".into()));
-    assert_eq!(code(run(Some(&away), "sch_1")), (503, Some("host_unavailable".into())));
+    assert_eq!(
+        code(run(Some(&away), "sch_1")),
+        (503, Some("host_unavailable".into()))
+    );
     let slow = FakeHost::refusing_run_now(RunNowRefusal::NoAnswer("timed out".into()));
     assert_eq!(
         code(run(Some(&slow), "sch_1")),
@@ -653,7 +656,10 @@ fn run_now_answers_the_new_run_or_why_not() {
         "it may still start"
     );
     assert_eq!(run(None, "sch_1").0, 503, "Run now needs the worker");
-    assert_eq!(code(run(None, "sch_gone")), (404, Some("unknown_task".into())));
+    assert_eq!(
+        code(run(None, "sch_gone")),
+        (404, Some("unknown_task".into()))
+    );
     assert_eq!(code(run(None, "")), (400, Some("invalid_request".into())));
 }
 
@@ -663,9 +669,10 @@ fn run_now_answers_the_new_run_or_why_not() {
 /// each answers its status and its machine-readable code.
 #[test]
 fn every_write_refusal_in_the_conformance_fixture_carries_its_code() {
-    let fixture: Value =
-        serde_json::from_str(include_str!("../../../../../protocol/host-conformance-v1.json"))
-            .expect("conformance fixture");
+    let fixture: Value = serde_json::from_str(include_str!(
+        "../../../../../protocol/host-conformance-v1.json"
+    ))
+    .expect("conformance fixture");
     let refusals = &fixture["scheduleWriteRefusals"];
     let codes: Vec<&str> = refusals["codes"]
         .as_array()
@@ -684,9 +691,16 @@ fn every_write_refusal_in_the_conformance_fixture_carries_its_code() {
         let path = case["path"].as_str().expect("path");
         let (status, body) = answer_with(&post(path, case["body"].clone()), host, &private);
         let id = case["id"].as_str().unwrap_or_default();
-        assert_eq!(Some(u64::from(status)), case["status"].as_u64(), "{id}: {body}");
+        assert_eq!(
+            Some(u64::from(status)),
+            case["status"].as_u64(),
+            "{id}: {body}"
+        );
         assert_eq!(body["code"], case["code"], "{id}: {body}");
-        assert!(codes.contains(&body["code"].as_str().unwrap_or_default()), "{id}");
+        assert!(
+            codes.contains(&body["code"].as_str().unwrap_or_default()),
+            "{id}"
+        );
     }
 }
 
@@ -694,9 +708,10 @@ fn every_write_refusal_in_the_conformance_fixture_carries_its_code() {
 /// Controller can word each one.
 #[test]
 fn every_refusal_code_is_in_the_conformance_vocabulary() {
-    let fixture: Value =
-        serde_json::from_str(include_str!("../../../../../protocol/host-conformance-v1.json"))
-            .expect("conformance fixture");
+    let fixture: Value = serde_json::from_str(include_str!(
+        "../../../../../protocol/host-conformance-v1.json"
+    ))
+    .expect("conformance fixture");
     let listed: Vec<&str> = fixture["scheduleWriteRefusals"]["codes"]
         .as_array()
         .expect("codes")

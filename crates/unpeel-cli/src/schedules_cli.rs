@@ -382,9 +382,7 @@ fn trigger_flags(args: &Args, comes_due: bool) -> Result<Option<ScheduleTrigger>
 /// flag's own name already gives.
 fn trigger_detail(refusal: &SaveRefusal) -> String {
     match refusal {
-        SaveRefusal::InvalidTrigger(detail) | SaveRefusal::TriggerInPast(detail) => {
-            detail.clone()
-        }
+        SaveRefusal::InvalidTrigger(detail) | SaveRefusal::TriggerInPast(detail) => detail.clone(),
         other => other.to_string(),
     }
 }
@@ -749,9 +747,6 @@ mod tests {
     #[test]
     fn the_help_states_the_instructions_cap() {
         let limit = unpeel_core::schedules::save::instructions_limit();
-        assert!(
-            super::HELP.contains(&format!("Up to {limit}.")),
-            "{limit}"
-        );
+        assert!(super::HELP.contains(&format!("Up to {limit}.")), "{limit}");
     }
 }

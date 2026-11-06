@@ -262,9 +262,7 @@ mod tests {
 
     #[test]
     fn a_session_is_engaged_while_it_runs_busy_or_waiting() {
-        let summary = |status: &str, activity: &str| {
-            serde_json::json!({ "status": status, "activity": activity })
-        };
+        let summary = |status: &str, activity: &str| serde_json::json!({ "status": status, "activity": activity });
         assert!(is_engaged(&summary("running", "working")));
         assert!(is_engaged(&summary("running", "blocked")));
         for (status, activity) in [
@@ -273,7 +271,10 @@ mod tests {
             ("running", "starting"),
             ("exited", "working"),
         ] {
-            assert!(!is_engaged(&summary(status, activity)), "{status} {activity}");
+            assert!(
+                !is_engaged(&summary(status, activity)),
+                "{status} {activity}"
+            );
         }
     }
 

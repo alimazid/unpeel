@@ -77,7 +77,10 @@ impl fmt::Display for SaveRefusal {
                 write!(formatter, "the Project {id} does not exist on this Host")
             }
             Self::ProjectHasNoFolder(id) => {
-                write!(formatter, "the Project {id} has no folder for a Run to start in")
+                write!(
+                    formatter,
+                    "the Project {id} has no folder for a Run to start in"
+                )
             }
             Self::NoPreset => write!(formatter, "a Scheduled Task needs a preset"),
             Self::PresetMissing(id) => write!(
@@ -252,7 +255,10 @@ pub fn schedules_list_mut(state: &mut Map<String, Value>) -> Result<&mut Vec<Val
 }
 
 /// The raw entry of task `schedule_id` in that list.
-pub fn entry_mut<'a>(list: &'a mut [Value], schedule_id: &str) -> Option<&'a mut Map<String, Value>> {
+pub fn entry_mut<'a>(
+    list: &'a mut [Value],
+    schedule_id: &str,
+) -> Option<&'a mut Map<String, Value>> {
     list.iter_mut()
         .find(|entry| entry.get("id").and_then(Value::as_str) == Some(schedule_id))
         .and_then(Value::as_object_mut)

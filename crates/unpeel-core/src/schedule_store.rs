@@ -280,7 +280,9 @@ mod tests {
     fn with_store<T>(body: impl FnOnce(&TaskStore) -> T) -> T {
         let root = std::env::temp_dir().join(format!("unpeel-sched-{}", uuid::Uuid::new_v4()));
         let store = TaskStore::open(&root, "sch_test").expect("valid id");
-        store.save_clock(&ScheduleClock::default()).expect("first clock");
+        store
+            .save_clock(&ScheduleClock::default())
+            .expect("first clock");
         let outcome = body(&store);
         let _ = fs::remove_dir_all(&root);
         outcome
@@ -423,7 +425,12 @@ mod tests {
             raw.extend_from_slice(b"{\"half a line\n");
             fs::write(&path, raw).unwrap();
             store.append_run(&run("run_2", RunStatus::Failed)).unwrap();
-            let ids: Vec<_> = store.runs().unwrap().into_iter().map(|r| r.run_id).collect();
+            let ids: Vec<_> = store
+                .runs()
+                .unwrap()
+                .into_iter()
+                .map(|r| r.run_id)
+                .collect();
             assert_eq!(ids, vec!["run_1", "run_2"]);
         });
     }
@@ -436,7 +443,9 @@ mod tests {
         let append = |task: &str, line: ScheduleRun| {
             let store = TaskStore::open(&root, task).expect("valid id");
             if !store.dir().exists() {
-                store.save_clock(&ScheduleClock::default()).expect("first clock");
+                store
+                    .save_clock(&ScheduleClock::default())
+                    .expect("first clock");
             }
             store.append_run(&line).expect("append");
         };
@@ -525,8 +534,16 @@ mod tests {
             assert_eq!(
                 sessions,
                 vec![
-                    ("run_1".to_string(), RunStatus::Done, Some("new".to_string())),
-                    ("run_2".to_string(), RunStatus::Done, Some("other".to_string())),
+                    (
+                        "run_1".to_string(),
+                        RunStatus::Done,
+                        Some("new".to_string())
+                    ),
+                    (
+                        "run_2".to_string(),
+                        RunStatus::Done,
+                        Some("other".to_string())
+                    ),
                 ]
             );
             assert_eq!(store.replace_session("unknown", "x"), Ok(false));

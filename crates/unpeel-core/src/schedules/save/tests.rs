@@ -99,7 +99,10 @@ fn every_refusal_has_a_stable_code_and_a_sentence() {
     let cases = [
         (SaveRefusal::NoProject, "project_missing"),
         (SaveRefusal::ProjectMissing("p".into()), "project_missing"),
-        (SaveRefusal::ProjectHasNoFolder("p".into()), "project_missing"),
+        (
+            SaveRefusal::ProjectHasNoFolder("p".into()),
+            "project_missing",
+        ),
         (SaveRefusal::NoPreset, "preset_missing"),
         (SaveRefusal::PresetMissing("x".into()), "preset_missing"),
         (SaveRefusal::NotAgentPreset("x".into()), "not_agent_preset"),
@@ -117,7 +120,9 @@ fn every_refusal_has_a_stable_code_and_a_sentence() {
         "the instructions are longer than 256 KiB"
     );
     assert_eq!(
-        SaveRefusal::from(TriggerRefusal::InPast("2026-01-01T09:00 is in the past".into())),
+        SaveRefusal::from(TriggerRefusal::InPast(
+            "2026-01-01T09:00 is in the past".into()
+        )),
         SaveRefusal::TriggerInPast("2026-01-01T09:00 is in the past".into())
     );
 }
@@ -143,7 +148,10 @@ fn a_new_entry_is_the_one_stored_shape() {
     };
     let entry = new_entry(&task, 42);
     let id = entry["id"].as_str().unwrap().to_owned();
-    assert!(id.starts_with("sch_") && super::super::is_valid_id(&id), "{id}");
+    assert!(
+        id.starts_with("sch_") && super::super::is_valid_id(&id),
+        "{id}"
+    );
     assert_eq!(
         entry,
         json!({
@@ -177,7 +185,10 @@ fn the_schedules_list_is_made_but_never_overwritten() {
         .push(json!({"id": "sch_1", "x": 1}));
     assert_eq!(state["schedules"], json!([{"id": "sch_1", "x": 1}]));
     let list = schedules_list_mut(&mut state).unwrap();
-    assert_eq!(entry_mut(list, "sch_1").map(|entry| entry["x"].clone()), Some(json!(1)));
+    assert_eq!(
+        entry_mut(list, "sch_1").map(|entry| entry["x"].clone()),
+        Some(json!(1))
+    );
     assert!(entry_mut(list, "sch_2").is_none());
     let mut broken = Map::from_iter([("schedules".to_owned(), json!({"not": "a list"}))]);
     assert!(schedules_list_mut(&mut broken).is_err());

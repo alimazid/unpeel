@@ -205,10 +205,7 @@ mod tests {
         rows.extend((1..=3).map(|n| row(&format!("b-{n}"), Some("sch_b"), false, n)));
         rows.extend((1..=9).map(|n| row(&format!("user-{n}"), None, false, n)));
 
-        assert_eq!(
-            sorted(expired_run_sessions(&rows)),
-            ["a-1", "a-2"]
-        );
+        assert_eq!(sorted(expired_run_sessions(&rows)), ["a-1", "a-2"]);
     }
 
     /// A pinned Run is never removed and takes no slot. Unread does not
@@ -246,7 +243,10 @@ mod tests {
         for (offset, row) in rows.iter_mut().take(5).enumerate() {
             row.activity_at = 100 + offset as u64;
         }
-        assert!(expired_run_sessions(&rows).is_empty(), "a-6 is the latest Run");
+        assert!(
+            expired_run_sessions(&rows).is_empty(),
+            "a-6 is the latest Run"
+        );
     }
 
     /// The newest is what the user touched last: a resumed-then-stopped

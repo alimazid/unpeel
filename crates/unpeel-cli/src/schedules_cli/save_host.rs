@@ -55,12 +55,17 @@ fn catalog() -> (Vec<HostCreateProject>, Vec<HostCreatePreset>) {
             create_project(id, path, branch)
         }));
         // The ids `resolve_preset` gives the app's own presets.
-        presets.extend(overlay.presets.iter().map(|(label, command)| HostCreatePreset {
-            id: format!("overlay-{label}"),
-            command: command.clone(),
-            enabled: true,
-            project_id: None,
-        }));
+        presets.extend(
+            overlay
+                .presets
+                .iter()
+                .map(|(label, command)| HostCreatePreset {
+                    id: format!("overlay-{label}"),
+                    command: command.clone(),
+                    enabled: true,
+                    project_id: None,
+                }),
+        );
     }
     (projects, presets)
 }

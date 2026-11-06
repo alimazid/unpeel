@@ -116,10 +116,7 @@ fn catalog() -> (Vec<HostCreateProject>, Vec<HostCreatePreset>) {
     )
 }
 
-fn with_scheduler<T>(
-    effects: Recording,
-    body: impl FnOnce(&mut Scheduler, &Recording) -> T,
-) -> T {
+fn with_scheduler<T>(effects: Recording, body: impl FnOnce(&mut Scheduler, &Recording) -> T) -> T {
     let root = std::env::temp_dir().join(format!("unpeel-sched-{}", uuid::Uuid::new_v4()));
     let effects = Arc::new(Recording {
         root: root.clone(),

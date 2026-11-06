@@ -394,10 +394,7 @@ pub fn current_run(runs: &[ScheduleRun]) -> Option<&ScheduleRun> {
     let mut newest: Option<(u64, &ScheduleRun)> = None;
     let mut latest_seen = 0;
     for run in runs {
-        let at = run
-            .ended_at_ms
-            .or(run.started_at_ms)
-            .unwrap_or(latest_seen);
+        let at = run.ended_at_ms.or(run.started_at_ms).unwrap_or(latest_seen);
         latest_seen = latest_seen.max(at);
         if newest.is_none_or(|(best, _)| at >= best) {
             newest = Some((at, run));
@@ -727,10 +724,7 @@ mod tests {
         );
         // A line that says nothing of its time reads at its place in the log.
         let timeless = run_at("run_from_disk", RunStatus::Skipped, None, None);
-        assert_eq!(
-            current_run(&[earlier, timeless.clone()]),
-            Some(&timeless)
-        );
+        assert_eq!(current_run(&[earlier, timeless.clone()]), Some(&timeless));
         assert_eq!(current_run(&[]), None);
     }
 

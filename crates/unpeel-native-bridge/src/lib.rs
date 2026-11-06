@@ -5140,13 +5140,13 @@ mod tests {
             host,
         };
         let encoded: serde_json::Value =
-            serde_json::from_slice(&super::encode_remote_effect_error(refused(Some(
-                Box::new(super::NativeHostRejection {
+            serde_json::from_slice(&super::encode_remote_effect_error(refused(Some(Box::new(
+                super::NativeHostRejection {
                     status: 400,
                     code: Some("trigger_in_past".into()),
                     message: Some("invalid Trigger".into()),
-                }),
-            ))))
+                },
+            )))))
             .unwrap();
         assert_eq!(encoded["code"], "host_operation_rejected");
         assert_eq!(encoded["hostStatus"], 400);

@@ -1501,7 +1501,10 @@ mod tests {
             .iter()
             .map(|schedule| (schedule.id.as_str(), schedule.trigger.kind()))
             .collect();
-        assert_eq!(triggers, vec![("sch_future", "unknown"), ("sch_daily", "daily")]);
+        assert_eq!(
+            triggers,
+            vec![("sch_future", "unknown"), ("sch_daily", "daily")]
+        );
 
         let not_a_list: AppState = serde_json::from_value(serde_json::json!({
             "presets": [{"id": "ok", "label": "ok", "command": "true", "project_id": null}],

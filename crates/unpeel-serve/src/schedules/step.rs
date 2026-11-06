@@ -195,7 +195,14 @@ fn step_task(
     if let Some((trigger, occurrence)) = due {
         after = Some(occurrence);
         last_occurrence = Some(clock::format_datetime(occurrence));
-        runs.extend(fire(task, &mut latest, trigger, occurrence, now, new_run_id));
+        runs.extend(fire(
+            task,
+            &mut latest,
+            trigger,
+            occurrence,
+            now,
+            new_run_id,
+        ));
     }
 
     let clock = clock_after(trigger, after, last_occurrence, latest, now.time_zone());
@@ -248,7 +255,12 @@ struct RunStart {
 
 /// The Run's line: skipped while the latest Run is still in progress, else
 /// started. Either becomes the latest as the clock publishes it.
-fn skip_or_launch(task: &TaskState, latest: &mut LatestRun, start: RunStart, now_ms: u64) -> Action {
+fn skip_or_launch(
+    task: &TaskState,
+    latest: &mut LatestRun,
+    start: RunStart,
+    now_ms: u64,
+) -> Action {
     let action = if latest.in_progress() {
         record(
             &task.schedule.id,

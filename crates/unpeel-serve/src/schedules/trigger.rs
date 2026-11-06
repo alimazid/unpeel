@@ -600,7 +600,9 @@ mod tests {
         };
         assert_eq!(
             for_save(&past, true, now),
-            Err(TriggerRefusal::InPast("2026-11-06T08:00 is in the past".into()))
+            Err(TriggerRefusal::InPast(
+                "2026-11-06T08:00 is in the past".into()
+            ))
         );
         assert_eq!(for_save(&past, false, now), Ok(past));
         let malformed = ScheduleTrigger::Daily {

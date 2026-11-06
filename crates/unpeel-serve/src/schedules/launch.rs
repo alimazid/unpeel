@@ -114,7 +114,10 @@ mod tests {
     fn a_missing_project_or_preset_is_the_reason_it_cannot_start() {
         let presets = [preset("ok", "true", None)];
         let gone = resolve(&schedule("gone", "ok"), &[project("p", "/work")], &presets);
-        assert_eq!(gone, Err("the Project gone does not exist on this Host".into()));
+        assert_eq!(
+            gone,
+            Err("the Project gone does not exist on this Host".into())
+        );
 
         let folder = resolve(&schedule("f", "ok"), &[project("f", " ")], &presets);
         assert!(folder.unwrap_err().contains("no folder"));

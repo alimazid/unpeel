@@ -183,8 +183,8 @@ fn create(
     let preset_id = optional_string(body, "presetID")?.unwrap_or_default();
     let instructions = instructions_field(body)?.flatten();
     let host = require(host)?;
-    let trigger = save::check_trigger(host, &decode_trigger(raw_trigger)?, enabled)
-        .map_err(refused)?;
+    let trigger =
+        save::check_trigger(host, &decode_trigger(raw_trigger)?, enabled).map_err(refused)?;
     save::check_task_runs(host, &project_id, &preset_id, instructions.as_deref())
         .map_err(refused)?;
 
@@ -426,15 +426,13 @@ fn decode(entry: &Map<String, Value>) -> Result<Schedule, Failure> {
 
 /// `{"schedule": <row>}` for an entry as saved, as the list route lists it.
 fn saved_row(workspace: &Workspace, entry: &Value) -> Result<Value, Failure> {
-    let entry = entry
-        .as_object()
-        .ok_or_else(|| {
-            Failure::new(
-                500,
-                codes::INTERNAL,
-                "the saved Scheduled Task is not an object",
-            )
-        })?;
+    let entry = entry.as_object().ok_or_else(|| {
+        Failure::new(
+            500,
+            codes::INTERNAL,
+            "the saved Scheduled Task is not an object",
+        )
+    })?;
     Ok(json!({ "schedule": super::row_at(decode(entry)?, &workspace.root) }))
 }
 
