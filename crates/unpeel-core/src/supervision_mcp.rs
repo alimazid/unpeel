@@ -193,6 +193,15 @@ impl CreateHooks {
         self.default_cwd.clone()
     }
 
+    /// `(command, source preset id)` for a Worker the Router started with
+    /// neither `preset` nor `command`: the Router's own agent. `None` keeps
+    /// upstream's `resolve_create_command`.
+    pub(crate) fn default_command(&self) -> Option<(String, Option<String>)> {
+        self.worker
+            .as_ref()
+            .and_then(workers::WorkerPlan::default_command)
+    }
+
     /// The session record about to be spawned, with any extra fields set.
     pub(crate) fn prepare(&self, session: SessionInfo) -> SessionInfo {
         match &self.worker {

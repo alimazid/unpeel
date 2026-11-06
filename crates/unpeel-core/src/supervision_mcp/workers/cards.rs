@@ -14,20 +14,26 @@ pub(crate) const FINISHED_STATUS: &str = "finished";
 /// Longest card preview.
 pub(super) const MAX_PREVIEW_CHARS: usize = 160;
 
-/// Extra `sessions current` fields for `caller_id` (`None`: nothing to add).
+/// Extra `sessions current` fields for `caller_id`: `inbox.pending` for
+/// every caller (§9), plus Worker cards for the Router or `router_id` for a
+/// Worker.
 pub(crate) fn current_extras(caller_id: &str) -> Option<Value> {
     at_home(|home| current_extras_at(home, caller_id))
 }
 
 pub(super) fn current_extras_at(home: &Home, caller_id: &str) -> Option<Value> {
+    let inbox = json!({ "pending": home.inbox.pending_stats(caller_id).items });
     if home.is_router(caller_id) {
         return Some(json!({
             "super_agent": true,
             "workers": worker_cards(home, caller_id),
+            "inbox": inbox,
         }));
     }
-    home.marker(caller_id)
-        .map(|marker| json!({ "router_id": marker.router_id }))
+    Some(match home.marker(caller_id) {
+        Some(marker) => json!({ "router_id": marker.router_id, "inbox": inbox }),
+        None => json!({ "inbox": inbox }),
+    })
 }
 
 /// One card per Worker, stopped ones included, oldest first. The Router's

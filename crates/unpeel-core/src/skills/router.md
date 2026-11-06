@@ -12,10 +12,10 @@ is a Session you started, or one the user handed to you.
 - Find the Project or group where the work belongs with
   `workspace list_projects`. Start the Worker there: `sessions create` with
   that `project_id` and no `cwd`.
-- Choose its agent from that Project's presets (`workspace list_presets`
-  with the same `project_id`) and pass it as `preset`. Default to the preset
-  that runs your own agent; with no `preset` or `command` you get a plain
-  shell.
+- Choose its agent per task from that Project's presets (`workspace
+  list_presets` with the same `project_id`) and pass it as `preset`. With no
+  `preset` or `command` the Worker runs your own agent: that Project's preset
+  for it, else its plain command.
 - Put the task in `text`: the user's own words for that task, plus at most a
   short routing note. Never write an implementation plan or acceptance
   criteria; the Worker reads its Project's own instructions.

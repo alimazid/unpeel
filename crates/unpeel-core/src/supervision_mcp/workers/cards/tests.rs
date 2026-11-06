@@ -113,8 +113,25 @@ fn a_finished_notice_previews_the_workers_reply() {
 }
 
 #[test]
-fn a_worker_sees_its_router_and_anyone_else_nothing() {
+fn every_caller_sees_its_pending_inbox_and_a_worker_its_router() {
     let home = TestHome::new().worker("w1", true, WorkerOrigin::Created, 10);
-    assert_eq!(extras(&home, "w1"), Some(json!({ "router_id": ROUTER })));
-    assert_eq!(extras(&home, "user-1"), None);
+    assert_eq!(
+        extras(&home, "w1"),
+        Some(json!({ "router_id": ROUTER, "inbox": { "pending": 0 } }))
+    );
+    // Any caller, Worker or not (§9): delivered items no longer count.
+    let first = item(from("w1"), ItemKind::Message, None, "one");
+    let delivered = home.inbox.enqueue("user-1", first, 100).unwrap();
+    home.inbox
+        .ack_through("user-1", &delivered.item_id, 150)
+        .unwrap();
+    for summary in ["two", "three"] {
+        let message = item(from("w1"), ItemKind::Message, None, summary);
+        home.inbox.enqueue("user-1", message, 200).unwrap();
+    }
+    assert_eq!(
+        extras(&home, "user-1"),
+        Some(json!({ "inbox": { "pending": 2 } }))
+    );
+    assert_eq!(extras(&home, ROUTER).unwrap()["inbox"]["pending"], 0);
 }

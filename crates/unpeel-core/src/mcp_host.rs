@@ -3494,7 +3494,10 @@ fn tool_create_session(args: &Value) -> Result<String, String> {
     let project_id = optional_trimmed_str(args, "project_id")
         .map(str::to_string)
         .unwrap_or_else(|| caller.session.project_id.clone());
-    let (command, source_preset_id) = resolve_create_command(args, &project_id)?;
+    // Fork-only: a Worker with neither preset nor command runs the Router's own agent.
+    let (command, source_preset_id) = hooks
+        .default_command()
+        .map_or_else(|| resolve_create_command(args, &project_id), Ok)?;
     let cwd = optional_trimmed_str(args, "cwd")
         .map(str::to_string)
         .or_else(|| hooks.default_cwd()) // Fork-only: the named Project's folder

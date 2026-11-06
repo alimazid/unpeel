@@ -149,6 +149,10 @@ pub(super) struct Creator {
     pub id: String,
     pub label: String,
     pub project_id: String,
+    /// Its observed foreground runtime (`active_runtime_id`).
+    pub observed_runtime: Option<String>,
+    /// Its launch command, as typed.
+    pub command: String,
 }
 
 /// Creates (or adopts) a worktree: `workspace_tools::create_and_register`
@@ -177,6 +181,15 @@ pub(crate) struct WorkerPlan {
     task: Option<String>,
     text: Option<String>,
     worktree: Option<PlannedWorktree>,
+    /// With neither `preset` nor `command`: the Router's own agent.
+    default_command: Option<DefaultCommand>,
+}
+
+/// What a Worker runs when the Router names no `preset` or `command`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct DefaultCommand {
+    command: String,
+    preset_id: Option<String>,
 }
 
 /// The extra create parameters, validated.
@@ -279,6 +292,7 @@ Create the session without it."
         )?),
         None => None,
     };
+    let explicit = text(args, "preset")?.is_some() || text(args, "command")?.is_some();
     Ok(Some(WorkerPlan {
         router_id: caller.id.clone(),
         router_label: caller.label.clone(),
@@ -286,7 +300,42 @@ Create the session without it."
         task: params.task,
         text: params.text,
         worktree,
+        default_command: (!explicit)
+            .then(|| routers_own_agent(&home.state, &project_id, caller))
+            .flatten(),
     }))
+}
+
+/// The Router's own agent for a Worker in `project_id` (§16.2): an enabled
+/// preset of that Project (a group or worktree uses its root's) running the
+/// Router's runtime, else that runtime's plain command — never the Router's
+/// own launch line, which may resume its conversation. `None` (a plain
+/// shell, as upstream) when the catalog does not know the Router's agent.
+fn routers_own_agent(state: &Value, project_id: &str, router: &Creator) -> Option<DefaultCommand> {
+    let runtime = match router.observed_runtime.as_deref() {
+        Some(observed) => crate::integrations::runtime_for_dispatch(observed),
+        None => crate::integrations::runtime_for_command(&router.command),
+    }?;
+    let preset = crate::workspace_tools::usable_presets(state, project_id)
+        .into_iter()
+        .find(|preset| {
+            crate::integrations::runtime_for_command(&preset.command)
+                .is_some_and(|candidate| candidate.id == runtime.id)
+        });
+    match preset {
+        Some(preset) => Some(DefaultCommand {
+            command: preset.command,
+            preset_id: Some(preset.id),
+        }),
+        None => runtime
+            .detection
+            .command_aliases
+            .first()
+            .map(|alias| DefaultCommand {
+                command: alias.clone(),
+                preset_id: None,
+            }),
+    }
 }
 
 /// A root's Sidebar group holds side-panel panes only (§16.2).
@@ -402,6 +451,8 @@ pub(crate) fn plan_create_at_home(
         id: caller.session.id.clone(),
         label: caller.session.label.clone(),
         project_id: caller.session.project_id.clone(),
+        observed_runtime: crate::session_host::active_runtime_id(caller).map(str::to_owned),
+        command: caller.session.command.clone(),
     };
     at_home(|home| {
         plan_create(
@@ -417,6 +468,14 @@ impl WorkerPlan {
     /// The folder the Worker runs in when it has a worktree.
     pub(crate) fn cwd(&self) -> Option<String> {
         self.worktree.as_ref().map(|worktree| worktree.path.clone())
+    }
+
+    /// `(command, source preset id)` when the Router named neither `preset`
+    /// nor `command`: its own agent. `None` keeps upstream's choice.
+    pub(crate) fn default_command(&self) -> Option<(String, Option<String>)> {
+        self.default_command
+            .as_ref()
+            .map(|default| (default.command.clone(), default.preset_id.clone()))
     }
 
     /// The session record about to be spawned: its labels, and its
@@ -558,7 +617,9 @@ pub(super) fn help_docs() -> Vec<(String, Value)> {
             "create".into(),
             section(
                 "Super Agent only: starting a Worker. Without cwd it runs in project_id's folder \
-        (a group runs in its Project's; never the Sidebar group). It is marked as your Worker: its \
+        (a group runs in its Project's; never the Sidebar group). With neither preset nor command it \
+        runs your own agent: the Project's enabled preset for it, else its plain command (never your \
+        own launch line). It is marked as your Worker: its \
         reports and replies reach your Inbox by themselves. At most supervisor_max_children (8) of \
         your Workers run at once, and supervisor_max_spawns_per_minute (6) start per minute; past \
         either the create is refused, so keep the task queued and tell the user.",
@@ -592,10 +653,11 @@ pub(super) fn help_docs() -> Vec<(String, Value)> {
         (
             "current".into(),
             section(
-                "For the Super Agent: super_agent: true and workers[], one card per Worker \
-        {id, label, project_id, group_id, activity_status, last_report_status, preview (its last \
-        report or reply, at most 160 characters)}. Call it after a compaction or Resume before \
-        starting anything. For a Worker: router_id, the Super Agent it reports to.",
+                "For every caller: inbox.pending, the items queued in your own Inbox (read them \
+        with sessions inbox). For the Super Agent: super_agent: true and workers[], one card per \
+        Worker {id, label, project_id, group_id, activity_status, last_report_status, preview (its \
+        last report or reply, at most 160 characters)}. Call it after a compaction or Resume \
+        before starting anything. For a Worker: router_id, the Super Agent it reports to.",
                 json!({}),
             ),
         ),
