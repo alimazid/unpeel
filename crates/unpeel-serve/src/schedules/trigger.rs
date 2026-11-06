@@ -10,6 +10,7 @@
 use jiff::civil::{DateTime, Time, Weekday};
 use jiff::tz::TimeZone;
 use jiff::{ToSpan, Zoned};
+use unpeel_core::schedules::save::TriggerRefusal;
 use unpeel_core::schedules::{Schedule, ScheduleClock, ScheduleTrigger};
 
 use super::clock;
@@ -155,21 +156,26 @@ impl Trigger {
     }
 }
 
-/// The save-time check of a Controller's write
-/// (`unpeel_core::controller_schedules`): the Trigger in its stored form,
-/// or what is wrong with it. A task saved enabled must still come due
-/// ([`Trigger::check`]); one saved paused only needs a Trigger that reads,
-/// since resuming checks it again.
+/// The save-time check of every writer (`unpeel_core::schedules::save`):
+/// the Trigger in its stored form, or what is wrong with it. A task saved
+/// enabled must still come due ([`Trigger::check`]); one saved paused only
+/// needs a Trigger that reads, since resuming checks it again.
 pub fn for_save(
     trigger: &ScheduleTrigger,
     comes_due: bool,
     now: DateTime,
-) -> Result<ScheduleTrigger, String> {
+) -> Result<ScheduleTrigger, TriggerRefusal> {
     let parsed = match Trigger::parse(trigger) {
         Some(parsed) if !comes_due => parsed,
+        Some(Trigger::Once(at)) if at <= now => {
+            return Err(TriggerRefusal::InPast(format!(
+                "{} is in the past",
+                clock::format_datetime(at)
+            )))
+        }
         // `check` reads at least as strictly as `parse`, so it says what is
         // wrong with a Trigger that does not parse.
-        _ => Trigger::check(trigger, now)?,
+        _ => Trigger::check(trigger, now).map_err(TriggerRefusal::Invalid)?,
     };
     Ok(match (parsed, trigger) {
         (Trigger::Hourly(_), _) => trigger.clone(),
@@ -592,14 +598,22 @@ mod tests {
         let past = ScheduleTrigger::Once {
             at: "2026-11-06T08:00".into(),
         };
-        let refused = for_save(&past, true, now).unwrap_err();
-        assert!(refused.contains("in the past"), "{refused}");
+        assert_eq!(
+            for_save(&past, true, now),
+            Err(TriggerRefusal::InPast("2026-11-06T08:00 is in the past".into()))
+        );
         assert_eq!(for_save(&past, false, now), Ok(past));
         let malformed = ScheduleTrigger::Daily {
             time: "25:00".into(),
         };
-        let refused = for_save(&malformed, false, now).unwrap_err();
-        assert!(refused.contains("not a local time"), "{refused}");
-        assert!(for_save(&ScheduleTrigger::Unknown, false, now).is_err());
+        let refused = for_save(&malformed, false, now);
+        assert!(
+            matches!(&refused, Err(TriggerRefusal::Invalid(detail)) if detail.contains("not a local time")),
+            "{refused:?}"
+        );
+        assert!(matches!(
+            for_save(&ScheduleTrigger::Unknown, false, now),
+            Err(TriggerRefusal::Invalid(_))
+        ));
     }
 }

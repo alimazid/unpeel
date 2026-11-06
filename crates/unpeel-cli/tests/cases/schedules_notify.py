@@ -330,7 +330,7 @@ def check_script_runs(case, service, home, adapter):
                and [(n.get("kind"), n.get("sessionID"), n.get("title"), n.get("body"))
                     for n in sent]
                == [("alert", "", "Doomed",
-                    "Failed: the preset doomed no longer exists or is disabled")],
+                    "Failed: the preset doomed does not exist in that Project or is turned off")],
                json.dumps(sent))
 
 

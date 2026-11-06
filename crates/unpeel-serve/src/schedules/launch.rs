@@ -1,8 +1,11 @@
 //! Where a task's Run starts: its Project's directory and its preset's
-//! command as typed, resolved against the Host's create catalog by the same
-//! rules as `session.create`. A reason comes back when it cannot start.
+//! command as typed, resolved against the Host's create catalog by the save
+//! rules every writer checks (`unpeel_core::schedules::save`), so a Run
+//! refuses exactly what a save would. A reason comes back when it cannot
+//! start.
 
-use unpeel_core::controller_api::{find_host_preset, HostCreatePreset, HostCreateProject};
+use unpeel_core::controller_api::{HostCreatePreset, HostCreateProject};
+use unpeel_core::schedules::save;
 use unpeel_core::schedules::Schedule;
 
 use super::step::LaunchPlan;
@@ -12,61 +15,24 @@ pub fn resolve(
     projects: &[HostCreateProject],
     presets: &[HostCreatePreset],
 ) -> Result<LaunchPlan, String> {
-    let project = projects
-        .iter()
-        .find(|project| project.id == schedule.project_id)
-        .ok_or_else(|| format!("the Project {} no longer exists", schedule.project_id))?;
-    let cwd = project
-        .worktree_path
-        .clone()
-        .unwrap_or_else(|| project.path.clone());
-    if cwd.trim().is_empty() {
-        return Err(format!(
-            "the Project {} has no folder to run in",
-            schedule.project_id
-        ));
-    }
-    let preset =
-        find_host_preset(presets, &schedule.preset_id, &schedule.project_id).ok_or_else(|| {
-            format!(
-                "the preset {} no longer exists or is disabled",
-                schedule.preset_id
-            )
-        })?;
+    let target = save::check_runnable(
+        &schedule.project_id,
+        &schedule.preset_id,
+        schedule.instructions.as_deref(),
+        projects,
+        presets,
+    )
+    .map_err(|refusal| refusal.to_string())?;
     Ok(LaunchPlan {
-        project_id: project.id.clone(),
-        preset_id: preset.id.clone(),
-        command: preset.command.clone(),
-        cwd,
-        worktree_path: project.worktree_path.clone(),
-        worktree_branch: project.worktree_branch.clone(),
-        agent: unpeel_core::agent_readiness::is_agent_command(&preset.command),
-        instructions: instructions(schedule, preset)?,
+        project_id: target.project.id.clone(),
+        preset_id: target.preset.id.clone(),
+        command: target.preset.command.clone(),
+        cwd: target.cwd.to_owned(),
+        worktree_path: target.project.worktree_path.clone(),
+        worktree_branch: target.project.worktree_branch.clone(),
+        agent: unpeel_core::agent_readiness::is_agent_command(&target.preset.command),
+        instructions: target.instructions.map(str::to_owned),
     })
-}
-
-/// The task's instructions, when its preset can take them: an Agent Preset
-/// (a runtime Unpeel can tell is ready), within the create path's cap. A
-/// preset edited into a plain command since the task was saved fails the
-/// Run rather than typing the instructions into a shell.
-fn instructions(schedule: &Schedule, preset: &HostCreatePreset) -> Result<Option<String>, String> {
-    let Some(text) = schedule
-        .instructions
-        .as_deref()
-        .filter(|text| !text.trim().is_empty())
-    else {
-        return Ok(None);
-    };
-    if !unpeel_core::agent_readiness::is_agent_command(&preset.command) {
-        return Err(format!(
-            "the preset {} is not an Agent Preset, so it cannot take the task's instructions",
-            preset.id
-        ));
-    }
-    if text.len() > unpeel_core::initial_text::MAX_INITIAL_TEXT_BYTES {
-        return Err("the task's instructions are longer than 256 KiB".into());
-    }
-    Ok(Some(text.to_owned()))
 }
 
 #[cfg(test)]
@@ -143,7 +109,7 @@ mod tests {
     fn a_missing_project_or_preset_is_the_reason_it_cannot_start() {
         let presets = [preset("ok", "true", None)];
         let gone = resolve(&schedule("gone", "ok"), &[project("p", "/work")], &presets);
-        assert_eq!(gone, Err("the Project gone no longer exists".into()));
+        assert_eq!(gone, Err("the Project gone does not exist on this Host".into()));
 
         let folder = resolve(&schedule("f", "ok"), &[project("f", " ")], &presets);
         assert!(folder.unwrap_err().contains("no folder"));
@@ -155,7 +121,7 @@ mod tests {
         );
         assert_eq!(
             deleted,
-            Err("the preset deleted no longer exists or is disabled".into())
+            Err("the preset deleted does not exist in that Project or is turned off".into())
         );
 
         let mut disabled = preset("ok", "true", None);

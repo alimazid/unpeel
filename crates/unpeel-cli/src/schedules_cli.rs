@@ -7,11 +7,15 @@
 //! those verbs refuse inside a Session (the same detection `unpeel send`
 //! uses).
 
-use serde_json::{json, Map, Value};
+use serde_json::{json, Value};
 use unpeel_core::schedule_store::TaskStore;
+use unpeel_core::schedules::save::{self, SaveRefusal};
 use unpeel_core::schedules::{self, Schedule, ScheduleEdit, ScheduleRun, ScheduleTrigger};
 use unpeel_serve::schedules::clock;
-use unpeel_serve::schedules::trigger::{self, Trigger};
+use unpeel_serve::schedules::trigger;
+
+mod save_host;
+use save_host::CliHost;
 
 pub const HELP: &str = "\
 usage: unpeel schedules [list] [--json]
@@ -275,37 +279,37 @@ fn local_time(ms: u64) -> Option<String> {
 
 fn add(args: &Args, json: bool) -> Result<(), String> {
     let name = add_name(args)?;
-    let trigger = trigger_flags(args)?.ok_or_else(|| {
+    let trigger = trigger_flags(args, true)?.ok_or_else(|| {
         format!(
             "give exactly one Trigger: --hourly, --daily, --weekdays, --weekly, --once or --cron\n\n{HELP}"
         )
     })?;
     let notify = notify_flag(args)?.unwrap_or(true);
     let project_id = resolve_project(required(args, "project")?)?;
-    let (preset_id, preset_command) = resolve_preset(required(args, "preset")?, &project_id)?;
-    let instructions = add_instructions(args, &preset_id, &preset_command)?;
-    let id = format!("sch_{}", uuid::Uuid::new_v4());
-    let mut entry = json!({
-        "id": id,
-        "name": name,
-        "project_id": project_id,
-        "preset_id": preset_id,
-        "trigger": trigger,
-        "enabled": true,
-        "notify_when_done": notify,
-        "created_at_ms": clock::epoch_ms(&clock::now()),
-    });
-    if let Some(instructions) = instructions {
-        entry["instructions"] = Value::String(instructions);
-    }
+    let preset_id = resolve_preset(required(args, "preset")?, &project_id)?;
+    let instructions = add_instructions(args)?;
+    save::check_task_runs(&CliHost, &project_id, &preset_id, instructions.as_deref())
+        .map_err(|refusal| refusal.to_string())?;
+    let entry = save::new_entry(
+        &save::NewTask {
+            name: &name,
+            project_id: &project_id,
+            preset_id: &preset_id,
+            trigger: &trigger,
+            instructions: instructions.as_deref(),
+            enabled: true,
+            notify_when_done: notify,
+        },
+        clock::epoch_ms(&clock::now()),
+    );
     unpeel_core::app_state::edit(|state| {
-        schedules_mut(state)?.push(entry.clone());
+        save::schedules_list_mut(state)?.push(entry.clone());
         Ok(())
     })?;
     if json {
         println!("{entry}");
     } else {
-        println!("{id}");
+        println!("{}", entry["id"].as_str().unwrap_or_default());
     }
     if !unpeel_serve::driver::is_running() {
         eprintln!(
@@ -333,36 +337,24 @@ fn notify_flag(args: &Args) -> Result<Option<bool>, String> {
     }
 }
 
-/// `--instructions`: only an Agent Preset takes them (ADR 0005), and no more
-/// than a create may type.
-fn add_instructions(args: &Args, preset_id: &str, command: &str) -> Result<Option<String>, String> {
+/// `--instructions`, checked with the rest of the task (`save::check_runnable`:
+/// only an Agent Preset takes them, ADR 0005, and no more than a create may
+/// type).
+fn add_instructions(args: &Args) -> Result<Option<String>, String> {
     let Some(text) = args.values.get("instructions") else {
         return Ok(None);
     };
     if text.trim().is_empty() {
         return Err("--instructions cannot be empty".into());
     }
-    checked_instructions(text, preset_id, command).map(Some)
+    Ok(Some(text.clone()))
 }
 
-/// The rules every writer of instructions applies: an Agent Preset, at most
-/// 256 KiB.
-fn checked_instructions(text: &str, preset_id: &str, command: &str) -> Result<String, String> {
-    if text.len() > unpeel_core::initial_text::MAX_INITIAL_TEXT_BYTES {
-        return Err("--instructions are longer than 256 KiB".into());
-    }
-    if !unpeel_core::agent_readiness::is_agent_command(command) {
-        return Err(format!(
-            "the preset {preset_id} is not an Agent Preset: its command ({command}) does not \
-             start an agent Unpeel can tell is ready, so it cannot take --instructions"
-        ));
-    }
-    Ok(text.to_string())
-}
-
-/// The Trigger the flags give, in its stored form, after the save-time
-/// check every writer runs; `None` when no Trigger flag is given.
-fn trigger_flags(args: &Args) -> Result<Option<ScheduleTrigger>, String> {
+/// The Trigger the flags give, in its stored form, after the save check
+/// every writer runs (`save::check_trigger`, on this machine's clock, the
+/// Host's): with `comes_due` it must still come due. `None` when no
+/// Trigger flag is given.
+fn trigger_flags(args: &Args, comes_due: bool) -> Result<Option<ScheduleTrigger>, String> {
     let given: Vec<&str> = TRIGGER_FLAGS
         .iter()
         .copied()
@@ -381,15 +373,26 @@ fn trigger_flags(args: &Args) -> Result<Option<ScheduleTrigger>, String> {
     };
     let value = args.values.get(flag).map(String::as_str).unwrap_or("");
     let trigger = stored_trigger(flag, value)?;
-    Trigger::check(&trigger, clock::now().datetime())
-        .map_err(|error| format!("--{flag}: {error}"))?;
-    Ok(Some(trigger))
+    save::check_trigger(&CliHost, &trigger, comes_due)
+        .map(Some)
+        .map_err(|refusal| format!("--{flag}: {}", trigger_detail(&refusal)))
+}
+
+/// What is wrong with a Trigger, without the "invalid Trigger" prefix a
+/// flag's own name already gives.
+fn trigger_detail(refusal: &SaveRefusal) -> String {
+    match refusal {
+        SaveRefusal::InvalidTrigger(detail) | SaveRefusal::TriggerInPast(detail) => {
+            detail.clone()
+        }
+        other => other.to_string(),
+    }
 }
 
 /// A Trigger flag's value in the stored form: times and dates without
 /// zero seconds, a weekday's full name, a cron expression's fields
 /// single-spaced. A value that does not read is passed on as typed, for
-/// [`Trigger::check`] to say what is wrong with it.
+/// the save check to say what is wrong with it.
 fn stored_trigger(flag: &str, value: &str) -> Result<ScheduleTrigger, String> {
     let time = |raw: &str| {
         clock::parse_time(raw)
@@ -458,8 +461,8 @@ fn resolve_project(selector: &str) -> Result<String, String> {
 }
 
 /// An enabled preset by id, then by unique label: the Project's own and the
-/// global ones, the catalog a Run resolves against. Its id and command.
-fn resolve_preset(selector: &str, project_id: &str) -> Result<(String, String), String> {
+/// global ones, the catalog a Run resolves against.
+fn resolve_preset(selector: &str, project_id: &str) -> Result<String, String> {
     let state = unpeel_serve::sessions::load_app_state();
     let mut stored: Vec<_> = state
         .iter()
@@ -492,19 +495,13 @@ fn resolve_preset(selector: &str, project_id: &str) -> Result<(String, String), 
             }),
         );
     }
-    let id = pick(
+    pick(
         "preset",
         selector,
         presets
             .iter()
             .map(|(id, label, _)| (id.as_str(), label.as_str())),
-    )?;
-    let command = presets
-        .iter()
-        .find(|(candidate, _, _)| *candidate == id)
-        .map(|(_, _, command)| command.clone())
-        .unwrap_or_default();
-    Ok((id, command))
+    )
 }
 
 /// The id `selector` names: an exact id first, then a unique name.
@@ -531,56 +528,18 @@ fn pick<'a>(
     }
 }
 
-fn schedules_mut(state: &mut Map<String, Value>) -> Result<&mut Vec<Value>, String> {
-    state
-        .entry("schedules")
-        .or_insert_with(|| Value::Array(Vec::new()))
-        .as_array_mut()
-        .ok_or_else(|| "app-state.json schedules is not a list; not changing it".to_string())
-}
-
 // ── edit / pause / resume ──
 
 fn edit(args: &Args, json: bool) -> Result<(), String> {
     let schedule = select(args)?;
-    let project_id = args
-        .values
-        .get("project")
-        .map(|selector| resolve_project(selector))
-        .transpose()?;
-    let in_project = project_id.as_deref().unwrap_or(&schedule.project_id);
-    let preset = match args.values.get("preset") {
-        Some(selector) => Some(resolve_preset(selector, in_project)?),
-        None => {
-            if project_id.is_some() && resolve_preset(&schedule.preset_id, in_project).is_err() {
-                return Err(format!(
-                    "the preset {} is not available in that Project; give --preset too",
-                    schedule.preset_id
-                ));
-            }
-            None
-        }
-    };
-    let instructions = edit_instructions(args, &schedule, preset.as_ref(), in_project)?;
-    let change = ScheduleEdit {
-        name: args
-            .values
-            .get("name")
-            .map(|name| schedules::task_name(name))
-            .transpose()?,
-        project_id,
-        preset_id: preset.map(|(id, _)| id),
-        trigger: trigger_flags(args)?,
-        enabled: None,
-        notify_when_done: notify_flag(args)?,
-        instructions,
-    };
+    let change = edit_change(args, &schedule)?;
     if change == ScheduleEdit::default() {
         return Err(format!(
             "nothing to change: give --name, --project, --preset, a Trigger, --instructions, \
              --notify or --no-notify\n\n{HELP}"
         ));
     }
+    check_edit_runs(&schedule, &change)?;
     let edited = save_edit(&schedule.id, &change)?;
     if json {
         println!("{}", schedule_json(&edited));
@@ -597,35 +556,65 @@ fn edit(args: &Args, json: bool) -> Result<(), String> {
     Ok(())
 }
 
-/// `edit --instructions`: new text is checked against the preset the task
-/// will have (add's rules), an empty value removes them, and a new preset
-/// that cannot take the instructions the task keeps is refused.
-fn edit_instructions(
-    args: &Args,
-    schedule: &Schedule,
-    new_preset: Option<&(String, String)>,
-    in_project: &str,
-) -> Result<Option<Option<String>>, String> {
-    let given = args.values.get("instructions");
-    if given.is_some_and(|text| text.trim().is_empty()) {
-        return Ok(Some(None));
+/// What `edit`'s flags change. A new Trigger must still come due while the
+/// task is enabled; a new preset is looked up in the Project the task will
+/// have.
+fn edit_change(args: &Args, schedule: &Schedule) -> Result<ScheduleEdit, String> {
+    let project_id = args
+        .values
+        .get("project")
+        .map(|selector| resolve_project(selector))
+        .transpose()?;
+    let in_project = project_id.as_deref().unwrap_or(&schedule.project_id);
+    let preset_id = args
+        .values
+        .get("preset")
+        .map(|selector| resolve_preset(selector, in_project))
+        .transpose()?;
+    Ok(ScheduleEdit {
+        name: args
+            .values
+            .get("name")
+            .map(|name| schedules::task_name(name))
+            .transpose()?,
+        project_id,
+        preset_id,
+        trigger: trigger_flags(args, schedule.enabled)?,
+        enabled: None,
+        notify_when_done: notify_flag(args)?,
+        // Absent: unchanged; empty: removed; text: set.
+        instructions: args
+            .values
+            .get("instructions")
+            .map(|text| (!text.trim().is_empty()).then(|| text.clone())),
+    })
+}
+
+/// A new Project, preset or instructions must still make a task the Host
+/// would run (`save::check_runnable`), as the write routes check it.
+fn check_edit_runs(schedule: &Schedule, change: &ScheduleEdit) -> Result<(), String> {
+    let changes_the_run = change.project_id.is_some()
+        || change.preset_id.is_some()
+        || matches!(change.instructions, Some(Some(_)));
+    if !changes_the_run {
+        return Ok(());
     }
-    let kept = schedule
-        .instructions
-        .as_deref()
-        .filter(|text| !text.trim().is_empty() && new_preset.is_some());
-    let Some(text) = given.map(String::as_str).or(kept) else {
-        return Ok(None);
+    let instructions = match &change.instructions {
+        Some(given) => given.as_deref(),
+        None => schedule.instructions.as_deref(),
     };
-    let (preset_id, command) = match new_preset {
-        Some(preset) => preset.clone(),
-        None => resolve_preset(&schedule.preset_id, in_project)?,
-    };
-    checked_instructions(text, &preset_id, &command).map_err(|error| match given {
-        Some(_) => error,
-        None => format!("{error}; the task has instructions: remove them with --instructions ''"),
-    })?;
-    Ok(given.map(|text| Some(text.clone())))
+    save::check_task_runs(
+        &CliHost,
+        change.project_id.as_deref().unwrap_or(&schedule.project_id),
+        change.preset_id.as_deref().unwrap_or(&schedule.preset_id),
+        instructions,
+    )
+    .map_err(|refusal| match (&refusal, &change.instructions) {
+        (SaveRefusal::NotAgentPreset(_), None) => {
+            format!("{refusal}; the task has instructions: remove them with --instructions ''")
+        }
+        _ => refusal.to_string(),
+    })
 }
 
 fn pause(args: &Args) -> Result<(), String> {
@@ -647,14 +636,16 @@ fn resume(args: &Args) -> Result<(), String> {
         println!("{} is not paused", display_name(&schedule));
         return Ok(());
     }
-    if let ScheduleTrigger::Once { at } = &schedule.trigger {
-        if Trigger::check(&schedule.trigger, clock::now().datetime()).is_err() {
+    match save::check_trigger(&CliHost, &schedule.trigger, true) {
+        Ok(_) => {}
+        Err(SaveRefusal::TriggerInPast(_)) => {
             return Err(format!(
-                "{}'s time {at} has passed; give it a new one with `unpeel schedules edit {} --once …`",
+                "{}'s time has passed; give it a new one with `unpeel schedules edit {} --once …`",
                 display_name(&schedule),
                 schedule.id
-            ));
+            ))
         }
+        Err(refusal) => return Err(format!("cannot resume: {refusal}")),
     }
     let resumed = save_edit(&schedule.id, &enabled(true))?;
     let next = schedule_json(&resumed)["next_run"]
@@ -677,16 +668,11 @@ fn enabled(enabled: bool) -> ScheduleEdit {
 fn save_edit(schedule_id: &str, change: &ScheduleEdit) -> Result<Schedule, String> {
     let now_ms = clock::epoch_ms(&clock::now());
     let saved = unpeel_core::app_state::edit(|state| {
-        let entry = schedules_mut(state)?
-            .iter_mut()
-            .find(|entry| entry.get("id").and_then(Value::as_str) == Some(schedule_id))
+        let list = save::schedules_list_mut(state)?;
+        let entry = save::entry_mut(list, schedule_id)
             .ok_or_else(|| format!("no Scheduled Task {schedule_id}; it was removed"))?;
-        let stored = entry
-            .as_object()
-            .ok_or_else(|| format!("Scheduled Task {schedule_id} is not an object"))?;
-        let edited = Value::Object(schedules::apply_edit(stored, change, now_ms));
-        *entry = edited.clone();
-        Ok(edited)
+        *entry = schedules::apply_edit(entry, change, now_ms);
+        Ok(Value::Object(entry.clone()))
     })?;
     schedules::schedules_from_value(Some(&Value::Array(vec![saved])))
         .pop()
@@ -747,7 +733,7 @@ fn run_now(args: &Args, json: bool) -> Result<(), String> {
 fn remove(args: &Args) -> Result<(), String> {
     let schedule = select(args)?;
     unpeel_core::app_state::edit(|state| {
-        schedules_mut(state)?
+        save::schedules_list_mut(state)?
             .retain(|entry| entry.get("id").and_then(Value::as_str) != Some(schedule.id.as_str()));
         Ok(())
     })?;

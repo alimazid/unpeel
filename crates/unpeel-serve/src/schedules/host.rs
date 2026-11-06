@@ -10,6 +10,7 @@ use std::time::Duration;
 
 use unpeel_core::controller_api::{HostCreatePreset, HostCreateProject};
 use unpeel_core::controller_schedules::{RunNowRefusal, ScheduleHost};
+use unpeel_core::schedules::save::{SaveHost, TriggerRefusal};
 use unpeel_core::schedules::ScheduleTrigger;
 
 use super::{clock, trigger};
@@ -33,7 +34,7 @@ impl WorkerHost {
     }
 }
 
-impl ScheduleHost for WorkerHost {
+impl SaveHost for WorkerHost {
     fn catalog(&self) -> Option<(Vec<HostCreateProject>, Vec<HostCreatePreset>)> {
         crate::mobile::create_catalog(&self.snapshot)
     }
@@ -42,10 +43,12 @@ impl ScheduleHost for WorkerHost {
         &self,
         trigger: &ScheduleTrigger,
         comes_due: bool,
-    ) -> Result<ScheduleTrigger, String> {
+    ) -> Result<ScheduleTrigger, TriggerRefusal> {
         trigger::for_save(trigger, comes_due, clock::now().datetime())
     }
+}
 
+impl ScheduleHost for WorkerHost {
     fn run_now(&self, schedule_id: &str) -> Result<String, RunNowRefusal> {
         let (reply, answer) = mpsc::sync_channel(1);
         let request = LocalControlRequest::RunScheduleNow {

@@ -670,17 +670,10 @@ impl Effects for HostEffects {
     }
 
     fn disable(&self, schedule_id: &str) -> Result<(), String> {
+        use unpeel_core::schedules::save;
         unpeel_core::app_state::edit(|state| {
-            let entry = state
-                .get_mut("schedules")
-                .and_then(serde_json::Value::as_array_mut)
-                .and_then(|entries| {
-                    entries.iter_mut().find(|entry| {
-                        entry.get("id").and_then(serde_json::Value::as_str) == Some(schedule_id)
-                    })
-                })
-                .and_then(serde_json::Value::as_object_mut);
-            if let Some(entry) = entry {
+            let list = save::schedules_list_mut(state)?;
+            if let Some(entry) = save::entry_mut(list, schedule_id) {
                 entry.insert("enabled".into(), serde_json::Value::Bool(false));
             }
             Ok(())

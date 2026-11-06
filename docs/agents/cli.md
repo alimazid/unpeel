@@ -119,9 +119,14 @@ goes through `unpeel_core::schedules::apply_edit`); the workspace worker
 re-reads it every rescan and fires due tasks itself
 (`unpeel_serve::schedules`). Every Trigger is stored in its canonical form
 (times without zero seconds, a weekday's full lowercase name, a cron
-expression single-spaced) after `trigger::Trigger::check`, the save-time
-check any writer must run: it refuses out-of-range values, a past Once, and
-a cron expression that is not exactly 5 fields or never comes due. Pause is
+expression single-spaced) after the save rules every writer runs
+(`unpeel_core::schedules::save`, with `trigger::for_save` on this machine's
+clock, the function the Host uses): they refuse out-of-range values, a past
+Once, a cron expression that is not exactly 5 fields or never comes due, and
+a task the Host would not run (a Project with no folder, a preset that is
+missing or turned off, instructions on a preset that is not an Agent
+Preset), checked against the Projects and presets of `app-state.json` and
+the app's overlay. Pause is
 `enabled: false`; Resume, and a new Trigger, stamp `clock_reset_at_ms`, and
 the due rule counts only occurrences after it, so nothing missed while
 paused runs. `run` (Run now) goes to the live worker over the owner-only

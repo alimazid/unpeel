@@ -25,10 +25,9 @@ use std::sync::{Arc, Mutex};
 use serde_json::{json, Map, Value};
 
 use super::Failure;
-use crate::controller_api::{
-    find_host_preset, ControllerPrincipal, ControllerRequest, HostCreatePreset, HostCreateProject,
-};
+use crate::controller_api::{ControllerPrincipal, ControllerRequest};
 use crate::schedule_store::TaskStore;
+use crate::schedules::save::{self, SaveHost, SaveRefusal};
 use crate::schedules::{self, Schedule, ScheduleEdit, ScheduleTrigger};
 
 pub(super) const CREATE_PATH: &str = "/mobile/schedules";
@@ -48,21 +47,9 @@ pub enum RunNowRefusal {
     NoAnswer(String),
 }
 
-/// What only the workspace worker can do for the write routes.
-pub trait ScheduleHost: Send + Sync {
-    /// The Projects and presets a Run resolves against (`session.create`'s
-    /// catalog); `None` while the worker has not published one.
-    fn catalog(&self) -> Option<(Vec<HostCreateProject>, Vec<HostCreatePreset>)>;
-    /// The save-time check of every writer, on the Host's wall clock: the
-    /// Trigger in its stored form, or what is wrong with it. With
-    /// `comes_due` it must still come due (a past Once is refused); a task
-    /// saved paused only needs a Trigger that reads, and is checked again
-    /// when it resumes.
-    fn check_trigger(
-        &self,
-        trigger: &ScheduleTrigger,
-        comes_due: bool,
-    ) -> Result<ScheduleTrigger, String>;
+/// What only the workspace worker can do for the write routes: the save
+/// rules' Host half (its clock and catalog, [`SaveHost`]) and Run now.
+pub trait ScheduleHost: SaveHost + Send + Sync {
     /// Start a Run of the task now; its Run id.
     fn run_now(&self, schedule_id: &str) -> Result<String, RunNowRefusal>;
 }
@@ -187,23 +174,23 @@ fn create(
     let preset_id = optional_string(body, "presetID")?.unwrap_or_default();
     let instructions = instructions_field(body)?.flatten();
     let host = require(host)?;
-    let trigger = checked_trigger(host, raw_trigger, enabled)?;
-    Catalog::of(host)?.check_runs(&project_id, &preset_id, instructions.as_deref())?;
+    let trigger = save::check_trigger(host, &decode_trigger(raw_trigger)?, enabled)
+        .map_err(refused)?;
+    save::check_task_runs(host, &project_id, &preset_id, instructions.as_deref())
+        .map_err(refused)?;
 
-    let id = format!("sch_{}", uuid::Uuid::new_v4());
-    let mut entry = json!({
-        "id": id,
-        "name": name,
-        "project_id": project_id,
-        "preset_id": preset_id,
-        "trigger": trigger,
-        "enabled": enabled,
-        "notify_when_done": notify,
-        "created_at_ms": now_ms,
-    });
-    if let Some(instructions) = instructions {
-        entry["instructions"] = Value::String(instructions);
-    }
+    let entry = save::new_entry(
+        &save::NewTask {
+            name: &name,
+            project_id: &project_id,
+            preset_id: &preset_id,
+            trigger: &trigger,
+            instructions: instructions.as_deref(),
+            enabled,
+            notify_when_done: notify,
+        },
+        now_ms,
+    );
     workspace.edit(|list| {
         list.push(entry.clone());
         Ok(())
@@ -239,42 +226,53 @@ fn edit(
         instructions: instructions_field(body)?,
     };
     let host = require(host)?;
-    let enabled = change.enabled.unwrap_or(current.enabled);
-    let new_trigger = body
-        .get("trigger")
-        .filter(|raw| !raw.is_null() && Some(*raw) != stored.get("trigger"));
-    if let Some(raw) = new_trigger {
-        change.trigger = Some(checked_trigger(host, raw, enabled)?);
-    } else if enabled && !current.enabled {
-        host.check_trigger(&current.trigger, true)
-            .map_err(|error| invalid(format!("cannot resume: {error}")))?;
-    }
+    change.trigger = edited_trigger(host, body, &stored, &current, change.enabled)?;
     if change.project_id.is_some()
         || change.preset_id.is_some()
         || matches!(change.instructions, Some(Some(_)))
     {
         let edited = decode(&schedules::apply_edit(&stored, &change, now_ms))?;
-        Catalog::of(host)?.check_runs(
+        save::check_task_runs(
+            host,
             &edited.project_id,
             &edited.preset_id,
             edited.instructions.as_deref(),
-        )?;
+        )
+        .map_err(refused)?;
     }
     let saved = workspace.edit(|list| {
-        let entry = list
-            .iter_mut()
-            .find(|entry| entry_id(entry) == Some(schedule_id.as_str()))
-            .ok_or_else(|| gone(&schedule_id))?;
-        let fresh = entry.as_object().ok_or_else(|| {
-            Failure(
-                500,
-                format!("Scheduled Task {schedule_id} is not an object"),
-            )
-        })?;
-        *entry = Value::Object(schedules::apply_edit(fresh, &change, now_ms));
-        Ok(entry.clone())
+        let entry = save::entry_mut(list, &schedule_id).ok_or_else(|| gone(&schedule_id))?;
+        *entry = schedules::apply_edit(entry, &change, now_ms);
+        Ok(Value::Object(entry.clone()))
     })?;
     saved_row(workspace, &saved)
+}
+
+/// An edit's new Trigger, checked (it must come due while the task stays
+/// enabled); without one, resuming checks the Trigger the task keeps.
+fn edited_trigger(
+    host: &dyn ScheduleHost,
+    body: &Map<String, Value>,
+    stored: &Map<String, Value>,
+    current: &Schedule,
+    enabled: Option<bool>,
+) -> Result<Option<ScheduleTrigger>, Failure> {
+    let enabled = enabled.unwrap_or(current.enabled);
+    let new_trigger = body
+        .get("trigger")
+        .filter(|raw| !raw.is_null() && Some(*raw) != stored.get("trigger"));
+    if let Some(raw) = new_trigger {
+        return save::check_trigger(host, &decode_trigger(raw)?, enabled)
+            .map(Some)
+            .map_err(refused);
+    }
+    if enabled && !current.enabled {
+        save::check_trigger(host, &current.trigger, true).map_err(|refusal| {
+            let failure = refused(refusal);
+            Failure(failure.0, format!("cannot resume: {}", failure.1))
+        })?;
+    }
+    Ok(None)
 }
 
 // ── delete ──
@@ -327,94 +325,23 @@ fn run_now(
 
 // ── shared rules ──
 
-/// The Projects and presets a Run would resolve against.
-struct Catalog {
-    projects: Vec<HostCreateProject>,
-    presets: Vec<HostCreatePreset>,
+/// A save rule's refusal (`schedules::save`): 400, except a catalog the
+/// Host has not published yet (503, try again).
+fn refused(refusal: SaveRefusal) -> Failure {
+    let status = match refusal {
+        SaveRefusal::CatalogUnavailable => 503,
+        _ => 400,
+    };
+    Failure(status, refusal.to_string())
 }
 
-impl Catalog {
-    fn of(host: &dyn ScheduleHost) -> Result<Self, Failure> {
-        let (projects, presets) = host.catalog().ok_or_else(|| {
-            Failure(
-                503,
-                "the Host has not published its Projects yet; try again".into(),
-            )
-        })?;
-        Ok(Self { projects, presets })
-    }
-
-    /// The rules a Run applies when it starts (`unpeel_serve::schedules::
-    /// launch`), so a task the Host would refuse to run is not saved: a
-    /// Project with a folder, an enabled preset of it or a global one, and
-    /// instructions only for an Agent Preset.
-    fn check_runs(
-        &self,
-        project_id: &str,
-        preset_id: &str,
-        instructions: Option<&str>,
-    ) -> Result<(), Failure> {
-        if project_id.trim().is_empty() {
-            return Err(invalid("a Scheduled Task needs a Project"));
-        }
-        let project = self
-            .projects
-            .iter()
-            .find(|project| project.id == project_id)
-            .ok_or_else(|| {
-                invalid(format!(
-                    "the Project {project_id} does not exist on this Host"
-                ))
-            })?;
-        let folder = project.worktree_path.as_deref().unwrap_or(&project.path);
-        if folder.trim().is_empty() {
-            return Err(invalid(format!(
-                "the Project {project_id} has no folder for a Run to start in"
-            )));
-        }
-        if preset_id.trim().is_empty() {
-            return Err(invalid("a Scheduled Task needs a preset"));
-        }
-        let preset = find_host_preset(&self.presets, preset_id, project_id).ok_or_else(|| {
-            invalid(format!(
-                "the preset {preset_id} does not exist in that Project or is turned off"
-            ))
-        })?;
-        match instructions {
-            Some(text) => check_instructions(text, &preset.command),
-            None => Ok(()),
-        }
-    }
-}
-
-/// Instructions are for an Agent Preset only, at most what a create types.
-fn check_instructions(text: &str, command: &str) -> Result<(), Failure> {
-    if text.len() > crate::initial_text::MAX_INITIAL_TEXT_BYTES {
-        return Err(invalid("instructions are longer than 256 KiB"));
-    }
-    if !crate::agent_readiness::is_agent_command(command) {
-        return Err(invalid(
-            "this preset is not an Agent Preset: it does not start an agent Unpeel can tell \
-             is ready, so it cannot take instructions",
-        ));
-    }
-    Ok(())
-}
-
-/// A Trigger from a body, decoded and checked by the Host.
-fn checked_trigger(
-    host: &dyn ScheduleHost,
-    raw: &Value,
-    comes_due: bool,
-) -> Result<ScheduleTrigger, Failure> {
+/// A Trigger from a body. A shape that does not decode reads as `Unknown`,
+/// which no Host accepts: the save check says so.
+fn decode_trigger(raw: &Value) -> Result<ScheduleTrigger, Failure> {
     if !raw.is_object() {
         return Err(invalid("a Trigger is an object with a kind"));
     }
-    // A shape that does not decode reads as `Unknown`, which no Host
-    // accepts: its check says so.
-    let trigger = serde_json::from_value(raw.clone()).unwrap_or_default();
-    host.check_trigger(&trigger, comes_due)
-        .map_err(|error| invalid(format!("invalid Trigger: {error}")))
+    Ok(serde_json::from_value(raw.clone()).unwrap_or_default())
 }
 
 /// `instructions`: absent → `None` (unchanged); `null` or blank →
@@ -539,13 +466,7 @@ impl Workspace {
     ) -> Result<T, Failure> {
         let mut refused = None;
         let mutate = |state: &mut Map<String, Value>| {
-            let list = state
-                .entry("schedules")
-                .or_insert_with(|| Value::Array(Vec::new()))
-                .as_array_mut()
-                .ok_or_else(|| {
-                    "app-state.json schedules is not a list; not changing it".to_owned()
-                })?;
+            let list = save::schedules_list_mut(state)?;
             change(list).map_err(|failure| {
                 let message = failure.1.clone();
                 refused = Some(failure);

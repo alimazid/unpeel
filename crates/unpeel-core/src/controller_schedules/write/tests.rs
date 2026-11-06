@@ -1,4 +1,6 @@
 use super::*;
+use crate::controller_api::{HostCreatePreset, HostCreateProject};
+use crate::schedules::save::TriggerRefusal;
 use serde_json::json;
 use std::sync::Mutex;
 
@@ -65,7 +67,7 @@ impl FakeHost {
     }
 }
 
-impl ScheduleHost for FakeHost {
+impl SaveHost for FakeHost {
     fn catalog(&self) -> Option<(Vec<HostCreateProject>, Vec<HostCreatePreset>)> {
         let project = |id: &str, path: &str| HostCreateProject {
             id: id.into(),
@@ -98,25 +100,27 @@ impl ScheduleHost for FakeHost {
         &self,
         trigger: &ScheduleTrigger,
         comes_due: bool,
-    ) -> Result<ScheduleTrigger, String> {
+    ) -> Result<ScheduleTrigger, TriggerRefusal> {
         self.checks
             .lock()
             .unwrap()
             .push((trigger.clone(), comes_due));
         match trigger {
             ScheduleTrigger::Once { at } if comes_due && at.as_str() < "2026" => {
-                Err(format!("{at} is in the past"))
+                Err(TriggerRefusal::InPast(format!("{at} is in the past")))
             }
             ScheduleTrigger::Daily { time } if time.matches(':').count() == 2 => {
                 Ok(ScheduleTrigger::Daily {
                     time: time.strip_suffix(":00").unwrap_or(time).to_owned(),
                 })
             }
-            ScheduleTrigger::Unknown => Err("unknown Trigger kind".into()),
+            ScheduleTrigger::Unknown => Err(TriggerRefusal::Invalid("unknown Trigger kind".into())),
             other => Ok(other.clone()),
         }
     }
+}
 
+impl ScheduleHost for FakeHost {
     fn run_now(&self, _schedule_id: &str) -> Result<String, RunNowRefusal> {
         self.run_now.clone()
     }

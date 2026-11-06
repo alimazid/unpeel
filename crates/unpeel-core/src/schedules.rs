@@ -14,6 +14,8 @@
 use serde::{Deserialize, Deserializer, Serialize};
 
 pub mod run_sessions;
+#[cfg(feature = "native-host")]
+pub mod save;
 
 /// `spawned_by` of a Run's Session is this prefix plus the task id. It names
 /// no Session id, so the MCP close rule never lets an agent close one.
