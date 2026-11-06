@@ -14,13 +14,19 @@ use crate::sessions::{SessionRow, SidebarModel};
 
 mod inbox_drain;
 mod inbox_rules;
+mod notices;
+mod watchdog;
+mod worker_alerts;
+mod worker_host;
 
-pub use inbox_drain::Notice;
+pub use inbox_drain::{Notice, NoticeKind};
 
 #[derive(Debug, Default)]
 pub struct Supervisor {
     /// Pastes queued Inbox items into idle targets (`inbox_drain.rs`).
     inbox: inbox_drain::Drain,
+    /// Worker edges and the watchdog, for the Router (`worker_alerts.rs`).
+    workers: worker_alerts::WorkerAlerts,
 }
 
 impl Supervisor {
@@ -28,6 +34,8 @@ impl Supervisor {
     /// `activity::normalize_event_name` returns it), received at `at_ms`.
     pub fn observe_hook(&mut self, session_id: &str, canonical_event: &str, at_ms: u64) {
         self.inbox.observe_hook(session_id, canonical_event, at_ms);
+        self.workers
+            .observe_hook(session_id, canonical_event, at_ms);
     }
 
     /// A lifecycle edge of `row` about to notify the user. `true` takes it
@@ -41,19 +49,22 @@ impl Supervisor {
         body: Option<&str>,
         now_ms: u64,
     ) -> bool {
-        let _ = (row, kind, body, now_ms);
-        false
+        self.workers.divert(row, kind, body, now_ms, &self.inbox)
     }
 
-    /// Once per rescan, after the keep-limit sweep: drains Inboxes. Returns
-    /// notifications for the user (a draft holding queued items).
+    /// Once per rescan, after the keep-limit sweep: Worker notices and the
+    /// watchdog, then the Inbox drain. Returns notifications for the user
+    /// (an unanswered Worker prompt, a draft holding queued items).
     pub fn step(&mut self, model: &SidebarModel, now_ms: u64) -> Vec<Notice> {
-        self.inbox.step(&model.rows, now_ms)
+        let mut notices = self.workers.step(&model.rows, now_ms);
+        notices.extend(self.inbox.step(&model.rows, now_ms));
+        notices
     }
 
-    /// The rows the auto-stop sweep may consider.
+    /// The rows the auto-stop sweep may consider: never the Router, its
+    /// running Workers, or a Session with queued Inbox items.
     pub fn auto_stop_rows<'a>(&self, rows: &'a [SessionRow]) -> Cow<'a, [SessionRow]> {
-        Cow::Borrowed(rows)
+        self.workers.auto_stop_rows(rows, &self.inbox)
     }
 }
 
