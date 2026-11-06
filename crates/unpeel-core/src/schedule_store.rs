@@ -189,6 +189,8 @@ mod tests {
             exit_code: None,
             reason: None,
             snippet: None,
+            phase: None,
+            prompted_at_ms: None,
         }
     }
 

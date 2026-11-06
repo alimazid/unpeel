@@ -38,6 +38,12 @@ pub struct Schedule {
     pub project_id: String,
     #[serde(default)]
     pub preset_id: String,
+    /// What a Run types into the agent once it is ready (ADR 0005). Only a
+    /// task on an Agent Preset has them, at most
+    /// `initial_text::MAX_INITIAL_TEXT_BYTES`; a task without them runs its
+    /// preset like a script, finished by its command's exit.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub instructions: Option<String>,
     #[serde(default, deserialize_with = "deserialize_trigger")]
     pub trigger: ScheduleTrigger,
     #[serde(default = "default_true")]
@@ -192,6 +198,41 @@ pub struct ScheduleRun {
     pub reason: Option<String>,
     #[serde(default)]
     pub snippet: Option<String>,
+    /// Where an agent Run (a task with instructions) is in its lifecycle;
+    /// `None` for a script Run. Kept on its finished line too, so a
+    /// `needs_you` Run says whether the agent ever started working.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub phase: Option<RunPhase>,
+    /// When an agent Run's instructions were typed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prompted_at_ms: Option<u64>,
+}
+
+/// An agent Run's lifecycle: `launching` (its Session starting),
+/// `waiting_ready` (for the agent's first readiness signal), `prompted`
+/// (instructions typed, no working signal yet), `working`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RunPhase {
+    Launching,
+    WaitingReady,
+    Prompted,
+    Working,
+    /// A phase this build does not know.
+    #[serde(other)]
+    Unknown,
+}
+
+impl RunPhase {
+    pub fn word(self) -> &'static str {
+        match self {
+            Self::Launching => "launching",
+            Self::WaitingReady => "waiting_ready",
+            Self::Prompted => "prompted",
+            Self::Working => "working",
+            Self::Unknown => "unknown",
+        }
+    }
 }
 
 /// Each Run's latest line, in the order the Runs first appeared (oldest
@@ -255,6 +296,7 @@ mod tests {
                 name: "Morning".into(),
                 project_id: "p".into(),
                 preset_id: "ok".into(),
+                instructions: None,
                 trigger: ScheduleTrigger::Daily {
                     time: "09:43".into()
                 },
@@ -322,6 +364,8 @@ mod tests {
             exit_code: None,
             reason: None,
             snippet: None,
+            phase: None,
+            prompted_at_ms: None,
         };
         let folded = fold_runs([
             line("run_a", RunStatus::Running),
@@ -337,6 +381,46 @@ mod tests {
             statuses,
             vec![("run_a", RunStatus::Done), ("run_b", RunStatus::Skipped)]
         );
+    }
+
+    #[test]
+    fn a_task_on_an_agent_preset_carries_its_instructions() {
+        let schedules = decode(serde_json::json!([
+            {"id": "sch_agent", "preset_id": "claude", "instructions": "run the briefing"},
+            {"id": "sch_script", "preset_id": "ok"}
+        ]));
+        assert_eq!(
+            schedules[0].instructions.as_deref(),
+            Some("run the briefing")
+        );
+        assert_eq!(schedules[1].instructions, None);
+        let written = serde_json::to_value(&schedules[1]).unwrap();
+        assert!(
+            written.get("instructions").is_none(),
+            "a script task writes no instructions key: {written}"
+        );
+    }
+
+    #[test]
+    fn an_agent_runs_phase_round_trips_and_a_newer_one_keeps_the_line() {
+        let line: ScheduleRun = serde_json::from_value(serde_json::json!({
+            "run_id": "run_a", "status": "running", "phase": "prompted",
+            "prompted_at_ms": 42
+        }))
+        .unwrap();
+        assert_eq!(line.phase, Some(RunPhase::Prompted));
+        assert_eq!(line.prompted_at_ms, Some(42));
+        let script: ScheduleRun =
+            serde_json::from_value(serde_json::json!({"run_id": "run_b", "status": "done"}))
+                .unwrap();
+        assert_eq!((script.phase, script.prompted_at_ms), (None, None));
+        let written = serde_json::to_value(&script).unwrap();
+        assert!(written.get("phase").is_none(), "{written}");
+        let newer: ScheduleRun = serde_json::from_value(
+            serde_json::json!({"run_id": "run_c", "status": "running", "phase": "thinking"}),
+        )
+        .unwrap();
+        assert_eq!(newer.phase, Some(RunPhase::Unknown));
     }
 
     #[test]
