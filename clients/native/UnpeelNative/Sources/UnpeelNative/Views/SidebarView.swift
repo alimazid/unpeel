@@ -572,6 +572,10 @@ struct SidebarView: View {
     // Fork-only: git support. Git History's view model, kept alive while
     // its section is collapsed (publishes nothing, like the explorer's).
     @StateObject private var gitHistorySection = GitHistorySectionModel()
+    // Fork-only: Scheduled Tasks. Held, not observed: it publishes, and
+    // only the section's own panel should re-render when it does. Its rows
+    // outlive a collapse, so re-expanding shows them at once.
+    @State private var scheduledSection = ScheduledSectionModel()
     private let sectionLayout = SidebarSectionLayoutStore.shared
 
     /// Absolute-top scroll anchor for the project tree (a 1pt marker pinned
@@ -787,6 +791,13 @@ struct SidebarView: View {
                         showsAllRecent: store.selectedHostScope == .local
                     ))
                 }
+            ),
+            // Fork-only: Scheduled Tasks
+            SidebarSectionDescriptor(
+                id: .scheduled,
+                accessory: AnyView(EmptyView()),
+                actions: AnyView(EmptyView()),
+                content: { AnyView(ScheduledSectionPanel(store: store, model: scheduledSection)) }
             ),
             SidebarSectionDescriptor(
                 id: .explorer,

@@ -274,6 +274,23 @@ Resume or Reload wins. A failed removal backs off for a minute and is
 reported as a worker warning; each removal is traced (`host-worker removed
 stopped session <id> past the keep limit`).
 
+### Scheduled Tasks for Controllers (fork-only)
+
+`unpeel_core::controller_schedules` serves two read routes from the core
+router, so `/mobile`, the local gateway and SSH answer alike, to paired
+devices and owner transports only: `GET /mobile/schedules` (capability
+`schedules`: every task with its next run and latest Run) and `GET
+/mobile/schedules/runs?scheduleID=<id>[&limit=<n>]` (`schedules.runs`: the
+history, newest first). Both read the disk, never the scheduler: definitions
+from `app-state.json`, the next run from the `clock.json` the worker
+publishes and the Runs from `runs.jsonl`. Bootstrap's `schedulesRevision`
+moves whenever either route would answer differently, and the worker pings
+the state bus (`schedules`) when a sweep starts or records a Run, so
+Controllers reread on the refresh they already have instead of polling.
+`protocol/schedules-samples-v1.json` pins both bodies for the Host and the
+Swift DTOs. The Mac app's SCHEDULED section (`ScheduledSectionModel`) is the
+reader; Run now still goes over the owner-only `/_unpeel/schedules` path.
+
 ### Browser engine install (`serve.json.browserEngine`)
 
 At start the worker spawns one `browser-engine-install` thread that runs

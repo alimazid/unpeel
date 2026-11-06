@@ -39,6 +39,10 @@ pub enum Change {
     Lifecycle,
     /// Controller pane layouts: `pane-layouts.json`.
     PaneLayouts,
+    /// Fork-only: a Scheduled Task's Run started or was recorded (done,
+    /// needs you, failed, failed to start, skipped) under
+    /// `schedules/<id>/`. Controllers re-read the `schedules` routes.
+    Schedules,
 }
 
 impl Change {
@@ -49,6 +53,7 @@ impl Change {
             Change::AppState => "app-state",
             Change::Lifecycle => "lifecycle",
             Change::PaneLayouts => "pane-layouts",
+            Change::Schedules => "schedules",
         }
     }
 }

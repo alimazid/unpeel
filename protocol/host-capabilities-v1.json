@@ -472,6 +472,20 @@
       "path": "/mobile/git-settings",
       "native": true,
       "tui": true
+    },
+    {
+      "id": "schedules",
+      "method": "GET",
+      "path": "/mobile/schedules",
+      "native": true,
+      "tui": true
+    },
+    {
+      "id": "schedules.runs",
+      "method": "GET",
+      "path": "/mobile/schedules/runs",
+      "native": true,
+      "tui": true
     }
   ]
 }
