@@ -157,6 +157,16 @@ termination output is drained first. Never signal an unverified process group.
   Commands typed later in the fallback shell and Resume Agent's in-place
   relaunch are not recorded, and the manifest's `exit_code` stays the PTY
   child's (the fallback shell's).
+- A create's initial text is typed by `initial_text::deliver`: as soon as
+  the control socket exists (`initialTextWhen: "attached"`, the default), or
+  with `"agentReady"` only after the agent's first readiness signal after
+  launch — a program status idle record, a hook seed reporting idle, or the
+  runtime's `[screen]` idle prompt (`agent_readiness`, read from the
+  manifest and Session dir, so it holds whoever owns notifications). A
+  Running Session with no activity is never ready. After 120 s nothing is
+  typed. The outcome lands in `<session dir>/initial-text.json` (`state`:
+  `waiting`, `delivered` with its `signal`, `readiness_timeout`, `exited`,
+  `host_not_ready`, `delivery_failed`).
 
 ### Recent ordering (sidebar + shared ⌘K/^K contract)
 
