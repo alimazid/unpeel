@@ -308,7 +308,7 @@ fn instructions_item(router_id: &str, since: u64) -> NewItem {
         summary: format!(
             "You are now the Super Agent. Read your instructions with skills read {}, \
              then call sessions current.",
-            crate::skills_mcp::ROUTER_SKILL_ID
+            crate::skills_builtin::ROUTER_SKILL_ID
         ),
         body: String::new(),
         dedupe_key: Some(format!("{INSTRUCTIONS_KEY_PREFIX}{router_id}:{since}")),
