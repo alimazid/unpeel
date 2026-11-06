@@ -58,6 +58,7 @@ impl WorkerHost for FakeHost {
     fn write_heartbeat(&self, at_ms: u64) {
         self.with(|world| world.heartbeats_written.push(at_ms));
     }
+    fn announce(&self) {}
 }
 
 #[derive(Default)]

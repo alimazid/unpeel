@@ -36,6 +36,8 @@ pub trait WorkerHost: Send + Sync {
     /// The last heartbeat any supervisor of this home wrote.
     fn heartbeat(&self) -> Option<u64>;
     fn write_heartbeat(&self, at_ms: u64);
+    /// A notice was queued in some Inbox.
+    fn announce(&self);
 }
 
 /// The real home.
@@ -104,5 +106,9 @@ impl WorkerHost for HostWorkers {
         if let Err(error) = written {
             crate::tracelog::trace("supervisor", &format!("heartbeat write failed: {error}"));
         }
+    }
+
+    fn announce(&self) {
+        unpeel_core::state_bus::announce(unpeel_core::state_bus::Change::SessionMarkers, None);
     }
 }

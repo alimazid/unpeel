@@ -470,10 +470,7 @@ impl WorkerAlerts {
     fn enqueue(&self, router: &str, notice: NewItem, now: u64) -> bool {
         match self.store.enqueue(router, notice, now) {
             Ok(_) => {
-                unpeel_core::state_bus::announce(
-                    unpeel_core::state_bus::Change::SessionMarkers,
-                    None,
-                );
+                self.io.announce();
                 true
             }
             Err(error) => {
