@@ -54,6 +54,10 @@ pub trait ScheduleHost: SaveHost + Send + Sync {
     fn run_now(&self, schedule_id: &str) -> Result<String, RunNowRefusal>;
 }
 
+/// A process slot, not a routed context: every transport (`/mobile`, the
+/// local socket, Link, the disk-backed `host.sock` runtime) reaches these
+/// routes through `controller_api::route_uncached` with no shared context
+/// to carry the worker, and threading one through all of them is not worth it.
 static HOST: Mutex<Option<Arc<dyn ScheduleHost>>> = Mutex::new(None);
 
 /// The workspace worker installs itself when it starts; a later start
