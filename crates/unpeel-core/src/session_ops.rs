@@ -122,12 +122,25 @@ pub fn managed_storage_path_for_session(session_id: &str) -> Option<String> {
 
 /// Non-destructive stop: ask the host (via its own socket) to SIGTERM its
 /// process group, then wait for the exited manifest. The Session stays a
-/// resumable stopped row; only its scrollback is dropped.
+/// resumable stopped row; only its scrollback is dropped, unless it is a
+/// Run Session, which keeps its output ([`keeps_output_when_stopped`]).
 pub fn stop_session(session_id: &str) -> Result<(), String> {
     let _lifecycle_lock = lock_session_lifecycle(session_id)?;
+    let keeps_output = load_manifest(session_id).is_some_and(|m| keeps_output_when_stopped(&m));
     stop_session_unlocked(session_id)?;
-    drop_scrollback(session_id);
+    if !keeps_output {
+        drop_scrollback(session_id);
+    }
     Ok(())
+}
+
+/// A Run Session of a Scheduled Task (agent or script) keeps its output
+/// when it stops, whoever stops it: for a script Run that output is
+/// usually the whole point, and the next Run stops the previous one as
+/// it comes up. Run retention still removes it with the Session
+/// (ADR 0006).
+fn keeps_output_when_stopped(manifest: &HostedSessionManifest) -> bool {
+    crate::schedules::run_sessions::schedule_id(manifest.session.spawned_by.as_deref()).is_some()
 }
 
 /// Caller holds this Session's lifecycle lock. Kept separate so remove and
@@ -312,7 +325,8 @@ pub fn session_has_resume_evidence(session_id: &str) -> bool {
 /// A stopped Session keeps only what Resume needs — manifest, title, and
 /// provider id — never its scrollback: Resume starts a fresh terminal and
 /// never replays the old journal, and kept journals were what grew
-/// `app-sessions` into gigabytes. Truncating (rather than unlinking) keeps
+/// `app-sessions` into gigabytes. A Run Session is the exception
+/// ([`keeps_output_when_stopped`]). Truncating (rather than unlinking) keeps
 /// `output.bin` present for readers that open it unconditionally.
 fn drop_scrollback(session_id: &str) {
     let dir = session_dir(session_id);

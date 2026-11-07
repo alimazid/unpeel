@@ -229,8 +229,10 @@ socket, and record untouched; the restarted worker re-adopts).
 
 `sweep_auto_stop` (`auto_stop.rs`) runs on every rescan tick (1 s) and gives
 a due Session the plain Stop verb: it becomes a resumable stopped row and
-its scrollback is dropped. A running row is due only when ALL hold: status
-Idle, `resumable` (a resumable conversation:
+its scrollback is dropped, unless it is a Run Session of a Scheduled Task
+([ADR 0006](../adr/0006-a-stopped-run-session-keeps-its-output.md)). A
+running row is due only when ALL hold: status Idle, `resumable` (a
+resumable conversation:
 `session_ops::has_resume_evidence` — a provider session id plus transcript
 resume data or a real lifecycle hook; plain shells and an agent that has not
 completed a turn never qualify), not pinned, not **unread attention** (a
@@ -251,8 +253,10 @@ the cutoff` / `pinned` / …), so "why did this never stop" is one grep.
 
 There is no archive: Stop is the only non-destructive end of a Session, and
 it keeps a resumable stopped row (manifest, title, provider id) while
-truncating `output.bin` — Resume never replays the old journal, and kept
-journals were what grew `app-sessions/` into gigabytes. Each worker start
+truncating `output.bin` (a Run Session keeps it,
+[ADR 0006](../adr/0006-a-stopped-run-session-keeps-its-output.md)) —
+Resume never replays the old journal, and kept journals were what grew
+`app-sessions/` into gigabytes. Each worker start
 runs `session_ops::migrate_archived_sessions`, which turns every legacy
 `archived.json` beside a non-running manifest into a plain stopped row
 (marker and scrollback dropped). `session.archive`, `session.archive.list`,
@@ -733,8 +737,9 @@ with the interactive path — see `docs/agents/cli.md` for the invariants).
 
 ### Change gates
 
-Serve lifecycle, protocol, or launch changes must run these gates serially
-(the process suites share ports):
+Serve lifecycle, protocol, or launch changes must run these gates, one after
+another in the checkout. Other worktrees' PTY matrices may run alongside: the
+matrix shares the machine through slots (`crates/unpeel-cli/tests/README.md`).
 
 ```sh
 (cd crates && cargo test --workspace)
