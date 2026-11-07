@@ -5340,9 +5340,9 @@ mod tests {
             .contains("call sessions current"));
     }
 
+    /// Fork-only: the Super Agent's after-compaction rule.
     #[test]
     fn instructions_carry_the_super_agents_compaction_rule() {
-        // Instructions stay in the system prompt, which compaction keeps.
         let instructions = initialize_result(&json!({}))["instructions"]
             .as_str()
             .unwrap()
