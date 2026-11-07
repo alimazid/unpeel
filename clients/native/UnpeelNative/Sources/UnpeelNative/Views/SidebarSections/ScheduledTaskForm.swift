@@ -305,6 +305,8 @@ enum ScheduledTaskErrorText {
     /// One sentence per code a Controller words itself.
     static let byCode: [String: String] = [
         "run_in_progress": "A Run of this task is still in progress. Try again once it finishes.",
+        "run_log_unreadable": "Unpeel can't read this task's Run history, so it can't tell whether a Run "
+            + "is in progress.",
         "run_no_answer": "The Host didn't answer in time. The Run may still start; check its history.",
         "unknown_task": "This Scheduled Task no longer exists on the Host.",
         "forbidden": "Only you can change Scheduled Tasks on this Host.",

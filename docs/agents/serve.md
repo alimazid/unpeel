@@ -304,8 +304,10 @@ the Trigger in its stored shape: `/mobile/schedules` (`schedule.create`),
 `/mobile/schedules/edit` (`schedule.edit`; pause and resume are `enabled`),
 `/mobile/schedules/delete` (`schedule.delete`: the task and its history,
 never its Run Sessions) and `/mobile/schedules/run` (`schedule.run`: Run
-now, 409 while a Run is in progress). They edit `app-state.json` raw under
-its flock and announce, like `unpeel schedules`, and are replay-protected.
+now, 409 while a Run is in progress, 500 `run_log_unreadable` when the
+task's Run log will not read, so the Host cannot tell). They edit
+`app-state.json` raw under its flock and announce, like `unpeel
+schedules`, and are replay-protected.
 Every refusal of the schedules routes answers `{"error": <message>, "code":
 <code>}`; the codes (`trigger_in_past`, `not_agent_preset`,
 `run_in_progress`, …) are listed with their statuses in
@@ -321,9 +323,11 @@ not checked again; resuming re-checks, and refuses a Once time that has
 passed until the task has a new one), the create catalog
 its Runs resolve against (a Project with a folder, an enabled preset,
 instructions only on an Agent Preset), Run now through the driver (the same request `unpeel schedules run` sends
-over `/_unpeel/schedules`), and a saved task's next run: a create or edit
-answers with `trigger::published_next_run` on the Host's clock, the value
-the worker's next sweep writes to `clock.json`, rather than the disk's
+over `/_unpeel/schedules`, which answers its refusals with the same status
+and code; `schedules::host::run_now`), and a saved task's next run: a
+create or edit answers with `trigger::published_next_run` on the Host's
+clock, the value the worker's next sweep writes to `clock.json`, rather
+than the disk's
 (none yet, or an older Trigger's). A process without a worker (the SSH fallback
 gateway) leaves the four ids out of its descriptor and answers 503. Every
 bootstrap preset row carries `agentPreset` and `bypassesApprovals`

@@ -801,6 +801,47 @@ fn run_now_answers_the_new_run_or_why_not() {
     assert_eq!(code(run(None, "")), (400, Some("invalid_request".into())));
 }
 
+/// #28: each reason the worker refuses Run now keeps its own status and
+/// code; none of them reads as "a Run is in progress".
+#[test]
+fn run_now_answers_each_refusal_with_its_own_code() {
+    let private = Private::new(stored());
+    let run = |refusal: RunNowRefusal| {
+        let host = FakeHost::refusing_run_now(refusal);
+        answer_with(
+            &post(RUN_PATH, json!({"scheduleID": "sch_1"})),
+            Some(&host),
+            &private,
+        )
+    };
+    let unreadable = "cannot tell whether a Run of Morning is in progress: read runs.jsonl: \
+        Is a directory";
+    assert_eq!(
+        run(RunNowRefusal::RunLogUnreadable(unreadable.into())),
+        (
+            500,
+            json!({"error": unreadable, "code": "run_log_unreadable"})
+        )
+    );
+    assert_eq!(
+        run(RunNowRefusal::UnknownTask("no Scheduled Task sch_1".into())),
+        (
+            404,
+            json!({"error": "no Scheduled Task sch_1", "code": "unknown_task"})
+        ),
+        "deleted between the route's check and the worker's answer"
+    );
+    assert_eq!(
+        run(RunNowRefusal::Internal(
+            "could not read Scheduled Tasks".into()
+        )),
+        (
+            500,
+            json!({"error": "could not read Scheduled Tasks", "code": "internal"})
+        )
+    );
+}
+
 // ── error codes ──
 
 /// The conformance fixture's write refusals, against this fake worker:
@@ -872,6 +913,7 @@ fn every_refusal_code_is_in_the_conformance_vocabulary() {
         codes::FORBIDDEN,
         codes::UNKNOWN_TASK,
         codes::RUN_IN_PROGRESS,
+        codes::RUN_LOG_UNREADABLE,
         codes::RUN_NO_ANSWER,
         codes::HOST_UNAVAILABLE,
         codes::INTERNAL,
