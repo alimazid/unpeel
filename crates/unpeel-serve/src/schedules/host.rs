@@ -145,6 +145,9 @@ pub(crate) mod test_support {
         fn disable(&self, _: &str) -> Result<(), String> {
             unreachable!("Run now turns nothing off")
         }
+        fn is_defined(&self, _: &str) -> Result<bool, String> {
+            unreachable!("Run now writes no task state")
+        }
     }
 }
 

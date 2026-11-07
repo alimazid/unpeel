@@ -1142,7 +1142,7 @@ impl HostRuntime {
         // per sweep).
         if events
             .iter()
-            .any(|event| !matches!(event, crate::schedules::SweepEvent::Warning(_)))
+            .any(crate::schedules::SweepEvent::changes_schedules)
         {
             unpeel_core::state_bus::announce(
                 unpeel_core::state_bus::Change::Schedules,
@@ -1199,6 +1199,10 @@ impl HostRuntime {
             }
             // Its ping is the sweep's one announce, above.
             crate::schedules::SweepEvent::Published { .. } => {}
+            crate::schedules::SweepEvent::Deleted { schedule_id } => crate::tracelog::trace(
+                "host-worker",
+                &format!("schedule {schedule_id} was deleted during a sweep: nothing ran"),
+            ),
             crate::schedules::SweepEvent::Warning(warning) => {
                 emitted.push(ServeEvent::Warning(warning))
             }

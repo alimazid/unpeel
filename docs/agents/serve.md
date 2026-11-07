@@ -307,11 +307,12 @@ the local socket after checking the caller is the Router; see
 the Trigger in its stored shape: `/mobile/schedules` (`schedule.create`),
 `/mobile/schedules/edit` (`schedule.edit`; pause and resume are `enabled`),
 `/mobile/schedules/delete` (`schedule.delete`: the task and its history,
-never its Run Sessions) and `/mobile/schedules/run` (`schedule.run`: Run
-now, 409 while a Run is in progress, 500 `run_log_unreadable` when the
-task's Run log will not read, so the Host cannot tell). They edit
-`app-state.json` raw under its flock and announce, like `unpeel
-schedules`, and are replay-protected.
+never its Run Sessions; a delete during a sweep wins, as for `unpeel
+schedules rm`, and the sweep's `SweepEvent::Deleted` adds no ping) and
+`/mobile/schedules/run` (`schedule.run`: Run now, 409 while a Run is in
+progress, 500 `run_log_unreadable` when the task's Run log will not read,
+so the Host cannot tell). They edit `app-state.json` raw under its flock
+and announce, like `unpeel schedules`, and are replay-protected.
 Every refusal of the schedules routes answers `{"error": <message>, "code":
 <code>}`; the codes (`trigger_in_past`, `not_agent_preset`,
 `run_in_progress`, …) are listed with their statuses in
