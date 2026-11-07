@@ -14,7 +14,7 @@ use std::time::{Duration, Instant};
 
 use jiff::Zoned;
 use unpeel_core::controller_api::{HostCreatePreset, HostCreateProject};
-use unpeel_core::schedule_store::TaskStore;
+use unpeel_core::schedule_store::{TaskStore, TaskWrite};
 use unpeel_core::schedules::{RunStatus, Schedule, ScheduleClock, ScheduleRun};
 use unpeel_core::state::Preset;
 
@@ -70,6 +70,9 @@ pub trait Effects: Send + Sync {
     fn screen_reply(&self, session_id: &str, instructions: &str) -> Option<String>;
     /// Turn a task off in `app-state.json`.
     fn disable(&self, schedule_id: &str) -> Result<(), String>;
+    /// Whether the task is still among the saved Scheduled Tasks, read
+    /// afresh: the sweep's definitions may predate a delete.
+    fn is_defined(&self, schedule_id: &str) -> Result<bool, String>;
 }
 
 /// What a sweep did, for the worker's trace and warnings.
@@ -98,6 +101,11 @@ pub enum SweepEvent {
     /// The task's clock changed on disk (its next run, its latest Run), so
     /// a Controller that read the list before this sweep reads it again.
     Published {
+        schedule_id: String,
+    },
+    /// The task was deleted after this sweep read its definition: the
+    /// sweep wrote nothing for it and dropped its remaining actions.
+    Deleted {
         schedule_id: String,
     },
     Warning(String),
@@ -443,12 +451,22 @@ impl Scheduler {
     ) {
         // A task whose clock did not save must start, record and disable
         // nothing this sweep: the occurrence would fire again on the next.
+        // Nor must one deleted since the sweep read it.
         let mut held: HashSet<String> = HashSet::new();
         for action in actions {
             match action {
                 Action::SaveClock { schedule_id, clock } => {
-                    match self.store(&schedule_id).and_then(|s| s.save_clock(&clock)) {
-                        Ok(()) => events.push(SweepEvent::Published { schedule_id }),
+                    let saved = self.store(&schedule_id).and_then(|s| {
+                        s.save_clock(&clock, || self.effects.is_defined(&schedule_id))
+                    });
+                    match saved {
+                        Ok(TaskWrite::Written) => {
+                            events.push(SweepEvent::Published { schedule_id })
+                        }
+                        Ok(TaskWrite::TaskDeleted) => {
+                            held.insert(schedule_id.clone());
+                            events.push(SweepEvent::Deleted { schedule_id });
+                        }
                         Err(error) => {
                             held.insert(schedule_id.clone());
                             self.warn(&schedule_id, format!("saving its clock: {error}"), events);
@@ -464,7 +482,12 @@ impl Scheduler {
                     run,
                     plan,
                 } => match schedules.iter().find(|schedule| schedule.id == schedule_id) {
-                    Some(schedule) => self.start(schedule, run, plan, hook_port, events),
+                    Some(schedule) => {
+                        if !self.start(schedule, run, plan, hook_port, events) {
+                            held.insert(schedule_id.clone());
+                            events.push(SweepEvent::Deleted { schedule_id });
+                        }
+                    }
                     None => self.warn(&schedule_id, "no longer defined".into(), events),
                 },
                 Action::Record { schedule_id, run } => {
@@ -501,7 +524,8 @@ impl Scheduler {
     }
 
     /// Record the Run with the id of the Session it starts, then start that
-    /// Session on a helper thread.
+    /// Session on a helper thread. `false` when the task was deleted since
+    /// the sweep read it: nothing was recorded or started.
     fn start(
         &mut self,
         schedule: &Schedule,
@@ -509,15 +533,22 @@ impl Scheduler {
         plan: LaunchPlan,
         hook_port: Option<u16>,
         events: &mut Vec<SweepEvent>,
-    ) {
+    ) -> bool {
         let session_id = uuid::Uuid::new_v4().to_string().to_lowercase();
         let run = ScheduleRun {
             session_id: Some(session_id.clone()),
             ..run
         };
-        if let Err(error) = self.store(&schedule.id).and_then(|s| s.append_run(&run)) {
-            self.warn(&schedule.id, format!("recording its Run: {error}"), events);
-            return;
+        let recorded = self
+            .store(&schedule.id)
+            .and_then(|s| s.append_run_if_defined(&run, || self.effects.is_defined(&schedule.id)));
+        match recorded {
+            Ok(TaskWrite::Written) => {}
+            Ok(TaskWrite::TaskDeleted) => return false,
+            Err(error) => {
+                self.warn(&schedule.id, format!("recording its Run: {error}"), events);
+                return true;
+            }
         }
         self.launching.insert(run.run_id.clone());
         let request = SpawnRequest {
@@ -538,6 +569,7 @@ impl Scheduler {
             run_id: run.run_id,
             session_id,
         });
+        true
     }
 
     /// The `unpeel-schedules` helper: start the Session, then for an agent
@@ -715,6 +747,12 @@ impl Effects for HostEffects {
             }
             Ok(())
         })
+    }
+
+    fn is_defined(&self, schedule_id: &str) -> Result<bool, String> {
+        Ok(unpeel_core::schedule_store::load_schedules()?
+            .iter()
+            .any(|schedule| schedule.id == schedule_id))
     }
 }
 
