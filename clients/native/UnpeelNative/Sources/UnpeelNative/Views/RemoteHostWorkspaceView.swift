@@ -106,14 +106,21 @@ struct RemoteScopeTerminalMount: View {
         }
     }
 
+    private var terminalPaneStyle: TerminalPaneStyle {
+        Self.paneStyle(
+            for: session,
+            background: store.remoteTerminalBackgroundColor(for: session.id)
+        )
+    }
+
     /// The Host resolves provider-specific terminal chrome; apply that value
     /// directly rather than reading provider configuration on the Controller.
-    private var terminalPaneStyle: TerminalPaneStyle {
+    static func paneStyle(for session: SessionEntry, background: NSColor?) -> TerminalPaneStyle {
         var style = TerminalPaneStyle.resolved(
             runtimeID: session.activeRuntimeID,
             command: session.presentationCommand
         )
-        guard let color = store.remoteTerminalBackgroundColor(for: session.id) else {
+        guard let color = background else {
             return style
         }
         let rgb = color.usingColorSpace(.sRGB) ?? color

@@ -408,7 +408,12 @@ impl DiskCatalog {
                 engaged: crate::schedules::run_sessions::is_engaged(&summary),
                 ..*run_row
             };
-            crate::schedules::run_sessions::publish(&mut summary, run_row, &latest_runs);
+            crate::schedules::run_sessions::publish(
+                &mut summary,
+                run_row,
+                &latest_runs,
+                crate::session_host::journal_has_retained_output,
+            );
             // The bootstrap includes the same inactive preview as the Host
             // sidebar.
             // Fork-only: `superAgent` / `superAgentRouterID`.

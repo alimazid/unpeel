@@ -2042,6 +2042,7 @@ pub(crate) fn mobile_snapshot_with_runs(
             &mut summary,
             crate::run_sessions::wire_row(row),
             latest_runs,
+            unpeel_core::session_host::journal_has_retained_output,
         );
         // Fork-only: `superAgent` / `superAgentRouterID`.
         let summary = unpeel_core::supervision::with_summary_fields(summary, router_id.as_deref());

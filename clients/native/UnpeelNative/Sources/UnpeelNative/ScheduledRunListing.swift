@@ -19,6 +19,27 @@ struct ScheduledRunMark: Codable, Hashable, Sendable {
     let scheduleID: String
     /// Not its task's latest Run: Project listings hide it.
     let superseded: Bool
+    /// Stopped, with output the Host kept (ADR 0006): its terminal area
+    /// shows that output instead of the stopped placeholder.
+    let keptOutput: Bool
+
+    init(scheduleID: String, superseded: Bool, keptOutput: Bool = false) {
+        self.scheduleID = scheduleID
+        self.superseded = superseded
+        self.keptOutput = keptOutput
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case scheduleID, superseded, keptOutput
+    }
+
+    /// A startup cache written before `keptOutput` still decodes.
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        scheduleID = try container.decode(String.self, forKey: .scheduleID)
+        superseded = try container.decode(Bool.self, forKey: .superseded)
+        keptOutput = try container.decodeIfPresent(Bool.self, forKey: .keptOutput) ?? false
+    }
 }
 
 enum ScheduledRunListing {
@@ -28,7 +49,13 @@ enum ScheduledRunListing {
 
     /// The mark a Host-published row carries; nil for any other Session.
     static func mark(_ summary: RemoteSessionSummary) -> ScheduledRunMark? {
-        summary.scheduleID.map { ScheduledRunMark(scheduleID: $0, superseded: summary.superseded) }
+        summary.scheduleID.map {
+            ScheduledRunMark(
+                scheduleID: $0,
+                superseded: summary.superseded,
+                keptOutput: summary.keptOutput
+            )
+        }
     }
 
     /// Whether a Project's listings show this Session.
@@ -38,6 +65,14 @@ enum ScheduledRunListing {
 
     static func isListed(_ session: SessionEntry) -> Bool {
         session.scheduledRun?.superseded != true
+    }
+
+    /// Whether a stopped row's terminal area shows the output the Host kept
+    /// (read-only, fetched through the Host) instead of the stopped
+    /// placeholder. Only a stopped Run the Host says kept output does; every
+    /// other stopped row looks as it always has.
+    static func showsKeptOutput(_ session: SessionEntry) -> Bool {
+        session.status == .exited && session.scheduledRun?.keptOutput == true
     }
 
     /// Run Sessions take no slot in a Project's stopped window, as on the

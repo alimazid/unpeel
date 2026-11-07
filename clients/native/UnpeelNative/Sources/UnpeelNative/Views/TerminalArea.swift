@@ -285,6 +285,15 @@ struct ContentArea: View {
                 } else if let session = terminalSession {
                     if shouldMountPanePresentation(for: session) {
                         terminalMount(for: session)
+                    } else if ScheduledRunListing.showsKeptOutput(session) {
+                        // Fork-only: a stopped Run shows the output the Host
+                        // kept (ADR 0006) in the placeholder's frame.
+                        KeptOutputView(
+                            store: store,
+                            session: session,
+                            backgroundColor: terminalFrameBackground(for: session)
+                        )
+                        .id("kept:\(store.selectedHostScope.paneScopeID):\(session.id)")
                     } else {
                         DeadSessionView(
                             session: session,

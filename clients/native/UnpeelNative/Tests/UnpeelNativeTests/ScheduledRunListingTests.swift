@@ -142,11 +142,59 @@ private func row(
     activity: RemoteActivityState,
     unread: Bool = false,
     scheduleID: String? = nil,
-    superseded: Bool = false
+    superseded: Bool = false,
+    keptOutput: Bool = false
 ) -> RemoteSessionSummary {
     RemoteSessionSummary(
         id: id, projectID: "p", title: id, command: "claude",
         createdAtUnixMs: 1, status: status, activity: activity, unread: unread,
-        scheduleID: scheduleID, superseded: superseded
+        scheduleID: scheduleID, superseded: superseded, keptOutput: keptOutput
     )
+}
+
+/// ADR 0006 (#36): which stopped rows show the output the Host kept,
+/// read-only, instead of the stopped placeholder.
+@MainActor
+struct KeptOutputPresentationTests {
+    private func entry(
+        status: RemoteSessionStatus,
+        scheduleID: String? = "sch_a",
+        keptOutput: Bool
+    ) -> SessionEntry {
+        UnpeelStore.sessionEntry(fromRemote: row(
+            "s", status: status, activity: .idle,
+            scheduleID: scheduleID, superseded: true, keptOutput: keptOutput
+        ))
+    }
+
+    @Test func aStoppedRunWithKeptOutputShowsIt() {
+        #expect(ScheduledRunListing.showsKeptOutput(entry(status: .exited, keptOutput: true)))
+    }
+
+    @Test func everyOtherRowLooksAsItDoesToday() {
+        #expect(
+            !ScheduledRunListing.showsKeptOutput(entry(status: .exited, keptOutput: false)),
+            "a stopped Run with nothing kept shows the placeholder"
+        )
+        #expect(
+            !ScheduledRunListing.showsKeptOutput(
+                entry(status: .exited, scheduleID: nil, keptOutput: true)
+            ),
+            "a stopped Session that is not a Run shows the placeholder"
+        )
+        #expect(
+            !ScheduledRunListing.showsKeptOutput(entry(status: .running, keptOutput: true)),
+            "a live Run mounts its live terminal"
+        )
+    }
+
+    /// A startup cache written before the field still decodes its Runs.
+    @Test func anOlderCachedMarkDecodesWithNothingKept() throws {
+        let mark = try JSONDecoder().decode(
+            ScheduledRunMark.self,
+            from: Data(#"{"scheduleID":"sch_a","superseded":true}"#.utf8)
+        )
+        #expect(mark == ScheduledRunMark(scheduleID: "sch_a", superseded: true))
+        #expect(!mark.keptOutput)
+    }
 }

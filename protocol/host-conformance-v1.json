@@ -1461,6 +1461,11 @@
       "field": "presets[].bypassesApprovals",
       "required": false,
       "note": "Fork-only: Scheduled Tasks. On every preset row: whether the preset's command passes one of its runtime's declared approval-bypass flags (runtimes/<slug>/runtime.toml [approvals]), so its Runs act with no one asked. Controllers warn from this field alone and never parse a command's flags; absent (an older Host) reads as false."
+    },
+    {
+      "field": "sessions[].keptOutput",
+      "required": false,
+      "note": "Fork-only: Scheduled Tasks (ADR 0006). true on a stopped Run Session's row (`scheduleID` set, `status` exited) whose output.bin still holds bytes past its retention floor; omitted otherwise. A Controller shows that output, read-only, through the existing session.output.read route (a GET /mobile/output tail read without an offset) instead of its stopped placeholder; absent (an older Host, or nothing kept) shows the placeholder."
     }
   ],
   "scheduleWriteRefusals": {

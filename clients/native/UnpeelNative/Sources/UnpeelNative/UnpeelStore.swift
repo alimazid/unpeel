@@ -1532,6 +1532,9 @@ final class UnpeelStore: ObservableObject {
     let localHostID: String
     let remoteHostStore: RemoteHostStore
     let remoteHostRuntime = RemoteHostRuntime()
+    /// Fork-only: the read-only panes stopped Runs show their kept output in
+    /// (ADR 0006, `KeptOutputView`).
+    let keptOutputPanes = KeptOutputPanes()
     /// Background workspace pool (workspaces-unification phase 7): read-only
     /// bootstrap connections + cached snapshots for every known workspace the
     /// runtime is NOT serving. Started ~2s after the first window paint

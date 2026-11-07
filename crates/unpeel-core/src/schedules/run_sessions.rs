@@ -102,16 +102,31 @@ pub fn is_superseded(row: RunSessionRow<'_>, latest: &LatestRunSessions) -> bool
 }
 
 /// Publish a Run Session's facts on its wire row: `scheduleID` (what the
-/// clock badge keys off) and `superseded`. Additive: older Controllers
-/// ignore both. Any other Session's row is left as it is.
-pub fn publish(summary: &mut Value, row: RunSessionRow<'_>, latest: &LatestRunSessions) {
+/// clock badge keys off), `superseded`, and, on a stopped Run whose journal
+/// still holds output (ADR 0006), `keptOutput: true` (a Controller shows that
+/// output instead of its stopped placeholder). Additive: older Controllers
+/// ignore all three. Any other Session's row is left as it is.
+/// `journal_has_output` answers for the Run's Session id
+/// (`session_host::journal_has_retained_output` on a Host); it is asked only
+/// for a stopped Run.
+pub fn publish(
+    summary: &mut Value,
+    row: RunSessionRow<'_>,
+    latest: &LatestRunSessions,
+    journal_has_output: impl FnOnce(&str) -> bool,
+) {
     let Some(task) = schedule_id(row.spawned_by) else {
         return;
     };
     let superseded = is_superseded(row, latest);
+    let stopped = summary.get("status").and_then(Value::as_str) == Some("exited");
+    let kept_output = stopped && journal_has_output(row.session_id);
     if let Some(object) = summary.as_object_mut() {
         object.insert("scheduleID".into(), task.into());
         object.insert("superseded".into(), superseded.into());
+        if kept_output {
+            object.insert("keptOutput".into(), true.into());
+        }
     }
 }
 
@@ -292,17 +307,65 @@ mod tests {
     fn a_run_sessions_row_carries_its_task_and_whether_it_is_superseded() {
         let latest = latest(&[("sch_a", Some("a-2"))]);
         let mut older = serde_json::json!({"id": "a-1"});
-        publish(&mut older, run_row("a-1", "schedule:sch_a"), &latest);
+        publish(
+            &mut older,
+            run_row("a-1", "schedule:sch_a"),
+            &latest,
+            |_| true,
+        );
         assert_eq!(
             older,
             serde_json::json!({"id": "a-1", "scheduleID": "sch_a", "superseded": true})
         );
         let mut current = serde_json::json!({"id": "a-2"});
-        publish(&mut current, run_row("a-2", "schedule:sch_a"), &latest);
+        publish(
+            &mut current,
+            run_row("a-2", "schedule:sch_a"),
+            &latest,
+            |_| true,
+        );
         assert_eq!(
             current,
             serde_json::json!({"id": "a-2", "scheduleID": "sch_a", "superseded": false})
         );
+    }
+
+    /// A stopped Run whose journal still holds output says so, so a
+    /// Controller shows that output instead of the stopped placeholder
+    /// (ADR 0006). A live Run, an empty journal, and other Sessions don't.
+    #[test]
+    fn a_stopped_runs_row_says_whether_it_kept_output() {
+        let latest = latest(&[("sch_a", Some("a-2"))]);
+        let published = |status: &str, kept: bool| {
+            let mut row = serde_json::json!({"id": "a-1", "status": status});
+            let mut asked = Vec::new();
+            publish(&mut row, run_row("a-1", "schedule:sch_a"), &latest, |id| {
+                asked.push(id.to_owned());
+                kept
+            });
+            (row.get("keptOutput").cloned(), asked)
+        };
+        assert_eq!(
+            published("exited", true),
+            (Some(serde_json::json!(true)), vec!["a-1".to_owned()])
+        );
+        assert_eq!(published("exited", false), (None, vec!["a-1".to_owned()]));
+        assert_eq!(
+            published("running", true),
+            (None, Vec::new()),
+            "a live Run's journal is its live terminal, never read here"
+        );
+
+        let mut user = serde_json::json!({"id": "user", "status": "exited"});
+        let user_row = RunSessionRow {
+            session_id: "user",
+            spawned_by: None,
+            pinned: false,
+            created_at: 1,
+            engaged: false,
+        };
+        publish(&mut user, user_row, &latest, |_| true);
+        assert_eq!(user, serde_json::json!({"id": "user", "status": "exited"}));
     }
 
     #[test]
@@ -316,7 +379,7 @@ mod tests {
             created_at: 1,
             engaged: false,
         };
-        publish(&mut row, user, &latest);
+        publish(&mut row, user, &latest, |_| true);
         assert_eq!(row, serde_json::json!({"id": "user"}));
     }
 }

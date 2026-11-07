@@ -376,6 +376,15 @@ pub struct RemoteSessionSummary {
     pub schedule_id: Option<String>,
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub superseded: bool,
+    /// A stopped Run whose journal still holds output (ADR 0006): the
+    /// Controller shows that output, read through `session.output.read`,
+    /// instead of its stopped placeholder. Additive; omitted otherwise.
+    #[serde(
+        default,
+        rename = "keptOutput",
+        skip_serializing_if = "std::ops::Not::not"
+    )]
+    pub kept_output: bool,
     /// Fork-only: this Session is the workspace's Super Agent (Router).
     /// Additive; older Hosts omit it. Must round-trip, as `cwd`.
     #[serde(default)]
@@ -1649,6 +1658,15 @@ impl RemoteSessionBackend {
                 "filesystem.file.read",
                 "/mobile/files/read",
                 &["path", "offset"],
+            ),
+            // Fork-only: a stopped Run's kept output (ADR 0006). A tail read
+            // without an offset, so it never moves this backend's output
+            // cursor (a live pane's pump owns that).
+            "outputTail" => (
+                "GET",
+                OUTPUT_CAPABILITY,
+                OUTPUT_PATH,
+                &["session_id", "limit"],
             ),
             // Fork-only: Scheduled Tasks' read routes.
             "schedules" => ("GET", "schedule.list", "/mobile/schedules", &[]),
@@ -4736,6 +4754,29 @@ mod tests {
         let bare_wire = serde_json::to_value(&bare).unwrap();
         assert!(bare_wire.get("scheduleID").is_none());
         assert!(bare_wire.get("superseded").is_none());
+    }
+
+    /// The native bridge strips what this type does not carry.
+    #[test]
+    fn session_summary_round_trips_a_stopped_runs_kept_output() {
+        let session: RemoteSessionSummary = serde_json::from_value(json!({
+            "id": "s1", "projectID": "p1", "title": "t", "command": "zsh",
+            "createdAtUnixMs": 1, "status": "exited", "activity": "idle",
+            "scheduleID": "sch_a", "superseded": true, "keptOutput": true
+        }))
+        .unwrap();
+        assert!(session.kept_output);
+        assert_eq!(serde_json::to_value(&session).unwrap()["keptOutput"], true);
+        let bare: RemoteSessionSummary = serde_json::from_value(json!({
+            "id": "s1", "projectID": "p1", "title": "t", "command": "zsh",
+            "createdAtUnixMs": 1, "status": "exited", "activity": "idle"
+        }))
+        .unwrap();
+        assert!(!bare.kept_output);
+        assert!(serde_json::to_value(&bare)
+            .unwrap()
+            .get("keptOutput")
+            .is_none());
     }
 
     #[test]
@@ -8139,6 +8180,55 @@ mod tests {
             Ok(runs)
         );
         assert_eq!(connection.remaining(), 0);
+    }
+
+    /// A stopped Run's kept output is one stateless tail read of
+    /// `/mobile/output` (no offset, so no output cursor moves), behind
+    /// `session.output.read`.
+    #[test]
+    fn an_output_tail_is_a_stateless_read_behind_the_output_capability() {
+        let connection = ScriptedConnection::new();
+        let generation = connection.generation(1);
+        add_bootstrap(
+            &connection,
+            generation,
+            bootstrap_json(
+                Some("host-1"),
+                HOST_PROTOCOL_MAJOR,
+                Some(&[BOOTSTRAP_CAPABILITY, OUTPUT_CAPABILITY]),
+            ),
+        );
+        let tail = br#"{"sessionID":"s1","offset":0,"nextOffset":3,"dataBase64":"aGkK","truncated":false}"#
+            .to_vec();
+        connection.push(reply_step(
+            expected_read(
+                generation,
+                OUTPUT_PATH,
+                vec![
+                    ("session_id".to_owned(), "s1".to_owned()),
+                    ("limit".to_owned(), "196608".to_owned()),
+                ],
+            ),
+            generation,
+            200,
+            tail.clone(),
+        ));
+        let backend = RemoteSessionBackend::new(connection.clone());
+        backend.bootstrap().unwrap();
+        let query = HashMap::from([
+            ("session_id".to_owned(), "s1".to_owned()),
+            ("limit".to_owned(), "196608".to_owned()),
+        ]);
+        assert_eq!(
+            backend.resource_request("outputTail", &query, Vec::new()),
+            Ok(tail)
+        );
+        assert_eq!(connection.remaining(), 0);
+        assert_eq!(
+            backend.committed_output_offset("s1"),
+            None,
+            "no output cursor moved"
+        );
     }
 
     #[test]
