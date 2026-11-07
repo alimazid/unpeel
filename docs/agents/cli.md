@@ -136,8 +136,10 @@ the app's overlay. Pause is
 the due rule counts only occurrences after it, so nothing missed while
 paused runs. `run` (Run now) goes to the live worker over the owner-only
 `/_unpeel/schedules` control path, which refuses while a Run is in
-progress, so it needs a running Host. `list` and `history` read the
-per-task clock and Run log under `<UNPEEL_HOME>/schedules/<id>/`
+progress (or when the task's Run log will not read, so it cannot tell) with
+the status and code of `/mobile/schedules/run`, so it needs a running Host.
+`list` and `history` read the per-task clock and Run log under
+`<UNPEEL_HOME>/schedules/<id>/`
 (`unpeel_core::schedule_store`); `list`'s next run is
 `trigger::next_run`, the instant the Host publishes. Every verb but `list`
 and `history` refuses inside a Session, the detection `unpeel send` uses,
@@ -148,10 +150,13 @@ the user, here or through the MCP `workspace` writes.
 Triggers read the local wall clock (`unpeel_serve::schedules::clock`):
 `system_zone()` resolves the zone on every call (`TZ`, else the
 `/etc/localtime` link), so travel takes effect on the next sweep. A time a
-spring-forward change skips comes due when the change ends; a repeated
-time fires once, on its first pass — for every kind, Hourly and cron
-included. Occurrences are compared as local date-times, so after a
-westward trip the same local time does not fire twice.
+spring-forward change skips comes due when the change ends; a time repeated
+when clocks go back fires once, on its first pass — for every kind, Hourly
+and cron included, so an hourly task fires one time fewer that night and an
+every-minute cron task is quiet for the second pass
+([ADR 0007](../adr/0007-a-repeated-local-time-fires-once-for-every-trigger.md)).
+Occurrences are compared as local date-times, so after a westward trip the
+same local time does not fire twice.
 
 `unpeel ls` lists Sessions the way the apps do: it leaves out Superseded
 Runs, a task's older Runs that are not pinned, busy, or waiting on you. The

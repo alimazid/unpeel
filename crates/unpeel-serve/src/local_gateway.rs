@@ -15,6 +15,7 @@ use std::thread::JoinHandle;
 use std::time::Duration;
 
 use unpeel_core::controller_host::ControllerHostRuntime;
+use unpeel_core::controller_schedules::RunNowRefusal;
 use unpeel_core::remote_stdio;
 
 use crate::computer::{ComputerAdapter, SharedComputerStatus};
@@ -61,7 +62,7 @@ pub(crate) enum LocalControlRequest {
     },
     RunScheduleNow {
         schedule_id: String,
-        reply: mpsc::SyncSender<Result<serde_json::Value, String>>,
+        reply: mpsc::SyncSender<Result<String, RunNowRefusal>>,
     },
 }
 
@@ -615,7 +616,8 @@ fn handle_local_control(
 }
 
 /// `{"action":"run","scheduleID":…}`: Run now through the worker, which
-/// answers at once with the Run id or why it refused.
+/// answers at once with the Run id or why it refused, in the status and
+/// `{"error", "code"}` body `/mobile/schedules/run` answers.
 fn handle_schedules_control(
     request: unpeel_core::relay_wire::TunnelRequest,
     control_tx: &mpsc::Sender<LocalControlRequest>,
@@ -635,12 +637,14 @@ fn handle_schedules_control(
     else {
         return (400, br#"{"error":"valid scheduleID required"}"#.to_vec());
     };
-    let (reply_tx, reply_rx) = mpsc::sync_channel(1);
-    let control = LocalControlRequest::RunScheduleNow {
-        schedule_id,
-        reply: reply_tx,
+    let (status, body) = match crate::schedules::host::run_now(control_tx, &schedule_id) {
+        Ok(run_id) => (200, serde_json::json!({ "runID": run_id })),
+        Err(refusal) => {
+            let failure = refusal.failure();
+            (failure.status, failure.body())
+        }
     };
-    await_control_reply(control_tx, control, &reply_rx, "Run now failed")
+    (status, body.to_string().into_bytes())
 }
 
 fn await_control_reply(
@@ -722,7 +726,8 @@ fn control_call(
 }
 
 /// Run a Scheduled Task now through the workspace worker. Returns the new
-/// Run's id; refused while a Run of the task is in progress.
+/// Run's id, or the worker's refusal message (a Run in progress, a Run log
+/// that will not read, a task that is gone).
 pub fn run_schedule_now(home: &Path, schedule_id: &str) -> Result<String, String> {
     let response = control_call(
         home,
@@ -809,4 +814,87 @@ pub fn set_device_relay_allowed(home: &Path, device_id: &str, allowed: bool) -> 
         }),
     )
     .map(|_| ())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::schedules::host::test_support::{morning, run_now_driver};
+
+    fn run_now_request() -> unpeel_core::relay_wire::TunnelRequest {
+        unpeel_core::relay_wire::TunnelRequest {
+            id: 1,
+            method: "POST".into(),
+            path: SCHEDULES_CONTROL_PATH.into(),
+            query: Vec::new(),
+            auth: None,
+            content_type: Some("application/json".into()),
+            body: br#"{"action":"run","scheduleID":"sch_1"}"#.to_vec(),
+        }
+    }
+
+    fn answer(control: &mpsc::Sender<LocalControlRequest>) -> (u16, serde_json::Value) {
+        let (status, body) = handle_schedules_control(run_now_request(), control);
+        (status, serde_json::from_slice(&body).expect("a JSON body"))
+    }
+
+    /// #28, the CLI's wire (`unpeel schedules run`): an unreadable Run log
+    /// answers the same status and code as `/mobile/schedules/run`.
+    #[test]
+    fn an_unreadable_run_log_answers_its_own_code_on_the_cli_wire() {
+        let root = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(root.path().join("sch_1").join("runs.jsonl")).unwrap();
+        let control = run_now_driver(root.path().to_path_buf(), vec![morning()], 1);
+        let (status, body) = answer(&control);
+        assert_eq!(
+            (status, &body["code"]),
+            (500, &"run_log_unreadable".into()),
+            "{body}"
+        );
+        let message = body["error"].as_str().unwrap_or_default();
+        assert!(
+            message.contains("Morning") && message.contains("runs.jsonl"),
+            "{body}"
+        );
+    }
+
+    #[test]
+    fn a_run_already_queued_answers_run_in_progress_on_the_cli_wire() {
+        let root = tempfile::tempdir().unwrap();
+        let control = run_now_driver(root.path().to_path_buf(), vec![morning()], 2);
+        let (status, body) = answer(&control);
+        assert_eq!(status, 200, "{body}");
+        assert!(
+            body["runID"]
+                .as_str()
+                .unwrap_or_default()
+                .starts_with("run_"),
+            "{body}"
+        );
+        let (status, body) = answer(&control);
+        assert_eq!(
+            (status, &body["code"]),
+            (409, &"run_in_progress".into()),
+            "{body}"
+        );
+        assert!(
+            body["error"]
+                .as_str()
+                .unwrap_or_default()
+                .contains("in progress"),
+            "{body}"
+        );
+    }
+
+    #[test]
+    fn a_task_gone_by_the_time_the_driver_answers_is_unknown_on_the_cli_wire() {
+        let root = tempfile::tempdir().unwrap();
+        let control = run_now_driver(root.path().to_path_buf(), Vec::new(), 1);
+        let (status, body) = answer(&control);
+        assert_eq!(
+            (status, &body["code"]),
+            (404, &"unknown_task".into()),
+            "{body}"
+        );
+    }
 }
