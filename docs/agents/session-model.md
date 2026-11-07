@@ -227,7 +227,14 @@ Remove, plus `__browser_cleanup__`) and keeps the Session dir's manifest,
 title, artifacts, and provider id — but truncates `output.bin`: Resume starts
 a replacement terminal and never replays the old journal, and kept journals
 were what grew `app-sessions/` into gigabytes. A Session that exits on its own
-keeps its output (it may explain why it died). Each `unpeel serve` worker
+keeps its output (it may explain why it died). So does a **Run Session** (its
+`spawned_by` is `schedule:<task id>`), agent or script, whoever stops it: the
+next Run superseding it, auto-stop, or the user
+([ADR 0006](../adr/0006-a-stopped-run-session-keeps-its-output.md)).
+`unpeel logs <id>` and the MCP `sessions read_output` action read it; the
+journal's own cap still applies, and it goes with the directory when Run
+retention removes the Session (five stopped Runs per task). Resume of a
+stopped Run still starts a fresh terminal. Each `unpeel serve` worker
 start migrates legacy `archived.json` Sessions to plain stopped rows
 (`session_ops::migrate_archived_sessions`: marker and scrollback dropped).
 
