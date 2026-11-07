@@ -225,8 +225,12 @@ fn create(
     let preset_id = optional_string(body, "presetID")?.unwrap_or_default();
     let instructions = instructions_field(body)?.flatten();
     let host = require(host)?;
-    let trigger =
-        save::check_trigger(host, &decode_trigger(raw_trigger)?, enabled).map_err(refused)?;
+    let trigger = save::check_trigger(
+        host,
+        &save::read_trigger(trigger_object(raw_trigger)?),
+        enabled,
+    )
+    .map_err(refused)?;
     save::check_task_runs(host, &project_id, &preset_id, instructions.as_deref())
         .map_err(refused)?;
 
@@ -252,10 +256,10 @@ fn create(
 // ── edit, pause, resume ──
 
 /// Change the fields the body names. A new Trigger is checked (and must
-/// come due while the task is enabled); resuming checks the Trigger the
-/// task keeps; a new Project, preset or instructions must still make a
-/// task the Host would run. Resuming or a new Trigger restarts the clock
-/// (`schedules::apply_edit`).
+/// come due while the task is enabled), the stored one sent back is not;
+/// resuming checks the Trigger the task keeps; a new Project, preset or
+/// instructions must still make a task the Host would run. Resuming or a
+/// new Trigger restarts the clock (`schedules::apply_edit`).
 fn edit(
     body: &Map<String, Value>,
     host: Option<&dyn ScheduleHost>,
@@ -299,8 +303,10 @@ fn edit(
     saved_row(workspace, host, &saved)
 }
 
-/// An edit's new Trigger, checked (it must come due while the task stays
-/// enabled); without one, resuming checks the Trigger the task keeps.
+/// An edit's new Trigger, by the save rules (`save::check_edited_trigger`:
+/// the stored one sent back is no change; another must come due while the
+/// task stays enabled); without one, resuming checks the Trigger the task
+/// keeps (`save::check_resume`).
 fn edited_trigger(
     host: &dyn ScheduleHost,
     body: &Map<String, Value>,
@@ -309,16 +315,15 @@ fn edited_trigger(
     enabled: Option<bool>,
 ) -> Result<Option<ScheduleTrigger>, Failure> {
     let enabled = enabled.unwrap_or(current.enabled);
-    let new_trigger = body
+    let given = body
         .get("trigger")
-        .filter(|raw| !raw.is_null() && Some(*raw) != stored.get("trigger"));
-    if let Some(raw) = new_trigger {
-        return save::check_trigger(host, &decode_trigger(raw)?, enabled)
-            .map(Some)
-            .map_err(refused);
-    }
-    if enabled && !current.enabled {
-        save::check_trigger(host, &current.trigger, true).map_err(|refusal| {
+        .filter(|raw| !raw.is_null())
+        .map(trigger_object)
+        .transpose()?;
+    let trigger =
+        save::check_edited_trigger(host, given, stored.get("trigger"), enabled).map_err(refused)?;
+    if trigger.is_none() && enabled && !current.enabled {
+        save::check_resume(host, &current.trigger).map_err(|refusal| {
             let failure = refused(refusal);
             Failure {
                 message: format!("cannot resume: {}", failure.message),
@@ -326,7 +331,7 @@ fn edited_trigger(
             }
         })?;
     }
-    Ok(None)
+    Ok(trigger)
 }
 
 // ── delete ──
@@ -388,13 +393,15 @@ fn refused(refusal: SaveRefusal) -> Failure {
     Failure::new(status, refusal.code(), refusal.to_string())
 }
 
-/// A Trigger from a body. A shape that does not decode reads as `Unknown`,
-/// which no Host accepts: the save check says so.
-fn decode_trigger(raw: &Value) -> Result<ScheduleTrigger, Failure> {
-    if !raw.is_object() {
-        return Err(invalid("a Trigger is an object with a kind"));
+/// A Trigger from a body, in its stored JSON form: an object. A shape that
+/// does not decode reads as `Unknown` (`save::read_trigger`), which no
+/// Host accepts: the save check says so.
+fn trigger_object(raw: &Value) -> Result<&Value, Failure> {
+    if raw.is_object() {
+        Ok(raw)
+    } else {
+        Err(invalid("a Trigger is an object with a kind"))
     }
-    Ok(serde_json::from_value(raw.clone()).unwrap_or_default())
 }
 
 /// `instructions`: absent → `None` (unchanged); `null` or blank →
@@ -530,13 +537,9 @@ impl Workspace {
     /// The task's raw entry, read without the flock: a write route refuses
     /// an unknown task before it takes the lock or needs the Host.
     fn stored_entry(&self, schedule_id: &str) -> Result<Map<String, Value>, Failure> {
-        self.load()?
-            .get("schedules")
-            .and_then(Value::as_array)
-            .into_iter()
-            .flatten()
-            .find(|entry| entry_id(entry) == Some(schedule_id))
-            .and_then(Value::as_object)
+        let state = self.load()?;
+        let list = state.get("schedules").and_then(Value::as_array);
+        save::entry(list.map_or(&[], Vec::as_slice), schedule_id)
             .cloned()
             .ok_or_else(|| gone(schedule_id))
     }
