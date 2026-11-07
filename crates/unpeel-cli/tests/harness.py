@@ -25,6 +25,7 @@ import http.client
 import json
 import os
 import pty
+import random
 import re
 import select
 import shutil
@@ -45,6 +46,11 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 REPO = os.path.realpath(os.path.join(os.path.dirname(__file__), "..", "..", ".."))
 CRATES = os.path.join(REPO, "crates")
 BINARY = os.environ.get("UNPEEL_TUI_BINARY", os.path.join(CRATES, "target", "debug", "unpeel"))
+
+# run.sh starts each case as a background job, and a shell starts those with
+# SIGINT ignored. Restore it so Ctrl-C (or run.sh passing one on) still
+# unwinds the case through `Case.finish()` and its cleanup.
+signal.signal(signal.SIGINT, signal.default_int_handler)
 
 SPINNER_CHARS = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
 UNREAD_DOT = "●"
@@ -231,6 +237,13 @@ def _pids_with_arg(arg):
     return pids
 
 
+def _names_path(text, path):
+    """Whether `text` mentions `path` itself or something under it. A bare
+    substring test would let /tmp/s1-cli claim /tmp/s1-cli_write_policy,
+    a different case's home that may be running beside it."""
+    return re.search(re.escape(path) + r"(?=/|\s|$)", text) is not None
+
+
 def _process_references_home(pid, home_real):
     # argv mentions the home (covers __session_host__ launch files)…
     try:
@@ -238,7 +251,7 @@ def _process_references_home(pid, home_real):
             ["ps", "-p", str(pid), "-o", "command="],
             capture_output=True, text=True, check=False,
         ).stdout
-        if home_real in cmd:
+        if _names_path(cmd, home_real):
             return True
     except Exception:
         pass
@@ -249,7 +262,7 @@ def _process_references_home(pid, home_real):
             ["ps", "eww", "-p", str(pid), "-o", "command="],
             capture_output=True, text=True, check=False,
         ).stdout
-        if f"UNPEEL_HOME={home_real}" in env or f"UNPEEL_HOME={home_real}/" in env:
+        if _names_path(env, f"UNPEEL_HOME={home_real}"):
             return True
     except Exception:
         pass
@@ -571,11 +584,28 @@ class Home:
         `server-port` is the *app's* rebinding contract: the Host binds it
         when free but must never write it, so a test that wants to reach the
         phone server has to publish the number itself — exactly as a desktop
-        app would have."""
-        probe = socket.socket()
-        probe.bind(("127.0.0.1", 0))
-        port = probe.getsockname()[1]
-        probe.close()
+        app would have.
+
+        The Host binds this exact number later, so a kernel-chosen `:0` port
+        could be handed to any other process in between (other cases and
+        other runs bind `:0` all the time). A random port below every OS
+        ephemeral range (macOS 49152+, Linux 32768+) can only be taken by an
+        explicit bind of that number — the cure `mobile.rs` uses for its own
+        tests (`on_a_reclaimable_port`)."""
+        port = None
+        for _ in range(200):
+            candidate = random.randrange(20000, 30000)
+            probe = socket.socket()
+            try:
+                probe.bind(("0.0.0.0", candidate))
+                port = candidate
+                break
+            except OSError:
+                continue
+            finally:
+                probe.close()
+        if port is None:
+            raise RuntimeError("no free port in 20000-29999 for the phone endpoint")
         with open(self.path("mobile", "server-port"), "w") as handle:
             handle.write(f"{port}\n")
         return port
