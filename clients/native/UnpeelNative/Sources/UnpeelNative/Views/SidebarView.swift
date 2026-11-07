@@ -839,7 +839,8 @@ struct SidebarView: View {
                             dragState: dragState,
                             node: node,
                             depth: 0,
-                            workspaceMoveTargets: workspaceMoveTargets
+                            workspaceMoveTargets: workspaceMoveTargets,
+                            ancestorShells: []
                         )
                     }
                 }
@@ -1267,8 +1268,17 @@ struct ProjectNodeView: View {
     /// Resolved once by the root tree and threaded through child folders.
     /// Only top-level project menus consume it.
     let workspaceMoveTargets: [WorkspaceMoveTarget]
+    /// The blocks enclosing this node, outermost first (empty at top level).
+    let ancestorShells: [SidebarSessionDragController.ShellOwner]
 
     private var isExpanded: Bool { store.expandedProjectIDs.contains(node.id) }
+
+    /// The owner chain every row of this node registers: the enclosing
+    /// blocks plus this node's own. The drag controller derives each
+    /// block's drop shell from the rows that name it.
+    private var shells: [SidebarSessionDragController.ShellOwner] {
+        ancestorShells + [isInlineFolder ? .group(node.id) : .project(node.id)]
+    }
 
     /// Group or worktree — inline child-folder row with a leading disclosure
     /// chevron and a wash behind the whole cluster on hover.
@@ -1341,22 +1351,15 @@ struct ProjectNodeView: View {
                     parentID: node.project.parentProjectID ?? ""
                 ))
         } else {
+            // The header remains the only project-drag SOURCE. The whole
+            // expanded block is still a reliable top-level reorder TARGET:
+            // the controller derives its shell from the rows that name it.
             VStack(alignment: .leading, spacing: 0) {
                 projectRow
                 if isExpanded {
                     sessionList
                         .transition(.sessionListContent)
                 }
-            }
-            // The header remains the only project-drag SOURCE. This larger
-            // overlapping record makes the whole expanded block a reliable
-            // top-level reorder TARGET even when the pointer is over one of
-            // its Session/group descendants.
-            .background {
-                Color.clear.sidebarDragRowFrame(
-                    id: "project-shell-drop:\(node.id)",
-                    kind: .projectShell(projectID: node.id)
-                )
             }
             .modifier(SidebarProjectBlockDragEffects(
                 dragState: dragState, nodeID: node.id
@@ -1374,24 +1377,15 @@ struct ProjectNodeView: View {
                     .transition(.sessionListContent)
             }
         }
+        // The group's drop shell is not a frame of this cluster: the drag
+        // controller derives it from the rows that name this group (header,
+        // Sessions, nested groups, the empty placeholder), so it never
+        // follows the hover-animated wash.
         .background {
             GroupClusterBackground(
                 selection: store.sessionSelection,
                 node: node,
                 isHovering: groupHovering
-            )
-        }
-        .background {
-            // Drop-target frame lives on its OWN stable layer, not on the
-            // hover-animated wash above. A group whose sessions are all
-            // stopped (so its body is nearly empty) would otherwise
-            // report a small, animation-jittery shell frame — sometimes stale
-            // under the cursor — and a dragged session would fall through to
-            // the parent project shell instead of filing INTO the group. This
-            // matches the .projectShell registration on the non-inline branch.
-            Color.clear.sidebarDragRowFrame(
-                id: "group-shell-drop:\(node.id)",
-                kind: .groupShell(projectID: node.id)
             )
         }
         .onHover { groupHovering = $0 }
@@ -1542,7 +1536,7 @@ struct ProjectNodeView: View {
                 // Group/root move target for the detached session drag: the
                 // controller hit-tests this frame and gates the highlight +
                 // drop through `UnpeelStore.canMoveSession`.
-                .sidebarDragRowFrame(id: node.id, kind: .project)
+                .sidebarDragRowFrame(id: node.id, kind: .project, owners: shells)
         } else if let parentID = node.project.parentProjectID {
             row
                 .modifier(SidebarSessionRowDragEffects(
@@ -1560,7 +1554,8 @@ struct ProjectNodeView: View {
                         parentID: parentID,
                         pinned: store.isGroupPinned(node.id),
                         depth: depth
-                    )
+                    ),
+                    owners: shells
                 )
                 .onDrop(of: [.fileURL], delegate: SidebarReorderDropDelegate(
                     isReorderActive: { false },
@@ -1619,7 +1614,8 @@ struct ProjectNodeView: View {
                         dragState: dragState,
                         node: child,
                         depth: depth + 1,
-                        workspaceMoveTargets: workspaceMoveTargets
+                        workspaceMoveTargets: workspaceMoveTargets,
+                        ancestorShells: shells
                     )
                     .transition(.sessionRowStagger(index: index))
                 case .session(let session):
@@ -1646,7 +1642,8 @@ struct ProjectNodeView: View {
                         dragState: dragState,
                         node: child,
                         depth: depth + 1,
-                        workspaceMoveTargets: workspaceMoveTargets
+                        workspaceMoveTargets: workspaceMoveTargets,
+                        ancestorShells: shells
                     )
                     .transition(.sessionRowStagger(index: pinnedItems.count + index))
                 case .session(let session):
@@ -1680,6 +1677,9 @@ struct ProjectNodeView: View {
                     onManagePlugins: { store.openSettings(tab: .plugins) },
                     showsManagePresets: store.selectedHostScope == .local
                 )
+                // Shell-only: a drop on the placeholder files into this
+                // group or project, never onto the row itself.
+                .sidebarDragShellFrame(id: "empty:\(node.id)", owners: shells)
             }
 
             // Everything past the inactive-preview window leaves the sidebar.
@@ -1874,6 +1874,7 @@ struct ProjectNodeView: View {
                     kind: .session(
                         projectID: node.id, pinned: pinnedRow, depth: depth
                     ),
+                    owners: shells,
                     isDraggable: true
                 )
                 // Finder folder drops on a row still mean "add project"; the
@@ -1899,6 +1900,7 @@ struct ProjectNodeView: View {
                 kind: .session(
                     projectID: node.id, pinned: pinnedRow, depth: depth
                 ),
+                owners: shells,
                 isDraggable: false
             )
         }

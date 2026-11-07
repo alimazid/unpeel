@@ -146,16 +146,58 @@ final class SidebarSessionDragController: ObservableObject {
         /// A top-level project row. It is both a project-reorder source/target
         /// and a potential session move target.
         case project
-        /// The full visible block owned by a top-level project (header plus
-        /// expanded descendants). It is a reorder TARGET but never a source:
-        /// presses on a nested Session/group must retain their own meaning.
+        /// The visible block owned by a top-level project (header plus
+        /// expanded descendants). Never registered: `row(at:in:)` derives it
+        /// from the rows the block owns. It is a reorder TARGET but never a
+        /// source: presses on a nested Session/group must retain their own
+        /// meaning.
         case projectShell(projectID: String)
-        /// The full visible background shell around a group. It gets a
-        /// separate registry id and lower hit priority, so its header remains
-        /// a draggable `folderItem` and contained Session rows retain their
-        /// positional-reorder geometry while every bit of group wash still
-        /// accepts a drop.
+        /// The visible shell around a group or worktree cluster. Never
+        /// registered either, and it loses to every semantic row, so its
+        /// header remains a draggable `folderItem` and contained Session rows
+        /// retain their positional-reorder geometry while every bit of group
+        /// wash still accepts a drop.
         case groupShell(projectID: String)
+    }
+
+    /// A block whose drop shell a registered row extends. Rows carry their
+    /// owner chain; a block's shell is the union of the registered frames of
+    /// the mounted rows that name it, derived at hit-test time.
+    enum ShellOwner: Hashable {
+        /// A top-level project's block.
+        case project(String)
+        /// An inline group or worktree cluster (a top-level one included).
+        case group(String)
+
+        var shellKind: RowKind {
+            switch self {
+            case let .project(id): .projectShell(projectID: id)
+            case let .group(id): .groupShell(projectID: id)
+            }
+        }
+
+        var shellID: String {
+            switch self {
+            case let .project(id): "project-shell-drop:\(id)"
+            case let .group(id): "group-shell-drop:\(id)"
+            }
+        }
+    }
+
+    /// What a content-space point resolves to: a registered row, or a
+    /// project/group shell derived from the rows its block owns.
+    struct RowHit: Equatable {
+        let id: String
+        let kind: RowKind
+        let frame: CGRect
+        let isDraggable: Bool
+    }
+
+    /// The top-level project block under a point during a project drag, and
+    /// which half of it the point is in.
+    struct ProjectBlockHit: Equatable {
+        let id: String
+        let below: Bool
     }
 
     /// The lifted row rendered by the floating card. Row chrome that would
@@ -176,19 +218,39 @@ final class SidebarSessionDragController: ObservableObject {
         let isUnread: Bool
     }
 
-    private struct RowRecord {
-        var kind: RowKind
-        var frame: CGRect
+    struct RowRecord {
+        /// Nil for a shell-only row (the empty-project placeholder): never a
+        /// hit target itself, it only extends its owners' shells.
+        let kind: RowKind?
+        let frame: CGRect
+        /// The blocks this row sits inside, outermost first: the top-level
+        /// block, then each enclosing group down to the row's own. A group
+        /// or project header names its own block too.
+        let owners: [ShellOwner]
         /// Session rows also participate in immediate press selection even
         /// when their current sort/scope does not permit a detached drag.
         /// Other row kinds retain the historical draggable default.
-        var isDraggable: Bool
+        let isDraggable: Bool
         /// Identity of the reporter instance that registered this frame.
         /// A moved row (cross-group drop) is a NEW view for the same id:
         /// the new reporter registers before the old view's teardown runs,
         /// and an unscoped remove would delete the fresh registration —
         /// leaving the row undraggable until its list rebuilt.
-        var token: UUID
+        let token: UUID
+
+        init(
+            kind: RowKind?,
+            frame: CGRect,
+            owners: [ShellOwner],
+            isDraggable: Bool = true,
+            token: UUID = UUID()
+        ) {
+            self.kind = kind
+            self.frame = frame
+            self.owners = owners
+            self.isDraggable = isDraggable
+            self.token = token
+        }
     }
 
     /// A terminal pane title is another source for the same detached Session
@@ -375,14 +437,16 @@ final class SidebarSessionDragController: ObservableObject {
 
     func setRowFrame(
         id: String,
-        kind: RowKind,
+        kind: RowKind?,
         frame: CGRect,
+        owners: [ShellOwner],
         isDraggable: Bool = true,
         token: UUID
     ) {
         rows[id] = RowRecord(
             kind: kind,
             frame: frame,
+            owners: owners,
             isDraggable: isDraggable,
             token: token
         )
@@ -405,7 +469,7 @@ final class SidebarSessionDragController: ObservableObject {
         edgeMargin: CGFloat
     ) -> Bool {
         guard let record = rows[sessionID],
-              case .session = record.kind,
+              case .session? = record.kind,
               let scrollView = monitorView?.enclosingScrollView
         else { return true }
         return Self.rowNeedsReveal(
@@ -805,25 +869,25 @@ final class SidebarSessionDragController: ObservableObject {
         // The trailing cluster is reserved for Resume/Stop/runtime
         // controls; confirmation and edit modes own the whole row.
         let selectionBeforePress = store?.selectedSessionID
-        if let (id, record) = sessionRow(at: point),
+        if let hit = sessionRow(at: point),
            Self.immediateSelectionHit(
                point: point,
-               rowFrame: record.frame,
+               rowFrame: hit.frame,
                trailingControlWidth: Self.immediateSelectionTrailingControlWidth
            ),
-           sessionAcceptsImmediateSelection(id) {
-            store?.selectedSessionID = id
+           sessionAcceptsImmediateSelection(hit.id) {
+            store?.selectedSessionID = hit.id
         }
-        guard let (id, record) = draggableRow(at: point) else { return event }
+        guard let hit = draggableRow(at: point) else { return event }
         guard Self.shouldArmRowDrag(
-            rowID: id,
+            rowID: hit.id,
             editingSessionID: store?.editingSessionID,
             confirmingRemoveSessionID: store?.confirmingRemoveSessionID
         ) else { return event }
-        if case .session = record.kind {
+        if case .session = hit.kind {
             selectionBeforePressedSession = selectionBeforePress
         }
-        phase = .pressed(sessionID: id, startLocation: event.locationInWindow)
+        phase = .pressed(sessionID: hit.id, startLocation: event.locationInWindow)
         // The lift must NOT depend on dragged events reaching the local
         // monitor: whatever event-tracking the row press starts (see header)
         // can consume every subsequent dragged event, in which case the 6pt
@@ -1008,6 +1072,8 @@ final class SidebarSessionDragController: ObservableObject {
               isSurfaceBusy?() != true,
               let parent = view.window,
               let record = rows[sessionID],
+              // A shell-only row never lifts.
+              let kind = record.kind,
               Self.shouldArmRowDrag(
                   rowID: sessionID,
                   editingSessionID: store.editingSessionID,
@@ -1019,7 +1085,7 @@ final class SidebarSessionDragController: ObservableObject {
             selectionBeforePressedSession = nil
             return false
         }
-        if case .session = record.kind,
+        if case .session = kind,
            let restored = Self.selectionToRestoreForLift(
                draggedID: sessionID,
                selectedBeforePress: selectionBeforePressedSession,
@@ -1031,10 +1097,10 @@ final class SidebarSessionDragController: ObservableObject {
         let projectID: String
         let pinned: Bool
         let newCard: Card
-        pinnedDragBoundary = Self.pinnedBoundary(for: record.kind)
+        pinnedDragBoundary = Self.pinnedBoundary(for: kind)
         pinnedDropDenied = false
         worktreeDropDenied = false
-        switch record.kind {
+        switch kind {
         case let .session(ownerID, isPinned, rowDepth):
             guard let entry = sessionEntry(projectID: ownerID, sessionID: sessionID) else {
                 stopDragTimer()
@@ -1112,7 +1178,7 @@ final class SidebarSessionDragController: ObservableObject {
             return false
         }
         generation += 1
-        if case .project = record.kind {
+        if case .project = kind {
             dragState.beginProject(
                 sessionID,
                 armed: false,
@@ -1145,7 +1211,7 @@ final class SidebarSessionDragController: ObservableObject {
             // represent its move — collapsed folders reorder normally, and
             // cross-project drops still work without a gap.
             let expandedFolderSource: Bool = {
-                if case .folderItem = record.kind {
+                if case .folderItem = kind {
                     return store.expandedProjectIDs.contains(sessionID)
                 }
                 return false
@@ -1908,18 +1974,19 @@ final class SidebarSessionDragController: ObservableObject {
                 return
             }
 
-            guard let (id, record) = row(at: content) else {
+            guard let hit = row(at: content) else {
                 // Tiny stack gaps and blank space in the current shell retain
                 // the last valid pinned reorder gap, like ordinary drags.
                 pinnedDropDenied = false
         worktreeDropDenied = false
                 return
             }
+            let id = hit.id
             let action = Self.pinnedSidebarHitAction(
                 boundary: boundary,
                 sourceID: drag.sessionID,
                 targetID: id,
-                targetKind: record.kind,
+                targetKind: hit.kind,
                 firstReorderID: dragState.sessionReorderFirstID
             )
             var insertion: SidebarDragState.SessionInsertion?
@@ -1931,7 +1998,7 @@ final class SidebarSessionDragController: ObservableObject {
                 pinnedDropDenied = false
         worktreeDropDenied = false
                 if paneDragContext != nil,
-                   case let .session(projectID, pinned, _) = record.kind,
+                   case let .session(projectID, pinned, _) = hit.kind,
                    projectID == drag.projectID,
                    pinned == drag.pinned,
                    id != drag.sessionID {
@@ -1941,7 +2008,7 @@ final class SidebarSessionDragController: ObservableObject {
                     insertion = SidebarDragState.SessionInsertion(
                         projectID: projectID,
                         anchorID: id,
-                        below: content.y > record.frame.midY
+                        below: content.y > hit.frame.midY
                     )
                 } else if anchorID != reorderAnchorID,
                           let index = dragState.sessionReorderIndexByID[anchorID] {
@@ -1964,13 +2031,14 @@ final class SidebarSessionDragController: ObservableObject {
         var newInsertion: SidebarDragState.SessionInsertion?
         var newReorderAnchor: String?
         var springCandidate: String?
-        if let (id, record) = row(at: content) {
+        if let hit = row(at: content) {
+            let id = hit.id
             // Checkout boundary first: a row owned by a project in another
             // git checkout than the dragged Session's home can never accept
             // it, never previews a gap, and never spring-opens. The origin
             // section's own sibling folders stay positional (below).
             let hoveredOwnerProjectID: String?
-            switch record.kind {
+            switch hit.kind {
             case let .session(projectID, _, _):
                 hoveredOwnerProjectID = projectID
             case let .folderItem(parentID, _, _):
@@ -1987,7 +2055,7 @@ final class SidebarSessionDragController: ObservableObject {
                ) {
                 worktreeDropDenied = true
             }
-            switch record.kind {
+            switch hit.kind {
             case let .session(projectID, pinned, _):
                 if projectID == drag.projectID, paneDragContext == nil {
                     // Same-section rows move the TRANSFORM gap — one small
@@ -2007,7 +2075,7 @@ final class SidebarSessionDragController: ObservableObject {
                         newInsertion = SidebarDragState.SessionInsertion(
                             projectID: projectID,
                             anchorID: id,
-                            below: content.y > record.frame.midY
+                            below: content.y > hit.frame.midY
                         )
                     }
                 } else if store.canMoveSession(drag.sessionID, toProjectID: projectID) {
@@ -2024,7 +2092,7 @@ final class SidebarSessionDragController: ObservableObject {
                         newInsertion = SidebarDragState.SessionInsertion(
                             projectID: projectID,
                             anchorID: id,
-                            below: content.y > record.frame.midY
+                            below: content.y > hit.frame.midY
                         )
                     }
                 }
@@ -2041,8 +2109,8 @@ final class SidebarSessionDragController: ObservableObject {
                         newReorderAnchor = id
                     } else if Self.folderHoverIsPositional(
                         y: content.y,
-                        rowMinY: record.frame.minY,
-                        rowHeight: record.frame.height
+                        rowMinY: hit.frame.minY,
+                        rowHeight: hit.frame.height
                     ) {
                         // Top/bottom band of a sibling group: place the
                         // session ABOVE/BELOW the group (essential when
@@ -2925,79 +2993,95 @@ final class SidebarSessionDragController: ObservableObject {
 
     // MARK: Geometry
 
-    private func row(at content: CGPoint) -> (String, RowRecord)? {
-        var best: (id: String, record: RowRecord)?
-        for (id, record) in rows where record.frame.contains(content) {
-            guard let current = best else {
-                best = (id, record)
-                continue
-            }
-            let priority = hitTestPriority(record.kind)
-            let currentPriority = hitTestPriority(current.record.kind)
-            let area = record.frame.width * record.frame.height
-            let currentArea = current.record.frame.width * current.record.frame.height
-            // A group shell deliberately overlaps every row it contains.
-            // Semantic rows win first; among nested semantic/shell frames,
-            // the smallest visible region is the most specific target.
-            if priority < currentPriority
-                || (priority == currentPriority && area < currentArea) {
-                best = (id, record)
-            }
-        }
-        return best.map { ($0.id, $0.record) }
+    private func row(at content: CGPoint) -> RowHit? {
+        Self.row(at: content, in: rows)
     }
 
-    private func hitTestPriority(_ kind: RowKind) -> Int {
-        switch kind {
-        case .projectShell, .groupShell: return 1
-        case .session, .folderItem, .project: return 0
-        }
-    }
-
-    private func sessionRow(at content: CGPoint) -> (String, RowRecord)? {
-        guard let hit = row(at: content), case .session = hit.1.kind else { return nil }
+    private func sessionRow(at content: CGPoint) -> RowHit? {
+        guard let hit = row(at: content), case .session = hit.kind else { return nil }
         return hit
     }
 
-    private func draggableRow(at content: CGPoint) -> (String, RowRecord)? {
+    private func draggableRow(at content: CGPoint) -> RowHit? {
         guard let hit = row(at: content) else { return nil }
-        switch hit.1.kind {
-        case .session: return hit.1.isDraggable ? hit : nil
+        switch hit.kind {
+        case .session: return hit.isDraggable ? hit : nil
         case .folderItem, .project: return hit
         case .projectShell, .groupShell: return nil
         }
     }
 
-    /// Top-level project containing this point. Header records win over the
-    /// larger overlapping block, though both resolve to the same project id.
-    /// This scan is intentionally independent of `row(at:)`: nested Session
-    /// rows have higher semantic hit priority, but they must not punch holes
-    /// in the containing PROJECT's reorder target geometry.
-    private func projectBlock(at content: CGPoint) -> (id: String, below: Bool)? {
-        var best: (id: String, priority: Int, area: CGFloat, frame: CGRect)?
-        for (id, record) in rows where record.frame.contains(content) {
-            let projectID: String
-            let priority: Int
-            switch record.kind {
-            case .project:
-                projectID = id
-                priority = 1
-            case let .projectShell(id):
-                projectID = id
-                // Prefer the full block over its overlapping header: the
-                // block midpoint gives a natural above/below insertion slot.
-                priority = 0
-            case .session, .folderItem, .groupShell:
-                continue
+    private func projectBlock(at content: CGPoint) -> ProjectBlockHit? {
+        Self.projectBlock(at: content, in: rows)
+    }
+
+    /// The row under a point. A shell deliberately overlaps every row its
+    /// block owns, so semantic rows win first and, among them, the smallest
+    /// frame is the most specific target. Only a point no semantic row
+    /// covers (blank wash, a placeholder) falls through to the shells, where
+    /// the smallest containing one, the innermost group, wins.
+    nonisolated static func row(
+        at point: CGPoint, in rows: [String: RowRecord]
+    ) -> RowHit? {
+        let semantic = rows.compactMap { id, record -> RowHit? in
+            guard let kind = record.kind, record.frame.contains(point) else { return nil }
+            return RowHit(
+                id: id, kind: kind, frame: record.frame,
+                isDraggable: record.isDraggable
+            )
+        }
+        if let hit = semantic.min(by: { area($0.frame) < area($1.frame) }) {
+            return hit
+        }
+        return shellFrames(in: rows)
+            .filter { $0.value.contains(point) }
+            .min { area($0.value) < area($1.value) }
+            .map { owner, frame in
+                RowHit(
+                    id: owner.shellID, kind: owner.shellKind, frame: frame,
+                    isDraggable: false
+                )
             }
-            let area = record.frame.width * record.frame.height
-            if best == nil
-                || priority < best!.priority
-                || (priority == best!.priority && area < best!.area) {
-                best = (projectID, priority, area, record.frame)
+    }
+
+    /// Top-level project containing this point. The whole block wins over
+    /// its overlapping header (its midpoint gives a natural above/below
+    /// insertion slot); a top-level group has no project block, so its
+    /// header alone answers. This scan is intentionally independent of
+    /// `row(at:in:)`: nested Session rows have higher semantic hit priority,
+    /// but they must not punch holes in the containing PROJECT's reorder
+    /// target geometry.
+    nonisolated static func projectBlock(
+        at point: CGPoint, in rows: [String: RowRecord]
+    ) -> ProjectBlockHit? {
+        let blocks = shellFrames(in: rows).compactMap { owner, frame -> (String, CGRect)? in
+            guard case let .project(id) = owner, frame.contains(point) else { return nil }
+            return (id, frame)
+        }
+        let headers = rows.compactMap { id, record -> (String, CGRect)? in
+            guard case .project? = record.kind, record.frame.contains(point) else { return nil }
+            return (id, record.frame)
+        }
+        return (blocks.isEmpty ? headers : blocks)
+            .min { area($0.1) < area($1.1) }
+            .map { ProjectBlockHit(id: $0.0, below: point.y > $0.1.midY) }
+    }
+
+    /// Each block's shell: the union of the registered frames of the rows
+    /// that name it. Only mounted rows are registered, so a block taller
+    /// than the lazy window covers just its mounted part.
+    nonisolated static func shellFrames(
+        in rows: [String: RowRecord]
+    ) -> [ShellOwner: CGRect] {
+        rows.values.reduce(into: [:]) { frames, record in
+            for owner in record.owners {
+                frames[owner] = frames[owner]?.union(record.frame) ?? record.frame
             }
         }
-        return best.map { ($0.id, content.y > $0.frame.midY) }
+    }
+
+    private nonisolated static func area(_ frame: CGRect) -> CGFloat {
+        frame.width * frame.height
     }
 
     /// A tiny gap between project blocks should not erase an otherwise valid
@@ -3081,18 +3165,22 @@ extension EnvironmentValues {
 struct SidebarSessionDragFrameReporter: ViewModifier {
     @Environment(\.sidebarSessionDragController) private var controller
     let id: String
-    let kind: SidebarSessionDragController.RowKind
+    /// Nil for a shell-only row (see `RowRecord.kind`).
+    let kind: SidebarSessionDragController.RowKind?
+    let owners: [SidebarSessionDragController.ShellOwner]
     let isDraggable: Bool
     /// Per-view-instance registration identity — see removeRowFrame.
     @State private var token = UUID()
 
     /// `onGeometryChange` normally publishes only when the CGRect changes.
     /// A cross-group move can reparent a row into the exact same coordinates,
-    /// though; include its semantic kind so the registry adopts the new owner
-    /// even when collapse/expand is the first later geometry change.
+    /// though; include its semantic kind and owner chain so the registry
+    /// adopts the new owner even when collapse/expand is the first later
+    /// geometry change.
     private struct ReportedGeometry: Equatable {
         let frame: CGRect
-        let kind: SidebarSessionDragController.RowKind
+        let kind: SidebarSessionDragController.RowKind?
+        let owners: [SidebarSessionDragController.ShellOwner]
         let isDraggable: Bool
     }
 
@@ -3102,6 +3190,7 @@ struct SidebarSessionDragFrameReporter: ViewModifier {
                 ReportedGeometry(
                     frame: proxy.frame(in: .named(SidebarSessionDragController.contentSpace)),
                     kind: kind,
+                    owners: owners,
                     isDraggable: isDraggable
                 )
             } action: { reported in
@@ -3109,6 +3198,7 @@ struct SidebarSessionDragFrameReporter: ViewModifier {
                     id: id,
                     kind: reported.kind,
                     frame: reported.frame,
+                    owners: reported.owners,
                     isDraggable: reported.isDraggable,
                     token: token
                 )
@@ -3118,15 +3208,34 @@ struct SidebarSessionDragFrameReporter: ViewModifier {
 }
 
 extension View {
+    /// `owners` is the row's block chain, outermost first (see
+    /// `RowRecord.owners`); a block's drop shell is derived from it.
     func sidebarDragRowFrame(
         id: String,
         kind: SidebarSessionDragController.RowKind,
+        owners: [SidebarSessionDragController.ShellOwner],
         isDraggable: Bool = true
     ) -> some View {
         modifier(SidebarSessionDragFrameReporter(
             id: id,
             kind: kind,
+            owners: owners,
             isDraggable: isDraggable
+        ))
+    }
+
+    /// A row that only extends its owners' drop shells and is never a hit
+    /// target itself: the empty-project placeholder, so a drop on it files
+    /// into its group or project.
+    func sidebarDragShellFrame(
+        id: String,
+        owners: [SidebarSessionDragController.ShellOwner]
+    ) -> some View {
+        modifier(SidebarSessionDragFrameReporter(
+            id: id,
+            kind: nil,
+            owners: owners,
+            isDraggable: false
         ))
     }
 }
