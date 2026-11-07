@@ -408,3 +408,109 @@ fn a_new_trigger_counts_from_when_it_was_set() {
         Some("2026-11-07T08:00".into())
     );
 }
+
+/// A Run the worker started, at the instant it started, with the next run
+/// its clock then published.
+struct Firing {
+    at: Zoned,
+    run: ScheduleRun,
+    next_run_ms: Option<u64>,
+}
+
+/// Every Run a task starts when the worker steps it once a minute from
+/// `from` for `minutes` real minutes.
+fn step_each_minute(mut task: TaskState, from: &Zoned, minutes: i64) -> Vec<Firing> {
+    let mut firings = Vec::new();
+    for minute in 0..minutes {
+        // Minutes on a Zoned are real time, so the walk crosses the fold.
+        let at = from
+            .checked_add(jiff::Span::new().minutes(minute))
+            .expect("in range");
+        let actions = run_step(&task, &at);
+        let next_run_ms = saved(&actions).and_then(|clock| clock.next_occurrence_ms);
+        firings.extend(started(&actions).into_iter().map(|run| Firing {
+            at: at.clone(),
+            run: run.clone(),
+            next_run_ms,
+        }));
+        task = after_step(task, &actions);
+    }
+    firings
+}
+
+/// How many Runs started on the repeated hour's first pass (01:xx EDT) and
+/// on its second (01:xx EST) of New York's 2026-11-01.
+fn runs_in_each_pass(firings: &[Firing]) -> (usize, usize) {
+    let in_pass = |offset: i8| {
+        firings
+            .iter()
+            .filter(|firing| firing.at.hour() == 1 && firing.at.offset() == tz::offset(offset))
+            .count()
+    };
+    (in_pass(-4), in_pass(-5))
+}
+
+/// The Run started at 01:`minute` EDT, on the repeated hour's first pass.
+fn on_the_first_pass(firings: &[Firing], minute: i8) -> &Firing {
+    firings
+        .iter()
+        .find(|firing| {
+            firing.at.hour() == 1
+                && firing.at.minute() == minute
+                && firing.at.offset() == tz::offset(-4)
+        })
+        .unwrap_or_else(|| panic!("01:{minute:02} EDT fired"))
+}
+
+#[test]
+fn hourly_on_the_fall_back_night_fires_the_repeated_hour_once() {
+    // ADR 0007: the repeated hour fires once, on its first pass, so an
+    // hourly task fires 3 times in the 4 real hours 00:00 EDT-02:59 EST.
+    let zone = new_york();
+    let hourly = fired_at(
+        task(
+            ScheduleTrigger::Hourly { minute: 30 },
+            ms_at(civil(10, 1, 0, 0, 0), -4),
+        ),
+        "2026-10-31T23:30",
+    );
+    let firings = step_each_minute(hourly, &instant(civil(11, 1, 0, 0, 0), -4, &zone), 240);
+    let shown: Vec<String> = firings
+        .iter()
+        .map(|firing| {
+            let at = firing.at.strftime("%H:%M %Z");
+            format!("{at} {:?}", firing.run.scheduled_for)
+        })
+        .collect();
+    assert_eq!(runs_in_each_pass(&firings), (1, 0), "{shown:?}");
+    assert_eq!(firings.len(), 3, "{shown:?}");
+    assert_eq!(
+        on_the_first_pass(&firings, 30).next_run_ms,
+        Some(ms_at(civil(11, 1, 2, 30, 0), -5)),
+        "after 01:30 EDT the next run is 02:30 EST, two real hours on"
+    );
+}
+
+#[test]
+fn every_minute_cron_on_the_fall_back_night_is_quiet_for_the_second_pass() {
+    // ADR 0007: every minute of the first pass fires and none of the
+    // second, so the cron task starts 180 Runs in 240 real minutes.
+    let zone = new_york();
+    let cron = fired_at(
+        task(
+            ScheduleTrigger::Cron {
+                expr: "* * * * *".into(),
+            },
+            ms_at(civil(10, 1, 0, 0, 0), -4),
+        ),
+        "2026-10-31T23:59",
+    );
+    let firings = step_each_minute(cron, &instant(civil(11, 1, 0, 0, 0), -4, &zone), 240);
+    assert_eq!(runs_in_each_pass(&firings), (60, 0));
+    assert_eq!(firings.len(), 180);
+    assert_eq!(
+        on_the_first_pass(&firings, 59).next_run_ms,
+        Some(ms_at(civil(11, 1, 2, 0, 0), -5)),
+        "after 01:59 EDT the next run is 02:00 EST, 61 real minutes on"
+    );
+}
