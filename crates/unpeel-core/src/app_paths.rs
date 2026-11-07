@@ -125,6 +125,44 @@ pub fn unpeel_home() -> PathBuf {
     real_unpeel_home()
 }
 
+/// Point this process at a fresh private Unpeel home, `/tmp/uth-<pid>-<n>`,
+/// unless the caller already set `UNPEEL_HOME` (the verify scripts and the PTY
+/// matrix build their own). Every unit-test binary that resolves the home
+/// calls this from a `#[ctor]` before `main`: setting the env var once a test
+/// thread runs would race the others' reads. The root is `/tmp`, not
+/// `temp_dir()`: macOS's `/var/folders/…` would push session sockets past the
+/// `sockaddr_un` limit. The directory is left behind for post-mortems.
+#[doc(hidden)]
+pub fn use_private_test_home() -> std::io::Result<PathBuf> {
+    let caller_set = std::env::var_os("UNPEEL_HOME")
+        .is_some_and(|home| !home.to_string_lossy().trim().is_empty());
+    if caller_set {
+        return Ok(unpeel_home());
+    }
+    let pid = std::process::id();
+    let mut builder = std::fs::DirBuilder::new();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::DirBuilderExt;
+        builder.mode(0o700);
+    }
+    for attempt in 0..100 {
+        let home = PathBuf::from(format!("/tmp/uth-{pid}-{attempt}"));
+        match builder.create(&home) {
+            Ok(()) => {
+                std::env::set_var("UNPEEL_HOME", &home);
+                return Ok(home);
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(error) => return Err(error),
+        }
+    }
+    Err(std::io::Error::new(
+        std::io::ErrorKind::AlreadyExists,
+        format!("every /tmp/uth-{pid}-<n> already exists"),
+    ))
+}
+
 /// Ensure `~/.unpeel` exists and is private to the current user (mode `0700`).
 /// Session artifacts underneath (`output.bin`, `manifest.json`, `launch.json`)
 /// can contain echoed secrets and the first typed prompt; a `0700` parent makes

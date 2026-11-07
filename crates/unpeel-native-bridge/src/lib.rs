@@ -5255,6 +5255,11 @@ pub unsafe extern "C" fn unpeel_native_bridge_free(pointer: *mut u8, length: usi
     drop(Box::from_raw(slice));
 }
 
+/// Before `main`, points this test binary at a private `UNPEEL_HOME` and
+/// guards that no test resolves the real `~/.unpeel`.
+#[cfg(test)]
+mod test_home;
+
 #[cfg(test)]
 mod tests {
     /// A Host route's own refusal reaches Swift as `hostStatus` and

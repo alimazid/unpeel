@@ -42,6 +42,10 @@ pub mod service;
 pub mod service_install;
 pub mod sessions;
 pub mod supervisor; // Fork-only
+/// Before `main`, points this test binary at a private `UNPEEL_HOME` and
+/// guards that no test resolves the real `~/.unpeel`.
+#[cfg(test)]
+mod test_home;
 mod tracelog;
 
 pub use driver::HostRuntime;
