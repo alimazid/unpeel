@@ -136,8 +136,10 @@ the app's overlay. Pause is
 the due rule counts only occurrences after it, so nothing missed while
 paused runs. `run` (Run now) goes to the live worker over the owner-only
 `/_unpeel/schedules` control path, which refuses while a Run is in
-progress, so it needs a running Host. `list` and `history` read the
-per-task clock and Run log under `<UNPEEL_HOME>/schedules/<id>/`
+progress (or when the task's Run log will not read, so it cannot tell) with
+the status and code of `/mobile/schedules/run`, so it needs a running Host.
+`list` and `history` read the per-task clock and Run log under
+`<UNPEEL_HOME>/schedules/<id>/`
 (`unpeel_core::schedule_store`); `list`'s next run is
 `trigger::next_run`, the instant the Host publishes. Every verb but `list`
 and `history` refuses inside a Session, the detection `unpeel send` uses,

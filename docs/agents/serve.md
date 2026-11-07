@@ -229,8 +229,10 @@ socket, and record untouched; the restarted worker re-adopts).
 
 `sweep_auto_stop` (`auto_stop.rs`) runs on every rescan tick (1 s) and gives
 a due Session the plain Stop verb: it becomes a resumable stopped row and
-its scrollback is dropped. A running row is due only when ALL hold: status
-Idle, `resumable` (a resumable conversation:
+its scrollback is dropped, unless it is a Run Session of a Scheduled Task
+([ADR 0006](../adr/0006-a-stopped-run-session-keeps-its-output.md)). A
+running row is due only when ALL hold: status Idle, `resumable` (a
+resumable conversation:
 `session_ops::has_resume_evidence` — a provider session id plus transcript
 resume data or a real lifecycle hook; plain shells and an agent that has not
 completed a turn never qualify), not pinned, not **unread attention** (a
@@ -251,8 +253,10 @@ the cutoff` / `pinned` / …), so "why did this never stop" is one grep.
 
 There is no archive: Stop is the only non-destructive end of a Session, and
 it keeps a resumable stopped row (manifest, title, provider id) while
-truncating `output.bin` — Resume never replays the old journal, and kept
-journals were what grew `app-sessions/` into gigabytes. Each worker start
+truncating `output.bin` (a Run Session keeps it,
+[ADR 0006](../adr/0006-a-stopped-run-session-keeps-its-output.md)) —
+Resume never replays the old journal, and kept journals were what grew
+`app-sessions/` into gigabytes. Each worker start
 runs `session_ops::migrate_archived_sessions`, which turns every legacy
 `archived.json` beside a non-running manifest into a plain stopped row
 (marker and scrollback dropped). `session.archive`, `session.archive.list`,
@@ -304,9 +308,11 @@ the Trigger in its stored shape: `/mobile/schedules` (`schedule.create`),
 `/mobile/schedules/edit` (`schedule.edit`; pause and resume are `enabled`),
 `/mobile/schedules/delete` (`schedule.delete`: the task and its history,
 never its Run Sessions; a delete during a sweep wins, as for `unpeel
-schedules rm`, and the sweep's `SweepEvent::Deleted` adds no ping) and `/mobile/schedules/run` (`schedule.run`: Run
-now, 409 while a Run is in progress). They edit `app-state.json` raw under
-its flock and announce, like `unpeel schedules`, and are replay-protected.
+schedules rm`, and the sweep's `SweepEvent::Deleted` adds no ping) and
+`/mobile/schedules/run` (`schedule.run`: Run now, 409 while a Run is in
+progress, 500 `run_log_unreadable` when the task's Run log will not read,
+so the Host cannot tell). They edit `app-state.json` raw under its flock
+and announce, like `unpeel schedules`, and are replay-protected.
 Every refusal of the schedules routes answers `{"error": <message>, "code":
 <code>}`; the codes (`trigger_in_past`, `not_agent_preset`,
 `run_in_progress`, …) are listed with their statuses in
@@ -320,9 +326,11 @@ from the `ScheduleHost` the workspace worker installs at start
 task saved enabled must come due; resuming re-checks), the create catalog
 its Runs resolve against (a Project with a folder, an enabled preset,
 instructions only on an Agent Preset), Run now through the driver (the same request `unpeel schedules run` sends
-over `/_unpeel/schedules`), and a saved task's next run: a create or edit
-answers with `trigger::published_next_run` on the Host's clock, the value
-the worker's next sweep writes to `clock.json`, rather than the disk's
+over `/_unpeel/schedules`, which answers its refusals with the same status
+and code; `schedules::host::run_now`), and a saved task's next run: a
+create or edit answers with `trigger::published_next_run` on the Host's
+clock, the value the worker's next sweep writes to `clock.json`, rather
+than the disk's
 (none yet, or an older Trigger's). A process without a worker (the SSH fallback
 gateway) leaves the four ids out of its descriptor and answers 503. Every
 bootstrap preset row carries `agentPreset` and `bypassesApprovals`
@@ -728,8 +736,9 @@ with the interactive path — see `docs/agents/cli.md` for the invariants).
 
 ### Change gates
 
-Serve lifecycle, protocol, or launch changes must run these gates serially
-(the process suites share ports):
+Serve lifecycle, protocol, or launch changes must run these gates, one after
+another in the checkout. Other worktrees' PTY matrices may run alongside: the
+matrix shares the machine through slots (`crates/unpeel-cli/tests/README.md`).
 
 ```sh
 (cd crates && cargo test --workspace)
