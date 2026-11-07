@@ -735,8 +735,9 @@ with the interactive path — see `docs/agents/cli.md` for the invariants).
 
 ### Change gates
 
-Serve lifecycle, protocol, or launch changes must run these gates serially
-(the process suites share ports):
+Serve lifecycle, protocol, or launch changes must run these gates, one after
+another in the checkout. Other worktrees' PTY matrices may run alongside: the
+matrix shares the machine through slots (`crates/unpeel-cli/tests/README.md`).
 
 ```sh
 (cd crates && cargo test --workspace)
