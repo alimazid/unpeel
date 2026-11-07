@@ -27,8 +27,8 @@ def read_json(path):
         return {}
 
 
-def control(home, session_id, data, write_id=None):
-    request = {"type": "write", "data": data}
+def control(home, session_id, data, write_id=None, **fields):
+    request = {"type": "write", "data": data, **fields}
     if write_id:
         request["write_id"] = write_id
     with socket.socket(socket.AF_UNIX) as client:

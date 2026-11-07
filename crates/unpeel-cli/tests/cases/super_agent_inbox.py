@@ -3,10 +3,13 @@
 While the Host worker runs, `sessions report` queues into the target's
 Inbox instead of typing. A program that speaks OSC 7501 and enables
 bracketed paste gets everything queued as ONE paste once it is idle and
-quiet; a `progress` report alone never pastes; and a plain `cat` session is
-held (no agent authority) and drains by pulling with `sessions inbox`.
-Without a Host worker, `report` pastes at once and says so.
+quiet; a half-typed prompt holds the paste until the user clears it (#38);
+a `progress` report alone never pastes; and a plain `cat` session is held
+(no agent authority) and drains by pulling with `sessions inbox`. Without a
+Host worker, `report` pastes at once and says so.
 """
+
+import time
 
 import json
 import os
@@ -23,8 +26,9 @@ HEADER = "[unpeel inbox for id:"
 
 def write_fixture(home, path, log):
     """A 7501 program with bracketed paste: idle at its prompt, it logs
-    stdin, goes working for a moment when a paste is submitted, and obeys
-    `w` (working) / `i` (idle) / `q` (quit) control writes."""
+    stdin, echoes typed text (backspace erases), goes working for a moment
+    when a paste is submitted, and obeys `w` (working) / `i` (idle) / `q`
+    (quit) control writes."""
     with open(path, "w") as handle:
         handle.write(f"#!{sys.executable}\n" + f'''
 import os, select, time, tty
@@ -53,6 +57,8 @@ while True:
     elif data == b"i":
         report("idle")
     else:
+        if b"\\x1b" not in data and b"\\r" not in data:
+            os.write(1, data.replace(b"\\x7f", b"\\b \\b"))
         pasted = pasted or b"\\x1b[200~" in data
         if pasted and b"\\r" in data:
             pasted = False
@@ -116,6 +122,10 @@ def body(case):
     def manifest():
         return read_json(home.path("app-sessions", agent, "manifest.json"))
 
+    def signal(data):
+        # The harness's own control writes: not a person typing.
+        return control(home, agent, data, origin="program")
+
     def pasted():
         try:
             with open(log, "rb") as handle:
@@ -132,7 +142,7 @@ def body(case):
                        timeout=10)), str(manifest().get("terminal_modes")))
 
         # 1. Two reports while the agent is busy: queued, nothing typed.
-        control(home, agent, "w")
+        signal("w")
         case.check("the agent turns busy", bool(service.wait_for(published("busy"), timeout=10)),
                    str(activity()))
         first, done = mcp(caller, "report", f"session_id={agent}", "summary=first summary",
@@ -152,7 +162,7 @@ def body(case):
                    == ["first summary", "second summary"] and held.get("hold") == "busy", str(held)[:400])
 
         # 2. Idle: exactly one paste with both, in order; then confirmed.
-        control(home, agent, "i")
+        signal("i")
         case.check("the batch is pasted once the agent is idle",
                    bool(service.wait_for(lambda: HEADER in pasted(), timeout=20)), pasted()[-300:])
         text = pasted()
@@ -165,20 +175,57 @@ def body(case):
                    str(inbox(agent))[:400])
         case.check("both items are kept as delivered", len(inbox(agent).get("delivered", [])) == 2)
 
-        # 3. A progress report alone never pastes.
+        # 3. A half-typed prompt holds the paste until it is cleared (#38).
+        service.wait_for(published("idle"), timeout=10)
+        control(home, agent, "abc")
+        case.check("a person's typing is stamped",
+                   bool(service.wait_for(lambda: manifest().get("last_input_at"), timeout=5)),
+                   str(manifest())[:300])
+        typed_at = manifest().get("last_input_at") or 0
+        refused = control(home, agent, "", origin="program", unless_typed_since=typed_at)
+        case.check("a guarded write after the typing is refused",
+                   refused.get("ok") is False and "typed" in (refused.get("error") or ""),
+                   str(refused))
+        accepted = control(home, agent, "", origin="program",
+                           unless_typed_since=int(time.time() * 1000) + 60_000)
+        case.check("a guarded write before any typing goes through", accepted.get("ok") is True,
+                   str(accepted))
+        case.check("program writes are not typing",
+                   manifest().get("last_input_at") == typed_at, str(manifest().get("last_input_at")))
+        before = pasted().count(HEADER)
+        typing, done = mcp(caller, "report", f"session_id={agent}", "summary=while typing",
+                           "status=done")
+        case.check("a report while the user types is queued", typing.get("queued") is True,
+                   (done.stdout + done.stderr)[:300])
+        service.read_for(5)
+        case.check("nothing is pasted onto a half-typed prompt",
+                   pasted().count(HEADER) == before, pasted()[-300:])
+        case.check("the Inbox holds it as a draft", inbox(agent).get("hold") == "draft",
+                   str(inbox(agent))[:300])
+        control(home, agent, "\x7f\x7f\x7f")
+        case.check("once the line is cleared the batch is pasted",
+                   bool(service.wait_for(lambda: pasted().count(HEADER) > before, timeout=15)),
+                   pasted()[-300:])
+        service.read_for(5)
+        case.check("exactly once", pasted().count(HEADER) == before + 1, pasted()[-600:])
+        case.check("its turn confirms it",
+                   bool(service.wait_for(lambda: inbox(agent).get("pending") == [], timeout=15)),
+                   str(inbox(agent))[:400])
+
+        # 4. A progress report alone never pastes.
         service.wait_for(published("idle"), timeout=10)
         progress, done = mcp(caller, "report", f"session_id={agent}", "summary=progress only",
                              "status=progress")
         case.check("a progress report rides along", progress.get("queued") is True
                    and progress.get("delivery") == "held:ride_along", (done.stdout + done.stderr)[:300])
         service.read_for(8)
-        case.check("a progress report alone never pastes", pasted().count(HEADER) == 1,
+        case.check("a progress report alone never pastes", pasted().count(HEADER) == 2,
                    pasted()[-300:])
         case.check("it waits as a ride-along item",
                    bool(service.wait_for(lambda: inbox(agent).get("hold") == "ride_along", timeout=5)),
                    str(inbox(agent))[:300])
 
-        # 4. A plain `cat` is held and pulls its own Inbox.
+        # 5. A plain `cat` is held and pulls its own Inbox.
         queued, done = mcp(caller, "report", f"session_id={cat}", "summary=for the cat",
                            "status=done", "details=the full text")
         case.check("a report to cat is queued", queued.get("queued") is True,
@@ -200,7 +247,7 @@ def body(case):
         case.check("nothing was typed into cat", HEADER not in screen and "for the cat" not in screen,
                    screen[-300:])
 
-        # 5. Without a Host worker, report pastes at once and says so.
+        # 6. Without a Host worker, report pastes at once and says so.
         service.close()
         legacy, done = mcp(caller, "report", f"session_id={cat}", "summary=typed at once")
         case.check("without a Host the report is pasted immediately",
@@ -208,7 +255,7 @@ def body(case):
                    (done.stdout + done.stderr)[:300])
     finally:
         try:
-            control(home, agent, "q")
+            signal("q")
         except OSError:
             pass
         for session_id in ids:

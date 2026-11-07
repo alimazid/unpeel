@@ -2328,6 +2328,7 @@ pub fn deliver_initial_text(
         serde_json::json!({
             "type": "write",
             "data": initial_text_payload(text, mode),
+            "origin": "program", // Fork-only (#38): not the user's typing
         }),
     )?;
     if response.get("ok").and_then(serde_json::Value::as_bool) == Some(true) {

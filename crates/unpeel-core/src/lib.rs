@@ -197,6 +197,9 @@ mod test_home;
 pub mod transcripts;
 // Fork-only
 #[cfg(feature = "native-host")]
+pub mod typed_input;
+// Fork-only
+#[cfg(feature = "native-host")]
 pub mod workspace_tools;
 #[cfg(feature = "native-host")]
 pub mod worktrees;
