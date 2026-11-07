@@ -222,9 +222,10 @@ fn unescape(input: &str) -> String {
 
 /// `unpeel ls`: the sidebar's Sessions less Superseded Runs (GLOSSARY.md),
 /// which `--all` lists too, marked. The rule and the Run fields
-/// (`scheduleID`, `superseded`) are the Host's row builders' own, over the
-/// same whole scan (`mobile_snapshot`). Only the listing filters: [`resolve`]
-/// reads every row, so a Superseded Run stays reachable by id.
+/// (`scheduleID`, `superseded`, `keptOutput`) are the Host's row builders'
+/// own, over the same whole scan (`mobile_snapshot`). Only the listing
+/// filters: [`resolve`] reads every row, so a Superseded Run stays reachable
+/// by id.
 fn print_sessions(args: &Args) {
     let model = scan();
     let latest_runs = unpeel_serve::run_sessions::latest_runs(&model.rows);
@@ -247,6 +248,7 @@ fn print_sessions(args: &Args) {
                     &mut summary,
                     unpeel_serve::run_sessions::wire_row(row),
                     &latest_runs,
+                    unpeel_core::session_host::journal_has_retained_output,
                 );
                 summary
             })
