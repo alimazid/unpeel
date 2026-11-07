@@ -1517,6 +1517,11 @@
         "meaning": "Run now while a Run of the task is in progress"
       },
       {
+        "code": "run_log_unreadable",
+        "status": 500,
+        "meaning": "Run now on a task whose Run log cannot be read, so the Host cannot tell whether a Run is in progress"
+      },
+      {
         "code": "run_no_answer",
         "status": 504,
         "meaning": "the Host did not answer Run now in time; the Run may still start"
