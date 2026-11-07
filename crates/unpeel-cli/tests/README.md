@@ -9,8 +9,18 @@ over `/mobile`, `host.sock`, and the relay, and what a script sees.
 ./run.sh                  # everything (~10 min on a development Mac)
 ./run.sh pairing state    # cases whose name contains a filter
 ./run.sh -v compat_serve  # stream a case's own output
+./run.sh -j 3             # up to 3 of this run's cases at once
 UNPEEL_TUI_SKIP_BUILD=1 ./run.sh   # skip the cargo build
 ```
+
+Any number of runs may share a machine (one per worktree, say) with no
+outside lock. Each case first takes one of `UNPEEL_TUI_SLOTS` machine-wide
+slots (default 4, at most 9) under `/tmp/unpeel-pty-matrix.slots/`; a case
+that finds them all busy waits, and its line says `(waited Ns for a slot)`.
+A slot is a `flock`, so a run that dies frees its slot with no cleanup.
+`UNPEEL_TUI_SLOTS` is the machine's load knob: every run on the machine
+should use the same value. `-j` (or `UNPEEL_TUI_JOBS`, default 1) only lets
+one run hold several slots at once.
 
 `cargo test -p unpeel-cli` runs the unit tests and the in-process
 `serve`/`settings` integration tests. The suites here are opt-in from cargo:
@@ -22,7 +32,10 @@ UNPEEL_TUI_PTY_TESTS=1 cargo test -p unpeel-cli --test pty_suites
 (The `UNPEEL_TUI_*` variable names predate the removal of the terminal UI
 and are kept so existing scripts and CI keep working: `UNPEEL_TUI_BINARY`,
 `UNPEEL_TUI_SKIP_BUILD`, `UNPEEL_TUI_TEST_BASE`, `UNPEEL_TUI_TEST_HOME`,
-`UNPEEL_TUI_PTY_TESTS`.)
+`UNPEEL_TUI_PTY_TESTS`. The runner's newer knobs share the prefix:
+`UNPEEL_TUI_SLOTS`, `UNPEEL_TUI_JOBS`, and `UNPEEL_TUI_SLOT_DIR`, which
+moves the slots only for the runner's own self-test,
+`scripts/verify-matrix-runner.sh`.)
 
 ## Why it is built this way
 
@@ -40,9 +53,24 @@ rather than red.
 **The home path must be short.** A hosted session binds
 `<home>/app-sessions/<uuid>/session.sock`; `sockaddr_un` caps the path near
 104 bytes. macOS `TMPDIR` alone is ~49, which silently breaks every host
-spawn. The runner uses `/tmp/ut-<case>` and the harness refuses a home that
-would overflow. Never run two `run.sh` invocations concurrently on one
-machine: cases bind ports and spawn hosted processes.
+spawn. The runner names each home after its slot, `/tmp/s<slot>-<case>`
+(one digit, as short as the old `/tmp/ut-<case>`), and the harness refuses a
+home that would overflow. `host_launch_conformance`'s sub-homes are already
+one byte under the limit, so `UNPEEL_TUI_TEST_BASE` (homes become
+`<base>-<case>`) must stay as short as `/tmp/u1`, and the caller then owns
+keeping it unique; leave it unset unless you need a fixed path.
+
+**Concurrent runs cannot meet.** A slot is held by one live case at a time
+and names that case's home, so no two live cases share a home, and every
+sweep (the runner's and `Case.finish()`'s) only touches processes bound to
+one home: by argv, by `UNPEEL_HOME`, or by an open file under it, matched at
+a path boundary so `/tmp/s1-cli` never claims `/tmp/s1-cli_write_policy`.
+Ports are never fixed. Hosts and fixtures bind `:0` and keep the socket;
+the one port that has to be released and bound again later (the phone
+endpoint, `reserve_mobile_port`) is a random free port below every OS
+ephemeral range, so no `:0` bind anywhere on the machine can take it; only
+another case drawing the same number from 20000–29999 in the same moment
+could.
 
 ## Writing a case
 
@@ -98,8 +126,9 @@ printed only when the check fails.
 | `startup_exit` | a launch command's exit status (0, 3, 128 + signal, a quit agent) lands in `startup-exit` before the fallback shell |
 | `schedules` | Scheduled Tasks on script presets: Run now records done / failed with the exit code, a Once task fires on its own with no app and disables itself, overlap is skipped without the skip replacing the live Run (it still blocks Run now and its finish lands), verbs refuse inside a Session |
 | `schedules_agents` | Scheduled Tasks on Agent Presets: instructions typed once the agent is ready (several lines arrive as one submission); screen-tier and OSC 7501 fakes reach done with their snippet, a question needs you (Run now refused) until answered, a never-ready agent fails to start, a task without instructions is done once its agent is ready; done again with a stand-in native app owning notification edges; `add`/`edit --instructions` refused for a non-agent preset |
-| `schedules_retention` | Run Sessions after a Run: each Run's start stops the previous Run's idle Session, the latest stays live, Runs never push the user's own stopped Sessions out of a Project, each task keeps its newest 5 stopped Run Sessions, deleting the task leaves them |
+| `schedules_retention` | Run Sessions after a Run: each Run's start stops the previous Run's idle Session, the latest stays live, Runs never push the user's own stopped Sessions out of a Project, each task keeps its newest 5 stopped Run Sessions and removes the oldest with its directory (kept output included), deleting the task leaves them |
 | `schedules_latest_run` | PROJECTS lists only each task's latest Run: after three Runs, both session-row builders (`/mobile/bootstrap` for a paired phone, and over `host.sock` for the Mac app) mark every Run Session with `scheduleID`, the latest Run's `superseded: false` and the older two `true`, the user's rows with neither; Runs never push the user's stopped rows off either wire; `unpeel ls` (text and `--json`) leaves the superseded Runs out, `ls --all` lists them marked, a pinned older Run is listed, and `logs` / `schedules history` still reach one; the same after a Resume replaces the latest Run |
+| `schedules_run_output` | A stopped Run Session keeps its output (ADR 0006): `unpeel logs` prints a script Run's line once the next Run stops it, after `unpeel stop`, and after a Host restart plus the exited-journal compaction pass; MCP `sessions read_output` reads it; a Session that is not a Run still stops with an empty `output.bin` |
 | `schedules_edit` | every Trigger kind (hourly, daily, weekdays, weekly, once, cron) stored canonically with its next run published; invalid cron and impossible times refused at save time; `edit` changes each field and passes unknown ones through; `pause` stops firing, `resume` restarts the clock with no catch-up, then a weekly task fires on its own; verbs refuse inside a Session |
 | `schedules_mcp` | Scheduled Tasks over the MCP `workspace` tool from inside a Session: `list_schedules` shows definition, next run and last Run; `list_schedule_runs` is newest first with status, times, late and snippet, and honours `limit`; help documents both, the four writes and `schedules add` are refused for a Session that is not the Super Agent, and Create & remove cannot close a Run Session |
 | `super_agent_schedules` | The Super Agent manages Scheduled Tasks over the MCP `workspace` tool against a live Host: create (preset label resolved, Trigger stored canonically, the answer carries the next run), Agent Preset instructions saved paused, the Host's refusal codes (`not_agent_preset`, `trigger_in_past`) save nothing, edit renames and moves the Trigger, pause/resume, Run now finishes, delete keeps the Run Session; the worker pings the state bus once it publishes a moved next run; any other Session is refused every write (MCP and CLI) while the Super Agent may use `unpeel schedules`; with the Host stopped a write changes nothing |
