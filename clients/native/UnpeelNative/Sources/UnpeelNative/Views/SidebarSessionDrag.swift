@@ -160,46 +160,6 @@ final class SidebarSessionDragController: ObservableObject {
         case groupShell(projectID: String)
     }
 
-    /// A block whose drop shell a registered row extends. Rows carry their
-    /// owner chain; a block's shell is the union of the registered frames of
-    /// the mounted rows that name it, derived at hit-test time.
-    enum ShellOwner: Hashable {
-        /// A top-level project's block.
-        case project(String)
-        /// An inline group or worktree cluster (a top-level one included).
-        case group(String)
-
-        var shellKind: RowKind {
-            switch self {
-            case let .project(id): .projectShell(projectID: id)
-            case let .group(id): .groupShell(projectID: id)
-            }
-        }
-
-        var shellID: String {
-            switch self {
-            case let .project(id): "project-shell-drop:\(id)"
-            case let .group(id): "group-shell-drop:\(id)"
-            }
-        }
-    }
-
-    /// What a content-space point resolves to: a registered row, or a
-    /// project/group shell derived from the rows its block owns.
-    struct RowHit: Equatable {
-        let id: String
-        let kind: RowKind
-        let frame: CGRect
-        let isDraggable: Bool
-    }
-
-    /// The top-level project block under a point during a project drag, and
-    /// which half of it the point is in.
-    struct ProjectBlockHit: Equatable {
-        let id: String
-        let below: Bool
-    }
-
     /// The lifted row rendered by the floating card. Row chrome that would
         /// otherwise need store lookups (selection and unread state) is
     /// snapshotted ONCE here at lift, so the card never touches the store
@@ -216,41 +176,6 @@ final class SidebarSessionDragController: ObservableObject {
         let size: CGSize
         let isSelected: Bool
         let isUnread: Bool
-    }
-
-    struct RowRecord {
-        /// Nil for a shell-only row (the empty-project placeholder): never a
-        /// hit target itself, it only extends its owners' shells.
-        let kind: RowKind?
-        let frame: CGRect
-        /// The blocks this row sits inside, outermost first: the top-level
-        /// block, then each enclosing group down to the row's own. A group
-        /// or project header names its own block too.
-        let owners: [ShellOwner]
-        /// Session rows also participate in immediate press selection even
-        /// when their current sort/scope does not permit a detached drag.
-        /// Other row kinds retain the historical draggable default.
-        let isDraggable: Bool
-        /// Identity of the reporter instance that registered this frame.
-        /// A moved row (cross-group drop) is a NEW view for the same id:
-        /// the new reporter registers before the old view's teardown runs,
-        /// and an unscoped remove would delete the fresh registration —
-        /// leaving the row undraggable until its list rebuilt.
-        let token: UUID
-
-        init(
-            kind: RowKind?,
-            frame: CGRect,
-            owners: [ShellOwner],
-            isDraggable: Bool = true,
-            token: UUID = UUID()
-        ) {
-            self.kind = kind
-            self.frame = frame
-            self.owners = owners
-            self.isDraggable = isDraggable
-            self.token = token
-        }
     }
 
     /// A terminal pane title is another source for the same detached Session
@@ -443,6 +368,7 @@ final class SidebarSessionDragController: ObservableObject {
         isDraggable: Bool = true,
         token: UUID
     ) {
+        assert(kind?.isShell != true, "shells are derived from rows, never registered")
         rows[id] = RowRecord(
             kind: kind,
             frame: frame,
@@ -2994,7 +2920,17 @@ final class SidebarSessionDragController: ObservableObject {
     // MARK: Geometry
 
     private func row(at content: CGPoint) -> RowHit? {
-        Self.row(at: content, in: rows)
+        Self.row(at: content, in: rows, clusterShifts: clusterShifts)
+    }
+
+    /// The live transform-gap offset of each shifted item in the drag's
+    /// origin section; empty when no same-section gap is open.
+    private var clusterShifts: [String: CGFloat] {
+        guard let dragState, let drag = dragState.sessionDrag else { return [:] }
+        return dragState.sessionReorderIndexByID.keys.reduce(into: [:]) { shifts, id in
+            let shift = dragState.reorderShift(for: id, inProject: drag.projectID)
+            if shift != 0 { shifts[id] = shift }
+        }
     }
 
     private func sessionRow(at content: CGPoint) -> RowHit? {
@@ -3013,75 +2949,6 @@ final class SidebarSessionDragController: ObservableObject {
 
     private func projectBlock(at content: CGPoint) -> ProjectBlockHit? {
         Self.projectBlock(at: content, in: rows)
-    }
-
-    /// The row under a point. A shell deliberately overlaps every row its
-    /// block owns, so semantic rows win first and, among them, the smallest
-    /// frame is the most specific target. Only a point no semantic row
-    /// covers (blank wash, a placeholder) falls through to the shells, where
-    /// the smallest containing one, the innermost group, wins.
-    nonisolated static func row(
-        at point: CGPoint, in rows: [String: RowRecord]
-    ) -> RowHit? {
-        let semantic = rows.compactMap { id, record -> RowHit? in
-            guard let kind = record.kind, record.frame.contains(point) else { return nil }
-            return RowHit(
-                id: id, kind: kind, frame: record.frame,
-                isDraggable: record.isDraggable
-            )
-        }
-        if let hit = semantic.min(by: { area($0.frame) < area($1.frame) }) {
-            return hit
-        }
-        return shellFrames(in: rows)
-            .filter { $0.value.contains(point) }
-            .min { area($0.value) < area($1.value) }
-            .map { owner, frame in
-                RowHit(
-                    id: owner.shellID, kind: owner.shellKind, frame: frame,
-                    isDraggable: false
-                )
-            }
-    }
-
-    /// Top-level project containing this point. The whole block wins over
-    /// its overlapping header (its midpoint gives a natural above/below
-    /// insertion slot); a top-level group has no project block, so its
-    /// header alone answers. This scan is intentionally independent of
-    /// `row(at:in:)`: nested Session rows have higher semantic hit priority,
-    /// but they must not punch holes in the containing PROJECT's reorder
-    /// target geometry.
-    nonisolated static func projectBlock(
-        at point: CGPoint, in rows: [String: RowRecord]
-    ) -> ProjectBlockHit? {
-        let blocks = shellFrames(in: rows).compactMap { owner, frame -> (String, CGRect)? in
-            guard case let .project(id) = owner, frame.contains(point) else { return nil }
-            return (id, frame)
-        }
-        let headers = rows.compactMap { id, record -> (String, CGRect)? in
-            guard case .project? = record.kind, record.frame.contains(point) else { return nil }
-            return (id, record.frame)
-        }
-        return (blocks.isEmpty ? headers : blocks)
-            .min { area($0.1) < area($1.1) }
-            .map { ProjectBlockHit(id: $0.0, below: point.y > $0.1.midY) }
-    }
-
-    /// Each block's shell: the union of the registered frames of the rows
-    /// that name it. Only mounted rows are registered, so a block taller
-    /// than the lazy window covers just its mounted part.
-    nonisolated static func shellFrames(
-        in rows: [String: RowRecord]
-    ) -> [ShellOwner: CGRect] {
-        rows.values.reduce(into: [:]) { frames, record in
-            for owner in record.owners {
-                frames[owner] = frames[owner]?.union(record.frame) ?? record.frame
-            }
-        }
-    }
-
-    private nonisolated static func area(_ frame: CGRect) -> CGFloat {
-        frame.width * frame.height
     }
 
     /// A tiny gap between project blocks should not erase an otherwise valid

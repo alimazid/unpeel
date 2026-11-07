@@ -2,19 +2,19 @@ import CoreGraphics
 import XCTest
 @testable import UnpeelNative
 
-/// Project and group drop shells are no longer registered frames: each
-/// registered row carries its owner chain, and the drag controller derives a
-/// block's shell as the union of the mounted rows it owns (#43). These tests
-/// pin what a point resolves to through the controller's static surface.
+/// A project's or group's drop shell is the union of the registered frames
+/// of the mounted rows that name it in their owner chain (#43). These tests
+/// pin what a point resolves to through the drag controller's static surface.
 @MainActor
 final class SidebarDropShellTests: XCTestCase {
     private typealias Controller = SidebarSessionDragController
 
     private static let width: CGFloat = 260
-    private static let rowHeight: CGFloat = 28
+    /// One row's height; every layout below is in multiples of it.
+    private static let row: CGFloat = 28
 
-    private func frame(slot: Int, height: CGFloat = rowHeight) -> CGRect {
-        CGRect(x: 0, y: CGFloat(slot) * Self.rowHeight, width: Self.width, height: height)
+    private func frame(y: CGFloat, height: CGFloat = row) -> CGRect {
+        CGRect(x: 0, y: y, width: Self.width, height: height)
     }
 
     private func record(
@@ -22,320 +22,291 @@ final class SidebarDropShellTests: XCTestCase {
         _ frame: CGRect,
         owners: [Controller.ShellOwner]
     ) -> Controller.RowRecord {
-        Controller.RowRecord(kind: kind, frame: frame, owners: owners)
+        Controller.RowRecord(
+            kind: kind, frame: frame, owners: owners, isDraggable: true, token: UUID()
+        )
     }
 
+    private func session(in projectID: String, depth: Int, pinned: Bool = false) -> Controller.RowKind {
+        .session(projectID: projectID, pinned: pinned, depth: depth)
+    }
+
+    private func folder(in parentID: String, depth: Int, pinned: Bool = false) -> Controller.RowKind {
+        .folderItem(parentID: parentID, pinned: pinned, depth: depth)
+    }
+
+    private func hit(_ y: CGFloat, in rows: [String: Controller.RowRecord]) -> Controller.RowHit? {
+        Controller.row(at: CGPoint(x: 120, y: y), in: rows)
+    }
+
+    // MARK: Placeholders
+
     func testDropOnAnEmptyExpandedGroupsPlaceholderFilesIntoThatGroup() {
-        let rows: [String: Controller.RowRecord] = [
-            "root": record(.project, frame(slot: 0), owners: [.project("root")]),
-            "group": record(
-                .folderItem(parentID: "root", pinned: false, depth: 1),
-                frame(slot: 1),
-                owners: [.project("root"), .group("group")]
-            ),
-            "empty:group": record(
-                nil, frame(slot: 2), owners: [.project("root"), .group("group")]
-            ),
+        let group: [Controller.ShellOwner] = [.project("root"), .group("group")]
+        let rows = [
+            "root": record(.project, frame(y: 0), owners: [.project("root")]),
+            "group": record(folder(in: "root", depth: 1), frame(y: Self.row), owners: group),
+            "empty:group": record(nil, frame(y: 2 * Self.row), owners: group),
         ]
 
-        let hit = Controller.row(at: CGPoint(x: 120, y: 2.5 * Self.rowHeight), in: rows)
-
-        XCTAssertEqual(hit?.kind, .groupShell(projectID: "group"))
+        XCTAssertEqual(hit(2.5 * Self.row, in: rows)?.kind, .groupShell(projectID: "group"))
     }
 
     func testDropOnAnEmptyTopLevelProjectsPlaceholderFilesIntoThatProject() {
-        let rows: [String: Controller.RowRecord] = [
-            "root": record(.project, frame(slot: 0), owners: [.project("root")]),
-            "empty:root": record(nil, frame(slot: 1), owners: [.project("root")]),
+        let rows = [
+            "root": record(.project, frame(y: 0), owners: [.project("root")]),
+            "empty:root": record(nil, frame(y: Self.row), owners: [.project("root")]),
         ]
 
-        let hit = Controller.row(at: CGPoint(x: 120, y: 1.5 * Self.rowHeight), in: rows)
-
-        XCTAssertEqual(hit?.kind, .projectShell(projectID: "root"))
+        XCTAssertEqual(hit(1.5 * Self.row, in: rows)?.kind, .projectShell(projectID: "root"))
     }
 
-    /// root ▸ header, group (header, a, 14pt of blank wash, b), then c.
+    // MARK: Blank wash and hit priority
+
+    /// root ▸ header, then group (header, a, half a row of blank wash, b),
+    /// then root's own Session c.
     private var groupWithBlankWash: [String: Controller.RowRecord] {
         let group: [Controller.ShellOwner] = [.project("root"), .group("group")]
         return [
-            "root": record(.project, frame(slot: 0), owners: [.project("root")]),
-            "group": record(
-                .folderItem(parentID: "root", pinned: false, depth: 1),
-                frame(slot: 1),
-                owners: group
-            ),
-            "a": record(
-                .session(projectID: "group", pinned: false, depth: 1),
-                CGRect(x: 0, y: 56, width: Self.width, height: 28),
-                owners: group
-            ),
-            "b": record(
-                .session(projectID: "group", pinned: false, depth: 1),
-                CGRect(x: 0, y: 98, width: Self.width, height: 28),
-                owners: group
-            ),
-            "c": record(
-                .session(projectID: "root", pinned: false, depth: 0),
-                CGRect(x: 0, y: 126, width: Self.width, height: 28),
-                owners: [.project("root")]
-            ),
+            "root": record(.project, frame(y: 0), owners: [.project("root")]),
+            "group": record(folder(in: "root", depth: 1), frame(y: Self.row), owners: group),
+            "a": record(session(in: "group", depth: 1), frame(y: 2 * Self.row), owners: group),
+            "b": record(session(in: "group", depth: 1), frame(y: 3.5 * Self.row), owners: group),
+            "c": record(session(in: "root", depth: 0), frame(y: 4.5 * Self.row), owners: [.project("root")]),
         ]
     }
 
     func testDropOnBlankGroupWashFilesIntoTheGroupNotItsProject() {
-        let hit = Controller.row(at: CGPoint(x: 120, y: 90), in: groupWithBlankWash)
+        let washHit = hit(3.25 * Self.row, in: groupWithBlankWash)
 
-        XCTAssertEqual(hit?.kind, .groupShell(projectID: "group"))
+        XCTAssertEqual(washHit?.kind, .groupShell(projectID: "group"))
         XCTAssertEqual(
-            hit?.frame,
-            CGRect(x: 0, y: 28, width: Self.width, height: 98),
+            washHit?.frame,
+            frame(y: Self.row, height: 3.5 * Self.row),
             "the shell is the union of the group's header and rows"
         )
-        XCTAssertEqual(hit?.isDraggable, false, "a shell is never a drag source")
+        XCTAssertEqual(washHit?.isDraggable, false, "a shell is never a drag source")
     }
 
     func testBlankWashOfANestedGroupFilesIntoTheInnermostGroup() {
         let outer: [Controller.ShellOwner] = [.project("root"), .group("outer")]
         let inner = outer + [.group("inner")]
-        let rows: [String: Controller.RowRecord] = [
-            "root": record(.project, frame(slot: 0), owners: [.project("root")]),
-            "outer": record(
-                .folderItem(parentID: "root", pinned: false, depth: 1),
-                frame(slot: 1),
-                owners: outer
-            ),
-            "inner": record(
-                .folderItem(parentID: "outer", pinned: false, depth: 2),
-                frame(slot: 2),
-                owners: inner
-            ),
-            "a": record(
-                .session(projectID: "inner", pinned: false, depth: 2),
-                CGRect(x: 0, y: 98, width: Self.width, height: 28),
-                owners: inner
-            ),
-            "b": record(
-                .session(projectID: "outer", pinned: false, depth: 1),
-                frame(slot: 5),
-                owners: outer
-            ),
+        let rows = [
+            "root": record(.project, frame(y: 0), owners: [.project("root")]),
+            "outer": record(folder(in: "root", depth: 1), frame(y: Self.row), owners: outer),
+            "inner": record(folder(in: "outer", depth: 2), frame(y: 2 * Self.row), owners: inner),
+            "a": record(session(in: "inner", depth: 2), frame(y: 3.5 * Self.row), owners: inner),
+            "b": record(session(in: "outer", depth: 1), frame(y: 5 * Self.row), owners: outer),
         ]
 
-        let hit = Controller.row(at: CGPoint(x: 120, y: 90), in: rows)
-
-        XCTAssertEqual(hit?.kind, .groupShell(projectID: "inner"))
+        XCTAssertEqual(hit(3.25 * Self.row, in: rows)?.kind, .groupShell(projectID: "inner"))
     }
 
     func testSemanticRowsWinOverTheShellsThatContainThem() {
+        XCTAssertEqual(hit(2.5 * Self.row, in: groupWithBlankWash)?.kind, session(in: "group", depth: 1))
         XCTAssertEqual(
-            Controller.row(at: CGPoint(x: 120, y: 70), in: groupWithBlankWash)?.kind,
-            .session(projectID: "group", pinned: false, depth: 1)
-        )
-        XCTAssertEqual(
-            Controller.row(at: CGPoint(x: 120, y: 40), in: groupWithBlankWash)?.kind,
-            .folderItem(parentID: "root", pinned: false, depth: 1),
+            hit(1.5 * Self.row, in: groupWithBlankWash)?.kind,
+            folder(in: "root", depth: 1),
             "the group header stays a draggable folder row"
         )
     }
 
     func testOverlappingSemanticRowsResolveToTheSmallest() {
-        let rows: [String: Controller.RowRecord] = [
-            "tall": record(
-                .session(projectID: "root", pinned: false, depth: 0),
-                CGRect(x: 0, y: 0, width: Self.width, height: 80),
-                owners: [.project("root")]
-            ),
-            "short": record(
-                .session(projectID: "root", pinned: false, depth: 0),
-                CGRect(x: 0, y: 20, width: Self.width, height: 28),
-                owners: [.project("root")]
-            ),
+        let rows = [
+            "tall": record(session(in: "root", depth: 0), frame(y: 0, height: 3 * Self.row), owners: [.project("root")]),
+            "short": record(session(in: "root", depth: 0), frame(y: Self.row), owners: [.project("root")]),
         ]
 
-        XCTAssertEqual(Controller.row(at: CGPoint(x: 120, y: 30), in: rows)?.id, "short")
+        XCTAssertEqual(hit(1.5 * Self.row, in: rows)?.id, "short")
+    }
+
+    /// root ▸ worktree (header, s1, s2, collapsed group g2), then root's own
+    /// p1. Dragging s1 down onto g2 shifts s2 and g2 up one row. A Session
+    /// row's shift sits inside its own reporter, so s2 stays registered at
+    /// its slot; g2's whole cluster moves as an offset its header reports.
+    private var shiftedClusterLayout: [String: Controller.RowRecord] {
+        let worktree: [Controller.ShellOwner] = [.project("root"), .group("worktree")]
+        return [
+            "root": record(.project, frame(y: 0), owners: [.project("root")]),
+            "worktree": record(folder(in: "root", depth: 1), frame(y: Self.row), owners: worktree),
+            "s1": record(session(in: "worktree", depth: 1), frame(y: 2 * Self.row), owners: worktree),
+            "s2": record(session(in: "worktree", depth: 1), frame(y: 3 * Self.row), owners: worktree),
+            "g2": record(
+                folder(in: "worktree", depth: 2),
+                frame(y: 3 * Self.row),
+                owners: worktree + [.group("g2")]
+            ),
+            "p1": record(session(in: "root", depth: 0), frame(y: 5 * Self.row), owners: [.project("root")]),
+        ]
+    }
+
+    func testAClusterRidingTheReorderGapKeepsItsParentsShellAtItsLayoutSlot() {
+        let shifts: [String: CGFloat] = ["s2": -Self.row, "g2": -Self.row]
+
+        let vacated = Controller.row(
+            at: CGPoint(x: 120, y: 4.5 * Self.row),
+            in: shiftedClusterLayout,
+            clusterShifts: shifts
+        )
+
+        XCTAssertEqual(
+            vacated?.kind, .groupShell(projectID: "worktree"),
+            "the strip g2 vacated is still the worktree's, never its project's"
+        )
+        let shells = Controller.shellFrames(in: shiftedClusterLayout, clusterShifts: shifts)
+        XCTAssertEqual(shells[.group("worktree")], frame(y: Self.row, height: 4 * Self.row))
+        XCTAssertEqual(
+            shells[.group("g2")], frame(y: 3 * Self.row),
+            "the moving cluster's own shell rides with it"
+        )
     }
 
     func testAPointOutsideEveryBlockHitsNothing() {
-        XCTAssertNil(Controller.row(at: CGPoint(x: 120, y: 400), in: groupWithBlankWash))
+        XCTAssertNil(hit(20 * Self.row, in: groupWithBlankWash))
     }
 
-    // MARK: Pinned drags without registered shells
+    // MARK: Pinned drags
 
-    /// root ▸ header 0–28, group (header 28–56, pinned g1 56–84, wash
-    /// 84–98, g2 98–126), root's own blank 126–140, other (header 140–168,
-    /// wash 168–182, o1 182–210); then the empty project far (header
-    /// 210–238, placeholder 238–266).
+    /// Rows top to bottom, half a row of blank between some of them:
+    /// root header; group (header, pinned g1, blank, g2); root's own blank;
+    /// other (header, blank, o1); then the empty project far (header,
+    /// placeholder).
     private var pinnedLayout: [String: Controller.RowRecord] {
         let group: [Controller.ShellOwner] = [.project("root"), .group("group")]
         let other: [Controller.ShellOwner] = [.project("root"), .group("other")]
-        func row(_ y: CGFloat) -> CGRect {
-            CGRect(x: 0, y: y, width: Self.width, height: Self.rowHeight)
-        }
         return [
-            "root": record(.project, row(0), owners: [.project("root")]),
-            "group": record(
-                .folderItem(parentID: "root", pinned: true, depth: 1),
-                row(28),
-                owners: group
-            ),
-            "g1": record(.session(projectID: "group", pinned: true, depth: 1), row(56), owners: group),
-            "g2": record(.session(projectID: "group", pinned: false, depth: 1), row(98), owners: group),
-            "other": record(
-                .folderItem(parentID: "root", pinned: false, depth: 1),
-                row(140),
-                owners: other
-            ),
-            "o1": record(.session(projectID: "other", pinned: false, depth: 1), row(182), owners: other),
-            "far": record(.project, row(210), owners: [.project("far")]),
-            "empty:far": record(nil, row(238), owners: [.project("far")]),
+            "root": record(.project, frame(y: 0), owners: [.project("root")]),
+            "group": record(folder(in: "root", depth: 1, pinned: true), frame(y: Self.row), owners: group),
+            "g1": record(session(in: "group", depth: 1, pinned: true), frame(y: 2 * Self.row), owners: group),
+            "g2": record(session(in: "group", depth: 1), frame(y: 3.5 * Self.row), owners: group),
+            "other": record(folder(in: "root", depth: 1), frame(y: 5 * Self.row), owners: other),
+            "o1": record(session(in: "other", depth: 1), frame(y: 6.5 * Self.row), owners: other),
+            "far": record(.project, frame(y: 7.5 * Self.row), owners: [.project("far")]),
+            "empty:far": record(nil, frame(y: 8.5 * Self.row), owners: [.project("far")]),
         ]
     }
+
+    /// The y of each blank region in `pinnedLayout`.
+    private static let groupWash = 3.25 * row
+    private static let rootOwnBlank = 4.75 * row
+    private static let otherWash = 6.25 * row
+    private static let farPlaceholder = 9 * row
 
     private func pinnedAction(
         partition parentID: String, source sourceID: String, at y: CGFloat
     ) -> Controller.PinnedSidebarHitAction? {
-        guard let hit = Controller.row(at: CGPoint(x: 120, y: y), in: pinnedLayout) else {
-            return nil
-        }
+        guard let target = hit(y, in: pinnedLayout) else { return nil }
         return Controller.pinnedSidebarHitAction(
             boundary: .partition(parentID: parentID),
             sourceID: sourceID,
-            targetID: hit.id,
-            targetKind: hit.kind,
+            targetID: target.id,
+            targetKind: target.kind,
             firstReorderID: nil
         )
     }
 
     func testPinnedSessionAllowsItsOwnGroupsWashAndDeniesEveryOtherBlock() {
-        XCTAssertEqual(pinnedAction(partition: "group", source: "g1", at: 90), .allow)
+        XCTAssertEqual(pinnedAction(partition: "group", source: "g1", at: Self.groupWash), .allow)
         XCTAssertEqual(
-            pinnedAction(partition: "group", source: "g1", at: 175), .deny,
+            pinnedAction(partition: "group", source: "g1", at: Self.otherWash), .deny,
             "a sibling group's wash is outside the pinned partition"
         )
         XCTAssertEqual(
-            pinnedAction(partition: "group", source: "g1", at: 133), .deny,
+            pinnedAction(partition: "group", source: "g1", at: Self.rootOwnBlank), .deny,
             "the parent project's blank space is outside the group's partition"
         )
         XCTAssertEqual(
-            pinnedAction(partition: "group", source: "g1", at: 250), .deny,
+            pinnedAction(partition: "group", source: "g1", at: Self.farPlaceholder), .deny,
             "another project's placeholder is outside the partition"
         )
     }
 
     func testPinnedSessionOfAProjectAllowsThatProjectsBlankSpace() {
-        XCTAssertEqual(pinnedAction(partition: "root", source: "r1", at: 133), .allow)
-        XCTAssertEqual(pinnedAction(partition: "root", source: "r1", at: 250), .deny)
+        XCTAssertEqual(pinnedAction(partition: "root", source: "r1", at: Self.rootOwnBlank), .allow)
+        XCTAssertEqual(pinnedAction(partition: "root", source: "r1", at: Self.farPlaceholder), .deny)
     }
 
     func testPinnedGroupAllowsItsOwnWashAndDeniesASiblingGroups() {
-        XCTAssertEqual(pinnedAction(partition: "root", source: "group", at: 90), .allow)
-        XCTAssertEqual(pinnedAction(partition: "root", source: "group", at: 175), .deny)
+        XCTAssertEqual(pinnedAction(partition: "root", source: "group", at: Self.groupWash), .allow)
+        XCTAssertEqual(pinnedAction(partition: "root", source: "group", at: Self.otherWash), .deny)
     }
 
     // MARK: Project reorder target
 
-    /// alpha ▸ header 0–28 and four Sessions 28–140 (midpoint 70); a 1pt
-    /// stack gap; beta ▸ header 141–169 and two Sessions 169–225.
+    /// alpha: header and four Sessions (0 to 5 rows, midpoint 2.5 rows); a
+    /// 1pt stack gap; beta: header and two Sessions.
     private var twoProjects: [String: Controller.RowRecord] {
-        var rows: [String: Controller.RowRecord] = [
-            "alpha": record(.project, frame(slot: 0), owners: [.project("alpha")]),
-            "beta": record(
-                .project,
-                CGRect(x: 0, y: 141, width: Self.width, height: 28),
-                owners: [.project("beta")]
-            ),
-        ]
-        for index in 0..<4 {
-            rows["a\(index)"] = record(
-                .session(projectID: "alpha", pinned: false, depth: 0),
-                frame(slot: index + 1),
+        let betaTop = 5 * Self.row + 1
+        let alpha = (0..<4).map { index in
+            ("a\(index)", record(
+                session(in: "alpha", depth: 0),
+                frame(y: CGFloat(index + 1) * Self.row),
                 owners: [.project("alpha")]
-            )
+            ))
         }
-        for index in 0..<2 {
-            rows["b\(index)"] = record(
-                .session(projectID: "beta", pinned: false, depth: 0),
-                CGRect(x: 0, y: 169 + CGFloat(index) * 28, width: Self.width, height: 28),
+        let beta = (0..<2).map { index in
+            ("b\(index)", record(
+                session(in: "beta", depth: 0),
+                frame(y: betaTop + CGFloat(index + 1) * Self.row),
                 owners: [.project("beta")]
-            )
+            ))
         }
-        return rows
+        let headers = [
+            ("alpha", record(.project, frame(y: 0), owners: [.project("alpha")])),
+            ("beta", record(.project, frame(y: betaTop), owners: [.project("beta")])),
+        ]
+        return Dictionary(uniqueKeysWithValues: headers + alpha + beta)
+    }
+
+    private func block(_ y: CGFloat, in rows: [String: Controller.RowRecord]) -> Controller.ProjectBlockHit? {
+        Controller.projectBlock(at: CGPoint(x: 120, y: y), in: rows)
     }
 
     func testProjectBlockSplitsAboveAndBelowAtTheBlocksMidpoint() {
+        XCTAssertEqual(block(0.5 * Self.row, in: twoProjects), .init(id: "alpha", below: false))
         XCTAssertEqual(
-            Controller.projectBlock(at: CGPoint(x: 120, y: 10), in: twoProjects),
-            .init(id: "alpha", below: false)
-        )
-        XCTAssertEqual(
-            Controller.projectBlock(at: CGPoint(x: 120, y: 69), in: twoProjects),
-            .init(id: "alpha", below: false),
+            block(2.4 * Self.row, in: twoProjects), .init(id: "alpha", below: false),
             "the header alone would have put this point below"
         )
         XCTAssertEqual(
-            Controller.projectBlock(at: CGPoint(x: 120, y: 120), in: twoProjects),
-            .init(id: "alpha", below: true),
+            block(4 * Self.row, in: twoProjects), .init(id: "alpha", below: true),
             "a nested Session row doesn't punch a hole in its project's block"
         )
-        XCTAssertEqual(
-            Controller.projectBlock(at: CGPoint(x: 120, y: 160), in: twoProjects),
-            .init(id: "beta", below: false)
-        )
-        XCTAssertEqual(
-            Controller.projectBlock(at: CGPoint(x: 120, y: 200), in: twoProjects),
-            .init(id: "beta", below: true)
-        )
+        XCTAssertEqual(block(5.5 * Self.row, in: twoProjects), .init(id: "beta", below: false))
+        XCTAssertEqual(block(7.5 * Self.row, in: twoProjects), .init(id: "beta", below: true))
     }
 
     func testTheGapBetweenProjectBlocksHitsNoBlock() {
-        XCTAssertNil(Controller.projectBlock(at: CGPoint(x: 120, y: 140.5), in: twoProjects))
+        XCTAssertNil(block(5 * Self.row + 0.5, in: twoProjects))
     }
 
     func testAPartlyMountedBlockSplitsAtTheMidpointOfItsMountedPart() {
         // Only Sessions 3–5 of a long project are mounted (its header and
-        // first rows scrolled out of the lazy window): 112–196, midpoint 154.
-        let rows = (3..<6).reduce(into: [String: Controller.RowRecord]()) { rows, index in
-            rows["s\(index)"] = record(
-                .session(projectID: "long", pinned: false, depth: 0),
-                CGRect(x: 0, y: CGFloat(index + 1) * 28, width: Self.width, height: 28),
+        // first rows sit outside the lazy window): rows 4 to 7, midpoint 5.5.
+        let rows = Dictionary(uniqueKeysWithValues: (3..<6).map { index in
+            ("s\(index)", record(
+                session(in: "long", depth: 0),
+                frame(y: CGFloat(index + 1) * Self.row),
                 owners: [.project("long")]
-            )
-        }
+            ))
+        })
 
-        XCTAssertEqual(
-            Controller.projectBlock(at: CGPoint(x: 120, y: 150), in: rows),
-            .init(id: "long", below: false)
-        )
-        XCTAssertEqual(
-            Controller.projectBlock(at: CGPoint(x: 120, y: 158), in: rows),
-            .init(id: "long", below: true)
-        )
+        XCTAssertEqual(block(5.4 * Self.row, in: rows), .init(id: "long", below: false))
+        XCTAssertEqual(block(5.6 * Self.row, in: rows), .init(id: "long", below: true))
     }
 
     func testATopLevelGroupHasNoProjectBlockSoItsHeaderAnswers() {
         let group: [Controller.ShellOwner] = [.group("folder")]
-        let rows: [String: Controller.RowRecord] = [
-            "folder": record(.project, frame(slot: 0), owners: group),
-            "f1": record(
-                .session(projectID: "folder", pinned: false, depth: 0),
-                frame(slot: 1),
-                owners: group
-            ),
-            "f2": record(
-                .session(projectID: "folder", pinned: false, depth: 0),
-                frame(slot: 2),
-                owners: group
-            ),
+        let rows = [
+            "folder": record(.project, frame(y: 0), owners: group),
+            "f1": record(session(in: "folder", depth: 0), frame(y: Self.row), owners: group),
+            "f2": record(session(in: "folder", depth: 0), frame(y: 2 * Self.row), owners: group),
         ]
 
         XCTAssertEqual(
-            Controller.projectBlock(at: CGPoint(x: 120, y: 20), in: rows),
-            .init(id: "folder", below: true),
-            "the header's own midpoint (14) splits it"
+            block(0.7 * Self.row, in: rows), .init(id: "folder", below: true),
+            "the header's own midpoint splits it"
         )
-        XCTAssertNil(
-            Controller.projectBlock(at: CGPoint(x: 120, y: 40), in: rows),
-            "a top-level group's rows are not a project block"
-        )
+        XCTAssertNil(block(1.5 * Self.row, in: rows), "a top-level group's rows are not a project block")
     }
 }

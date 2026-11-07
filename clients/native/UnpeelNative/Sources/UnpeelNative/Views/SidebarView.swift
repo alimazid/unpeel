@@ -840,7 +840,7 @@ struct SidebarView: View {
                             node: node,
                             depth: 0,
                             workspaceMoveTargets: workspaceMoveTargets,
-                            ancestorShells: []
+                            ancestorOwners: []
                         )
                     }
                 }
@@ -1269,15 +1269,15 @@ struct ProjectNodeView: View {
     /// Only top-level project menus consume it.
     let workspaceMoveTargets: [WorkspaceMoveTarget]
     /// The blocks enclosing this node, outermost first (empty at top level).
-    let ancestorShells: [SidebarSessionDragController.ShellOwner]
+    let ancestorOwners: [SidebarSessionDragController.ShellOwner]
 
     private var isExpanded: Bool { store.expandedProjectIDs.contains(node.id) }
 
     /// The owner chain every row of this node registers: the enclosing
     /// blocks plus this node's own. The drag controller derives each
     /// block's drop shell from the rows that name it.
-    private var shells: [SidebarSessionDragController.ShellOwner] {
-        ancestorShells + [isInlineFolder ? .group(node.id) : .project(node.id)]
+    private var rowOwners: [SidebarSessionDragController.ShellOwner] {
+        ancestorOwners + [isInlineFolder ? .group(node.id) : .project(node.id)]
     }
 
     /// Group or worktree — inline child-folder row with a leading disclosure
@@ -1536,7 +1536,7 @@ struct ProjectNodeView: View {
                 // Group/root move target for the detached session drag: the
                 // controller hit-tests this frame and gates the highlight +
                 // drop through `UnpeelStore.canMoveSession`.
-                .sidebarDragRowFrame(id: node.id, kind: .project, owners: shells)
+                .sidebarDragRowFrame(id: node.id, kind: .project, owners: rowOwners)
         } else if let parentID = node.project.parentProjectID {
             row
                 .modifier(SidebarSessionRowDragEffects(
@@ -1555,7 +1555,7 @@ struct ProjectNodeView: View {
                         pinned: store.isGroupPinned(node.id),
                         depth: depth
                     ),
-                    owners: shells
+                    owners: rowOwners
                 )
                 .onDrop(of: [.fileURL], delegate: SidebarReorderDropDelegate(
                     isReorderActive: { false },
@@ -1615,7 +1615,7 @@ struct ProjectNodeView: View {
                         node: child,
                         depth: depth + 1,
                         workspaceMoveTargets: workspaceMoveTargets,
-                        ancestorShells: shells
+                        ancestorOwners: rowOwners
                     )
                     .transition(.sessionRowStagger(index: index))
                 case .session(let session):
@@ -1643,7 +1643,7 @@ struct ProjectNodeView: View {
                         node: child,
                         depth: depth + 1,
                         workspaceMoveTargets: workspaceMoveTargets,
-                        ancestorShells: shells
+                        ancestorOwners: rowOwners
                     )
                     .transition(.sessionRowStagger(index: pinnedItems.count + index))
                 case .session(let session):
@@ -1679,7 +1679,7 @@ struct ProjectNodeView: View {
                 )
                 // Shell-only: a drop on the placeholder files into this
                 // group or project, never onto the row itself.
-                .sidebarDragShellFrame(id: "empty:\(node.id)", owners: shells)
+                .sidebarDragShellFrame(id: "empty:\(node.id)", owners: rowOwners)
             }
 
             // Everything past the inactive-preview window leaves the sidebar.
@@ -1874,7 +1874,7 @@ struct ProjectNodeView: View {
                     kind: .session(
                         projectID: node.id, pinned: pinnedRow, depth: depth
                     ),
-                    owners: shells,
+                    owners: rowOwners,
                     isDraggable: true
                 )
                 // Finder folder drops on a row still mean "add project"; the
@@ -1900,7 +1900,7 @@ struct ProjectNodeView: View {
                 kind: .session(
                     projectID: node.id, pinned: pinnedRow, depth: depth
                 ),
-                owners: shells,
+                owners: rowOwners,
                 isDraggable: false
             )
         }
