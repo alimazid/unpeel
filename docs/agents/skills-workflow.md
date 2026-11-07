@@ -88,14 +88,22 @@ any fix.
   - "single test files" means a filtered `cargo test` or
     `crates/unpeel-cli/tests/run.sh <filter>`;
   - "the full suite at the end" means the "Tests to run" list in
-    [AGENTS.md](../../AGENTS.md). Run the whole PTY matrix after you touch the
-    CLI, `unpeel serve` or anything they share with the clients, and the
+    [AGENTS.md](../../AGENTS.md), plus the fork's
+    `scripts/verify-matrix-runner.sh` (`run.sh` itself: slots, `-j`,
+    interrupt; fake cases, ~40 s). Run the whole PTY matrix after you touch
+    the CLI, `unpeel serve` or anything they share with the clients, and the
     client suites after you touch `clients/`. A change to `docs/` still runs
-    `scripts/check-links.sh`.
+    `scripts/check-links.sh`. `run.sh -j N` runs N cases at once; its knobs
+    are in [the matrix README](../../crates/unpeel-cli/tests/README.md).
 
-  Every run uses a private `UNPEEL_HOME`. `cargo test` sets its own (see
-  "Working in this repository" in [AGENTS.md](../../AGENTS.md)), and the PTY
-  matrix and the verify scripts build theirs.
+  Every run uses a private `UNPEEL_HOME`. A unit-test binary that resolves
+  the home sets its own before `main` unless the caller already did
+  (`src/test_home.rs` in `unpeel-core`, `unpeel-serve` and
+  `unpeel-native-bridge`: a `#[ctor]` hook plus a guard test), so a plain
+  `cargo test` needs no setup. A new crate whose tests resolve the home gets
+  the same `test_home.rs`; process tests pass their own `HOME`/`UNPEEL_HOME`
+  to the binaries they spawn. The PTY matrix and the verify scripts build
+  their own homes.
 
 ## Taking a raw issue to done
 
