@@ -136,8 +136,8 @@ pub fn stop_session(session_id: &str) -> Result<(), String> {
 
 /// A Run Session of a Scheduled Task (agent or script) keeps its output
 /// when it stops, whoever stops it: for a script Run that output is
-/// usually the whole point, and the next Run supersedes the previous one
-/// by stopping it. Run retention still removes it with the Session
+/// usually the whole point, and the next Run stops the previous one as
+/// it comes up. Run retention still removes it with the Session
 /// (ADR 0006).
 fn keeps_output_when_stopped(manifest: &HostedSessionManifest) -> bool {
     crate::schedules::run_sessions::schedule_id(manifest.session.spawned_by.as_deref()).is_some()

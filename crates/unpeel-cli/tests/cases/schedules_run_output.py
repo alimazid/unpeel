@@ -1,14 +1,14 @@
 """A stopped Run Session keeps its output (ADR 0006), end to end.
 
 One script task prints a line naming its Run (`UNPEEL_SCHEDULE_RUN_ID`)
-and runs twice via Run now. Covered: once the second Run supersedes the
-first, `unpeel logs` on the first Run's Session still prints its line; the
-same after the second Run is stopped by hand with `unpeel stop`; the MCP
-`sessions read_output` action reads it from inside another Session; a
-Session that is not a Run still loses its output on Stop (an empty
-`output.bin`, no retention marker); and both Runs' output survives a Host
-restart and the exited-journal compaction pass. Retention removing a Run
-Session's directory, output included, is `schedules_retention`.
+and runs twice via Run now. Covered: once the second Run stops the first
+as it comes up, `unpeel logs` on the first Run's Session still prints its
+line; the same after the second Run is stopped by hand with `unpeel stop`;
+the MCP `sessions read_output` action reads it from inside another
+Session; a Session that is not a Run still loses its output on Stop (an
+empty `output.bin`, no retention marker); and both Runs' output survives a
+Host restart and the exited-journal compaction pass. Retention removing a
+Run Session's directory, output included, is `schedules_retention`.
 """
 
 import datetime
@@ -80,6 +80,9 @@ def check_superseded(case, service, home, first):
     if not case.check("the second Run stops the first Run's idle Session", bool(stopped),
                       f"{session_id}: {state_of(home, session_id)}"):
         return
+    # The stop's helper thread drops scrollback (when it does) only after
+    # the exited manifest lands: give it time to, or this read races it.
+    service.read_for(1.5)
     shown = logs(home, session_id)
     case.check("logs on the superseded Run's Session prints its line",
                f"run-{run_id}" in shown, shown[-400:])
@@ -125,7 +128,7 @@ def check_user_stop_drops(case, home, session_id):
     output = home.path("app-sessions", session_id, "output.bin")
     retention = home.path("app-sessions", session_id, "output-retention.json")
     size = os.path.getsize(output) if os.path.exists(output) else None
-    case.check("a Session that is not a Run still stops with an empty output.bin",
+    case.check("Stop still drops the output of a Session that is not a Run",
                size == 0 and not os.path.exists(retention),
                f"size={size} retention={os.path.exists(retention)}")
 
@@ -138,13 +141,13 @@ def compact_exited_journals(home):
     )
 
 
-def check_after_restart(case, home, service, runs):
+def check_after_restart(case, service, home, runs):
     service.close()
     restarted = case.serve(env={"TZ": ZONE})
     if not case.check("the Host restarts", bool(restarted.ready(timeout=25)), restarted.log()):
         return
     compacted = compact_exited_journals(home)
-    case.check("the exited-journal compaction pass runs", compacted.returncode == 0,
+    case.check("the Host compacts stopped Sessions' output", compacted.returncode == 0,
                compacted.stderr)
     for number, (run_id, session_id) in enumerate(runs, start=1):
         shown = logs(home, session_id)
@@ -178,7 +181,7 @@ def body(case):
         if caller:
             check_read_output(case, home, caller, first)
             check_user_stop_drops(case, home, caller)
-        check_after_restart(case, home, service, [first, second])
+        check_after_restart(case, service, home, [first, second])
     finally:
         for session_id in list(home.manifests()):
             cli(home, "rm", session_id)
