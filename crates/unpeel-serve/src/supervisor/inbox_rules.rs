@@ -207,6 +207,44 @@ pub fn send_hold(timing: &Timing) -> Option<HoldReason> {
     (timing.deliveries_last_hour >= budget).then_some(HoldReason::Budget)
 }
 
+/// What the draft guard reads about a person's typing (#38).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Typing {
+    pub now: u64,
+    /// When the target's current turn began: its latest prompt submit, or
+    /// the step that saw it turn busy.
+    pub turn_began_at: u64,
+    /// Manifest `last_input_at`: when a person last typed. `None` from a
+    /// session host that does not stamp it, or before anyone typed.
+    pub last_input_at: Option<u64>,
+}
+
+/// The line a paste may land on.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DraftGuard {
+    /// Nobody typed since the turn began: the line is the agent's own
+    /// prompt, so it is the baseline and the target's known-empty prompt.
+    Baseline,
+    /// Someone typed since: only the known-empty prompt is not a draft.
+    KnownEmpty,
+}
+
+/// The draft guard's first gate. Typing within the quiet window always
+/// holds; the drain then compares the line for [`DraftGuard::KnownEmpty`].
+pub fn draft_guard(typing: &Typing) -> Result<DraftGuard, HoldReason> {
+    let Some(typed_at) = typing.last_input_at else {
+        return Ok(DraftGuard::Baseline);
+    };
+    if typed_at < typing.turn_began_at {
+        return Ok(DraftGuard::Baseline);
+    }
+    if typed_at <= typing.now && typing.now - typed_at >= QUIET_MS {
+        Ok(DraftGuard::KnownEmpty)
+    } else {
+        Err(HoldReason::Draft)
+    }
+}
+
 /// Best-guess delivery (Q2): only with the setting on and a runtime in the
 /// foreground.
 fn best_guess(facts: &Facts) -> Readiness {
@@ -519,6 +557,55 @@ mod tests {
             ..timing(5_000, 5_000, 1)
         };
         assert_eq!(send_hold(&tight), Some(HoldReason::Budget));
+    }
+
+    fn typing(turn_began_at: u64, last_input_at: Option<u64>) -> Typing {
+        Typing {
+            now: NOW,
+            turn_began_at,
+            last_input_at,
+        }
+    }
+
+    #[test]
+    fn typing_since_the_turn_began_needs_the_known_empty_prompt() {
+        let began = NOW - 60_000;
+        let rows = [
+            (
+                "a host that does not stamp input",
+                None,
+                Ok(DraftGuard::Baseline),
+            ),
+            (
+                "typed before the turn began",
+                Some(began - 1),
+                Ok(DraftGuard::Baseline),
+            ),
+            (
+                "typed as the turn began",
+                Some(began),
+                Ok(DraftGuard::KnownEmpty),
+            ),
+            (
+                "typed and quiet for 3 s",
+                Some(NOW - 3_000),
+                Ok(DraftGuard::KnownEmpty),
+            ),
+            ("typing just now", Some(NOW - 2_999), Err(HoldReason::Draft)),
+            // A clock step back reads as just typed, not as quiet forever.
+            (
+                "typed in the future",
+                Some(NOW + 5_000),
+                Err(HoldReason::Draft),
+            ),
+        ];
+        for (name, last_input_at, expected) in rows {
+            assert_eq!(
+                draft_guard(&typing(began, last_input_at)),
+                expected,
+                "{name}"
+            );
+        }
     }
 
     #[test]

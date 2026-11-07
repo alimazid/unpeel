@@ -80,6 +80,7 @@ fn fixture() -> Fixture {
             bracketed_paste: true,
             screen_changed_at: Some(T0 - 60_000),
             menu_prompt: false,
+            last_input_at: None,
         };
         world.cursor = Some(prompt(""));
         world.live = HashSet::from(["router".to_string()]);
@@ -474,6 +475,134 @@ fn a_changed_input_line_holds_the_paste_and_tells_the_user_once() {
     fx.io.with(|world| world.cursor = Some(prompt("")));
     fx.step_and_settle(&idle, T0 + 201_000);
     assert_eq!(fx.pastes().len(), 1);
+}
+
+/// The Router's last turn ended ten minutes ago, then the user started
+/// typing: the draft is already on the line when an item comes due.
+fn typing_after_a_long_idle(fx: &mut Fixture, last_input_at: Option<u64>) {
+    fx.step(&router(Status::Busy), T0 - 600_000);
+    fx.step(&router(Status::Idle), T0 - 590_000);
+    fx.io.with(|world| {
+        world.cursor = Some(prompt("can yo"));
+        world.terminal.screen_changed_at = Some(T0 - 5_000);
+        world.terminal.last_input_at = last_input_at;
+    });
+    report(fx, "result", T0 - 4_000);
+}
+
+#[test]
+fn a_draft_already_on_the_line_when_an_item_comes_due_is_never_pasted_over() {
+    let mut fx = fixture();
+    typing_after_a_long_idle(&mut fx, Some(T0 - 5_000));
+    // Quiet for 5 s and the item 4 s old: only the draft guard can hold it.
+    fx.step(&router(Status::Idle), T0);
+    assert_eq!(fx.hold().as_deref(), Some("draft"));
+    assert!(fx.pastes().is_empty(), "never paste over a draft");
+}
+
+#[test]
+fn a_session_host_that_does_not_stamp_input_keeps_todays_lazy_baseline() {
+    let mut fx = fixture();
+    typing_after_a_long_idle(&mut fx, None);
+    fx.step_and_settle(&router(Status::Idle), T0);
+    assert_eq!(fx.pastes().len(), 1);
+}
+
+#[test]
+fn a_session_first_seen_after_the_user_typed_is_not_held_for_it() {
+    // A Host restart: the drain never saw the Router's turn, and the
+    // user's last key came before it started watching.
+    let mut fx = fixture();
+    fx.io
+        .with(|world| world.terminal.last_input_at = Some(T0 - 30_000));
+    report(&fx, "result", T0 - 10_000);
+    fx.step_and_settle(&router(Status::Idle), T0);
+    assert_eq!(fx.pastes().len(), 1);
+}
+
+/// One clean delivery at T0: the drain learns the Router's empty prompt,
+/// and the Router's turn on the paste begins at T0 + 1 s.
+fn deliver_once(fx: &mut Fixture) {
+    report(fx, "first", T0 - 10_000);
+    fx.step_and_settle(&router(Status::Idle), T0);
+    fx.step(&router(Status::Busy), T0 + 1_000);
+    assert_eq!(fx.pending(), 0);
+}
+
+fn typed(fx: &Fixture, line: CursorLine, at: u64) {
+    fx.io.with(|world| {
+        world.cursor = Some(line);
+        world.terminal.last_input_at = Some(at);
+    });
+}
+
+#[test]
+fn a_draft_typed_while_the_target_works_is_held_when_it_goes_idle() {
+    let mut fx = fixture();
+    deliver_once(&mut fx);
+    typed(&fx, prompt("next"), T0 + 2_000);
+    report(&fx, "result", T0 + 3_000);
+    fx.step(&router(Status::Idle), T0 + 10_000);
+    assert_eq!(fx.hold().as_deref(), Some("draft"));
+    assert_eq!(fx.pastes().len(), 1);
+}
+
+#[test]
+fn a_draft_typed_then_cleared_is_delivered_once_typing_has_been_quiet() {
+    let mut fx = fixture();
+    let idle = router(Status::Idle);
+    deliver_once(&mut fx);
+    fx.step(&idle, T0 + 5_000);
+    typed(&fx, prompt("abc"), T0 + 6_000);
+    report(&fx, "result", T0 + 6_500);
+    fx.step(&idle, T0 + 10_000);
+    assert_eq!(fx.hold().as_deref(), Some("draft"));
+
+    typed(&fx, prompt(""), T0 + 11_000);
+    fx.step(&idle, T0 + 13_999);
+    assert_eq!(fx.hold().as_deref(), Some("draft"), "still typing");
+    fx.step_and_settle(&idle, T0 + 14_000);
+    assert_eq!(fx.pastes().len(), 2);
+}
+
+#[test]
+fn keys_that_answer_a_menu_do_not_hold_the_inbox() {
+    let mut fx = fixture();
+    let idle = router(Status::Idle);
+    deliver_once(&mut fx);
+    report(&fx, "result", T0 + 2_000);
+    fx.step(&router(Status::Attention), T0 + 3_000);
+    // The user picks an option; the input line stays the empty prompt.
+    fx.io
+        .with(|world| world.terminal.last_input_at = Some(T0 + 4_000));
+    fx.step(&router(Status::Busy), T0 + 5_000);
+    fx.step(&idle, T0 + 6_000);
+    assert_eq!(fx.hold().as_deref(), Some("draft"), "a key 2 s ago");
+    fx.step_and_settle(&idle, T0 + 7_000);
+    assert_eq!(fx.pastes().len(), 2);
+}
+
+#[test]
+fn the_known_empty_prompt_leaves_out_the_suggestion_drawn_on_it() {
+    let mut fx = fixture();
+    let idle = router(Status::Idle);
+    let suggesting = |text: &str| cursor_line(&input_screen(text, 2, Some((2, text.len() as u32))));
+    fx.io
+        .with(|world| world.cursor = Some(suggesting("> leave the epic")));
+    deliver_once(&mut fx);
+    // The user types and deletes; Claude Code now suggests something else.
+    fx.step(&idle, T0 + 5_000);
+    typed(&fx, suggesting("> run the tests"), T0 + 6_000);
+    report(&fx, "second", T0 + 6_500);
+    fx.step_and_settle(&idle, T0 + 10_000);
+    assert_eq!(fx.pastes().len(), 2, "a different suggestion");
+
+    // Then again, with no suggestion on the cleared line at all.
+    fx.step(&router(Status::Busy), T0 + 11_000);
+    typed(&fx, cursor_line(&input_screen("> ", 2, None)), T0 + 12_000);
+    report(&fx, "third", T0 + 12_500);
+    fx.step_and_settle(&idle, T0 + 16_000);
+    assert_eq!(fx.pastes().len(), 3, "no suggestion");
 }
 
 #[test]
