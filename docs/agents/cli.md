@@ -153,10 +153,12 @@ the status and code of `/mobile/schedules/run`, so it needs a running Host.
 and `history` refuses inside a Session, the detection `unpeel send` uses,
 except the Super Agent's (`supervision::is_router`): it changes tasks for
 the user, here or through the MCP `workspace` writes.
-`rm` deletes the task and its history; its Run Sessions stay. A delete
-that lands during a sweep wins: the worker re-checks, under the task's lock,
-that the definition is still saved before it saves the clock or records a
-Run's start, so a deleted task gets neither its directory nor a Run back.
+`rm` deletes the task and its history; its Run Sessions stay, though a Run
+already coming up still stops the task's Superseded Runs (detail:
+`docs/agents/serve.md`). A delete that lands during a sweep wins: the worker
+re-checks, under the task's lock, that the definition is still saved before
+it saves the clock or records a Run's start, so a deleted task gets neither
+its directory nor a Run back.
 
 Triggers read the local wall clock (`unpeel_serve::schedules::clock`):
 `system_zone()` resolves the zone on every call (`TZ`, else the
