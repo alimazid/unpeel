@@ -205,6 +205,18 @@ impl Scheduler {
         !self.run_now.is_empty()
     }
 
+    /// Whether a sweep against `schedules` has anything to do. A Run whose
+    /// Session is starting, or whose instructions are being typed, keeps
+    /// the sweeps going after its task is deleted: its helper's outcomes
+    /// are drained only by a sweep, and the Session coming up still stops
+    /// the task's earlier idle Runs (#30).
+    pub fn needs_sweep(&self, schedules: &[Schedule]) -> bool {
+        !schedules.is_empty()
+            || self.has_pending()
+            || !self.launching.is_empty()
+            || !self.delivering.is_empty()
+    }
+
     /// Accept Run now for `schedule_id`, unless a Run of it is in progress.
     /// The Run starts on the next sweep; its id comes back at once.
     pub fn request_run_now(

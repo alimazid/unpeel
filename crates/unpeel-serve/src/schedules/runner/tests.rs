@@ -17,6 +17,8 @@ struct Recording {
     /// (default: typed, or ready without instructions, at 09:00:01).
     delivered: Mutex<Vec<(String, Option<String>)>>,
     delivery: Option<Delivery>,
+    /// When set, each delivery waits for a message here before it returns.
+    held_delivery: Option<Mutex<mpsc::Receiver<()>>>,
     /// What the agent's screen shows as its reply.
     screen: Option<String>,
     /// Tasks whose definition has left the saved Scheduled Tasks.
@@ -44,6 +46,9 @@ impl Effects for Recording {
             .lock()
             .unwrap()
             .push((session_id.to_string(), instructions.map(str::to_string)));
+        if let Some(held) = &self.held_delivery {
+            let _ = held.lock().unwrap().recv();
+        }
         let at_ms = clock::epoch_ms(&now(9, 0, 1));
         self.delivery.clone().unwrap_or(match instructions {
             Some(_) => Delivery::Typed { at_ms },
@@ -824,6 +829,75 @@ fn instructions_on_a_preset_that_is_not_an_agent_fail_the_run_before_launch() {
         let run = latest(scheduler);
         assert_eq!(run.status, RunStatus::Failed);
         assert!(run.reason.unwrap().contains("not an Agent Preset"));
+    });
+}
+
+// ── A task deleted while its Run comes up (#30) ──
+
+/// The worker skips the sweep of a workspace with no task unless the
+/// Scheduler says otherwise. Deleting the only task while its Run's Session
+/// comes up must not leave that Session's outcome undrained (and the task's
+/// Superseded Runs live) until some later task is created; swept with no
+/// definition, the Run still says its Session is up.
+#[test]
+fn a_spawned_outcome_keeps_the_worker_sweeping_after_its_task_is_deleted() {
+    with_scheduler(Recording::default(), |scheduler, effects| {
+        let tasks = [schedule(ScheduleTrigger::Daily {
+            time: "09:00".into(),
+        })];
+        sweep(scheduler, &tasks, &now(9, 0, 0));
+        settle(effects, 1);
+        let session_id = effects.spawned.lock().unwrap()[0].0.session_id.clone();
+        assert!(
+            scheduler.needs_sweep(&[]),
+            "the worker skips the sweep, so the Session's Spawned outcome waits undrained"
+        );
+        let next = sweep(scheduler, &[], &now(9, 0, 1));
+        assert_eq!(spawned(&next), vec![session_id]);
+        assert!(!scheduler.needs_sweep(&[]), "nothing left to drain");
+    });
+}
+
+/// An agent Run's delivery outcome is drained the same way: a task deleted
+/// while its agent's instructions are typed leaves nothing held for a later
+/// sweep.
+#[test]
+fn an_agent_runs_delivery_keeps_the_worker_sweeping_after_its_task_is_deleted() {
+    let (release, held) = mpsc::channel();
+    let effects = Recording {
+        held_delivery: Some(Mutex::new(held)),
+        ..Recording::default()
+    };
+    with_scheduler(effects, |scheduler, effects| {
+        let session_id = start_agent_run(scheduler, effects);
+        let up = sweep(scheduler, &[], &now(9, 0, 1));
+        assert_eq!(spawned(&up), vec![session_id]);
+        assert!(
+            scheduler.needs_sweep(&[]),
+            "its instructions are still being typed"
+        );
+        release.send(()).unwrap();
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while scheduler.needs_sweep(&[]) && Instant::now() < deadline {
+            sweep(scheduler, &[], &now(9, 0, 2));
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert!(
+            !scheduler.needs_sweep(&[]),
+            "its delivery outcome was drained"
+        );
+    });
+}
+
+/// With no task and nothing starting, the worker still skips the sweep.
+#[test]
+fn a_workspace_with_no_task_and_no_run_starting_is_not_swept() {
+    with_scheduler(Recording::default(), |scheduler, _| {
+        assert!(!scheduler.needs_sweep(&[]));
+        let tasks = [schedule(ScheduleTrigger::Daily {
+            time: "09:00".into(),
+        })];
+        assert!(scheduler.needs_sweep(&tasks));
     });
 }
 
