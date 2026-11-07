@@ -819,7 +819,7 @@ pub fn set_device_relay_allowed(home: &Path, device_id: &str, allowed: bool) -> 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::schedules::host::tests::{answering, morning};
+    use crate::schedules::host::test_support::{morning, run_now_driver};
 
     fn run_now_request() -> unpeel_core::relay_wire::TunnelRequest {
         unpeel_core::relay_wire::TunnelRequest {
@@ -844,7 +844,7 @@ mod tests {
     fn an_unreadable_run_log_answers_its_own_code_on_the_cli_wire() {
         let root = tempfile::tempdir().unwrap();
         std::fs::create_dir_all(root.path().join("sch_1").join("runs.jsonl")).unwrap();
-        let control = answering(root.path().to_path_buf(), vec![morning()], 1);
+        let control = run_now_driver(root.path().to_path_buf(), vec![morning()], 1);
         let (status, body) = answer(&control);
         assert_eq!(
             (status, &body["code"]),
@@ -861,7 +861,7 @@ mod tests {
     #[test]
     fn a_run_already_queued_answers_run_in_progress_on_the_cli_wire() {
         let root = tempfile::tempdir().unwrap();
-        let control = answering(root.path().to_path_buf(), vec![morning()], 2);
+        let control = run_now_driver(root.path().to_path_buf(), vec![morning()], 2);
         let (status, body) = answer(&control);
         assert_eq!(status, 200, "{body}");
         assert!(
@@ -889,7 +889,7 @@ mod tests {
     #[test]
     fn a_task_gone_by_the_time_the_driver_answers_is_unknown_on_the_cli_wire() {
         let root = tempfile::tempdir().unwrap();
-        let control = answering(root.path().to_path_buf(), Vec::new(), 1);
+        let control = run_now_driver(root.path().to_path_buf(), Vec::new(), 1);
         let (status, body) = answer(&control);
         assert_eq!(
             (status, &body["code"]),

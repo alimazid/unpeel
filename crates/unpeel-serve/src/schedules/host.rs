@@ -85,22 +85,25 @@ pub(crate) fn run_now(
     })
 }
 
+/// Fixtures for the Run now wires' tests (here and `local_gateway`).
 #[cfg(test)]
-pub(crate) mod tests {
+pub(crate) mod test_support {
     use super::*;
-    use crate::schedules::runner::{HostEffects, Scheduler};
+    use crate::schedules::agent_run::Delivery;
+    use crate::schedules::runner::{Effects, Scheduler, SessionSeen, SpawnRequest};
 
-    /// The driver's answer to Run now (`driver.rs` `RunScheduleNow`) with
-    /// `schedules` as the definitions it read, on its own thread.
-    pub(crate) fn answering(
+    /// The driver's answer to Run now (`driver.rs` `RunScheduleNow`) on its
+    /// own thread, with `schedules` as the definitions it read, for the
+    /// first `answers` requests.
+    pub(crate) fn run_now_driver(
         root: std::path::PathBuf,
         schedules: Vec<Schedule>,
-        requests: usize,
+        answers: usize,
     ) -> mpsc::Sender<LocalControlRequest> {
         let (control, inbox) = mpsc::channel();
         std::thread::spawn(move || {
-            let mut scheduler = Scheduler::new(root, Arc::new(HostEffects));
-            for _ in 0..requests {
+            let mut scheduler = Scheduler::new(root, Arc::new(NoEffects));
+            for _ in 0..answers {
                 let Ok(LocalControlRequest::RunScheduleNow { schedule_id, reply }) = inbox.recv()
                 else {
                     return;
@@ -122,6 +125,34 @@ pub(crate) mod tests {
         .expect("a schedule")
     }
 
+    /// Run now only reads the task's store; it never sweeps, so it never
+    /// reaches the Host's Sessions or `app-state.json`.
+    struct NoEffects;
+
+    impl Effects for NoEffects {
+        fn spawn(&self, _: SpawnRequest) -> Result<(), String> {
+            unreachable!("Run now starts nothing")
+        }
+        fn deliver(&self, _: &str, _: Option<&str>) -> Delivery {
+            unreachable!("Run now delivers nothing")
+        }
+        fn session(&self, _: &str) -> (SessionSeen, Option<i32>) {
+            unreachable!("Run now observes no Session")
+        }
+        fn screen_reply(&self, _: &str, _: &str) -> Option<String> {
+            unreachable!("Run now reads no screen")
+        }
+        fn disable(&self, _: &str) -> Result<(), String> {
+            unreachable!("Run now turns nothing off")
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::test_support::{morning, run_now_driver};
+    use super::*;
+
     fn host(control: mpsc::Sender<LocalControlRequest>) -> WorkerHost {
         WorkerHost {
             snapshot: SharedSnapshot::default(),
@@ -135,7 +166,11 @@ pub(crate) mod tests {
     fn an_unreadable_run_log_is_refused_for_its_own_reason() {
         let root = tempfile::tempdir().unwrap();
         std::fs::create_dir_all(root.path().join("sch_1").join("runs.jsonl")).unwrap();
-        let host = host(answering(root.path().to_path_buf(), vec![morning()], 1));
+        let host = host(run_now_driver(
+            root.path().to_path_buf(),
+            vec![morning()],
+            1,
+        ));
         let result = host.run_now("sch_1");
         assert!(
             matches!(&result, Err(RunNowRefusal::RunLogUnreadable(message))
@@ -148,7 +183,7 @@ pub(crate) mod tests {
     #[test]
     fn a_task_gone_by_the_time_the_driver_answers_is_unknown() {
         let root = tempfile::tempdir().unwrap();
-        let host = host(answering(root.path().to_path_buf(), Vec::new(), 1));
+        let host = host(run_now_driver(root.path().to_path_buf(), Vec::new(), 1));
         let result = host.run_now("sch_1");
         assert!(
             matches!(&result, Err(RunNowRefusal::UnknownTask(message)) if message.contains("sch_1")),
@@ -160,7 +195,11 @@ pub(crate) mod tests {
     #[test]
     fn a_run_already_queued_is_in_progress() {
         let root = tempfile::tempdir().unwrap();
-        let host = host(answering(root.path().to_path_buf(), vec![morning()], 2));
+        let host = host(run_now_driver(
+            root.path().to_path_buf(),
+            vec![morning()],
+            2,
+        ));
         assert!(host.run_now("sch_1").unwrap().starts_with("run_"));
         let result = host.run_now("sch_1");
         assert!(

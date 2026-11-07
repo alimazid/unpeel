@@ -14,7 +14,7 @@ use std::time::{Duration, Instant};
 
 use jiff::Zoned;
 use unpeel_core::controller_api::{HostCreatePreset, HostCreateProject};
-use unpeel_core::controller_schedules::RunNowRefusal;
+use unpeel_core::controller_schedules::{unknown_task_message, RunNowRefusal};
 use unpeel_core::schedule_store::TaskStore;
 use unpeel_core::schedules::{RunStatus, Schedule, ScheduleClock, ScheduleRun};
 use unpeel_core::state::Preset;
@@ -188,8 +188,7 @@ impl Scheduler {
     }
 
     /// Accept Run now for `schedule_id`, unless a Run of it is in progress.
-    /// The Run starts on the next sweep; its id comes back at once. A
-    /// refusal says why, typed, so no reason reads as another.
+    /// The Run starts on the next sweep; its id comes back at once.
     pub fn request_run_now(
         &mut self,
         schedule_id: &str,
@@ -198,11 +197,7 @@ impl Scheduler {
         let schedule = schedules
             .iter()
             .find(|schedule| schedule.id == schedule_id)
-            .ok_or_else(|| {
-                RunNowRefusal::UnknownTask(format!(
-                    "no Scheduled Task {schedule_id}; it may have been deleted"
-                ))
-            })?;
+            .ok_or_else(|| RunNowRefusal::UnknownTask(unknown_task_message(schedule_id)))?;
         let store = TaskStore::open(&self.root, &schedule.id).map_err(RunNowRefusal::Internal)?;
         let latest_in_progress = store
             .current_run()

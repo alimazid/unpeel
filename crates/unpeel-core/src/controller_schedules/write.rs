@@ -49,7 +49,8 @@ pub enum RunNowRefusal {
     /// The task's Run log will not read, so the worker cannot tell whether
     /// a Run is in progress: 500.
     RunLogUnreadable(String),
-    /// The worker could not read the Scheduled Task definitions: 500.
+    /// The worker could not read its own state: the Scheduled Task
+    /// definitions, or the task's state directory: 500.
     Internal(String),
     /// The request never reached the worker: 503 (not applied).
     Unavailable(String),
@@ -439,11 +440,13 @@ fn invalid(message: impl Into<String>) -> Failure {
 }
 
 fn gone(schedule_id: &str) -> Failure {
-    Failure::new(
-        404,
-        codes::UNKNOWN_TASK,
-        format!("no Scheduled Task {schedule_id}; it may have been deleted"),
-    )
+    Failure::new(404, codes::UNKNOWN_TASK, unknown_task_message(schedule_id))
+}
+
+/// A task that is not stored, as every schedules refusal words it: these
+/// routes and the scheduler's Run now answer.
+pub fn unknown_task_message(schedule_id: &str) -> String {
+    format!("no Scheduled Task {schedule_id}; it may have been deleted")
 }
 
 fn entry_id(entry: &Value) -> Option<&str> {
