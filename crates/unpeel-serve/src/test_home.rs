@@ -3,7 +3,7 @@
 // SAFETY: runs once before `main`, while the process is single-threaded, and
 // only touches the environment and the filesystem.
 #[ctor::ctor(unsafe)]
-fn use_private_test_home() {
+fn isolate_unpeel_home() {
     unpeel_core::app_paths::use_private_test_home()
         .expect("create a private UNPEEL_HOME for the unpeel-serve tests");
 }
