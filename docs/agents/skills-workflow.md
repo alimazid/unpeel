@@ -82,20 +82,36 @@ any fix.
 - **Spec source** for `code-review`: the issue body plus its agent brief. Put
   `#<n>` in every commit message so the review can find it. The fixed point
   is `git merge-base main HEAD`.
-- **`/implement`'s checks** in this repo's terms:
+- **`/implement`'s checks** in this repo's terms. The fork's `run.sh` shares
+  the machine through slots, so `CONTRIBUTING.md`'s "never run two `run.sh`
+  invocations at once" and its `UNPEEL_TUI_TEST_BASE` advice don't apply
+  here (see [the matrix README](../../crates/unpeel-cli/tests/README.md)).
+  Several runs may go at once, from any worktrees, with no lock of your own:
+  each case takes one of `UNPEEL_TUI_SLOTS` machine-wide slots (default 4),
+  waits while all are busy, and names its home after its slot. Keep
+  `UNPEEL_TUI_SLOTS` the same for every run on a machine, leave
+  `UNPEEL_TUI_TEST_BASE` unset, and pass `-j N` to let one run hold up to N
+  slots.
   - "typecheck" means `cargo clippy` with `-D warnings` on the crates you
     touched;
   - "single test files" means a filtered `cargo test` or
     `crates/unpeel-cli/tests/run.sh <filter>`;
   - "the full suite at the end" means the "Tests to run" list in
-    [AGENTS.md](../../AGENTS.md). Run the whole PTY matrix after you touch the
-    CLI, `unpeel serve` or anything they share with the clients, and the
+    [AGENTS.md](../../AGENTS.md), plus the fork's
+    `scripts/verify-matrix-runner.sh` (`run.sh` itself: slots, `-j`,
+    interrupt; fake cases, ~40 s). Run the whole PTY matrix after you touch
+    the CLI, `unpeel serve` or anything they share with the clients, and the
     client suites after you touch `clients/`. A change to `docs/` still runs
     `scripts/check-links.sh`.
 
-  Every run uses a private `UNPEEL_HOME`. `cargo test` sets its own (see
-  "Working in this repository" in [AGENTS.md](../../AGENTS.md)), and the PTY
-  matrix and the verify scripts build theirs.
+  Every run uses a private `UNPEEL_HOME`. A unit-test binary that resolves
+  the home sets its own before `main` unless the caller already did
+  (`src/test_home.rs` in `unpeel-core`, `unpeel-serve` and
+  `unpeel-native-bridge`: a `#[ctor]` hook plus a guard test), so a plain
+  `cargo test` needs no setup. A new crate whose tests resolve the home gets
+  the same `test_home.rs`; process tests pass their own `HOME`/`UNPEEL_HOME`
+  to the binaries they spawn. The PTY matrix and the verify scripts build
+  their own homes.
 
 ## Taking a raw issue to done
 

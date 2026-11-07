@@ -116,12 +116,7 @@ makes sense for coding, it does not belong here.
 
 - Never write to a real `~/.unpeel` from tests: every test case and verify
   script uses a private `UNPEEL_HOME` (short paths — `sockaddr_un` caps a
-  socket path near 104 bytes). A unit-test binary that resolves the home
-  sets its own before `main` unless the caller already did (`src/test_home.rs`
-  in `unpeel-core`, `unpeel-serve` and `unpeel-native-bridge`: a `#[ctor]`
-  hook plus a guard test), so a plain `cargo test` needs no setup. A new
-  crate whose tests resolve the home gets the same `test_home.rs`; process
-  tests pass their own `HOME`/`UNPEEL_HOME` to the binaries they spawn.
+  socket path near 104 bytes).
 - Provider-specific code, assets, and fixtures belong together under
   `runtimes/<slug>/`; only provider-neutral enforcement lives in core.
 - Changing launching or hooks means updating `session_host.rs`, the
@@ -142,8 +137,7 @@ cargo test --manifest-path crates/unpeel-attach/Cargo.toml
 cargo test --manifest-path crates/apps/Cargo.toml --workspace         # first-party Apps + App Kit (own workspace)
 cargo clippy --manifest-path crates/Cargo.toml --workspace --all-targets --all-features -- -D warnings
 scripts/ci/check-portable-core.sh          # unpeel-core without the Host (controller-core + wasm32 clippy)
-crates/unpeel-cli/tests/run.sh            # the PTY matrix (real binaries, ~10 min); ./run.sh <filter> for a subset, -j N for N cases at once
-scripts/verify-matrix-runner.sh            # run.sh itself: slots, -j, interrupt (fake cases, ~40 s)
+crates/unpeel-cli/tests/run.sh            # the PTY matrix (real binaries, ~10 min); ./run.sh <filter> for a subset
 scripts/verify-attach.sh                   # attach end to end
 scripts/verify-browser.sh                  # browser engine + MCP (needs Chrome)
 bun run test:release                       # release/publish scripts

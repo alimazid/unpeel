@@ -541,7 +541,9 @@ impl VtTerminal {
     /// reports; one of these tracking modes must be active for the child to
     /// own button gestures.
     fn mouse_reporting(&self) -> bool {
-        [9, 1000, 1002, 1003].into_iter().any(|mode| self.mode(mode))
+        [9, 1000, 1002, 1003]
+            .into_iter()
+            .any(|mode| self.mode(mode))
     }
 
     /// A DEC private mode by its raw number; unknown-mode errors read as
@@ -3096,6 +3098,26 @@ mod snapshot_vt_tests {
     #[test]
     fn plain_text_and_cursor_round_trip() {
         round_trip(40, 10, b"hello\r\nworld\r\n$ ");
+    }
+
+    #[test]
+    fn cleared_screen_with_scrollback_and_blank_bottom_rows_round_trips() {
+        let mut input = Vec::new();
+        for i in 0..45 {
+            input.extend_from_slice(format!("old command {i}\r\n").as_bytes());
+        }
+        input.extend_from_slice(b"\x1b[2J\x1b[H\x1b[?25l");
+        for y in 1..=18 {
+            input.extend_from_slice(
+                format!(
+                    "\x1b[{y};3H\x1b[1;3{}mFRAME LINE {y:02}\x1b[0m  static text",
+                    y % 8
+                )
+                .as_bytes(),
+            );
+        }
+        input.extend_from_slice(b"\x1b[20;1H\x1b[?25h");
+        round_trip(100, 30, &input);
     }
 
     #[test]
