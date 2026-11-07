@@ -135,7 +135,8 @@ enum SidebarTreeFlattener {
     /// child folders (`regularItems`), recursing into expanded folders, then
     /// the placeholder when both lists are empty. Hidden pane members leave
     /// the list without spending the budget. `budget` caps the row count;
-    /// nil lists everything.
+    /// nil lists everything. A list the budget cuts short reads as
+    /// continuing past its last row: no block or group cluster ends there.
     static func rows(
         topLevelNodes: [ProjectNode],
         expandedProjectIDs: Set<String>,
@@ -144,6 +145,8 @@ enum SidebarTreeFlattener {
         regularItems: (ProjectNode) -> [SidebarMixedItem],
         budget: Int? = nil
     ) -> [SidebarTreeRow] {
+        // The builder stores the item sources for its recursion; they never
+        // outlive this call.
         withoutActuallyEscaping(pinnedItems) { pinnedItems in
             withoutActuallyEscaping(regularItems) { regularItems in
                 var builder = Builder(
@@ -154,7 +157,7 @@ enum SidebarTreeFlattener {
                     budget: budget ?? .max
                 )
                 for (blockIndex, node) in topLevelNodes.enumerated() {
-                    guard builder.hasBudget else { break }
+                    guard !builder.stopsForBudget() else { break }
                     builder.appendBlock(node, isFirstBlock: blockIndex == 0)
                 }
                 return builder.finishedRows()
@@ -162,8 +165,9 @@ enum SidebarTreeFlattener {
         }
     }
 
-    /// The wash-bearing folders whose subtree holds `sessionID` (the raw
-    /// selection, as the live group wash reads it), outermost first.
+    /// The wash-bearing folders whose subtree holds `sessionID`, outermost
+    /// first. Pass the pane representative the sidebar selects (the live
+    /// group wash reads `sessionSelection`, which holds the representative).
     static func washedFolderIDs(
         containing sessionID: String?,
         in nodes: [ProjectNode]
@@ -195,8 +199,15 @@ enum SidebarTreeFlattener {
         var budget: Int
         var drafts: [Draft] = []
         var emittedIDs: Set<String> = []
+        /// The budget ran out with rows still to list.
+        var isTruncated = false
 
-        var hasBudget: Bool { budget > 0 }
+        /// True once the budget is spent; anything still to list is cut.
+        mutating func stopsForBudget() -> Bool {
+            guard budget <= 0 else { return false }
+            isTruncated = true
+            return true
+        }
 
         mutating func appendBlock(_ node: ProjectNode, isFirstBlock: Bool) {
             let isExpanded = expandedProjectIDs.contains(node.id)
@@ -227,7 +238,7 @@ enum SidebarTreeFlattener {
             ]
             for section in sections {
                 for (index, item) in section.items.enumerated() {
-                    guard hasBudget else { return }
+                    guard !stopsForBudget() else { return }
                     appendItem(
                         item,
                         depth: depth,
@@ -294,9 +305,9 @@ enum SidebarTreeFlattener {
         /// the row, and so its subtree, is left out.
         @discardableResult
         private mutating func emit(_ draft: Draft) -> Bool {
-            guard hasBudget, emittedIDs.insert(draft.content.rowID).inserted else {
-                return false
-            }
+            guard !stopsForBudget(),
+                  emittedIDs.insert(draft.content.rowID).inserted
+            else { return false }
             budget -= 1
             drafts.append(draft)
             return true
@@ -308,12 +319,19 @@ enum SidebarTreeFlattener {
             drafts.indices.map { index in
                 let draft = drafts[index]
                 let next = index + 1 < drafts.count ? drafts[index + 1] : nil
-                let sameBlock = next?.topLevelProjectID == draft.topLevelProjectID
-                let sharedChain = sameBlock
-                    ? zip(draft.folderChain, next?.folderChain ?? [])
+                let isCutAfter = next == nil && isTruncated
+                let sameBlock = isCutAfter
+                    || next?.topLevelProjectID == draft.topLevelProjectID
+                let sharedChain: Int
+                if isCutAfter {
+                    sharedChain = draft.folderChain.count
+                } else if sameBlock {
+                    sharedChain = zip(draft.folderChain, next?.folderChain ?? [])
                         .prefix { $0 == $1 }
                         .count
-                    : 0
+                } else {
+                    sharedChain = 0
+                }
                 return SidebarTreeRow(
                     content: draft.content,
                     depth: draft.depth,

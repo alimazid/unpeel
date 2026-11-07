@@ -825,7 +825,7 @@ struct SidebarView: View {
     private var projectTreePanel: some View {
         ScrollViewReader { proxy in
             ScrollView {
-                LazyVStack(spacing: 1) {
+                LazyVStack(spacing: SidebarListPageMetrics.blockSpacing) {
                     // This reads the workspace registry's modification stamp.
                     // Resolve it once for the tree instead of once per top-level
                     // project whenever an unrelated store publication redraws
@@ -1661,7 +1661,7 @@ struct ProjectNodeView: View {
             // the inactive-preview window still reads as empty here.
             if pinnedItems.isEmpty && mixedItems.isEmpty {
                 EmptySessionsPlaceholderRow(
-                    label: node.sessions.isEmpty ? "No sessions yet." : "No active sessions.",
+                    label: EmptySessionsPlaceholderRow.label(for: node),
                     depth: depth,
                     indentBase: 28,
                     menuPresets: store.displayAvailablePresets,
@@ -1916,6 +1916,12 @@ struct EmptySessionsPlaceholderRow: View {
     var showsManagePresets = true
 
     @State private var hovering = false
+
+    /// A project whose only history is stopped rows past the inactive-preview
+    /// window still reads as having no active sessions.
+    static func label(for owner: ProjectNode) -> String {
+        owner.sessions.isEmpty ? "No sessions yet." : "No active sessions."
+    }
 
     var body: some View {
         HStack(spacing: 0) {

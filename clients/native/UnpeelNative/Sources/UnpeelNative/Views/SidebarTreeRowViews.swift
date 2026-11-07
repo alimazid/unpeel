@@ -17,8 +17,8 @@ enum SidebarGroupWash {
 
 /// One row's slice of a group wash. A slice that does not round an edge
 /// draws its rounded rectangle past that edge and clips it at the row, so
-/// stacked slices read as the one continuous rounded shape the live cluster
-/// draws, with today's exact corners.
+/// stacked slices read as one continuous rounded shape with the exact
+/// corners of a whole-cluster wash (`GroupClusterBackground`).
 struct SidebarGroupWashSliceView: View {
     let slice: SidebarWashSlice
     let isHighlighted: Bool
@@ -53,7 +53,7 @@ struct SidebarGroupWashSliceView: View {
 
 extension View {
     /// Draws a row's group wash slices behind it, the outermost group
-    /// furthest back, as nested cluster backgrounds stack today.
+    /// furthest back, the way nested cluster backgrounds stack.
     func sidebarGroupWash(
         _ slices: [SidebarWashSlice],
         isHighlighted: @escaping (String) -> Bool
@@ -89,12 +89,14 @@ struct SidebarFolderRollup: Equatable {
             n.sessions.contains { isUnread($0.id) }
                 || n.worktrees.contains(where: unread)
         }
-        func busy(_ n: ProjectNode) -> Bool {
+        func ownBusy(_ n: ProjectNode) -> Bool {
             n.sessions.contains { $0.status == .starting || $0.status == .busy }
-                || n.worktrees.contains(where: busy)
+        }
+        func busy(_ n: ProjectNode) -> Bool {
+            ownBusy(n) || n.worktrees.contains(where: busy)
         }
         let hasAttention = attention(node)
-        let busyNow = node.sessions.contains { $0.status == .starting || $0.status == .busy }
+        let busyNow = ownBusy(node)
             || (!isExpanded && node.worktrees.contains(where: busy))
         showsAttentionDot = !isExpanded && hasAttention
         showsUnreadDot = !isExpanded && unread(node)
@@ -131,7 +133,7 @@ struct SidebarPooledTreeRow: View {
         rowView
             .sidebarGroupWash(row.washSlices) { inputs.highlightedFolderIDs.contains($0) }
             // Outside the wash, as the live tree's 1 pt stack spacing is.
-            .padding(.top, row.hasBlockGapAbove ? 1 : 0)
+            .padding(.top, row.hasBlockGapAbove ? SidebarListPageMetrics.blockSpacing : 0)
     }
 
     @ViewBuilder
@@ -161,7 +163,7 @@ struct SidebarPooledTreeRow: View {
             // Menu-chrome metrics are identical to the live sidebar and the
             // snap cannot restyle it.
             EmptySessionsPlaceholderRow(
-                label: owner.sessions.isEmpty ? "No sessions yet." : "No active sessions.",
+                label: EmptySessionsPlaceholderRow.label(for: owner),
                 depth: row.depth,
                 menuPresets: [],
                 onLaunch: { _ in },

@@ -970,6 +970,8 @@ enum SidebarListPageMetrics {
     // Fork-only: sidebar sections. Was 48 (rows scrolled up under the
     // traffic-light glass); the PROJECTS section header now sits above.
     static let topInset: CGFloat = SidebarSectionMetrics.projectsTopInset
+    /// Between top-level projects; rows inside a project sit flush.
+    static let blockSpacing: CGFloat = 1
     /// Clearance below the last row. It must cover SessionScrollTarget's
     /// margin, or auto-scrolls to the last rows clamp back under the bottom
     /// fade.
@@ -1206,7 +1208,9 @@ enum SidebarListContentBuilder {
             sessionsByID: store.sessionsByID,
             eligibleSessionIDs: eligibleSessionIDs
         )
-        let selectedSessionID = store.sidebarCarouselLocalSelectedSessionID
+        let selectedSessionID = paneProjection.representativeSessionID(
+            for: store.sidebarCarouselLocalSelectedSessionID
+        )
         let rows = SidebarTreeFlattener.rows(
             topLevelNodes: store.nodes,
             expandedProjectIDs: expanded,
@@ -1217,7 +1221,7 @@ enum SidebarListContentBuilder {
         )
         let nodes = allNodes(store.nodes)
         let inputs = SidebarPooledRowInputs(
-            selectedSessionID: paneProjection.representativeSessionID(for: selectedSessionID),
+            selectedSessionID: selectedSessionID,
             highlightedFolderIDs: Set(SidebarTreeFlattener.washedFolderIDs(
                 containing: selectedSessionID, in: store.nodes
             )),
@@ -1480,7 +1484,7 @@ enum SidebarListContentBuilder {
         let inputs = SidebarPooledRowInputs(
             selectedSessionID: displayedSelectedSessionID,
             highlightedFolderIDs: Set(SidebarTreeFlattener.washedFolderIDs(
-                containing: selectedSessionID, in: rootNodes
+                containing: displayedSelectedSessionID, in: rootNodes
             )),
             unreadSessionIDs: Set(snapshot.sessions.filter { $0.unread == true }.map(\.id)),
             paneItemsByRepresentative: paneProjection.itemsByRepresentative,

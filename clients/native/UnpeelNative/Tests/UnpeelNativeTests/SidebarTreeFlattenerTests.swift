@@ -274,6 +274,43 @@ final class SidebarTreeFlattenerTests: XCTestCase {
         XCTAssertEqual(rows.last?.id, "session:q-s5")
     }
 
+    func testACutListCarriesOnPastItsLastRow() {
+        // The live page keeps going where the pooled glance stops, so the
+        // cut must not round the wash's bottom or end the block.
+        let group = folder("group", parent: "p", sessions: [
+            session("g1", in: "group"), session("g2", in: "group"),
+        ])
+        let rows = flatten(
+            [project("p", folders: [group]), project("q")],
+            expanded: ["p", "group"],
+            regular: [
+                "p": [.folder(group)],
+                "group": [.session(session("g1", in: "group")), .session(session("g2", in: "group"))],
+            ],
+            budget: 3
+        )
+
+        XCTAssertEqual(rows.map(\.id), ["folder:p", "folder:group", "session:g1"])
+        XCTAssertEqual(rows.last?.washSlices, [slice("group", top: false, bottom: false)])
+        XCTAssertEqual(rows.last?.isLastOfBlock, false)
+    }
+
+    func testABudgetSpentExactlyStillClosesTheList() {
+        let group = folder("group", parent: "p", sessions: [session("g1", in: "group")])
+        let rows = flatten(
+            [project("p", folders: [group])],
+            expanded: ["p", "group"],
+            regular: [
+                "p": [.folder(group)],
+                "group": [.session(session("g1", in: "group"))],
+            ],
+            budget: 3
+        )
+
+        XCTAssertEqual(rows.last?.washSlices, [slice("group", top: false, bottom: true)])
+        XCTAssertEqual(rows.last?.isLastOfBlock, true)
+    }
+
     func testHiddenMembersDoNotSpendTheBudget() {
         let rows = flatten(
             [project("p", sessions: [session("hidden"), session("a"), session("b")])],
