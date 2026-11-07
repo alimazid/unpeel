@@ -4,6 +4,8 @@ use crate::menu_prompt::viewport_has_menu_prompt;
 use crate::runtime_observer::ActiveRuntimeObservation;
 use crate::state::{current_timestamp_ms, SessionInfo};
 use crate::terminal_viewport::{TerminalViewportSnapshot, TerminalViewportState};
+// Fork-only (#38)
+pub use crate::typed_input::{WriteOrigin, TYPED_SINCE_ERROR};
 use portable_pty::{native_pty_system, Child, CommandBuilder, MasterPty, PtySize};
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet, VecDeque};
@@ -397,6 +399,12 @@ pub struct HostedSessionManifest {
     /// to output.bin on manifests from older hosts (where it is None).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub screen_changed_at: Option<u64>,
+    /// Fork-only (#38): wall-clock ms a person last typed into the session
+    /// (`crate::typed_input`), written by the same viewport scan and
+    /// coalesced like `screen_changed_at`. The Inbox's draft guard reads it.
+    /// Absent before anyone typed and on manifests from older hosts.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_input_at: Option<u64>,
     /// Local service URLs this session's processes currently serve, in the
     /// browsable sense: printed on the session's screen with a loopback
     /// authority and an explicit port, and answering the host's HTTP probe
@@ -478,8 +486,7 @@ const SCREEN_STAMP_COALESCE_MS: u64 = 2_000;
 struct ScreenChangeTracker {
     last_hash: Option<u64>,
     changed_at: Option<u64>,
-    written_at: Option<u64>,
-    last_write_ms: u64,
+    stamps: StampCoalescer,
 }
 
 impl ScreenChangeTracker {
@@ -492,7 +499,23 @@ impl ScreenChangeTracker {
             self.last_hash = Some(hash);
             self.changed_at = Some(now_ms);
         }
-        let pending = self.changed_at.filter(|c| Some(*c) != self.written_at)?;
+        self.stamps.due(self.changed_at, now_ms)
+    }
+}
+
+/// When a changing stamp is due a manifest write: the first change after
+/// quiet at once, then at most every `SCREEN_STAMP_COALESCE_MS` while
+/// changes keep coming, the trailing stamp on a later tick. Shared by
+/// `screen_changed_at` and (fork-only, #38) `last_input_at`.
+#[derive(Default)]
+struct StampCoalescer {
+    written_at: Option<u64>,
+    last_write_ms: u64,
+}
+
+impl StampCoalescer {
+    fn due(&mut self, stamp: Option<u64>, now_ms: u64) -> Option<u64> {
+        let pending = stamp.filter(|stamp| Some(*stamp) != self.written_at)?;
         if self.written_at.is_some()
             && now_ms.saturating_sub(self.last_write_ms) < SCREEN_STAMP_COALESCE_MS
         {
@@ -619,6 +642,16 @@ pub enum SessionHostCommand {
         /// local writers (attach, MCP), which never race two transports.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         write_id: Option<String>,
+        /// Fork-only (#38): who the bytes speak for. Absent means the user;
+        /// only a person's typing stamps `last_input_at`.
+        #[serde(default, skip_serializing_if = "WriteOrigin::is_user")]
+        origin: WriteOrigin,
+        /// Fork-only (#38): refuse the write ([`TYPED_SINCE_ERROR`]) when a
+        /// person typed at or after this wall-clock ms, so the Inbox never
+        /// submits a paste merged with a half-typed prompt. Hosts that
+        /// predate the field ignore it and write.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        unless_typed_since: Option<u64>,
     },
     Resize {
         cols: u16,
@@ -802,6 +835,9 @@ pub(crate) struct HostRuntime {
     last_runtime_observation: Option<ActiveRuntimeObservation>,
     recent_write_ids: RecentWriteIds,
     hook_input: crate::hook_cancellation::InputTracker,
+    /// Fork-only (#38): when a person last typed; flushed to the manifest's
+    /// `last_input_at` by the viewport scan.
+    pub(crate) typing: crate::typed_input::TypingClock,
 }
 
 #[cfg(unix)]
@@ -5886,6 +5922,7 @@ pub(crate) fn build_session_timer_jobs(inputs: SessionJobInputs) -> Vec<HostTime
     // idle repaint loops that only churn output.bin.
     let menu_session_id = session_id.clone();
     let viewport_for_menu = Arc::clone(&viewport);
+    let runtime_for_menu = Arc::clone(&runtime);
     let menu_job = {
         let mut last_active = false;
         let mut last_screen_activity: Option<String> = None;
@@ -5893,6 +5930,7 @@ pub(crate) fn build_session_timer_jobs(inputs: SessionJobInputs) -> Vec<HostTime
         let mut last_modes: Option<crate::terminal_viewport::TerminalModeState> = None;
         let mut url_tracker = crate::local_urls::LocalUrlTracker::default();
         let mut screen_tracker = ScreenChangeTracker::default();
+        let mut input_stamps = StampCoalescer::default();
         let mut ticks_since_probe: u32 = 0;
         HostTimerJob::new(
             Duration::from_millis(SESSION_MENU_SCAN_INTERVAL_MS),
@@ -5905,9 +5943,23 @@ pub(crate) fn build_session_timer_jobs(inputs: SessionJobInputs) -> Vec<HostTime
                         viewport.terminal_mode_state(),
                     )
                 };
-                if let Some(stamp) = screen_tracker.observe(&screen, current_timestamp_ms()) {
+                let now_ms = current_timestamp_ms();
+                let screen_stamp = screen_tracker.observe(&screen, now_ms);
+                // Fork-only (#38). A busy lock skips a tick; the coalescer
+                // still writes the latest stamp on a later one.
+                let typed_at = runtime_for_menu
+                    .try_lock()
+                    .ok()
+                    .and_then(|runtime| runtime.typing.typed_at());
+                let input_stamp = input_stamps.due(typed_at, now_ms);
+                if screen_stamp.is_some() || input_stamp.is_some() {
                     let _ = update_manifest_session(&menu_session_id, |manifest| {
-                        manifest.screen_changed_at = Some(stamp);
+                        if let Some(stamp) = screen_stamp {
+                            manifest.screen_changed_at = Some(stamp);
+                        }
+                        if let Some(stamp) = input_stamp {
+                            manifest.last_input_at = Some(stamp);
+                        }
                     });
                 }
                 // Edge-written like `menu_prompt_active`: steady state costs
@@ -6199,6 +6251,7 @@ pub(crate) fn start_host(
             program_status: None,
             terminal_modes: None,
             screen_changed_at: None,
+            last_input_at: None,
             detected_local_urls: Vec::new(),
             heartbeat_at: current_timestamp_ms(),
             updated_at: current_timestamp_ms(),
@@ -6384,6 +6437,7 @@ pub(crate) fn start_host(
             last_runtime_observation: None,
             recent_write_ids: RecentWriteIds::default(),
             hook_input: crate::hook_cancellation::InputTracker::default(),
+            typing: Default::default(),
         }));
         // Raw local socket clients can bypass the lifecycle-file lock used by
         // `session_ops`; serialize in-place relaunches here as the final
@@ -7418,6 +7472,7 @@ exit "${UNPEEL_FAKE_PROVIDER_STATUS:-0}"
             program_status: None,
             terminal_modes: None,
             screen_changed_at: None,
+            last_input_at: None,
             detected_local_urls: Vec::new(),
             heartbeat_at,
             updated_at,
@@ -7540,6 +7595,7 @@ exit "${UNPEEL_FAKE_PROVIDER_STATUS:-0}"
             program_status: None,
             terminal_modes: None,
             screen_changed_at: None,
+            last_input_at: None,
             detected_local_urls: Vec::new(),
             heartbeat_at: 1,
             updated_at: 1,

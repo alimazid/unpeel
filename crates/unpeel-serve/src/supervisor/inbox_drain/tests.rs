@@ -13,6 +13,10 @@ struct World {
     cursor: Option<CursorLine>,
     pastes: Vec<(String, String)>,
     paste_error: Option<String>,
+    /// What the guarded paste reports (`Submitted` when unset), and the
+    /// `since` each paste was given.
+    paste_result: Option<GuardedPaste>,
+    paste_since: Vec<u64>,
     deny: bool,
     config: unpeel_core::supervision::SupervisorConfig,
     live: HashSet<String>,
@@ -38,13 +42,17 @@ impl HostIo for FakeIo {
     fn cursor(&self, _session_id: &str) -> Option<CursorLine> {
         self.with(|world| world.cursor.clone())
     }
-    fn paste(&self, session_id: &str, text: &str) -> Result<(), String> {
-        self.with(|world| match world.paste_error.clone() {
-            Some(error) => Err(error),
-            None => {
-                world.pastes.push((session_id.into(), text.into()));
-                Ok(())
+    fn paste(&self, session_id: &str, text: &str, since: u64) -> Result<GuardedPaste, String> {
+        self.with(|world| {
+            world.paste_since.push(since);
+            if let Some(error) = world.paste_error.clone() {
+                return Err(error);
             }
+            let result = world.paste_result.unwrap_or(GuardedPaste::Submitted);
+            if result != GuardedPaste::NotPasted {
+                world.pastes.push((session_id.into(), text.into()));
+            }
+            Ok(result)
         })
     }
     fn live_session_ids(&self) -> HashSet<String> {
@@ -603,6 +611,54 @@ fn the_known_empty_prompt_leaves_out_the_suggestion_drawn_on_it() {
     report(&fx, "third", T0 + 12_500);
     fx.step_and_settle(&idle, T0 + 16_000);
     assert_eq!(fx.pastes().len(), 3, "no suggestion");
+}
+
+#[test]
+fn keys_from_the_moment_the_drain_looked_stop_the_paste() {
+    let mut fx = fixture();
+    report(&fx, "result", T0 - 10_000);
+    fx.step_and_settle(&router(Status::Idle), T0);
+    assert_eq!(fx.io.with(|world| world.paste_since.clone()), [T0]);
+}
+
+#[test]
+fn a_key_during_the_paste_leaves_it_on_the_line_for_the_users_enter() {
+    let mut fx = fixture();
+    let idle = router(Status::Idle);
+    report(&fx, "result", T0 - 10_000);
+    fx.io
+        .with(|world| world.paste_result = Some(GuardedPaste::NotSubmitted));
+    fx.step_and_settle(&idle, T0);
+    fx.step(&idle, T0 + 500);
+    assert_eq!(fx.hold().as_deref(), Some("unconfirmed"));
+    assert_eq!(fx.pending(), 1);
+    // The user's own Enter sends it along with what they typed.
+    fx.drain
+        .observe_hook("router", "UserPromptSubmit", T0 + 4_000);
+    fx.step(&idle, T0 + 4_500);
+    assert_eq!(fx.pending(), 0);
+    assert_eq!(fx.pastes().len(), 1);
+}
+
+#[test]
+fn a_key_just_before_the_paste_writes_nothing_and_releases_the_batch() {
+    let mut fx = fixture();
+    let idle = router(Status::Idle);
+    report(&fx, "result", T0 - 10_000);
+    fx.io
+        .with(|world| world.paste_result = Some(GuardedPaste::NotPasted));
+    fx.step_and_settle(&idle, T0);
+    fx.step(&idle, T0 + 500);
+    assert_eq!(fx.hold().as_deref(), Some("draft"));
+    assert!(fx.pastes().is_empty());
+
+    // The next turn pastes a fresh batch, not a redelivery.
+    fx.io.with(|world| world.paste_result = None);
+    fx.step(&router(Status::Busy), T0 + 10_000);
+    fx.step_and_settle(&idle, T0 + 20_000);
+    let pastes = fx.pastes();
+    assert_eq!(pastes.len(), 1);
+    assert!(!pastes[0].contains("(redelivery)"));
 }
 
 #[test]

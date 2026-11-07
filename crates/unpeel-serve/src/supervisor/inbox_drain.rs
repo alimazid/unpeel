@@ -9,13 +9,18 @@
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::Arc;
-use std::time::Duration;
 
 use unpeel_core::session_inbox::{Hold, PendingStats, Store};
+use unpeel_core::session_input::GuardedPaste;
 use unpeel_core::supervision::SupervisorConfig;
 
 use super::inbox_rules::{self, DraftGuard, Facts, HoldReason, Readiness, Timing, Typing};
 use crate::sessions::{SessionRow, Status};
+
+mod host;
+#[cfg(test)]
+use host::cursor_line;
+pub use host::HostTerminal;
 
 /// A paste with no prompt submit or Busy edge this long after it is pasted
 /// again, as a redelivery of the same batch.
@@ -30,8 +35,6 @@ pub const DRAFT_NOTIFY_MS: u64 = 120_000;
 /// Inbox GC runs this often.
 const GC_INTERVAL_MS: u64 = 60_000;
 const HOUR_MS: u64 = 3_600_000;
-const SNAPSHOT_TIMEOUT: Duration = Duration::from_millis(100);
-const PASTE_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// What the drain reads and does outside its own state: the real Host in
 /// [`HostTerminal`], a fake in tests.
@@ -40,8 +43,9 @@ pub trait HostIo: Send + Sync {
     fn terminal(&self, session_id: &str) -> Option<TerminalFacts>;
     /// The line the cursor is on, from a quick viewport snapshot.
     fn cursor(&self, session_id: &str) -> Option<CursorLine>;
-    /// Paste already-sanitized text and submit it.
-    fn paste(&self, session_id: &str, text: &str) -> Result<(), String>;
+    /// Paste already-sanitized text and submit it, unless a person types
+    /// at or after `since` (`session_input::paste_unless_typed`).
+    fn paste(&self, session_id: &str, text: &str, since: u64) -> Result<GuardedPaste, String>;
     /// Session ids that still have a manifest (Inbox GC).
     fn live_session_ids(&self) -> HashSet<String>;
     /// The supervisor's settings and the app-wide write policy, from one
@@ -452,7 +456,7 @@ impl Drain {
     fn settle_for_test(&mut self, now: u64) {
         let (session_id, outcome) = self
             .outcomes_rx
-            .recv_timeout(Duration::from_secs(5))
+            .recv_timeout(std::time::Duration::from_secs(5))
             .expect("a delivery thread reports back");
         self.apply(&session_id, outcome, now);
     }
@@ -683,7 +687,9 @@ fn draft_notice(row: &SessionRow, items: usize) -> Notice {
 
 /// One delivery, off the tick thread: re-check the draft guard, claim
 /// everything pending, paste it as one, and (for a best guess) mark it
-/// delivered at once.
+/// delivered at once. A person's key from `now` on stops the paste: before
+/// it, nothing is written; after it, the paste waits on the line unsubmitted
+/// and confirms like any other.
 fn deliver(
     store: &Store,
     io: &dyn HostIo,
@@ -703,25 +709,22 @@ fn deliver(
         Err(error) => return Outcome::Failed(error.to_string()),
     };
     let text = unpeel_core::session_inbox::render_batch(&batch);
-    if let Err(error) = io.paste(id, &text) {
-        // The next paste is a fresh batch; a claim left behind would make it
-        // this one again, marked as a redelivery.
-        match store.release(id, &batch.batch_id) {
-            Ok(true) => io.announce(),
-            Ok(false) => {}
-            Err(release) => crate::tracelog::trace(
-                "supervisor",
-                &format!(
-                    "inbox claim {} for {id} not released: {release}",
-                    batch.batch_id
-                ),
-            ),
+    let submitted = match io.paste(id, &text, now) {
+        Ok(GuardedPaste::Submitted) => true,
+        Ok(GuardedPaste::NotSubmitted) => false,
+        Ok(GuardedPaste::NotPasted) => {
+            release(store, io, id, &batch.batch_id);
+            return Outcome::Draft;
         }
-        return Outcome::Failed(error);
-    }
+        Err(error) => {
+            release(store, io, id, &batch.batch_id);
+            return Outcome::Failed(error);
+        }
+    };
     // Nothing will confirm a best guess; a last attempt stops the loop.
     let last_attempt = batch.attempt >= MAX_PASTE_ATTEMPTS;
-    let delivered = (!confident || last_attempt)
+    let delivered = submitted
+        && (!confident || last_attempt)
         && matches!(store.complete(id, &batch.batch_id, now), Ok(true));
     if confident && last_attempt {
         crate::tracelog::trace(
@@ -739,77 +742,17 @@ fn deliver(
     }
 }
 
-/// The draft guard's view of `snapshot`'s input line. Suggested input (a
-/// reply the program proposes, drawn faint at the cursor) is left out: it
-/// comes and goes on its own and is never the user's draft.
-fn cursor_line(snapshot: &unpeel_core::terminal_viewport::TerminalViewportSnapshot) -> CursorLine {
-    CursorLine {
-        text: snapshot
-            .cursor_row_text_without_suggestion()
-            .unwrap_or_default(),
-        col: snapshot.cursor_col,
-    }
-}
-
-/// The real Host: manifests, viewport snapshots, the paste recipe.
-#[derive(Debug, Clone, Copy, Default)]
-pub struct HostTerminal;
-
-impl HostIo for HostTerminal {
-    fn terminal(&self, session_id: &str) -> Option<TerminalFacts> {
-        let manifest = unpeel_core::session_host::load_manifest(session_id)?;
-        Some(TerminalFacts {
-            bracketed_paste: manifest
-                .terminal_modes
-                .as_ref()
-                .is_some_and(|modes| modes.set.contains(&2004)),
-            screen_changed_at: manifest.screen_changed_at,
-            menu_prompt: manifest.menu_prompt_active,
-            last_input_at: None,
-        })
-    }
-
-    fn cursor(&self, session_id: &str) -> Option<CursorLine> {
-        let snapshot = unpeel_core::session_host::request_current_viewport_snapshot_with_timeout(
-            session_id,
-            0,
-            None,
-            SNAPSHOT_TIMEOUT,
-        )
-        .ok()?;
-        Some(cursor_line(&snapshot))
-    }
-
-    fn paste(&self, session_id: &str, text: &str) -> Result<(), String> {
-        unpeel_core::session_input::deliver_sanitized_text_with_timeout(
-            session_id,
-            text,
-            true,
-            Some(PASTE_TIMEOUT),
-        )
-    }
-
-    fn live_session_ids(&self) -> HashSet<String> {
-        let Ok(entries) = std::fs::read_dir(unpeel_core::app_paths::app_sessions_root()) else {
-            return HashSet::new();
-        };
-        entries
-            .flatten()
-            .filter(|entry| entry.path().join("manifest.json").is_file())
-            .filter_map(|entry| entry.file_name().into_string().ok())
-            .collect()
-    }
-
-    fn settings(&self) -> Settings {
-        let (config, policy_deny) = unpeel_core::supervision::config_and_write_deny();
-        Settings {
-            config,
-            policy_deny,
-        }
-    }
-
-    fn announce(&self) {
-        unpeel_core::supervision::announce_markers();
+/// A paste that wrote nothing gives its claim back: the next paste is a
+/// fresh batch, where a claim left behind would make it this one again,
+/// marked as a redelivery.
+fn release(store: &Store, io: &dyn HostIo, id: &str, batch_id: &str) {
+    match store.release(id, batch_id) {
+        Ok(true) => io.announce(),
+        Ok(false) => {}
+        Err(release) => crate::tracelog::trace(
+            "supervisor",
+            &format!("inbox claim {batch_id} for {id} not released: {release}"),
+        ),
     }
 }
 

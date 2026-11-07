@@ -970,6 +970,12 @@ impl SessionIo {
         }
         let shared = Arc::clone(&self.shared);
         for data in frames {
+            // Fork-only (#38): the attach stream is a person's terminal.
+            shared.runtime.lock().unwrap().typing.note(
+                crate::session_host::WriteOrigin::User,
+                &data,
+                current_timestamp_ms(),
+            );
             if let Err(error) = self.write_pty_input(registry, &data) {
                 log::warn!(
                     "input stream write failed for {}: {error}",
@@ -1334,6 +1340,7 @@ impl SessionTeardown {
                 manifest.runtime_launch_pending = false;
                 manifest.menu_prompt_active = false;
                 manifest.screen_changed_at = None;
+                manifest.last_input_at = None;
                 manifest.detected_local_urls.clear();
                 manifest.terminal_modes = None;
                 manifest.heartbeat_at = current_timestamp_ms();
@@ -1505,7 +1512,12 @@ pub(crate) fn dispatch_client_command(
     }
 
     let response = match command {
-        SessionHostCommand::Write { data, write_id } => {
+        SessionHostCommand::Write {
+            data,
+            write_id,
+            origin,
+            unless_typed_since,
+        } => {
             match validate_write_id(write_id.as_deref()) {
                 Err(error) => SessionHostResponse {
                     ok: false,
@@ -1524,7 +1536,13 @@ pub(crate) fn dispatch_client_command(
                             .unwrap_or_else(|poisoned| poisoned.into_inner());
                         let mut guard = runtime.lock().unwrap();
                         if write_id.is_some_and(|id| guard.recent_write_ids.contains(id)) {
-                            false
+                            Some(false)
+                        } else if unless_typed_since
+                            .is_some_and(|since| guard.typing.typed_since(since))
+                        {
+                            // Fork-only (#38): a person typed since the
+                            // Inbox looked at the line.
+                            None
                         } else {
                             let mut remaining = data.as_bytes();
                             let menu_active = remaining.contains(&0x1b)
@@ -1548,13 +1566,16 @@ pub(crate) fn dispatch_client_command(
                                 );
                                 remaining = &remaining[written..];
                             }
+                            guard
+                                .typing
+                                .note(origin, data.as_bytes(), current_timestamp_ms());
                             if let Some(write_id) = write_id {
                                 guard.recent_write_ids.record_applied(write_id);
                             }
-                            true
+                            Some(true)
                         }
                     };
-                    if applied {
+                    if applied == Some(true) {
                         mark_input_written(session_id, &shared.has_been_written_to);
                         // Auto-title from the first submitted prompt for
                         // clients that write straight to the control socket
@@ -1567,8 +1588,10 @@ pub(crate) fn dispatch_client_command(
                         );
                     }
                     SessionHostResponse {
-                        ok: true,
-                        error: None,
+                        ok: applied.is_some(),
+                        error: applied
+                            .is_none()
+                            .then(|| crate::session_host::TYPED_SINCE_ERROR.to_owned()),
                         viewport: None,
                     }
                 }
@@ -2182,6 +2205,7 @@ pub(crate) fn rebuild_from_handoff(
         last_runtime_observation: None,
         recent_write_ids: RecentWriteIds::default(),
         hook_input: meta.hook_input.clone(),
+        typing: Default::default(),
     }));
 
     let mut viewport_state = TerminalViewportState::new(meta.snapshot_cols, meta.snapshot_rows);

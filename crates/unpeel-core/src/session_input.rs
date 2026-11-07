@@ -5,7 +5,7 @@
 //! Host actions such as screenshot requests. UI clients send semantic actions;
 //! they never construct terminal escape sequences themselves.
 
-use crate::session_host::{self, SessionHostCommand};
+use crate::session_host::{self, SessionHostCommand, WriteOrigin, TYPED_SINCE_ERROR};
 use std::thread;
 use std::time::Duration;
 
@@ -37,10 +37,17 @@ pub fn looks_like_it_contains_a_path(text: &str) -> bool {
         .any(|word| word.len() > 1 && word.contains('/'))
 }
 
-fn write_to_session(session_id: &str, data: &str, timeout: Option<Duration>) -> Result<(), String> {
+fn write_to_session(
+    session_id: &str,
+    data: &str,
+    timeout: Option<Duration>,
+    origin: WriteOrigin,
+) -> Result<(), String> {
     let command = SessionHostCommand::Write {
         data: data.to_string(),
         write_id: None,
+        origin,
+        unless_typed_since: None,
     };
     match timeout {
         Some(timeout) => session_host::send_command_with_timeout(session_id, &command, timeout),
@@ -55,32 +62,96 @@ pub fn deliver_sanitized_text(
     sanitized: &str,
     submit: bool,
 ) -> Result<(), String> {
-    deliver_sanitized_text_with_timeout(session_id, sanitized, submit, None)
+    deliver_sanitized_text_with_timeout(session_id, sanitized, submit, None, WriteOrigin::Program)
 }
 
-/// Fork-only `pub`: the Host supervisor pastes off its tick thread with a
-/// socket timeout (`None` blocks like `deliver_sanitized_text`).
-pub fn deliver_sanitized_text_with_timeout(
+/// Fork-only (#38): text a person typed elsewhere (the phone's text box);
+/// it counts as their typing in the session.
+pub fn deliver_sanitized_text_as_user(
+    session_id: &str,
+    sanitized: &str,
+    submit: bool,
+) -> Result<(), String> {
+    deliver_sanitized_text_with_timeout(session_id, sanitized, submit, None, WriteOrigin::User)
+}
+
+fn deliver_sanitized_text_with_timeout(
     session_id: &str,
     sanitized: &str,
     submit: bool,
     timeout: Option<Duration>,
+    origin: WriteOrigin,
 ) -> Result<(), String> {
     if !sanitized.is_empty() {
-        write_to_session(session_id, &encode_bracketed_paste(sanitized), timeout)?;
+        write_to_session(
+            session_id,
+            &encode_bracketed_paste(sanitized),
+            timeout,
+            origin,
+        )?;
     }
     if submit {
-        let settle = if looks_like_it_contains_a_path(sanitized) {
-            TEXT_SETTLE_DELAY_PATH_MS
-        } else {
-            TEXT_SETTLE_DELAY_MS
-        };
-        thread::sleep(Duration::from_millis(settle));
-        write_to_session(session_id, "\r", timeout)?;
+        thread::sleep(Duration::from_millis(settle_delay_ms(sanitized)));
+        write_to_session(session_id, "\r", timeout, origin)?;
         thread::sleep(Duration::from_millis(ENTER_FOLLOWUP_DELAY_MS));
-        write_to_session(session_id, "\r", timeout)?;
+        write_to_session(session_id, "\r", timeout, origin)?;
     }
     Ok(())
+}
+
+fn settle_delay_ms(sanitized: &str) -> u64 {
+    if looks_like_it_contains_a_path(sanitized) {
+        TEXT_SETTLE_DELAY_PATH_MS
+    } else {
+        TEXT_SETTLE_DELAY_MS
+    }
+}
+
+/// Fork-only (#38): how the Inbox's paste went.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GuardedPaste {
+    Submitted,
+    /// A person typed before the paste: nothing was written.
+    NotPasted,
+    /// A person typed after the paste: it waits on the line, unsubmitted.
+    NotSubmitted,
+}
+
+/// Fork-only (#38): the Inbox's paste. The same recipe, but the session
+/// host refuses each write once a person has typed at or after `since`, so
+/// a half-typed prompt is never submitted with the paste. A host that
+/// predates the guard writes everything ([`GuardedPaste::Submitted`]).
+pub fn paste_unless_typed(
+    session_id: &str,
+    sanitized: &str,
+    since: u64,
+    timeout: Duration,
+) -> Result<GuardedPaste, String> {
+    let write = |data: &str| {
+        let command = SessionHostCommand::Write {
+            data: data.to_string(),
+            write_id: None,
+            origin: WriteOrigin::Program,
+            unless_typed_since: Some(since),
+        };
+        match session_host::send_command_with_timeout(session_id, &command, timeout) {
+            Ok(()) => Ok(true),
+            Err(error) if error == TYPED_SINCE_ERROR => Ok(false),
+            Err(error) => Err(error),
+        }
+    };
+    if !write(&encode_bracketed_paste(sanitized))? {
+        return Ok(GuardedPaste::NotPasted);
+    }
+    thread::sleep(Duration::from_millis(settle_delay_ms(sanitized)));
+    if !write("\r")? {
+        return Ok(GuardedPaste::NotSubmitted);
+    }
+    thread::sleep(Duration::from_millis(ENTER_FOLLOWUP_DELAY_MS));
+    // The first Enter submitted the paste; a key typed since only keeps
+    // the second from submitting it too.
+    write("\r")?;
+    Ok(GuardedPaste::Submitted)
 }
 
 /// Sanitize and submit one user-visible prompt to a hosted session.
@@ -114,7 +185,7 @@ fn request_screenshot_with_optional_timeout(
         return Err("invalid session id".into());
     }
     let sanitized = sanitize_paste_text(SCREENSHOT_REQUEST_PROMPT);
-    deliver_sanitized_text_with_timeout(session_id, &sanitized, true, timeout)
+    deliver_sanitized_text_with_timeout(session_id, &sanitized, true, timeout, WriteOrigin::Program)
 }
 
 #[cfg(test)]
