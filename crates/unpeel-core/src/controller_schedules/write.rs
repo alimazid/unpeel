@@ -230,8 +230,8 @@ fn create(
 /// Change the fields the body names. A new Trigger is checked (and must
 /// come due while the task is enabled), the stored one sent back is not;
 /// resuming checks the Trigger the task keeps; a new Project, preset or
-/// instructions must still make a task the Host would run. Resuming or a new Trigger restarts the clock
-/// (`schedules::apply_edit`).
+/// instructions must still make a task the Host would run. Resuming or a
+/// new Trigger restarts the clock (`schedules::apply_edit`).
 fn edit(
     body: &Map<String, Value>,
     host: Option<&dyn ScheduleHost>,
@@ -515,13 +515,9 @@ impl Workspace {
     /// The task's raw entry, read without the flock: a write route refuses
     /// an unknown task before it takes the lock or needs the Host.
     fn stored_entry(&self, schedule_id: &str) -> Result<Map<String, Value>, Failure> {
-        self.load()?
-            .get("schedules")
-            .and_then(Value::as_array)
-            .into_iter()
-            .flatten()
-            .find(|entry| entry_id(entry) == Some(schedule_id))
-            .and_then(Value::as_object)
+        let state = self.load()?;
+        let list = state.get("schedules").and_then(Value::as_array);
+        save::entry(list.map_or(&[], Vec::as_slice), schedule_id)
             .cloned()
             .ok_or_else(|| gone(schedule_id))
     }

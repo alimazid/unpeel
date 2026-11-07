@@ -109,7 +109,7 @@ fn every_refusal_has_a_stable_code_and_a_sentence() {
         (SaveRefusal::InstructionsTooLarge, "instructions_too_large"),
         (SaveRefusal::InvalidTrigger("bad".into()), "invalid_trigger"),
         (SaveRefusal::TriggerInPast("then".into()), "trigger_in_past"),
-        (SaveRefusal::TimePassed("then".into()), "trigger_in_past"),
+        (SaveRefusal::ResumeInPast("then".into()), "trigger_in_past"),
         (SaveRefusal::CatalogUnavailable, "host_unavailable"),
     ];
     for (refusal, code) in cases {
@@ -297,7 +297,7 @@ fn resuming_a_once_whose_time_passed_asks_for_a_new_time() {
     .expect_err("refused");
     assert_eq!(
         refusal,
-        SaveRefusal::TimePassed("2001-01-01T09:00 is in the past".into())
+        SaveRefusal::ResumeInPast("2001-01-01T09:00 is in the past".into())
     );
     assert_eq!(refusal.code(), "trigger_in_past");
     assert_eq!(

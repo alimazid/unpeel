@@ -18,7 +18,7 @@
 //! Definitions live raw in `app-state.json` (`schedules`), so fields this
 //! build does not model pass through every edit: [`new_entry`] builds the
 //! one stored shape of a new task and [`schedules_list_mut`] /
-//! [`entry_mut`] are the one way into the list.
+//! [`entry`] / [`entry_mut`] are the one way into the list.
 
 use std::fmt;
 
@@ -58,7 +58,7 @@ pub enum SaveRefusal {
     InvalidTrigger(String),
     TriggerInPast(String),
     /// Resuming a task whose Once time has passed: it needs a new time.
-    TimePassed(String),
+    ResumeInPast(String),
     /// The Host has not published the catalog its Runs resolve against.
     CatalogUnavailable,
 }
@@ -74,7 +74,7 @@ impl SaveRefusal {
             Self::NotAgentPreset(_) => "not_agent_preset",
             Self::InstructionsTooLarge => "instructions_too_large",
             Self::InvalidTrigger(_) => "invalid_trigger",
-            Self::TriggerInPast(_) | Self::TimePassed(_) => "trigger_in_past",
+            Self::TriggerInPast(_) | Self::ResumeInPast(_) => "trigger_in_past",
             Self::CatalogUnavailable => "host_unavailable",
         }
     }
@@ -110,7 +110,7 @@ impl fmt::Display for SaveRefusal {
             ),
             Self::InvalidTrigger(detail) => write!(formatter, "invalid Trigger: {detail}"),
             Self::TriggerInPast(detail) => write!(formatter, "invalid Trigger: {detail}"),
-            Self::TimePassed(detail) => write!(formatter, "{detail}; give it a new time"),
+            Self::ResumeInPast(detail) => write!(formatter, "{detail}; give it a new time"),
             Self::CatalogUnavailable => write!(
                 formatter,
                 "the Host has not published its Projects yet; try again"
@@ -253,7 +253,7 @@ pub fn check_edited_trigger(
 pub fn check_resume(host: &dyn SaveHost, trigger: &ScheduleTrigger) -> Result<(), SaveRefusal> {
     match host.check_trigger(trigger, true) {
         Ok(_) => Ok(()),
-        Err(TriggerRefusal::InPast(detail)) => Err(SaveRefusal::TimePassed(detail)),
+        Err(TriggerRefusal::InPast(detail)) => Err(SaveRefusal::ResumeInPast(detail)),
         Err(refusal) => Err(refusal.into()),
     }
 }
@@ -301,6 +301,13 @@ pub fn schedules_list_mut(state: &mut Map<String, Value>) -> Result<&mut Vec<Val
         .or_insert_with(|| Value::Array(Vec::new()))
         .as_array_mut()
         .ok_or_else(|| "app-state.json schedules is not a list; not changing it".to_owned())
+}
+
+/// The raw entry of task `schedule_id` in a `schedules` list, to read.
+pub fn entry<'a>(list: &'a [Value], schedule_id: &str) -> Option<&'a Map<String, Value>> {
+    list.iter()
+        .find(|entry| entry.get("id").and_then(Value::as_str) == Some(schedule_id))
+        .and_then(Value::as_object)
 }
 
 /// The raw entry of task `schedule_id` in that list.

@@ -302,8 +302,7 @@ def check_without_a_host(case, home):
         "trigger": {"kind": "once", "at": "2020-01-01T09:00"}, "enabled": True,
         "notify_when_done": True, "created_at_ms": 1,
     })
-    with open(home.path("app-state.json"), "w") as handle:
-        json.dump(state, handle, indent=2)
+    home.write_state(state)
     stored_trigger = task(home, "sch_missed").get("trigger")
     renamed = cli(home, "schedules", "edit", "sch_missed", "--name", "Missed it",
                   "--once", "2020-01-01T09:00")
@@ -354,8 +353,7 @@ def body(case):
     state = home.state()
     state["projects"].append({"id": "g", "name": "Docs", "path": "", "parent_project_id": "p",
                               "is_folder": True})
-    with open(home.path("app-state.json"), "w") as handle:
-        json.dump(state, handle, indent=2)
+    home.write_state(state)
     check_without_a_host(case, home)
     service = case.serve(env={"TZ": ZONE})
     if not case.check("the Host starts with no app", bool(service.ready(timeout=25)), service.log()):

@@ -863,7 +863,7 @@ fn every_refusal_code_is_in_the_conformance_vocabulary() {
         SaveRefusal::InstructionsTooLarge,
         SaveRefusal::InvalidTrigger("x".into()),
         SaveRefusal::TriggerInPast("x".into()),
-        SaveRefusal::TimePassed("x".into()),
+        SaveRefusal::ResumeInPast("x".into()),
         SaveRefusal::CatalogUnavailable,
     ]
     .map(|refusal| refusal.code());

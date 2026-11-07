@@ -277,8 +277,7 @@ def body(case):
     state = home.state()
     state["projects"].append({"id": "g", "name": "Docs", "path": "", "parent_project_id": "p",
                               "is_folder": True})
-    with open(home.path("app-state.json"), "w") as handle:
-        json.dump(state, handle, indent=2)
+    home.write_state(state)
     home.preset(label="ok", command="true", preset_id="ok")
     home.preset(label="slow", command="sleep 25", preset_id="slow")
     home.preset(label="Claude", command="claude", preset_id="claude")

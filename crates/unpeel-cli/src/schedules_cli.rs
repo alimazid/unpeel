@@ -51,9 +51,7 @@ now. Only the user changes tasks, and the Super Agent for them: add, edit,
 pause, resume, run and rm refuse inside any other Session.
 
 A task's Project needs a folder for its Runs to start in, whatever the preset.
-A Once time that has passed is refused while the task is enabled; a paused task
-keeps one (a Once task pauses itself after its Run), edits as usual, and
-resumes only once `edit --once` gives it a new time.
+A past Once time saves only on a paused task; resuming it needs a new time.
 
 --instructions is for an Agent Preset (one that starts an agent Unpeel can
 tell is ready): each Run launches it as typed, types the instructions once
@@ -537,17 +535,12 @@ fn pick<'a>(
 
 // ── edit / pause / resume ──
 
-/// The value flags `edit` changes a task with, besides a Trigger.
-const EDIT_VALUES: &[&str] = &["name", "project", "preset", "instructions"];
-
 fn edit(args: &Args, json: bool) -> Result<(), String> {
     let schedule = select(args)?;
-    // Judged by the flags given: the stored Trigger sent back changes
-    // nothing, yet is an edit, as on the write routes.
-    let edits = EDIT_VALUES
-        .iter()
-        .chain(TRIGGER_FLAGS)
-        .any(|flag| args.values.contains_key(*flag))
+    // Judged by the flags given (every value flag edits a field): the
+    // stored Trigger sent back changes nothing, yet is an edit, as on the
+    // write routes.
+    let edits = !args.values.is_empty()
         || args.switches.contains("notify")
         || args.switches.contains("no-notify");
     if !edits {
@@ -623,15 +616,12 @@ fn edited_trigger(args: &Args, schedule: &Schedule) -> Result<Option<ScheduleTri
 }
 
 /// The task's Trigger as `app-state.json` stores it, the form an edit's
-/// Trigger is compared in.
+/// Trigger is compared in. Read before the edit takes the flock, as the
+/// write routes read it: the edit itself is applied under it.
 fn stored_trigger_value(schedule_id: &str) -> Result<Option<Value>, String> {
     let state = unpeel_core::app_state::load()?;
-    Ok(state
-        .get("schedules")
-        .and_then(Value::as_array)
-        .into_iter()
-        .flatten()
-        .find(|entry| entry.get("id").and_then(Value::as_str) == Some(schedule_id))
+    let list = state.get("schedules").and_then(Value::as_array);
+    Ok(save::entry(list.map_or(&[], Vec::as_slice), schedule_id)
         .and_then(|entry| entry.get("trigger"))
         .cloned())
 }
@@ -685,7 +675,7 @@ fn resume(args: &Args) -> Result<(), String> {
     }
     match save::check_resume(&CliHost, &schedule.trigger) {
         Ok(()) => {}
-        Err(refusal @ SaveRefusal::TimePassed(_)) => {
+        Err(refusal @ SaveRefusal::ResumeInPast(_)) => {
             return Err(format!(
                 "cannot resume {}: {refusal} with `unpeel schedules edit {} --once …`",
                 display_name(&schedule),
@@ -799,14 +789,21 @@ mod tests {
         assert!(super::HELP.contains(&format!("Up to {limit}.")), "{limit}");
     }
 
-    /// The two save rules every writer runs (`save` module docs).
+    /// The two save rules every writer runs (`save` module docs), a line
+    /// each.
     #[test]
     fn the_help_states_the_save_rules() {
+        let lines: Vec<&str> = super::HELP.lines().collect();
         for rule in [
-            "A task's Project needs a folder for its Runs to start in, whatever the preset.",
-            "A Once time that has passed is refused while the task is enabled; a paused task",
+            ["needs a folder", "whatever the preset"],
+            ["past Once", "paused task"],
         ] {
-            assert!(super::HELP.contains(rule), "{rule}");
+            assert!(
+                lines
+                    .iter()
+                    .any(|line| rule.iter().all(|words| line.contains(words))),
+                "{rule:?}"
+            );
         }
     }
 }
