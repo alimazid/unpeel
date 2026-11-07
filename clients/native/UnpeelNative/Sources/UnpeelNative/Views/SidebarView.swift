@@ -853,7 +853,7 @@ struct SidebarView: View {
                 // fade.
                 .padding(EdgeInsets(
                     top: SidebarListPageMetrics.topInset, leading: 8,
-                    bottom: SessionScrollTarget.margin + 12, trailing: 8
+                    bottom: SidebarListPageMetrics.bottomInset, trailing: 8
                 ))
                 // Absolute-top anchor: attached OUTSIDE the padding (marker
                 // top == the padded content's very top == content offset 0),
@@ -1272,11 +1272,7 @@ struct ProjectNodeView: View {
 
     /// Group or worktree — inline child-folder row with a leading disclosure
     /// chevron and a wash behind the whole cluster on hover.
-    private var isInlineFolder: Bool {
-        node.project.isFolder == true
-            || node.project.parentProjectID != nil
-            || node.project.worktreeBranch != nil
-    }
+    private var isInlineFolder: Bool { node.isSidebarInlineFolder }
 
     /// Hover wash behind the whole cluster (header + sessions), not just
     /// the title row.
@@ -1974,14 +1970,14 @@ private struct GroupClusterBackground: View {
     }
 
     var body: some View {
-        RoundedRectangle(cornerRadius: 10, style: .continuous)
-            .fill(isHighlighted ? Theme.hoverRow.opacity(0.5) : .clear)
+        RoundedRectangle(cornerRadius: SidebarGroupWash.cornerRadius, style: .continuous)
+            .fill(SidebarGroupWash.fill(isHighlighted: isHighlighted))
             // Child-group layout is already inset by its parent list. Expand
             // the wash back toward the Session-row bounds. Its natural height
             // gives the shell one extra point above and below compared with
             // the previous vertically-inset shape.
-            .padding(.trailing, -1)
-            .animation(.easeOut(duration: 0.12), value: isHighlighted)
+            .padding(.trailing, -SidebarGroupWash.trailingOverhang)
+            .animation(SidebarGroupWash.animation, value: isHighlighted)
     }
 }
 
