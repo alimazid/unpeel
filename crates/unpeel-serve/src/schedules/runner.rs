@@ -14,6 +14,7 @@ use std::time::{Duration, Instant};
 
 use jiff::Zoned;
 use unpeel_core::controller_api::{HostCreatePreset, HostCreateProject};
+use unpeel_core::controller_schedules::{unknown_task_message, RunNowRefusal};
 use unpeel_core::schedule_store::TaskStore;
 use unpeel_core::schedules::{RunStatus, Schedule, ScheduleClock, ScheduleRun};
 use unpeel_core::state::Preset;
@@ -192,26 +193,26 @@ impl Scheduler {
         &mut self,
         schedule_id: &str,
         schedules: &[Schedule],
-    ) -> Result<String, String> {
+    ) -> Result<String, RunNowRefusal> {
         let schedule = schedules
             .iter()
             .find(|schedule| schedule.id == schedule_id)
-            .ok_or_else(|| format!("no schedule {schedule_id}"))?;
-        let store = TaskStore::open(&self.root, &schedule.id)?;
+            .ok_or_else(|| RunNowRefusal::UnknownTask(unknown_task_message(schedule_id)))?;
+        let store = TaskStore::open(&self.root, &schedule.id).map_err(RunNowRefusal::Internal)?;
         let latest_in_progress = store
             .current_run()
             .map_err(|error| {
-                format!(
+                RunNowRefusal::RunLogUnreadable(format!(
                     "cannot tell whether a Run of {} is in progress: {error}",
                     display_name(schedule)
-                )
+                ))
             })?
             .is_some_and(|run| run.status.is_in_progress());
         if latest_in_progress || self.run_now.contains_key(&schedule.id) {
-            return Err(format!(
+            return Err(RunNowRefusal::InProgress(format!(
                 "a Run of {} is still in progress",
                 display_name(schedule)
-            ));
+            )));
         }
         let run_id = new_run_id();
         self.run_now.insert(schedule.id.clone(), run_id.clone());
