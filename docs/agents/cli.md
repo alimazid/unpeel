@@ -171,6 +171,17 @@ every-minute cron task is quiet for the second pass
 Occurrences are compared as local date-times, so after a westward trip the
 same local time does not fire twice.
 
+`unpeel ls` lists Sessions the way the apps do: it leaves out Superseded
+Runs, a task's older Runs that are not pinned, busy, or waiting on you. The
+rule is the Host's (`unpeel_core::schedules::run_sessions::is_superseded`
+against `unpeel_serve::run_sessions::latest_runs` of the whole scan, as
+`mobile_snapshot` does), applied to the CLI's own scan, so "busy" is that
+scan's view. `unpeel ls --all` lists them too, each text line
+ending in `superseded`. In `--json`, a Run's row carries `scheduleID` and
+`superseded` (`run_sessions::publish`, the Host's wire fields); other rows
+are unchanged. Only the listing filters: every verb that takes a Session id
+resolves a Superseded Run, and `unpeel schedules history` names its Session.
+
 ### Unpeel Link enrollment
 
 `crates/unpeel-cli/src/link_cli.rs` owns `unpeel link` — the scripted
