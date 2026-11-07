@@ -10,7 +10,9 @@ use std::time::{Duration, Instant};
 use unpeel_core::app_paths;
 
 use unpeel_serve::activity::ActivityEngine;
-use unpeel_serve::sessions::{scan_sidebar, ScanCache, SessionRow, SidebarItem, Status};
+use unpeel_serve::sessions::{
+    scan_sidebar, ScanCache, SessionRow, SidebarItem, SidebarModel, Status,
+};
 
 const SESSION_READY_TIMEOUT: Duration = Duration::from_secs(10);
 const PAIR_STANDALONE_NOTICE: &str =
@@ -34,7 +36,9 @@ unpeel — run and steer CLI agent sessions
                                   pair a Controller (phone, Mac app) with this Host
   unpeel pair list|remove <device>|relay <device> on|off
   unpeel --workspace NAME [...]   run any command in an isolated workspace
-  unpeel ls [--json]              list sessions (status, project, command)
+  unpeel ls [--all] [--json]      list sessions (status, project, command), less
+                                  each task's superseded Runs (older Runs not
+                                  pinned, busy or waiting); --all adds them, marked
   unpeel new [--preset L | --command C] [--cwd D] [--json]
   unpeel send <id> <text...> [--enter]  in a session: MCP send_text + approval policy
   unpeel keys <id> <sequence>     send raw bytes (\\r, \\t, \\e escapes)
@@ -122,29 +126,30 @@ impl Args {
     }
 }
 
-fn rows() -> Vec<SessionRow> {
+fn scan() -> SidebarModel {
     let mut engine = ActivityEngine::default();
     let overlay = unpeel_serve::overlay::load();
     let keep = std::collections::HashSet::new();
-    let listed = |model: &unpeel_serve::sessions::SidebarModel| -> Vec<SessionRow> {
-        model
-            .items
-            .iter()
-            .filter_map(|item| match item {
-                SidebarItem::Session(i) => Some(model.rows[*i].clone()),
-                _ => None,
-            })
-            .collect()
-    };
-    // Sidebar order, so `ls` and the UI agree. Worktree sessions are inline
-    // items under their folder rows now, so one scan covers everything.
     let mut cache = ScanCache::default();
-    listed(&scan_sidebar(
-        &mut engine,
-        overlay.as_ref(),
-        &keep,
-        &mut cache,
-    ))
+    scan_sidebar(&mut engine, overlay.as_ref(), &keep, &mut cache)
+}
+
+/// The scan's Sessions in sidebar order, so `ls` and the UI agree. Worktree
+/// sessions are inline items under their folder rows now, so one scan
+/// covers everything.
+fn listed(model: &SidebarModel) -> Vec<SessionRow> {
+    model
+        .items
+        .iter()
+        .filter_map(|item| match item {
+            SidebarItem::Session(i) => Some(model.rows[*i].clone()),
+            _ => None,
+        })
+        .collect()
+}
+
+fn rows() -> Vec<SessionRow> {
+    listed(&scan())
 }
 
 /// Resolve a session by id, id prefix, or exact title — scripts shouldn't
@@ -215,23 +220,51 @@ fn unescape(input: &str) -> String {
     out
 }
 
+/// `unpeel ls`: the sidebar's Sessions less Superseded Runs (GLOSSARY.md),
+/// which `--all` lists too, marked. The rule and the Run fields
+/// (`scheduleID`, `superseded`) are the Host's row builders' own, over the
+/// same whole scan (`mobile_snapshot`). Only the listing filters: [`resolve`]
+/// reads every row, so a Superseded Run stays reachable by id.
 fn print_sessions(args: &Args) {
-    let all = rows();
+    let model = scan();
+    let latest_runs = unpeel_serve::run_sessions::latest_runs(&model.rows);
+    let superseded = |row: &SessionRow| {
+        unpeel_core::schedules::run_sessions::is_superseded(
+            unpeel_serve::run_sessions::wire_row(row),
+            &latest_runs,
+        )
+    };
+    let shown: Vec<SessionRow> = listed(&model)
+        .into_iter()
+        .filter(|row| args.has("all") || !superseded(row))
+        .collect();
     if args.has("json") {
-        let list: Vec<serde_json::Value> = all.iter().map(session_json).collect();
+        let list: Vec<serde_json::Value> = shown
+            .iter()
+            .map(|row| {
+                let mut summary = session_json(row);
+                unpeel_core::schedules::run_sessions::publish(
+                    &mut summary,
+                    unpeel_serve::run_sessions::wire_row(row),
+                    &latest_runs,
+                );
+                summary
+            })
+            .collect();
         println!(
             "{}",
             serde_json::to_string_pretty(&list).unwrap_or_default()
         );
         return;
     }
-    for row in all {
+    for row in &shown {
         println!(
-            "{}  {:9}  {:30}  {}",
+            "{}  {:9}  {:30}  {}{}",
             &row.id[..8.min(row.id.len())],
             row.status.word(),
             row.label.chars().take(30).collect::<String>(),
-            row.command
+            row.command,
+            if superseded(row) { "  superseded" } else { "" }
         );
     }
 }

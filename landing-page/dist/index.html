@@ -1,0 +1,60 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Unpeel, Ali’s fork | Files and Git history beside your agents</title>
+  <meta name="description" content="Ali Mazid’s fork of Unpeel adds a native Explorer, Git history, Markdown previews, file operations, and richer completion notifications to the agent workspace.">
+  <meta name="theme-color" content="#f4f4f0">
+  <link rel="icon" href="data:,">
+  <meta property="og:title" content="Unpeel, Ali’s fork: keep the whole project in view">
+  <meta property="og:description" content="A native Explorer, Git history, and Markdown previews beside your running agents.">
+  <meta property="og:image" content="https://unpeel-project-showcase.icy-isle-3020.chatgpt.site/assets/workspace.png">
+  <link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="styles.css"><script src="app.js" defer></script>
+</head>
+<body>
+<a class="skip-link" href="#main">Skip to content</a>
+<header class="site-header shell">
+  <a class="wordmark" href="#main">Unpeel <span>/ Ali’s fork</span></a>
+  <nav aria-label="Main navigation"><a href="#explorer">Explorer</a><a href="#history">Git history</a><a class="repo-link" href="https://github.com/alimazid/unpeel">View the fork</a></nav>
+</header>
+<main id="main">
+<section class="hero shell" aria-labelledby="hero-title">
+  <div class="hero-intro"><div><p class="byline">A personal fork by Ali Mazid</p><h1 id="hero-title">Keep the whole<br>project in view<span class="accent">.</span></h1></div>
+    <div class="hero-description"><p>Your agent has a terminal. Now its files, commits, and documents have a place beside it.</p><p class="secondary-copy">This fork of Unpeel adds a native Explorer, Git history, and Markdown previews to the Mac workspace.</p><a class="button" href="#explorer">See what’s been added</a></div>
+  </div>
+  <figure class="workspace-figure"><a class="screenshot-link" href="assets/workspace.png" data-lightbox data-caption="The fork’s Mac workspace: Explorer and Git history on the left, a terminal in the center, and a Markdown preview on the right. Captured using a test repository." aria-label="Enlarge screenshot of the fork’s complete workspace"><img src="assets/workspace.png" width="1200" height="800" fetchpriority="high" alt="Ali’s Unpeel fork with Explorer, an expanded Git commit, a terminal, and a rendered README open together."><span class="enlarge-label">View full screenshot</span></a><figcaption><span>The fork, running on macOS</span><span>Actual app capture · test repository</span></figcaption></figure>
+  <div class="scope-note"><p>Built on Unpeel’s durable agent sessions</p><p>The additions below are from <a href="https://github.com/alimazid/unpeel">alimazid/unpeel</a></p></div>
+</section>
+<section class="explorer-section shell section" id="explorer" aria-labelledby="explorer-title">
+  <div class="section-title"><p class="section-index">01 / Explorer</p><h2 id="explorer-title">The files are right here</h2></div>
+  <div class="explorer-layout"><div class="feature-copy"><p class="lead">Browse the active session’s files without leaving the workspace. The tree follows changes on disk and shows Git status where you’re already looking.</p>
+    <dl class="feature-list"><div><dt>Put things in order</dt><dd>Create files and folders, rename in place, cut, copy, duplicate, or move to Trash. Undo and redo file operations.</dd></div><div><dt>Find what just changed</dt><dd>Sort by name or date modified, with folders first. Show hidden or Git-ignored files when you need them.</dd></div><div><dt>Bring Finder along</dt><dd>Drop files into the tree. Large transfers show progress and a Cancel control; name collisions offer Replace, Keep Both, or Skip.</dd></div></dl>
+    <p class="shortcut">Focus Explorer <kbd>⇧</kbd><kbd>⌘</kbd><kbd>E</kbd></p>
+  </div><div class="explorer-evidence">
+    <figure class="detail-figure"><a class="screenshot-link explorer-crop" href="assets/explorer.png" data-lightbox data-caption="Explorer showing Git status in a test repository. The visible tree is cropped for this page; the full capture is unchanged." aria-label="Enlarge screenshot of Explorer Git status markers"><img src="assets/explorer.png" width="1200" height="800" loading="lazy" alt="Explorer tree with docs, fresh, and src folders, helpers.swift marked R, and new.swift marked U."><span class="enlarge-label">Full capture</span></a><figcaption>Git status belongs next to the filename</figcaption></figure>
+    <div class="status-key" aria-label="Git status legend"><span><b>M</b> Modified</span><span><b>A</b> Added</span><span><b>R</b> Renamed</span><span><b>U</b> Untracked</span></div><p class="evidence-note">Captured before the date-modified column was added</p><a class="inline-link" href="assets/file-operations.png" data-lightbox data-caption="The fork’s actual file-collision prompt, captured during testing: Replace, Keep Both, or Skip.">See the file-collision prompt</a>
+  </div></div>
+</section>
+<section class="history-section" id="history" aria-labelledby="history-title"><div class="shell history-layout"><div class="history-copy">
+  <p class="section-index">02 / Git history</p><h2 id="history-title">From a commit<br>to the file it changed</h2><p class="lead">A history pane that stays with your session. Expand a commit to read its message and changed files, then open a file in the working tree.</p>
+  <ol class="history-details"><li><span class="step-number">1</span><div><h3>Choose the history you need</h3><p>Filter by a local branch, a remote-tracking branch, or all branches. Keep the checked-out branch and its ahead/behind counts in view.</p></div></li><li><span class="step-number">2</span><div><h3>Read the change in context</h3><p>See the author, commit message, refs, and changed-file list. Renames include the previous path.</p></div></li><li><span class="step-number">3</span><div><h3>Open the current file</h3><p>Reveal it in Explorer. Markdown opens in a preview pane; other files follow the configured Open With behavior.</p></div></li></ol>
+  <p class="history-limit">History is read-only. Opening a file shows the current working copy, not a historical revision. Ahead/behind counts reflect the last fetch.</p><p class="shortcut">Focus Git history <kbd>⌃</kbd><kbd>⇧</kbd><kbd>G</kbd></p>
+  </div><figure class="history-figure"><a class="screenshot-link history-crop" href="assets/git-history.png" data-lightbox data-caption="The real Git history view, rendered against a synthetic test repository. An expanded commit shows a renamed Markdown file and a deleted log." aria-label="Enlarge screenshot of the expanded Git history pane"><img src="assets/git-history.png" width="560" height="1040" loading="lazy" alt="Git history with an expanded rename commit, HEAD and branch labels, a renamed guide.md, and a deleted log.txt."><span class="enlarge-label">View full screenshot</span></a><figcaption>Real history view · synthetic test commits</figcaption></figure>
+</div></section>
+<section class="reading-section shell section" id="previews" aria-labelledby="preview-title">
+  <div class="section-title preview-title"><div><p class="section-index">03 / Markdown previews</p><h2 id="preview-title">Read the output<br>beside the conversation</h2></div><p>Open a Markdown file from Explorer or Git history. Keep the rendered document beside the live terminal, with headings, lists, tables, and code blocks you can actually read.</p></div>
+  <div class="preview-layout"><figure class="preview-figure"><a class="screenshot-link preview-crop" href="assets/markdown-preview.png" data-lightbox data-caption="The native Markdown preview beside a terminal, captured with a test document. It demonstrates headings, lists, tables, and code; the document also includes image-loading test cases." aria-label="Enlarge screenshot of the Markdown preview"><img src="assets/markdown-preview.png" width="1900" height="1000" loading="lazy" alt="Native Markdown preview of a test document with a heading, task list, table, and code block."><span class="enlarge-label">Full capture</span></a><figcaption>Rendered Markdown in the Mac app</figcaption></figure><div class="preview-notes"><h3>The document stays close</h3><p>The preview refreshes as the file changes. Relative Markdown links open in the preview; editing hands off to the configured editor.</p><div class="preview-divider"></div><h3>Your layout, your proportions</h3><p>Resize or collapse the Projects, Explorer, and Git history sections. Their sidebar layout is remembered across relaunches.</p><p class="detail-note">Markdown previews are read-only and temporary. They aren’t restored as terminal sessions.</p></div></div>
+</section>
+<section class="details-section shell" aria-labelledby="details-title"><div><p class="section-index">Also in the fork</p><h2 id="details-title">Small changes<br>you notice daily</h2></div><div class="detail-rows">
+  <article><h3>Follow a nested repository</h3><p>Working from a parent folder? Choose a repository inside it. Explorer decorations and Git history follow that same selection.</p></article>
+  <article><h3>Know what finished</h3><p>Completion notifications can include the program’s summary or a snippet of the agent’s final reply. When neither is available, the notification still says “Finished.”</p></article>
+  <article><h3>Keep the terminal workflow</h3><p>Drag a file into a terminal to insert its relative path. Use your existing agents and the underlying Unpeel session model.</p></article>
+</div></section>
+<section class="fork-section shell" id="source" aria-labelledby="fork-title"><div><p class="section-index">The source is the starting point</p><h2 id="fork-title">Take a look at the fork</h2><p>These additions live in Ali Mazid’s repository. Explorer and Git history currently operate on sessions hosted on the same Mac.</p><a class="button" href="https://github.com/alimazid/unpeel">Open alimazid/unpeel</a></div><aside><h3>Built on the original Unpeel</h3><p>The agent workspace, terminal hosting, and original apps come from Unpeel by UX Themes AS. This page showcases an independent fork, not an official Unpeel release.</p><a class="inline-link" href="https://github.com/unpeel-com/unpeel">Original Unpeel repository</a></aside></section>
+</main>
+<footer class="site-footer shell"><p>Unpeel / Ali’s fork</p><p>Original project © UX Themes AS · Unpeel marks belong to their owners</p><details><summary>Design credits</summary><p>Design process informed by <a href="https://github.com/heydamir/unslop">Unslop by Damir Sokolovsky</a> (CC BY 4.0) and <a href="https://github.com/miqdadbadjuber/anti-slop">Anti Slop by Miqdad Badjuber</a>. Screenshots are from this fork’s verification captures.</p></details></footer>
+<dialog id="image-dialog" aria-label="Product screenshot" aria-describedby="dialog-caption"><div class="dialog-toolbar"><span>Fork screenshot</span><button id="close-dialog" type="button">Close <kbd>Esc</kbd></button></div><div class="dialog-image-wrap"><img id="dialog-image" src="assets/workspace.png" width="1200" height="800" alt=""><p id="image-error" hidden>Couldn’t load this screenshot. Close the viewer and try again.</p></div><p id="dialog-caption"></p></dialog>
+</body>
+</html>
