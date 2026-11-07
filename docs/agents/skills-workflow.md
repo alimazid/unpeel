@@ -14,7 +14,7 @@ repo.
 Every change takes the same route:
 
 1. **Align.** `/grill-with-docs` interviews the maintainer until you share an
-   understanding of the change. It records terms in `CONTEXT.md` and
+   understanding of the change. It records terms in `GLOSSARY.md` and
    decisions in `docs/adr/` as they land. A question that needs a runnable
    answer detours through `/prototype`.
 2. **Fork on size.** If the work fits in what is left of the smart zone, run
@@ -71,11 +71,9 @@ any fix.
 
 ## This repo's settings
 
-- **The glossary is `CONTEXT.md`.** The installed skills call it
-  `GLOSSARY.md`, but this repo kept `CONTEXT.md`. Wherever a skill says
-  `GLOSSARY.md`, read and update `CONTEXT.md`, and use its terms (Scheduled
-  Task, Trigger, Run, Agent Preset). ADRs live in `docs/adr/`. The rules are
-  in [domain.md](domain.md).
+- **Glossary and ADRs:** `GLOSSARY.md` at the repo root and `docs/adr/`. Use
+  the glossary's terms (Scheduled Task, Trigger, Run, Agent Preset). The
+  rules are in [domain.md](domain.md).
 - **Tracker and labels:** [issue-tracker.md](issue-tracker.md) (GitHub on the
   fork) and [triage-labels.md](triage-labels.md).
 - **Standards sources** for `code-review`: [AGENTS.md](../../AGENTS.md) (the
