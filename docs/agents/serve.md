@@ -303,7 +303,8 @@ the local socket after checking the caller is the Router; see
 the Trigger in its stored shape: `/mobile/schedules` (`schedule.create`),
 `/mobile/schedules/edit` (`schedule.edit`; pause and resume are `enabled`),
 `/mobile/schedules/delete` (`schedule.delete`: the task and its history,
-never its Run Sessions) and `/mobile/schedules/run` (`schedule.run`: Run
+never its Run Sessions; a delete during a sweep wins, as for `unpeel
+schedules rm`, and the sweep's `SweepEvent::Deleted` adds no ping) and `/mobile/schedules/run` (`schedule.run`: Run
 now, 409 while a Run is in progress). They edit `app-state.json` raw under
 its flock and announce, like `unpeel schedules`, and are replay-protected.
 Every refusal of the schedules routes answers `{"error": <message>, "code":

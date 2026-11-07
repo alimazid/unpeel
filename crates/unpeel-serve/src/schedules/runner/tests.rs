@@ -855,6 +855,7 @@ fn a_task_deleted_at_its_due_time_starts_no_run() {
                 schedule_id: "sch_1".into()
             }]
         );
+        assert!(effects.spawned.lock().unwrap().is_empty());
         let dir = root_of(scheduler).join("sch_1");
         assert!(!dir.exists(), "recreated: {:?}", entries(&dir));
     });

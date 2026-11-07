@@ -104,11 +104,21 @@ pub enum SweepEvent {
         schedule_id: String,
     },
     /// The task was deleted after this sweep read its definition: the
-    /// sweep wrote nothing for it and dropped its remaining actions.
+    /// sweep dropped its remaining actions, so nothing more of it is
+    /// written and no Run of it starts.
     Deleted {
         schedule_id: String,
     },
     Warning(String),
+}
+
+impl SweepEvent {
+    /// Whether a Controller that read the schedules before this sweep
+    /// should read them again. A warning, or a task deleted mid-sweep (its
+    /// delete announced already), changed nothing on disk.
+    pub fn changes_schedules(&self) -> bool {
+        !matches!(self, Self::Warning(_) | Self::Deleted { .. })
+    }
 }
 
 /// What a helper thread reports, in order.
@@ -463,10 +473,7 @@ impl Scheduler {
                         Ok(TaskWrite::Written) => {
                             events.push(SweepEvent::Published { schedule_id })
                         }
-                        Ok(TaskWrite::TaskDeleted) => {
-                            held.insert(schedule_id.clone());
-                            events.push(SweepEvent::Deleted { schedule_id });
-                        }
+                        Ok(TaskWrite::TaskDeleted) => drop_deleted(schedule_id, &mut held, events),
                         Err(error) => {
                             held.insert(schedule_id.clone());
                             self.warn(&schedule_id, format!("saving its clock: {error}"), events);
@@ -482,16 +489,23 @@ impl Scheduler {
                     run,
                     plan,
                 } => match schedules.iter().find(|schedule| schedule.id == schedule_id) {
-                    Some(schedule) => {
-                        if !self.start(schedule, run, plan, hook_port, events) {
-                            held.insert(schedule_id.clone());
-                            events.push(SweepEvent::Deleted { schedule_id });
+                    Some(schedule) => match self.start(schedule, run, plan, hook_port, events) {
+                        Ok(TaskWrite::Written) => {}
+                        Ok(TaskWrite::TaskDeleted) => drop_deleted(schedule_id, &mut held, events),
+                        Err(error) => {
+                            self.warn(&schedule_id, format!("recording its Run: {error}"), events)
                         }
-                    }
+                    },
                     None => self.warn(&schedule_id, "no longer defined".into(), events),
                 },
                 Action::Record { schedule_id, run } => {
-                    self.record(schedule_id, run, schedules, before, events)
+                    match self.record(&schedule_id, run, schedules, before, events) {
+                        Ok(TaskWrite::Written) => {}
+                        Ok(TaskWrite::TaskDeleted) => drop_deleted(schedule_id, &mut held, events),
+                        Err(error) => {
+                            self.warn(&schedule_id, format!("recording a Run: {error}"), events)
+                        }
+                    }
                 }
                 Action::Disable { schedule_id } => {
                     if let Err(error) = self.effects.disable(&schedule_id) {
@@ -505,27 +519,28 @@ impl Scheduler {
     /// Append a Run line (a finished agent Run first takes its reply from
     /// the screen when its agent reported none).
     fn record(
-        &mut self,
-        schedule_id: String,
+        &self,
+        schedule_id: &str,
         run: ScheduleRun,
         schedules: &[Schedule],
         before: &HashMap<String, RunStatus>,
         events: &mut Vec<SweepEvent>,
-    ) {
-        let run = self.with_screen_reply(run, schedules, &schedule_id);
-        match self.store(&schedule_id).and_then(|s| s.append_run(&run)) {
-            Ok(()) => events.push(SweepEvent::Recorded {
+    ) -> Result<TaskWrite, String> {
+        let run = self.with_screen_reply(run, schedules, schedule_id);
+        let recorded = self.store(schedule_id)?.append_run(&run)?;
+        if recorded == TaskWrite::Written {
+            events.push(SweepEvent::Recorded {
                 previous: before.get(&run.run_id).copied(),
-                schedule_id,
+                schedule_id: schedule_id.to_string(),
                 run,
-            }),
-            Err(error) => self.warn(&schedule_id, format!("recording a Run: {error}"), events),
+            });
         }
+        Ok(recorded)
     }
 
     /// Record the Run with the id of the Session it starts, then start that
-    /// Session on a helper thread. `false` when the task was deleted since
-    /// the sweep read it: nothing was recorded or started.
+    /// Session on a helper thread. A task deleted since the sweep read it
+    /// records and starts nothing.
     fn start(
         &mut self,
         schedule: &Schedule,
@@ -533,22 +548,17 @@ impl Scheduler {
         plan: LaunchPlan,
         hook_port: Option<u16>,
         events: &mut Vec<SweepEvent>,
-    ) -> bool {
+    ) -> Result<TaskWrite, String> {
         let session_id = uuid::Uuid::new_v4().to_string().to_lowercase();
         let run = ScheduleRun {
             session_id: Some(session_id.clone()),
             ..run
         };
         let recorded = self
-            .store(&schedule.id)
-            .and_then(|s| s.append_run_if_defined(&run, || self.effects.is_defined(&schedule.id)));
-        match recorded {
-            Ok(TaskWrite::Written) => {}
-            Ok(TaskWrite::TaskDeleted) => return false,
-            Err(error) => {
-                self.warn(&schedule.id, format!("recording its Run: {error}"), events);
-                return true;
-            }
+            .store(&schedule.id)?
+            .append_run_if_defined(&run, || self.effects.is_defined(&schedule.id))?;
+        if recorded == TaskWrite::TaskDeleted {
+            return Ok(recorded);
         }
         self.launching.insert(run.run_id.clone());
         let request = SpawnRequest {
@@ -569,7 +579,7 @@ impl Scheduler {
             run_id: run.run_id,
             session_id,
         });
-        true
+        Ok(TaskWrite::Written)
     }
 
     /// The `unpeel-schedules` helper: start the Session, then for an agent
@@ -618,6 +628,13 @@ impl Scheduler {
             "schedule {schedule_id}: {error}"
         )));
     }
+}
+
+/// A task deleted since the sweep read it: the sweep drops its remaining
+/// actions quietly.
+fn drop_deleted(schedule_id: String, held: &mut HashSet<String>, events: &mut Vec<SweepEvent>) {
+    held.insert(schedule_id.clone());
+    events.push(SweepEvent::Deleted { schedule_id });
 }
 
 fn display_name(schedule: &Schedule) -> &str {

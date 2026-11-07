@@ -1140,15 +1140,10 @@ impl HostRuntime {
         // Run events and a moved next run reach Controllers through the
         // schedules projection; the ping only says "re-read it now" (one
         // per sweep).
-        // A task deleted mid-sweep changed nothing on disk: its delete
-        // announced already.
-        if events.iter().any(|event| {
-            !matches!(
-                event,
-                crate::schedules::SweepEvent::Warning(_)
-                    | crate::schedules::SweepEvent::Deleted { .. }
-            )
-        }) {
+        if events
+            .iter()
+            .any(crate::schedules::SweepEvent::changes_schedules)
+        {
             unpeel_core::state_bus::announce(
                 unpeel_core::state_bus::Change::Schedules,
                 unpeel_core::session_ops::own_listener_port_public(),

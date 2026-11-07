@@ -64,11 +64,12 @@ pub fn presets_from_value(value: Option<&serde_json::Value>) -> Vec<Preset> {
         .unwrap_or_default()
 }
 
-/// What a write that first checks its task is still defined did.
+/// What a write of a task's state did.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TaskWrite {
     Written,
-    /// The task's definition is gone: nothing was written.
+    /// The task was deleted (its definition is gone, or for a Run line its
+    /// directory): nothing was written.
     TaskDeleted,
 }
 
@@ -114,63 +115,66 @@ impl TaskStore {
     }
 
     /// Save the task's clock while `is_defined` says the task is still
-    /// saved. The scheduler's first write for a new task, so it makes the
-    /// task's directory; on disk a deleted task looks like a new one, so
-    /// only the definition tells them apart. The check runs under the
-    /// task's lock, which a delete takes after removing the definition:
-    /// either the clock lands before the delete removes the directory, or
-    /// the check sees the task gone and nothing is written. A check that
-    /// fails is an error, never "still defined".
+    /// saved ([`Self::write_if_defined`]). The scheduler's first write for
+    /// a new task, so it makes the task's directory; on disk a deleted task
+    /// looks like a new one, so only the definition tells them apart.
     pub fn save_clock(
         &self,
         clock: &ScheduleClock,
         is_defined: impl FnOnce() -> Result<bool, String>,
     ) -> Result<TaskWrite, String> {
         let body = serde_json::to_vec_pretty(clock).map_err(|error| error.to_string())?;
-        let _lock = self.lock()?;
-        if !is_defined()? {
-            return Ok(TaskWrite::TaskDeleted);
-        }
-        fs::create_dir_all(&self.dir)
-            .map_err(|error| format!("create {}: {error}", self.dir.display()))?;
-        replace_file(&self.dir.join(CLOCK_FILE), &body)?;
-        Ok(TaskWrite::Written)
+        self.write_if_defined(is_defined, || {
+            fs::create_dir_all(&self.dir)
+                .map_err(|error| format!("create {}: {error}", self.dir.display()))?;
+            replace_file(&self.dir.join(CLOCK_FILE), &body)?;
+            Ok(TaskWrite::Written)
+        })
     }
 
     /// Append one Run line; compacts the log once it passes
     /// [`COMPACT_AFTER_LINES`]. The task's clock is always saved first, so
     /// a missing directory is a task deleted since: its Run is not
     /// recorded, and the directory is not made again.
-    pub fn append_run(&self, run: &ScheduleRun) -> Result<(), String> {
+    pub fn append_run(&self, run: &ScheduleRun) -> Result<TaskWrite, String> {
         let line = run_line(run)?;
         let _lock = self.lock()?;
         self.append_line(&line)
     }
 
     /// Append a Run's first line while `is_defined` says the task is still
-    /// saved, checked under the lock as [`Self::save_clock`] does: a Run
-    /// starts only from a task that is not deleted.
+    /// saved ([`Self::write_if_defined`]): a Run starts only from a task
+    /// that is not deleted.
     pub fn append_run_if_defined(
         &self,
         run: &ScheduleRun,
         is_defined: impl FnOnce() -> Result<bool, String>,
     ) -> Result<TaskWrite, String> {
         let line = run_line(run)?;
+        self.write_if_defined(is_defined, || self.append_line(&line))
+    }
+
+    /// Run `write` under the task's lock while `is_defined` says the task
+    /// is still saved. A delete takes the same lock after removing the
+    /// definition, so either the write lands before the delete removes the
+    /// directory, or the check sees the task gone and nothing is written.
+    /// A check that fails is an error, never "still defined".
+    fn write_if_defined(
+        &self,
+        is_defined: impl FnOnce() -> Result<bool, String>,
+        write: impl FnOnce() -> Result<TaskWrite, String>,
+    ) -> Result<TaskWrite, String> {
         let _lock = self.lock()?;
         if !is_defined()? {
             return Ok(TaskWrite::TaskDeleted);
         }
-        self.append_line(&line)?;
-        Ok(TaskWrite::Written)
+        write()
     }
 
     /// The append itself, with the task's lock held.
-    fn append_line(&self, line: &[u8]) -> Result<(), String> {
+    fn append_line(&self, line: &[u8]) -> Result<TaskWrite, String> {
         if !self.dir.is_dir() {
-            return Err(format!(
-                "{} is gone: the Scheduled Task was deleted",
-                self.dir.display()
-            ));
+            return Ok(TaskWrite::TaskDeleted);
         }
         let path = self.dir.join(RUNS_FILE);
         let mut file = OpenOptions::new()
@@ -186,7 +190,7 @@ impl TaskStore {
         if raw.iter().filter(|byte| **byte == b'\n').count() > COMPACT_AFTER_LINES {
             compact(&path, &raw)?;
         }
-        Ok(())
+        Ok(TaskWrite::Written)
     }
 
     /// Every Run's latest line, oldest Run first. A missing log is a task
@@ -666,13 +670,17 @@ mod tests {
     }
 
     /// A Run recorded after its task was deleted (a sweep that read the
-    /// task first) does not bring the task's directory back.
+    /// task first) does not bring the task's directory back, and says why,
+    /// so the sweep drops it quietly.
     #[test]
     fn a_deleted_task_records_no_more_runs() {
         with_store(|store| {
             store.append_run(&run("run_1", RunStatus::Done)).unwrap();
             store.remove().unwrap();
-            assert!(store.append_run(&run("run_2", RunStatus::Done)).is_err());
+            assert_eq!(
+                store.append_run(&run("run_2", RunStatus::Done)),
+                Ok(TaskWrite::TaskDeleted)
+            );
             assert!(!store.dir().exists());
         });
     }
