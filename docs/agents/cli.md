@@ -133,9 +133,10 @@ script Run never falls back to `$HOME`; a preset that is missing or turned
 off; instructions on a preset that is not an Agent Preset), checked against
 the Projects and presets of `app-state.json` and the app's overlay. A Once
 time that has passed is refused only while the task is enabled: `add`
-always is, and `edit` refuses a new past time on an enabled task, but a
-paused task (a Once task pauses itself after its Run) saves one as is, and
-`resume` refuses it until `edit --once` gives it a new time. An `edit` that
+makes an enabled task, so it always refuses one, and `edit` refuses a new
+past time on an enabled task, but a paused task (a Once task pauses itself
+after its Run) saves one as is, and `resume` refuses it until `edit --once`
+gives it a new time. An `edit` that
 gives the Trigger the task already stores is no change and is not checked
 again, as on the write routes (`save::check_edited_trigger`), so a finished
 Once task's name, instructions and preset always edit. Pause is
@@ -155,10 +156,13 @@ the user, here or through the MCP `workspace` writes.
 Triggers read the local wall clock (`unpeel_serve::schedules::clock`):
 `system_zone()` resolves the zone on every call (`TZ`, else the
 `/etc/localtime` link), so travel takes effect on the next sweep. A time a
-spring-forward change skips comes due when the change ends; a repeated
-time fires once, on its first pass — for every kind, Hourly and cron
-included. Occurrences are compared as local date-times, so after a
-westward trip the same local time does not fire twice.
+spring-forward change skips comes due when the change ends; a time repeated
+when clocks go back fires once, on its first pass — for every kind, Hourly
+and cron included, so an hourly task fires one time fewer that night and an
+every-minute cron task is quiet for the second pass
+([ADR 0007](../adr/0007-a-repeated-local-time-fires-once-for-every-trigger.md)).
+Occurrences are compared as local date-times, so after a westward trip the
+same local time does not fire twice.
 
 ### Unpeel Link enrollment
 

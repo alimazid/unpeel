@@ -41,14 +41,16 @@ usage: unpeel schedules [list] [--json]
 
 A Scheduled Task starts a Session from a preset in a Project each time its
 Trigger comes due, on this Host's local wall clock: it follows the system
-time zone when the machine travels, a time that a clock change skips runs
-when the change ends, and a repeated time runs once. The Host fires it while
-`unpeel serve` runs, with the app open or not; a time missed while the Host
-was down runs once when it is back. `pause` stops a task firing; `resume`
-restarts its clock from now, so times that passed while it was paused never
-run (a new Trigger counts from the edit the same way). `run` starts a Run
-now. Only the user changes tasks, and the Super Agent for them: add, edit,
-pause, resume, run and rm refuse inside any other Session.
+time zone when the machine travels, a time skipped when clocks go forward
+runs when the change ends, and a time repeated when they go back runs once,
+on its first pass, for every kind of Trigger, hourly and cron included. The
+Host fires it while `unpeel serve` runs, with the app open or not; a time
+missed while the Host was down runs once when it is back. `pause` stops a
+task firing; `resume` restarts its clock from now, so times that passed
+while it was paused never run (a new Trigger counts from the edit the same
+way). `run` starts a Run now. Only the user changes tasks, and the Super
+Agent for them: add, edit, pause, resume, run and rm refuse inside any other
+Session.
 
 A task's Project needs a folder for its Runs to start in, whatever the preset.
 A past Once time saves only on a paused task; resuming it needs a new time.
@@ -804,6 +806,21 @@ mod tests {
                     .any(|line| rule.iter().all(|words| line.contains(words))),
                 "{rule:?}"
             );
+        }
+    }
+
+    /// ADR 0007: one rule for every kind on the night clocks go back, and
+    /// the spring-forward rule beside it. The help wraps lines, so match
+    /// with whitespace collapsed.
+    #[test]
+    fn the_help_states_the_clock_change_rules() {
+        let help = super::HELP.split_whitespace().collect::<Vec<_>>().join(" ");
+        for rule in [
+            "a time skipped when clocks go forward runs when the change ends",
+            "a time repeated when they go back runs once, on its first pass, \
+             for every kind of Trigger, hourly and cron included",
+        ] {
+            assert!(help.contains(rule), "{rule:?} in {help:?}");
         }
     }
 }
