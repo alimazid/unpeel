@@ -1628,10 +1628,14 @@ impl HostRuntime {
                 }
                 LocalControlRequest::RunScheduleNow { schedule_id, reply } => {
                     let result = unpeel_core::schedule_store::load_schedules()
+                        .map_err(|error| {
+                            unpeel_core::controller_schedules::RunNowRefusal::Internal(format!(
+                                "could not read Scheduled Tasks: {error}"
+                            ))
+                        })
                         .and_then(|schedules| {
                             self.schedules.request_run_now(&schedule_id, &schedules)
-                        })
-                        .map(|run_id| serde_json::json!({ "runID": run_id }));
+                        });
                     let _ = reply.send(result);
                 }
                 LocalControlRequest::SetDeviceRelayAllowed {

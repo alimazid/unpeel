@@ -340,6 +340,11 @@ fn a_script_run_finishes_from_its_exit_record() {
     });
 }
 
+/// Run now refused because a Run of the task is in progress.
+fn in_progress(refused: &Result<String, RunNowRefusal>) -> bool {
+    matches!(refused, Err(RunNowRefusal::InProgress(message)) if message.contains("in progress"))
+}
+
 #[test]
 fn run_now_is_refused_while_a_run_is_in_progress() {
     with_scheduler(Recording::default(), |scheduler, effects| {
@@ -350,7 +355,7 @@ fn run_now_is_refused_while_a_run_is_in_progress() {
             .request_run_now("sch_1", &tasks)
             .expect("accepted");
         assert!(
-            scheduler.request_run_now("sch_1", &tasks).is_err(),
+            in_progress(&scheduler.request_run_now("sch_1", &tasks)),
             "already queued"
         );
         sweep(scheduler, &tasks, &now(9, 0, 0));
@@ -363,9 +368,12 @@ fn run_now_is_refused_while_a_run_is_in_progress() {
             .unwrap()
             .insert(spawned.session_id, (SessionSeen::Live, None));
         sweep(scheduler, &tasks, &now(9, 0, 1));
-        let refused = scheduler.request_run_now("sch_1", &tasks).unwrap_err();
-        assert!(refused.contains("in progress"), "{refused}");
-        assert!(scheduler.request_run_now("sch_missing", &tasks).is_err());
+        let refused = scheduler.request_run_now("sch_1", &tasks);
+        assert!(in_progress(&refused), "{refused:?}");
+        assert!(matches!(
+            scheduler.request_run_now("sch_missing", &tasks),
+            Err(RunNowRefusal::UnknownTask(_))
+        ));
     });
 }
 
@@ -378,8 +386,12 @@ fn a_task_whose_runs_cannot_be_read_starts_nothing() {
             time: "09:00".into(),
         })];
         std::fs::create_dir_all(root_of(scheduler).join("sch_1").join("runs.jsonl")).unwrap();
-        let refused = scheduler.request_run_now("sch_1", &tasks).unwrap_err();
-        assert!(refused.contains("runs.jsonl"), "{refused}");
+        let refused = scheduler.request_run_now("sch_1", &tasks);
+        assert!(
+            matches!(&refused, Err(RunNowRefusal::RunLogUnreadable(message))
+                if message.contains("runs.jsonl")),
+            "{refused:?}"
+        );
         let events = sweep(scheduler, &tasks, &now(9, 0, 0));
         assert!(
             !events
@@ -424,8 +436,8 @@ fn a_run_with_an_occurrence_skipped_behind_it_is_still_followed() {
             store.current_run().unwrap().map(|run| run.run_id),
             Some(run_id.clone())
         );
-        let refused = scheduler.request_run_now("sch_1", &tasks).unwrap_err();
-        assert!(refused.contains("in progress"), "{refused}");
+        let refused = scheduler.request_run_now("sch_1", &tasks);
+        assert!(in_progress(&refused), "{refused:?}");
 
         seen((SessionSeen::Live, Some(0)));
         sweep(scheduler, &tasks, &now(9, 0, 30));
@@ -723,8 +735,8 @@ fn a_needs_you_run_refuses_run_now_and_a_quiet_agent_needs_you_after_the_window(
         assert_eq!(latest(scheduler).status, RunStatus::Running);
         sweep_seeing(scheduler, &tasks, &quiet, &now(9, 0, 7));
         assert_eq!(latest(scheduler).status, RunStatus::NeedsYou);
-        let refused = scheduler.request_run_now("sch_1", &tasks).unwrap_err();
-        assert!(refused.contains("in progress"), "{refused}");
+        let refused = scheduler.request_run_now("sch_1", &tasks);
+        assert!(in_progress(&refused), "{refused:?}");
     });
 }
 

@@ -27,7 +27,8 @@ use crate::schedules::{self, Schedule, ScheduleClock, ScheduleRun};
 mod write;
 
 pub use write::{
-    has_host, install_host, principal_can_write_schedules, NextRun, RunNowRefusal, ScheduleHost,
+    has_host, install_host, principal_can_write_schedules, unknown_task_message, NextRun,
+    RunNowRefusal, ScheduleHost,
 };
 
 /// `GET /mobile/schedules`.
@@ -70,6 +71,7 @@ pub mod codes {
     pub const FORBIDDEN: &str = "forbidden";
     pub const UNKNOWN_TASK: &str = "unknown_task";
     pub const RUN_IN_PROGRESS: &str = "run_in_progress";
+    pub const RUN_LOG_UNREADABLE: &str = "run_log_unreadable";
     pub const RUN_NO_ANSWER: &str = "run_no_answer";
     pub const HOST_UNAVAILABLE: &str = "host_unavailable";
     pub const INTERNAL: &str = "internal";

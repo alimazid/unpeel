@@ -217,6 +217,11 @@ struct ScheduledTaskFormTests {
             == "That Trigger isn't valid. Check its time and how often it repeats.")
         #expect(ScheduledTaskErrorText.message(for: refused(404, "unknown_task", "no Scheduled Task sch_1"))
             == "This Scheduled Task no longer exists on the Host.")
+        // #28: a Run log the Host cannot read is not a Run in progress.
+        #expect(ScheduledTaskErrorText.message(for: refused(
+            500, "run_log_unreadable",
+            "cannot tell whether a Run of Morning is in progress: read runs.jsonl: Is a directory"
+        )) == "Unpeel can't read this task's Run history, so it can't tell whether a Run is in progress.")
         // A code this build does not know, or none, shows the Host's message.
         #expect(ScheduledTaskErrorText.message(for: refused(400, "a_future_code", "the moon is not up"))
             == "The moon is not up.")
