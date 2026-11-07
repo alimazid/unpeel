@@ -108,6 +108,12 @@ its time. Most Runs have a Session; a skipped or failed-before-launch Run
 does not.
 _Avoid_: execution, job, instance, invocation
 
+**Superseded Run**:
+A Run of a Scheduled Task that is no longer the task's latest, whose Session
+is not pinned, busy, or waiting on you. Session lists hide it; it stays
+reachable from the task's history.
+_Avoid_: old Run, stale Run
+
 ### Super Agent
 
 **Router**:
