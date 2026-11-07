@@ -7,7 +7,8 @@
 //! - `POST /mobile/schedules/delete` (`schedule.delete`): the task and its
 //!   history; its Run Sessions stay where they are.
 //! - `POST /mobile/schedules/run` (`schedule.run`): Run now, refused (409)
-//!   while a Run of the task is in progress.
+//!   while a Run of the task is in progress, and for its own reason
+//!   otherwise ([`RunNowRefusal`]).
 //!
 //! Bodies are camelCase (`scheduleID`, `projectID`, `presetID`,
 //! `notifyWhenDone`, `instructions`); `trigger` is the stored shape the
@@ -35,16 +36,42 @@ pub(super) const EDIT_PATH: &str = "/mobile/schedules/edit";
 pub(super) const DELETE_PATH: &str = "/mobile/schedules/delete";
 pub(super) const RUN_PATH: &str = "/mobile/schedules/run";
 
-/// Why the worker did not start a Run now.
+/// Why the worker did not start a Run now, typed from the scheduler to
+/// every wire that answers it (this route and `unpeel schedules run`'s
+/// control path), so no refusal reads as another.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RunNowRefusal {
-    /// A Run of the task is still in progress (Runs never overlap): 409.
+    /// A Run of the task is still in progress, or a Run now of it is
+    /// already queued (Runs never overlap): 409.
     InProgress(String),
+    /// The task was gone by the time the worker answered: 404.
+    UnknownTask(String),
+    /// The task's Run log will not read, so the worker cannot tell whether
+    /// a Run is in progress: 500.
+    RunLogUnreadable(String),
+    /// The worker could not read the Scheduled Task definitions: 500.
+    Internal(String),
     /// The request never reached the worker: 503 (not applied).
     Unavailable(String),
     /// The worker did not answer in time; the Run may still start: 504
     /// (outcome unknown, so a Controller refreshes rather than retries).
     NoAnswer(String),
+}
+
+impl RunNowRefusal {
+    /// The refusal as every Run now wire answers it.
+    pub fn failure(self) -> Failure {
+        match self {
+            Self::InProgress(message) => Failure::new(409, codes::RUN_IN_PROGRESS, message),
+            Self::UnknownTask(message) => Failure::new(404, codes::UNKNOWN_TASK, message),
+            Self::RunLogUnreadable(message) => {
+                Failure::new(500, codes::RUN_LOG_UNREADABLE, message)
+            }
+            Self::Internal(message) => Failure::new(500, codes::INTERNAL, message),
+            Self::Unavailable(message) => Failure::new(503, codes::HOST_UNAVAILABLE, message),
+            Self::NoAnswer(message) => Failure::new(504, codes::RUN_NO_ANSWER, message),
+        }
+    }
 }
 
 /// A task's next run as its row lists it: the local date-time and its
@@ -342,18 +369,10 @@ fn run_now(
 ) -> Result<Value, Failure> {
     let schedule_id = schedule_id(body)?;
     workspace.stored_entry(&schedule_id)?;
-    match require(host)?.run_now(&schedule_id) {
-        Ok(run_id) => Ok(json!({ "scheduleID": schedule_id, "runID": run_id })),
-        Err(RunNowRefusal::InProgress(message)) => {
-            Err(Failure::new(409, codes::RUN_IN_PROGRESS, message))
-        }
-        Err(RunNowRefusal::Unavailable(message)) => {
-            Err(Failure::new(503, codes::HOST_UNAVAILABLE, message))
-        }
-        Err(RunNowRefusal::NoAnswer(message)) => {
-            Err(Failure::new(504, codes::RUN_NO_ANSWER, message))
-        }
-    }
+    let run_id = require(host)?
+        .run_now(&schedule_id)
+        .map_err(RunNowRefusal::failure)?;
+    Ok(json!({ "scheduleID": schedule_id, "runID": run_id }))
 }
 
 // ── shared rules ──

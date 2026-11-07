@@ -14,6 +14,7 @@ use std::time::{Duration, Instant};
 
 use jiff::Zoned;
 use unpeel_core::controller_api::{HostCreatePreset, HostCreateProject};
+use unpeel_core::controller_schedules::RunNowRefusal;
 use unpeel_core::schedule_store::TaskStore;
 use unpeel_core::schedules::{RunStatus, Schedule, ScheduleClock, ScheduleRun};
 use unpeel_core::state::Preset;
@@ -187,31 +188,36 @@ impl Scheduler {
     }
 
     /// Accept Run now for `schedule_id`, unless a Run of it is in progress.
-    /// The Run starts on the next sweep; its id comes back at once.
+    /// The Run starts on the next sweep; its id comes back at once. A
+    /// refusal says why, typed, so no reason reads as another.
     pub fn request_run_now(
         &mut self,
         schedule_id: &str,
         schedules: &[Schedule],
-    ) -> Result<String, String> {
+    ) -> Result<String, RunNowRefusal> {
         let schedule = schedules
             .iter()
             .find(|schedule| schedule.id == schedule_id)
-            .ok_or_else(|| format!("no schedule {schedule_id}"))?;
-        let store = TaskStore::open(&self.root, &schedule.id)?;
+            .ok_or_else(|| {
+                RunNowRefusal::UnknownTask(format!(
+                    "no Scheduled Task {schedule_id}; it may have been deleted"
+                ))
+            })?;
+        let store = TaskStore::open(&self.root, &schedule.id).map_err(RunNowRefusal::Internal)?;
         let latest_in_progress = store
             .current_run()
             .map_err(|error| {
-                format!(
+                RunNowRefusal::RunLogUnreadable(format!(
                     "cannot tell whether a Run of {} is in progress: {error}",
                     display_name(schedule)
-                )
+                ))
             })?
             .is_some_and(|run| run.status.is_in_progress());
         if latest_in_progress || self.run_now.contains_key(&schedule.id) {
-            return Err(format!(
+            return Err(RunNowRefusal::InProgress(format!(
                 "a Run of {} is still in progress",
                 display_name(schedule)
-            ));
+            )));
         }
         let run_id = new_run_id();
         self.run_now.insert(schedule.id.clone(), run_id.clone());

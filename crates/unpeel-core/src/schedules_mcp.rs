@@ -264,7 +264,8 @@ fn write_docs() -> Vec<Value> {
         doc(
             "run_schedule",
             "Super Agent only. Start a Run now: {scheduleID, runID}. Refused (run_in_progress) \
-        while a Run of the task is in progress. Read its outcome later with list_schedule_runs."
+        while a Run of the task is in progress, and (run_log_unreadable) when its Run log will \
+        not read, so the Host cannot tell. Read its outcome later with list_schedule_runs."
                 .into(),
             json!({ "schedule_id": task() }),
             &["schedule_id"],
