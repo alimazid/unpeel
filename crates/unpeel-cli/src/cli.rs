@@ -8,6 +8,7 @@ use std::io::Write;
 use std::time::{Duration, Instant};
 
 use unpeel_core::app_paths;
+use unpeel_core::schedules::run_sessions::{self, RunSessionRow};
 
 use unpeel_serve::activity::ActivityEngine;
 use unpeel_serve::sessions::{scan_sidebar, ScanCache, SessionRow, SidebarItem, Status};
@@ -34,7 +35,8 @@ unpeel — run and steer CLI agent sessions
                                   pair a Controller (phone, Mac app) with this Host
   unpeel pair list|remove <device>|relay <device> on|off
   unpeel --workspace NAME [...]   run any command in an isolated workspace
-  unpeel ls [--json]              list sessions (status, project, command)
+  unpeel ls [--all] [--json]      list sessions (status, project, command);
+                                  --all adds each task's superseded Runs
   unpeel new [--preset L | --command C] [--cwd D] [--json]
   unpeel send <id> <text...> [--enter]  in a session: MCP send_text + approval policy
   unpeel keys <id> <sequence>     send raw bytes (\\r, \\t, \\e escapes)
@@ -215,23 +217,53 @@ fn unescape(input: &str) -> String {
     out
 }
 
+/// `unpeel ls`: the sidebar's Sessions less Superseded Runs (a Scheduled
+/// Task's older Runs), which `--all` lists too, marked. The rule and the Run
+/// fields (`scheduleID`, `superseded`) are the Host's own row builders'
+/// (`run_sessions`). Only the listing filters: [`resolve`] reads every row,
+/// so a Superseded Run stays reachable by id.
 fn print_sessions(args: &Args) {
     let all = rows();
+    let run_rows: Vec<RunSessionRow<'_>> = all
+        .iter()
+        .map(unpeel_serve::run_sessions::wire_row)
+        .collect();
+    let latest_runs = unpeel_core::schedule_store::latest_run_sessions_of(&run_rows);
+    let listed: Vec<(&SessionRow, RunSessionRow<'_>, bool)> = all
+        .iter()
+        .zip(run_rows.iter().copied())
+        .map(|(row, run_row)| {
+            (
+                row,
+                run_row,
+                run_sessions::is_superseded(run_row, &latest_runs),
+            )
+        })
+        .filter(|(_, _, superseded)| args.has("all") || !superseded)
+        .collect();
     if args.has("json") {
-        let list: Vec<serde_json::Value> = all.iter().map(session_json).collect();
+        let list: Vec<serde_json::Value> = listed
+            .iter()
+            .map(|(row, run_row, _)| {
+                let mut summary = session_json(row);
+                run_sessions::publish(&mut summary, *run_row, &latest_runs);
+                summary
+            })
+            .collect();
         println!(
             "{}",
             serde_json::to_string_pretty(&list).unwrap_or_default()
         );
         return;
     }
-    for row in all {
+    for (row, _, superseded) in listed {
         println!(
-            "{}  {:9}  {:30}  {}",
+            "{}  {:9}  {:30}  {}{}",
             &row.id[..8.min(row.id.len())],
             row.status.word(),
             row.label.chars().take(30).collect::<String>(),
-            row.command
+            row.command,
+            if superseded { "  superseded" } else { "" }
         );
     }
 }

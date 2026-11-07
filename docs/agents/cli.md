@@ -145,6 +145,17 @@ except the Super Agent's (`supervision::is_router`): it changes tasks for
 the user, here or through the MCP `workspace` writes.
 `rm` deletes the task and its history; its Run Sessions stay.
 
+`unpeel ls` lists Sessions the way the apps do: it leaves out Superseded
+Runs, a task's older Runs that are not pinned, busy, or waiting on you. The
+rule is the Host's (`unpeel_core::schedules::run_sessions::is_superseded`
+over `schedule_store::latest_run_sessions_of`, fed by
+`unpeel_serve::run_sessions::wire_row`), applied to the CLI's own scan, so
+"busy" is that scan's view. `unpeel ls --all` lists them too, each text line
+ending in `superseded`. In `--json`, a Run's row carries `scheduleID` and
+`superseded` (`run_sessions::publish`, the Host's wire fields); other rows
+are unchanged. Only the listing filters: every verb that takes a Session id
+resolves a Superseded Run, and `unpeel schedules history` names its Session.
+
 Triggers read the local wall clock (`unpeel_serve::schedules::clock`):
 `system_zone()` resolves the zone on every call (`TZ`, else the
 `/etc/localtime` link), so travel takes effect on the next sweep. A time a
