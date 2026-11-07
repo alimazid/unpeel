@@ -781,26 +781,11 @@ fn instructions_on_a_preset_that_is_not_an_agent_fail_the_run_before_launch() {
 
 // ── A task deleted while its Run comes up (#30) ──
 
-/// A Run whose task was deleted once its Session started still says its
-/// Session is up, whatever the definitions are now.
-#[test]
-fn a_deleted_tasks_run_still_says_its_session_is_up() {
-    with_scheduler(Recording::default(), |scheduler, effects| {
-        let tasks = [schedule(ScheduleTrigger::Daily {
-            time: "09:00".into(),
-        })];
-        sweep(scheduler, &tasks, &now(9, 0, 0));
-        settle(effects, 1);
-        let session_id = effects.spawned.lock().unwrap()[0].0.session_id.clone();
-        let next = sweep(scheduler, &[], &now(9, 0, 1));
-        assert_eq!(spawned(&next), vec![session_id]);
-    });
-}
-
 /// The worker skips the sweep of a workspace with no task unless the
 /// Scheduler says otherwise. Deleting the only task while its Run's Session
 /// comes up must not leave that Session's outcome undrained (and the task's
-/// earlier idle Runs live) until some later task is created.
+/// Superseded Runs live) until some later task is created; swept with no
+/// definition, the Run still says its Session is up.
 #[test]
 fn a_spawned_outcome_keeps_the_worker_sweeping_after_its_task_is_deleted() {
     with_scheduler(Recording::default(), |scheduler, effects| {
@@ -831,13 +816,7 @@ fn an_agent_runs_delivery_keeps_the_worker_sweeping_after_its_task_is_deleted() 
         ..Recording::default()
     };
     with_scheduler(effects, |scheduler, effects| {
-        let tasks = [agent_schedule()];
-        scheduler
-            .request_run_now("sch_1", &tasks)
-            .expect("accepted");
-        sweep(scheduler, &tasks, &now(9, 0, 0));
-        settle(effects, 1);
-        let session_id = effects.spawned.lock().unwrap()[0].0.session_id.clone();
+        let session_id = start_agent_run(scheduler, effects);
         let up = sweep(scheduler, &[], &now(9, 0, 1));
         assert_eq!(spawned(&up), vec![session_id]);
         assert!(

@@ -345,10 +345,10 @@ phone's sidebar and bell) but keep it openable by id, which is how the
 SCHEDULED section reaches older Runs. Run Sessions take no slot in either
 builder's stopped window; Run retention bounds them per task.
 
-When a Run's Session comes up, the worker stops the task's earlier idle,
-unpinned Run Sessions through the pid-verified stop path
-(`run_sessions::stop_superseded`): the latest Run replaces the previous one,
-even if its task is deleted meanwhile. While a Run's Session is starting or
+When a Run's Session comes up, the worker stops the Sessions of the task's
+Superseded Runs (its earlier Run Sessions that are idle and not pinned)
+through the pid-verified stop path (`run_sessions::stop_superseded`): the
+latest Run replaces the previous one, even if its task is deleted meanwhile. While a Run's Session is starting or
 its instructions are being typed, the worker sweeps even a workspace with no
 task left (`Scheduler::needs_sweep`), so that outcome is handled on the next
 rescan, never when some later task is created. Deleting a task stops none of

@@ -143,9 +143,9 @@ per-task clock and Run log under `<UNPEEL_HOME>/schedules/<id>/`
 and `history` refuses inside a Session, the detection `unpeel send` uses,
 except the Super Agent's (`supervision::is_router`): it changes tasks for
 the user, here or through the MCP `workspace` writes.
-`rm` deletes the task and its history; its Run Sessions stay, except that a
-Run whose Session was coming up still replaces the earlier idle ones (the
-latest Run replaces the previous one, even if its task is deleted meanwhile).
+`rm` deletes the task and its history; its Run Sessions stay, though a Run
+already coming up still stops the task's Superseded Runs (detail:
+`docs/agents/serve.md`).
 
 Triggers read the local wall clock (`unpeel_serve::schedules::clock`):
 `system_zone()` resolves the zone on every call (`TZ`, else the
