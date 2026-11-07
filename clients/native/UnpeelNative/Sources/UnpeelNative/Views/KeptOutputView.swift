@@ -32,11 +32,11 @@ struct KeptOutputView: View {
     }
 
     var body: some View {
-        let key = KeptOutputPanes.Key(
-            scopeID: store.selectedHostScope.paneScopeID,
-            sessionID: session.id,
-            generation: session.lifecycleAtMs
+        let key = RemoteTerminalPaneKey(
+            hostID: store.selectedHostScope.paneScopeID,
+            sessionID: session.id
         )
+        let generation = session.lifecycleAtMs
         let pane = panes.pane(
             for: key,
             style: RemoteScopeTerminalMount.paneStyle(for: session, background: backgroundColor)
@@ -44,7 +44,7 @@ struct KeptOutputView: View {
         VStack(spacing: 0) {
             KeptOutputBar(
                 background: Color(nsColor: backgroundColor),
-                showsLastPart: panes.isTruncated(key),
+                status: panes.status(key, generation: generation),
                 canResume: store.sessionCanRestart(session.id),
                 isRestarting: store.restartingSessionIDs.contains(session.id),
                 command: session.command,
@@ -54,16 +54,17 @@ struct KeptOutputView: View {
         }
         // Read again once a Host connection exists (a cold launch shows the
         // disk seed before the first bootstrap).
-        .task(id: LoadTrigger(key: key, connected: runtime.snapshot != nil)) {
+        .task(id: LoadTrigger(key: key, generation: generation, connected: runtime.snapshot != nil)) {
             let sessionID = session.id
-            panes.load(key) { [runtime] in
+            panes.load(key, generation: generation) { [runtime] in
                 try await runtime.keptOutputTail(sessionID: sessionID)
             }
         }
     }
 
     private struct LoadTrigger: Equatable {
-        let key: KeptOutputPanes.Key
+        let key: RemoteTerminalPaneKey
+        let generation: Int64?
         let connected: Bool
     }
 }
@@ -72,13 +73,20 @@ struct KeptOutputView: View {
 /// shows, and Resume with the placeholder's action and in-flight state.
 struct KeptOutputBar: View {
     let background: Color
-    /// The tail shown leaves earlier output out.
-    let showsLastPart: Bool
+    let status: KeptOutputPanes.Status
     let canResume: Bool
     let isRestarting: Bool
     let command: String
     let onResume: () -> Void
     @State private var resumeHovering = false
+
+    private var detail: String {
+        switch status {
+        case .shown(truncated: true): "Showing the last part of its kept output"
+        case .loading, .shown(truncated: false): "Showing its kept output"
+        case .unreadable: "Its kept output could not be read"
+        }
+    }
 
     var body: some View {
         HStack(spacing: 10) {
@@ -86,7 +94,7 @@ struct KeptOutputBar: View {
                 .font(.system(size: 12, weight: .semibold))
                 .foregroundStyle(Theme.foreground)
                 .lineLimit(1)
-            Text(showsLastPart ? "Showing the last part of its kept output" : "Showing its kept output")
+            Text(detail)
                 .font(.system(size: 11))
                 .foregroundStyle(Theme.mutedForeground)
                 .lineLimit(1)

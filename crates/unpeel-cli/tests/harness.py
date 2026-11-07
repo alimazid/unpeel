@@ -18,6 +18,7 @@ Three things here are load-bearing and easy to get wrong:
   behind poisons the next one. `Pty.close()` and the runner both sweep.
 """
 
+import base64
 import fcntl
 import glob
 import hashlib
@@ -1283,6 +1284,29 @@ def host_certificate_pin(home=None):
             continue
         return hashlib.sha256(ssl.PEM_cert_to_DER_cert(pem)).hexdigest()
     return None
+
+
+def host_sock_request(socket_path, path, query=None, method="GET", timeout=20):
+    """One request over the persistent local `host.sock` in the UPL1 framing
+    the Mac app speaks (`host_launch_conformance.py` has a full client).
+    Returns `(status, json)`; a malformed reply is `(None, {})`."""
+    payload = json.dumps({"id": 1, "method": method, "path": path, "query": query or {},
+                          "auth": None, "contentType": None, "bodyB64": None}).encode()
+    with socket.socket(socket.AF_UNIX) as conn:
+        conn.settimeout(timeout)
+        conn.connect(socket_path)
+        conn.sendall(b"UPL1" + bytes([1, 0, 0, 0]) + struct.pack(">I", len(payload)) + payload)
+        received = b""
+        while len(received) < 12 or len(received) < 12 + struct.unpack(">I", received[8:12])[0]:
+            chunk = conn.recv(65536)
+            if not chunk:
+                break
+            received += chunk
+    if len(received) < 12 or received[:4] != b"UPL1":
+        return None, {}
+    envelope = json.loads(received[12:12 + struct.unpack(">I", received[8:12])[0]])
+    body = base64.b64decode(envelope["bodyB64"]) if envelope.get("bodyB64") else b"{}"
+    return envelope.get("status"), json.loads(body)
 
 
 def mobile_request(port, path, token, method="GET", body=None, timeout=10, headers=None,

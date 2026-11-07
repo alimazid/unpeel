@@ -13,6 +13,10 @@ struct StartupPresentation: Codable, Equatable, Sendable {
     /// superseded, so the disk seed hides them too
     /// (`ScheduledRunListing.seeding`). Absent in an older cache.
     var supersededRunIDs: Set<String>? = nil
+    /// Fork-only: the stopped Runs the Host last said kept output, so the
+    /// disk seed shows their kept output too (ADR 0006). Absent in an older
+    /// cache.
+    var keptOutputRunIDs: Set<String>? = nil
 }
 
 final class StartupPresentationCache: Sendable {

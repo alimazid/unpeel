@@ -2120,6 +2120,10 @@ final class RemoteGhosttyTerminalPane: NSView {
     /// pasted instead. nil when the Host does not advertise the capability.
     var remoteUploader: ((_ contentType: String, _ bytes: Data) async throws -> String)?
     var remoteFileUploader: ((_ filename: String, _ bytes: Data) async throws -> String)?
+    /// Fork-only: called once the surface exists, the first moment
+    /// `receiveHostBytes` accepts bytes (a stopped Run's kept output is fed
+    /// here, before the first frame).
+    var onSurfaceAttached: (() -> Void)?
     private var remoteDropTask: Task<Void, Never>?
     private var uploadProgress: NSProgressIndicator?
 
@@ -2427,6 +2431,7 @@ extension RemoteGhosttyTerminalPane:
 {
     func terminalDidAttachSurface(_ surface: TerminalSurface) {
         self.surface = surface
+        onSurfaceAttached?()
         // The surface is created while the view is still at .zero, finishes
         // attaching AFTER the first real fit has run, and then reports its
         // creation-time default grid (~50x17). That stale emission arrived

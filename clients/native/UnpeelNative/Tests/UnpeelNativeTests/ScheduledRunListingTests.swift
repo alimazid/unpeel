@@ -105,6 +105,27 @@ struct ScheduledRunListingTests {
         #expect(seeded.map { $0.scheduledRun?.scheduleID } == ["sch_a", "sch_a", "sch_a", "sch_b", nil, nil])
     }
 
+    /// A cold launch shows a stopped Run's kept output from the first frame:
+    /// the startup cache remembers which Runs kept output (ADR 0006), and the
+    /// seed marks them, so the view never flips placeholder → output when
+    /// the first bootstrap lands.
+    @Test func theDiskSeedRemembersWhichRunsKeptOutput() throws {
+        let scanned = [local("run-2", spawnedBy: "schedule:sch_a"), local("user", spawnedBy: nil)]
+        let seeded = ScheduledRunListing.seeding(
+            scanned, supersededRunIDs: ["run-2"], keptOutputRunIDs: ["run-2", "user"]
+        )
+        #expect(seeded.map { $0.scheduledRun?.keptOutput } == [true, nil])
+
+        let saved = StartupPresentation(
+            home: "/h", hostID: "host", nodes: [], pins: [:], unreadIDs: [],
+            supersededRunIDs: ["run-2"], keptOutputRunIDs: ["run-2"]
+        )
+        let decoded = try JSONDecoder().decode(
+            StartupPresentation.self, from: try JSONEncoder().encode(saved)
+        )
+        #expect(decoded.keptOutputRunIDs == ["run-2"])
+    }
+
     /// The startup cache remembers that verdict; one written before it
     /// decodes with none.
     @Test func theStartupCacheRemembersTheSupersededRuns() throws {

@@ -99,16 +99,19 @@ enum ScheduledRunListing {
     /// until the Host's first bootstrap replaces them. `supersededRunIDs` is
     /// the Host's last verdict, from the startup cache; the seed has no rule
     /// of its own, so a Run the Host has not answered for stays listed.
+    /// `keptOutputRunIDs` is the same for kept output (ADR 0006).
     static func seeding(
         _ sessions: [SessionEntry],
-        supersededRunIDs: Set<String>
+        supersededRunIDs: Set<String>,
+        keptOutputRunIDs: Set<String> = []
     ) -> [SessionEntry] {
         sessions.map { session in
             guard let scheduleID = scheduleID(spawnedBy: session.spawnedBy) else { return session }
             var marked = session
             marked.scheduledRun = ScheduledRunMark(
                 scheduleID: scheduleID,
-                superseded: supersededRunIDs.contains(session.id)
+                superseded: supersededRunIDs.contains(session.id),
+                keptOutput: keptOutputRunIDs.contains(session.id)
             )
             return marked
         }

@@ -19,7 +19,7 @@ import Foundation
 /// without an offset, so no output cursor moves.
 struct KeptOutputTail: Decodable, Equatable, Sendable {
     /// The same bounded tail a remote live pane attaches with.
-    static let limit = 192 * 1024
+    static let limit = RemoteHostRuntime.outputPageLimit
 
     let bytes: Data
     /// Earlier output exists that this tail does not show.
@@ -66,104 +66,127 @@ extension RemoteHostRuntime {
 }
 
 /// The read-only panes stopped Runs show their kept output in, a few at a
-/// time. A pane is fed once; its VT state then stays as drawn while the
-/// Run stays stopped, so moving back to it is instant.
+/// time (the remote pane cache's own retention). A tail is read once per
+/// stop, ahead of selection on hover, and fed the moment its pane's surface
+/// exists, so the first frame already shows it; the VT state then stays as
+/// drawn, so moving back is instant.
 @MainActor
 final class KeptOutputPanes: ObservableObject {
-    /// A stopped Run in one scope. `generation` (the row's lifecycle time)
-    /// changes when the Session runs and stops again, so a reloaded Session
-    /// never shows a stale tail.
-    struct Key: Hashable {
-        let scopeID: String
-        let sessionID: String
+    static let retainedPaneLimit = 4
+    /// Tails read ahead of selection (hover) are kept for this many Runs.
+    static let retainedTailLimit = 8
+
+    enum Status: Equatable {
+        case loading
+        case shown(truncated: Bool)
+        case unreadable
+    }
+
+    /// Bumped when a tail lands, is fed, or fails, so the bar re-renders.
+    @Published private(set) var revision = 0
+
+    private struct Tail {
+        /// The row's lifecycle time when read: a Session that runs and stops
+        /// again is read again rather than showing a stale tail.
         let generation: Int64?
+        let tail: KeptOutputTail
     }
 
-    /// Shown Runs whose tail leaves earlier output out.
-    @Published private(set) var truncatedKeys: Set<Key> = []
+    private let cache = RemoteGhosttyPaneCache(retainedPaneLimit: KeptOutputPanes.retainedPaneLimit)
+    private var tails: [RemoteTerminalPaneKey: Tail] = [:]
+    private var tailOrder: [RemoteTerminalPaneKey] = []
+    private var fed: [RemoteTerminalPaneKey: Int64?] = [:]
+    private var reading: [RemoteTerminalPaneKey: (generation: Int64?, task: Task<Void, Never>)] = [:]
+    private var unreadable: Set<RemoteTerminalPaneKey> = []
 
-    private final class Entry {
-        let pane: RemoteGhosttyTerminalPane
-        var fed = false
-        var loading: Task<Void, Never>?
-
-        init(pane: RemoteGhosttyTerminalPane) {
-            self.pane = pane
-        }
-    }
-
-    /// A just-mounted pane builds its surface on attach; give it this long.
-    private static let feedAttempts = 300
-    private static let feedRetryNanoseconds: UInt64 = 16_000_000
-
-    private let capacity: Int
-    private var entries: [Key: Entry] = [:]
-    private var recency: [Key] = []
-
-    init(capacity: Int = 4) {
-        self.capacity = max(1, capacity)
-    }
-
-    /// The pane for `key`. Its input and resize callbacks are no-ops.
-    func pane(for key: Key, style: TerminalPaneStyle) -> RemoteGhosttyTerminalPane {
-        recency.removeAll { $0 == key }
-        recency.append(key)
-        if let entry = entries[key] {
-            entry.pane.applyPaneStyle(style)
-            return entry.pane
-        }
-        let pane = RemoteGhosttyTerminalPane(
+    /// The pane for a stopped Run in one scope. Its input and resize
+    /// callbacks are no-ops. Safe to call from a view's body: it publishes
+    /// nothing.
+    func pane(for key: RemoteTerminalPaneKey, style: TerminalPaneStyle) -> RemoteGhosttyTerminalPane {
+        let pane = cache.pane(
+            for: key,
             style: style,
             onInput: { _ in },
             onResize: { _ in }
         )
-        entries[key] = Entry(pane: pane)
-        evictOverCapacity()
+        pane.onSurfaceAttached = { [weak self] in self?.feedIfReady(key) }
+        cache.prune(keeping: Set(fed.keys).union([key]), selectedKey: key)
+        fed = fed.filter { cache.existingPane(for: $0.key) != nil }
         return pane
     }
 
-    /// Read the tail through `read` and feed it once the pane is on screen.
-    /// A failed read or a pane that never attached is retried on the next
-    /// call; a fed pane is never read again.
-    func load(_ key: Key, read: @escaping @MainActor () async throws -> KeptOutputTail) {
-        guard let entry = entries[key], !entry.fed, entry.loading == nil else { return }
-        entry.loading = Task { [weak self, weak entry] in
-            defer { entry?.loading = nil }
-            let tail: KeptOutputTail
+    /// Read the Run's tail (unless this stop's is already read) and feed it
+    /// as soon as its pane can take it. Called on hover and on selection; a
+    /// failed read is tried again on the next call.
+    func load(
+        _ key: RemoteTerminalPaneKey,
+        generation: Int64?,
+        read: @escaping @MainActor () async throws -> KeptOutputTail
+    ) {
+        if tails[key]?.generation == generation {
+            feedIfReady(key)
+            return
+        }
+        if let current = reading[key] {
+            guard current.generation != generation else { return }
+            current.task.cancel()
+        }
+        let task = Task { [weak self] in
+            let result: Result<KeptOutputTail, Error>
             do {
-                tail = try await read()
-            } catch is CancellationError {
-                return
+                result = .success(try await read())
             } catch {
-                NSLog(
-                    "[UnpeelNative] kept output for %@ unavailable: %@",
-                    key.sessionID,
-                    error.localizedDescription
-                )
-                return
+                result = .failure(error)
             }
-            for _ in 0..<Self.feedAttempts {
-                guard !Task.isCancelled, let self, let entry else { return }
-                if entry.pane.receiveHostBytes(tail.bytes, resetBeforeFeed: true) {
-                    entry.fed = true
-                    if tail.truncated { self.truncatedKeys.insert(key) }
-                    return
-                }
-                try? await Task.sleep(nanoseconds: Self.feedRetryNanoseconds)
-            }
+            self?.finishRead(key, generation: generation, result: result)
         }
+        reading[key] = (generation, task)
     }
 
-    func isTruncated(_ key: Key) -> Bool {
-        truncatedKeys.contains(key)
+    func status(_ key: RemoteTerminalPaneKey, generation: Int64?) -> Status {
+        if let tail = tails[key], tail.generation == generation {
+            return .shown(truncated: tail.tail.truncated)
+        }
+        return unreadable.contains(key) ? .unreadable : .loading
     }
 
-    private func evictOverCapacity() {
-        while recency.count > capacity {
-            let evicted = recency.removeFirst()
-            entries.removeValue(forKey: evicted)?.loading?.cancel()
-            // Called from a view's body: publish only a real change.
-            if truncatedKeys.contains(evicted) { truncatedKeys.remove(evicted) }
+    private func finishRead(
+        _ key: RemoteTerminalPaneKey,
+        generation: Int64?,
+        result: Result<KeptOutputTail, Error>
+    ) {
+        guard reading[key]?.generation == generation else { return }
+        reading.removeValue(forKey: key)
+        switch result {
+        case let .success(tail):
+            unreadable.remove(key)
+            tails[key] = Tail(generation: generation, tail: tail)
+            tailOrder.removeAll { $0 == key }
+            tailOrder.append(key)
+            while tailOrder.count > Self.retainedTailLimit {
+                tails.removeValue(forKey: tailOrder.removeFirst())
+            }
+            feedIfReady(key)
+        case let .failure(error):
+            if error is CancellationError { return }
+            NSLog(
+                "[UnpeelNative] kept output for %@ unavailable: %@",
+                key.sessionID,
+                error.localizedDescription
+            )
+            unreadable.insert(key)
         }
+        revision &+= 1
+    }
+
+    /// Feed the read tail into its pane once: a no-op until both exist, and
+    /// for a pane already showing this stop's tail.
+    private func feedIfReady(_ key: RemoteTerminalPaneKey) {
+        guard let tail = tails[key],
+              fed[key] != .some(tail.generation),
+              let pane = cache.existingPane(for: key),
+              pane.receiveHostBytes(tail.tail.bytes, resetBeforeFeed: true)
+        else { return }
+        fed[key] = .some(tail.generation)
     }
 }

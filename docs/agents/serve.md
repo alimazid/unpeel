@@ -339,10 +339,16 @@ preset that turns off its agent's approval prompts from the runtime's own
 declared flags (`[approvals]` in its `runtime.toml`), never by parsing the
 command itself.
 
-Session rows carry two additive fields on a Run Session (`spawned_by`
+Session rows carry three additive fields on a Run Session (`spawned_by`
 `schedule:<id>`), from both builders (`sessions.rs` `mobile_snapshot` and
 `controller_host.rs` `DiskCatalog`): `scheduleID` (the task; the app's clock
-badge) and `superseded`. A Run Session is superseded when it is not the
+badge), `superseded`, and `keptOutput` (only on a stopped Run whose
+`output.bin` holds bytes past its retention floor,
+`session_host::journal_has_retained_output`; the Mac app then shows that
+output read-only instead of the stopped placeholder, read with one tail
+`GET /mobile/output`,
+[ADR 0006](../adr/0006-a-stopped-run-session-keeps-its-output.md)). A Run
+Session is superseded when it is not the
 Session of its task's `current_run`; a pinned Run never is, and a task
 with no Run log supersedes nothing (`schedules::run_sessions`). Once the
 logged Session is gone, the task's newest Run Session stands in: Resume

@@ -21,8 +21,6 @@ import datetime
 import json
 import os
 import re
-import socket
-import struct
 import subprocess
 import sys
 import time
@@ -30,7 +28,8 @@ import zoneinfo
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from harness import (  # noqa: E402
-    BINARY, CRATES, host_certificate_pin, mobile_port, mobile_request, run, run_cli,
+    BINARY, CRATES, host_certificate_pin, host_sock_request, mobile_port, mobile_request, run,
+    run_cli,
 )
 
 ZONE = "America/New_York"
@@ -143,28 +142,6 @@ def check_user_stop_drops(case, home, session_id):
                f"size={size} retention={os.path.exists(retention)}")
 
 
-def local_request(socket_path, path, query):
-    """One `host.sock` request in the UPL1 framing the Mac app speaks
-    (`host_launch_conformance.py` has the full client)."""
-    payload = json.dumps({"id": 1, "method": "GET", "path": path, "query": query,
-                          "auth": None, "contentType": None, "bodyB64": None}).encode()
-    with socket.socket(socket.AF_UNIX) as conn:
-        conn.settimeout(20)
-        conn.connect(socket_path)
-        conn.sendall(b"UPL1" + bytes([1, 0, 0, 0]) + struct.pack(">I", len(payload)) + payload)
-        received = b""
-        while len(received) < 12 or len(received) < 12 + struct.unpack(">I", received[8:12])[0]:
-            chunk = conn.recv(65536)
-            if not chunk:
-                break
-            received += chunk
-    if len(received) < 12 or received[:4] != b"UPL1":
-        return None, {}
-    envelope = json.loads(received[12:12 + struct.unpack(">I", received[8:12])[0]])
-    body = base64.b64decode(envelope["bodyB64"]) if envelope.get("bodyB64") else b"{}"
-    return envelope.get("status"), json.loads(body)
-
-
 def wires(service, home, token):
     """`(name, read)` per session-row builder; `read(path, query)` answers
     `(status, json)`."""
@@ -180,7 +157,7 @@ def wires(service, home, token):
         socket_path = (service.status() or {}).get("localSocket")
         if not socket_path or not os.path.exists(socket_path):
             return None, {"error": "no host.sock"}
-        return local_request(socket_path, path, query)
+        return host_sock_request(socket_path, path, query)
 
     return [("phone", phone), ("host.sock", app)]
 

@@ -1144,6 +1144,9 @@ final class UnpeelStore: ObservableObject {
     /// Fork-only: Scheduled Tasks. The Run Sessions the Host last called
     /// superseded (startup cache), so the disk seed hides them as well.
     private var seedSupersededRunIDs: Set<String> = []
+    /// Fork-only: the stopped Runs the Host last said kept output (startup
+    /// cache), so the disk seed shows their output as well.
+    private var seedKeptOutputRunIDs: Set<String> = []
     /// Final combined pin + regular order being previewed by an in-flight
     /// desktop session drag. This deliberately never reaches UserDefaults or
     /// session-order.json; a successful drop commits it once, while a
@@ -2010,6 +2013,7 @@ final class UnpeelStore: ObservableObject {
         pinnedByProject = saved.pins
         unreadSessionIDs = saved.unreadIDs
         seedSupersededRunIDs = saved.supersededRunIDs ?? []
+        seedKeptOutputRunIDs = saved.keptOutputRunIDs ?? []
         restorePersistedSessionSelection()
         // hasCompletedScan deliberately stays false: cached status is only
         // presentation, never input to lifecycle edge/notification detection.
@@ -2029,7 +2033,8 @@ final class UnpeelStore: ObservableObject {
             home: Self.currentInstanceNormalizedHome(), hostID: localHostID,
             nodes: nodes, pins: pins,
             unreadIDs: Set(summaries.filter(\.unread).map(\.id)),
-            supersededRunIDs: Set(summaries.filter(\.superseded).map(\.id))
+            supersededRunIDs: Set(summaries.filter(\.superseded).map(\.id)),
+            keptOutputRunIDs: Set(summaries.filter(\.keptOutput).map(\.id))
         )
         guard value != lastStartupPresentation else { return }
         lastStartupPresentation = value
@@ -6726,7 +6731,11 @@ final class UnpeelStore: ObservableObject {
         }
         // Fork-only: Scheduled Tasks. Mark the scan's Run Sessions with the
         // Host's last verdict; a superseded one stays indexed, not listed.
-        sessions = ScheduledRunListing.seeding(sessions, supersededRunIDs: seedSupersededRunIDs)
+        sessions = ScheduledRunListing.seeding(
+            sessions,
+            supersededRunIDs: seedSupersededRunIDs,
+            keptOutputRunIDs: seedKeptOutputRunIDs
+        )
 
         var byProject: [String: [SessionEntry]] = [:]
         // A project-override marker files the session under another project
@@ -14899,6 +14908,7 @@ final class UnpeelStore: ObservableObject {
 
     /// Request a warm pane for a live, not-currently-shown session.
     func prewarmSession(_ sessionID: String) {
+        prefetchKeptOutput(sessionID)
         guard sessionID != selectedSessionID,
               let session = sessionsByID[sessionID], session.isAttachable,
               !removingSessionIDs.contains(sessionID),
@@ -14914,6 +14924,21 @@ final class UnpeelStore: ObservableObject {
         }
         if ids != prewarmSessionIDs {
             prewarmSessionIDs = ids
+        }
+    }
+
+    /// Fork-only: read a stopped Run's kept output ahead of selection, so
+    /// selecting it shows that output in its first frame (`KeptOutputPanes`).
+    func prefetchKeptOutput(_ sessionID: String) {
+        guard let session = displaySessionsByID[sessionID],
+              ScheduledRunListing.showsKeptOutput(session)
+        else { return }
+        let runtime = remoteHostRuntime
+        keptOutputPanes.load(
+            RemoteTerminalPaneKey(hostID: selectedHostScope.paneScopeID, sessionID: sessionID),
+            generation: session.lifecycleAtMs
+        ) {
+            try await runtime.keptOutputTail(sessionID: sessionID)
         }
     }
 

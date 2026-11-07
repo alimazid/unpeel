@@ -376,14 +376,11 @@ pub struct RemoteSessionSummary {
     pub schedule_id: Option<String>,
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub superseded: bool,
-    /// A stopped Run whose journal still holds output (ADR 0006): the
-    /// Controller shows that output, read through `session.output.read`,
-    /// instead of its stopped placeholder. Additive; omitted otherwise.
-    #[serde(
-        default,
-        rename = "keptOutput",
-        skip_serializing_if = "std::ops::Not::not"
-    )]
+    /// Fork-only: a stopped Run whose journal still holds output (ADR 0006):
+    /// the Controller shows that output, read through `session.output.read`,
+    /// instead of its stopped placeholder. Additive; omitted otherwise. Must
+    /// round-trip here or the native bridge strips it from the Local snapshot.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub kept_output: bool,
     /// Fork-only: this Session is the workspace's Super Agent (Router).
     /// Additive; older Hosts omit it. Must round-trip, as `cwd`.

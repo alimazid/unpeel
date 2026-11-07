@@ -82,9 +82,11 @@ struct ScheduledSectionPanel: View {
         case .task(let row):
             taskRow(row)
         case .run(let row):
-            ScheduledRunRowView(row: row) { sessionID in
-                store.revealSessionInCurrentScope(sessionID)
-            }
+            ScheduledRunRowView(
+                row: row,
+                onOpen: { store.revealSessionInCurrentScope($0) },
+                onHoverIntent: { store.prefetchKeptOutput($0) }
+            )
         case .loadingRuns:
             ScheduledRunNotice(text: "Loading Runs…")
         case .noRuns:
@@ -120,6 +122,8 @@ struct ScheduledSectionPanel: View {
 private struct ScheduledRunRowView: View {
     let row: ScheduledRunRow
     let onOpen: (String) -> Void
+    /// A stopped Run's kept output is read ahead on hover (ADR 0006).
+    let onHoverIntent: (String) -> Void
     @State private var hovering = false
 
     var body: some View {
@@ -168,7 +172,10 @@ private struct ScheduledRunRowView: View {
         }
         .buttonStyle(.plain)
         .disabled(!canOpen)
-        .onHover { hovering = $0 }
+        .onHover { inside in
+            hovering = inside
+            if inside, let sessionID = row.openableSessionID { onHoverIntent(sessionID) }
+        }
         .accessibilityLabel(accessibilityLabel)
         .help(canOpen ? "Open this Run's Session" : "This Run's Session is no longer kept")
     }

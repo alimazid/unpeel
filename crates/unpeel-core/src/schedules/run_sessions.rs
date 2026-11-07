@@ -6,7 +6,9 @@
 //! of the task is *superseded*. Hosts publish both facts on the Session's row
 //! (`scheduleID`, `superseded`), and every Controller listing hides a
 //! superseded row from that one field while the row stays openable by id
-//! (the SCHEDULED section's Runs open it).
+//! (the SCHEDULED section's Runs open it). A stopped Run's row also says
+//! whether it kept output (`keptOutput`, ADR 0006), which a Controller shows
+//! in place of the stopped placeholder.
 //!
 //! A pinned Run is never superseded: the user kept it there, as Run
 //! retention and the next Run's stop both leave it alone. Nor is an older
