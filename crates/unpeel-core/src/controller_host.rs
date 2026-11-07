@@ -2727,6 +2727,7 @@ mod tests {
             program_status: None,
             terminal_modes: None,
             screen_changed_at: None,
+            last_input_at: None,
             detected_local_urls: Vec::new(),
             heartbeat_at: 1,
             updated_at: 1,
