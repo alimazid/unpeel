@@ -138,7 +138,7 @@ cargo test --manifest-path crates/apps/Cargo.toml --workspace         # first-pa
 cargo clippy --manifest-path crates/Cargo.toml --workspace --all-targets --all-features -- -D warnings
 scripts/ci/check-portable-core.sh          # unpeel-core without the Host (controller-core + wasm32 clippy)
 crates/unpeel-cli/tests/run.sh            # the PTY matrix (real binaries, ~10 min); ./run.sh <filter> for a subset, -j N for N cases at once
-scripts/verify-matrix-runner.sh            # run.sh itself: slots, -j, interrupt (fake cases, ~30 s)
+scripts/verify-matrix-runner.sh            # run.sh itself: slots, -j, interrupt (fake cases, ~40 s)
 scripts/verify-attach.sh                   # attach end to end
 scripts/verify-browser.sh                  # browser engine + MCP (needs Chrome)
 bun run test:release                       # release/publish scripts

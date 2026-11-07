@@ -32,7 +32,10 @@ UNPEEL_TUI_PTY_TESTS=1 cargo test -p unpeel-cli --test pty_suites
 (The `UNPEEL_TUI_*` variable names predate the removal of the terminal UI
 and are kept so existing scripts and CI keep working: `UNPEEL_TUI_BINARY`,
 `UNPEEL_TUI_SKIP_BUILD`, `UNPEEL_TUI_TEST_BASE`, `UNPEEL_TUI_TEST_HOME`,
-`UNPEEL_TUI_PTY_TESTS`.)
+`UNPEEL_TUI_PTY_TESTS`. The runner's newer knobs share the prefix:
+`UNPEEL_TUI_SLOTS`, `UNPEEL_TUI_JOBS`, and `UNPEEL_TUI_SLOT_DIR`, which
+moves the slots only for the runner's own self-test,
+`scripts/verify-matrix-runner.sh`.)
 
 ## Why it is built this way
 
@@ -65,7 +68,9 @@ a path boundary so `/tmp/s1-cli` never claims `/tmp/s1-cli_write_policy`.
 Ports are never fixed. Hosts and fixtures bind `:0` and keep the socket;
 the one port that has to be released and bound again later (the phone
 endpoint, `reserve_mobile_port`) is a random free port below every OS
-ephemeral range, so no `:0` bind anywhere on the machine can take it.
+ephemeral range, so no `:0` bind anywhere on the machine can take it; only
+another case drawing the same number from 20000–29999 in the same moment
+could.
 
 ## Writing a case
 

@@ -65,6 +65,7 @@ UNPEEL_HOME=/tmp/unpeel-dev crates/target/debug/unpeel serve  # isolated state, 
 cargo test --manifest-path crates/Cargo.toml --workspace
 cargo test --manifest-path crates/unpeel-attach/Cargo.toml
 crates/unpeel-cli/tests/run.sh          # real-PTY case matrix (~8 min); ./run.sh <filter> for a subset
+scripts/verify-matrix-runner.sh         # run.sh itself: slots, -j, interrupt (fake cases, ~40 s)
 scripts/bench-memory.sh                 # memory ceilings after anything touching session hosting
 scripts/verify-attach.sh                # attach replay / live echo / reattach / snapshot
 scripts/verify-browser.sh               # Browser MCP end to end (needs an engine + Chrome; skips otherwise)
