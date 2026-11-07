@@ -5,7 +5,8 @@ default stopped window is five). One script task then runs seven times via
 Run now. Covered: starting each Run stops the previous Run's idle Session,
 which stays a stopped row; the latest Run's Session stays live; Run
 Sessions never push the user's stopped Sessions out of the Project; the
-task keeps its newest five stopped Run Sessions and the oldest is removed;
+task keeps its newest five stopped Run Sessions and the oldest is removed,
+directory and kept output with it;
 and deleting the task leaves its Run Sessions where retention put them.
 Every finished Run is unread (no one looks at them here), and that never
 exempts a Run from its task's keep limit.
@@ -92,6 +93,11 @@ def check_retention(case, service, home, sessions):
     removed = service.wait_for(lambda: oldest not in home.manifests(), timeout=30)
     case.check("the task's oldest stopped Run Session is removed past its five",
                bool(removed), f"{oldest}: {state_of(home, oldest)}")
+    # A stopped Run keeps its output (ADR 0006) only until it is removed.
+    directory = home.path("app-sessions", oldest)
+    gone = service.wait_for(lambda: not os.path.exists(directory), timeout=10)
+    case.check("its directory goes with it, kept output included", bool(gone),
+               str(os.listdir(directory)) if os.path.isdir(directory) else "")
     case.check(f"the task keeps its newest {KEPT_STOPPED_RUNS} stopped Run Sessions",
                len(stopped) == KEPT_STOPPED_RUNS
                and all(state_of(home, session_id) == "exited" for session_id in stopped),

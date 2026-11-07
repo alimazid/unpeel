@@ -25,6 +25,7 @@ import http.client
 import json
 import os
 import pty
+import random
 import re
 import select
 import shutil
@@ -45,6 +46,11 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 REPO = os.path.realpath(os.path.join(os.path.dirname(__file__), "..", "..", ".."))
 CRATES = os.path.join(REPO, "crates")
 BINARY = os.environ.get("UNPEEL_TUI_BINARY", os.path.join(CRATES, "target", "debug", "unpeel"))
+
+# run.sh starts each case as a background job, and a shell starts those with
+# SIGINT ignored. Restore it so Ctrl-C (or run.sh passing one on) still
+# unwinds the case through `Case.finish()` and its cleanup.
+signal.signal(signal.SIGINT, signal.default_int_handler)
 
 SPINNER_CHARS = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
 UNREAD_DOT = "●"
@@ -231,6 +237,13 @@ def _pids_with_arg(arg):
     return pids
 
 
+def _names_path(text, path):
+    """Whether `text` mentions `path` itself or something under it. A bare
+    substring test would let /tmp/s1-cli claim /tmp/s1-cli_write_policy,
+    a different case's home that may be running beside it."""
+    return re.search(re.escape(path) + r"(?=/|\s|$)", text) is not None
+
+
 def _process_references_home(pid, home_real):
     # argv mentions the home (covers __session_host__ launch files)…
     try:
@@ -238,7 +251,7 @@ def _process_references_home(pid, home_real):
             ["ps", "-p", str(pid), "-o", "command="],
             capture_output=True, text=True, check=False,
         ).stdout
-        if home_real in cmd:
+        if _names_path(cmd, home_real):
             return True
     except Exception:
         pass
@@ -249,7 +262,7 @@ def _process_references_home(pid, home_real):
             ["ps", "eww", "-p", str(pid), "-o", "command="],
             capture_output=True, text=True, check=False,
         ).stdout
-        if f"UNPEEL_HOME={home_real}" in env or f"UNPEEL_HOME={home_real}/" in env:
+        if _names_path(env, f"UNPEEL_HOME={home_real}"):
             return True
     except Exception:
         pass
@@ -287,6 +300,29 @@ def leftover_host_processes(home_root):
                 ).stdout.strip()
                 leftovers.append((pid, cmd))
     return leftovers
+
+
+# `session_host::socket_path` keeps a session's socket at
+# <home>/app-sessions/<id>/session.sock only while that path is at most this
+# long; past it every Unpeel process looks in /tmp/unpeel-<uid>/<id>.sock
+# instead, one directory for the whole machine.
+MAX_UNIX_SOCKET_PATH_LEN = 100
+
+
+def fixture_socket_path(home, session_id):
+    """Where a fixture binds a session's control socket: the path the Host
+    will look in. A fixture session id is fixed, not a fresh UUID, so a
+    socket past the cap would move to the machine-wide fallback, where the
+    Host would miss this socket and another run's same-named fixture could
+    meet it. Refuse loudly instead; this also covers sub-homes, which the
+    budget check in `Case` cannot see."""
+    path = home.path("app-sessions", session_id, "session.sock")
+    if len(path) > MAX_UNIX_SOCKET_PATH_LEN:
+        raise RuntimeError(
+            f"fixture socket {path!r} is {len(path)} bytes, over the Host's "
+            f"{MAX_UNIX_SOCKET_PATH_LEN}: shorten the home or the session id"
+        )
+    return path
 
 
 # Every private home this process built, oldest first; `host_certificate_pin`
@@ -385,7 +421,7 @@ class Home:
             pid = child.pid
             state = "running"
             sock = socket.socket(socket.AF_UNIX)
-            sock_path = os.path.join(directory, "session.sock")
+            sock_path = fixture_socket_path(self, session_id)
             if os.path.exists(sock_path):
                 os.unlink(sock_path)
             sock.bind(sock_path)
@@ -571,11 +607,28 @@ class Home:
         `server-port` is the *app's* rebinding contract: the Host binds it
         when free but must never write it, so a test that wants to reach the
         phone server has to publish the number itself — exactly as a desktop
-        app would have."""
-        probe = socket.socket()
-        probe.bind(("127.0.0.1", 0))
-        port = probe.getsockname()[1]
-        probe.close()
+        app would have.
+
+        The Host binds this exact number later, so a kernel-chosen `:0` port
+        could be handed to any other process in between (other cases and
+        other runs bind `:0` all the time). A random port below every OS
+        ephemeral range (macOS 49152+, Linux 32768+) can only be taken by an
+        explicit bind of that number — the cure `mobile.rs` uses for its own
+        tests (`on_a_reclaimable_port`)."""
+        port = None
+        for _ in range(200):
+            candidate = random.randrange(20000, 30000)
+            probe = socket.socket()
+            try:
+                probe.bind(("0.0.0.0", candidate))
+                port = candidate
+                break
+            except OSError:
+                continue
+            finally:
+                probe.close()
+        if port is None:
+            raise RuntimeError("no free port in 20000-29999 for the phone endpoint")
         with open(self.path("mobile", "server-port"), "w") as handle:
             handle.write(f"{port}\n")
         return port
@@ -730,7 +783,7 @@ class FakeHost:
         application_cursor=False,
         response_delay=0,
     ):
-        self.path = home.path("app-sessions", session_id, "session.sock")
+        self.path = fixture_socket_path(home, session_id)
         self._manifest_path = home.path("app-sessions", session_id, "manifest.json")
         self.writes = []
         self.resizes = []
@@ -1437,14 +1490,17 @@ class Case:
         self.notes = []
         root = os.environ.get("UNPEEL_TUI_TEST_HOME") or f"/tmp/ut-{os.getpid()}"
         # A hosted session binds `<home>/app-sessions/<uuid>/session.sock`,
-        # which adds ~55 bytes to the home path; sockaddr_un caps the total
-        # near 104. Over that, bind() fails and the host dies with nothing on
-        # screen to explain it — so fail loudly here instead.
+        # which adds ~63 bytes to the home path. Past the Host's cap the
+        # socket moves to a machine-wide fallback directory, and sockaddr_un
+        # caps any path near 104 bytes; either way a case breaks with nothing
+        # on screen to explain it — so fail loudly here instead. Fixture
+        # sessions, in sub-homes too, are checked by `fixture_socket_path`.
         budget = len(root) + len("/app-sessions/") + 36 + len("/session.sock")
-        if budget > 100:
+        if budget > MAX_UNIX_SOCKET_PATH_LEN:
             raise RuntimeError(
                 f"test home {root!r} is too long ({budget} bytes with a socket "
-                "suffix, limit ~104) — hosted sessions could not bind"
+                f"suffix, limit {MAX_UNIX_SOCKET_PATH_LEN}) — hosted sessions "
+                "could not bind"
             )
         shutil.rmtree(root, ignore_errors=True)
         self.home = Home(root)
@@ -1511,6 +1567,8 @@ class Case:
         return self.track(FakeHost(self.home, session_id, **kwargs))
 
     def finish(self):
+        # A second Ctrl-C must not cut the cleanup below short.
+        signal.signal(signal.SIGINT, signal.SIG_IGN)
         for closable in reversed(self._closables):
             try:
                 closable.close()
@@ -1560,5 +1618,7 @@ def run(name, body):
 
         case.check(f"{name} raised", False, traceback.format_exc().strip().splitlines()[-1])
         traceback.print_exc()
+    except KeyboardInterrupt:
+        case.check(f"{name} finished before it was interrupted", False)
     finally:
         case.finish()

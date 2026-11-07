@@ -126,12 +126,20 @@ re-reads it every rescan and fires due tasks itself
 (times without zero seconds, a weekday's full lowercase name, a cron
 expression single-spaced) after the save rules every writer runs
 (`unpeel_core::schedules::save`, with `trigger::for_save` on this machine's
-clock, the function the Host uses): they refuse out-of-range values, a past
-Once, a cron expression that is not exactly 5 fields or never comes due, and
-a task the Host would not run (a Project with no folder, a preset that is
-missing or turned off, instructions on a preset that is not an Agent
-Preset), checked against the Projects and presets of `app-state.json` and
-the app's overlay. Pause is
+clock, the function the Host uses): they refuse out-of-range values, a cron
+expression that is not exactly 5 fields or never comes due, and a task the
+Host would not run (a Project with no folder, whatever the preset, so a
+script Run never falls back to `$HOME`; a preset that is missing or turned
+off; instructions on a preset that is not an Agent Preset), checked against
+the Projects and presets of `app-state.json` and the app's overlay. A Once
+time that has passed is refused only while the task is enabled: `add`
+makes an enabled task, so it always refuses one, and `edit` refuses a new
+past time on an enabled task, but a paused task (a Once task pauses itself
+after its Run) saves one as is, and `resume` refuses it until `edit --once`
+gives it a new time. An `edit` that
+gives the Trigger the task already stores is no change and is not checked
+again, as on the write routes (`save::check_edited_trigger`), so a finished
+Once task's name, instructions and preset always edit. Pause is
 `enabled: false`; Resume, and a new Trigger, stamp `clock_reset_at_ms`, and
 the due rule counts only occurrences after it, so nothing missed while
 paused runs. `run` (Run now) goes to the live worker over the owner-only
@@ -147,7 +155,10 @@ except the Super Agent's (`supervision::is_router`): it changes tasks for
 the user, here or through the MCP `workspace` writes.
 `rm` deletes the task and its history; its Run Sessions stay, though a Run
 already coming up still stops the task's Superseded Runs (detail:
-`docs/agents/serve.md`).
+`docs/agents/serve.md`). A delete that lands during a sweep wins: the worker
+re-checks, under the task's lock, that the definition is still saved before
+it saves the clock or records a Run's start, so a deleted task gets neither
+its directory nor a Run back.
 
 Triggers read the local wall clock (`unpeel_serve::schedules::clock`):
 `system_zone()` resolves the zone on every call (`TZ`, else the
