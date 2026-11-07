@@ -307,11 +307,12 @@ the local socket after checking the caller is the Router; see
 the Trigger in its stored shape: `/mobile/schedules` (`schedule.create`),
 `/mobile/schedules/edit` (`schedule.edit`; pause and resume are `enabled`),
 `/mobile/schedules/delete` (`schedule.delete`: the task and its history,
-never its Run Sessions) and `/mobile/schedules/run` (`schedule.run`: Run
-now, 409 while a Run is in progress, 500 `run_log_unreadable` when the
-task's Run log will not read, so the Host cannot tell). They edit
-`app-state.json` raw under its flock and announce, like `unpeel
-schedules`, and are replay-protected.
+never its Run Sessions; a delete during a sweep wins, as for `unpeel
+schedules rm`, and the sweep's `SweepEvent::Deleted` adds no ping) and
+`/mobile/schedules/run` (`schedule.run`: Run now, 409 while a Run is in
+progress, 500 `run_log_unreadable` when the task's Run log will not read,
+so the Host cannot tell). They edit `app-state.json` raw under its flock
+and announce, like `unpeel schedules`, and are replay-protected.
 Every refusal of the schedules routes answers `{"error": <message>, "code":
 <code>}`; the codes (`trigger_in_past`, `not_agent_preset`,
 `run_in_progress`, …) are listed with their statuses in
@@ -322,7 +323,9 @@ They check a task with the same save rules as the CLI and a starting Run
 (`unpeel_core::schedules::save`). What they cannot do from the disk comes
 from the `ScheduleHost` the workspace worker installs at start
 (`schedules::host::WorkerHost`): `trigger::for_save` on the Host's clock (a
-task saved enabled must come due; resuming re-checks), the create catalog
+task saved enabled must come due; the stored Trigger sent back in an edit is
+not checked again; resuming re-checks, and refuses a Once time that has
+passed until the task has a new one), the create catalog
 its Runs resolve against (a Project with a folder, an enabled preset,
 instructions only on an Agent Preset), Run now through the driver (the same request `unpeel schedules run` sends
 over `/_unpeel/schedules`, which answers its refusals with the same status

@@ -9,12 +9,18 @@ Run Session carries `scheduleID`; the latest Run's (the Session of the
 task's current Run) has `superseded: false` and the two older ones `true`;
 the user's Sessions carry neither; and on both wires every Run Session and
 all five of the user's stopped Sessions are still listed, so Runs never
-crowd the user's rows out and a superseded Run stays openable by id. Then
-the latest Run is replaced the way Resume leaves it on disk (a new id with
-the same `spawned_by` and `created_at`, the logged one gone): the
-replacement is the latest and the older two stay superseded. Last, a Run
-of an Agent Preset task is stopped and resumed for real: the task's Run
-history names the replacement id instead of the old one.
+crowd the user's rows out and a superseded Run stays openable by id. The
+CLI lists the same way: `unpeel ls` (text and `--json`) leaves the two
+older Runs out and keeps the latest and the user's rows, `ls --all` lists
+them marked `superseded` (`--json`: `superseded: true` and the task's
+`scheduleID`, the user's rows with neither), and `unpeel logs` and
+`schedules history` still reach one. Then the latest Run is replaced the
+way Resume leaves it on disk (a new id with the same `spawned_by` and
+`created_at`, the logged one gone): the replacement is the latest and the
+older two stay superseded, on both wires and in `ls`; a pinned older Run
+is listed again. Last, a Run of an Agent Preset task is stopped and
+resumed for real: the task's Run history names the replacement id instead
+of the old one.
 """
 
 import base64
@@ -125,7 +131,13 @@ def check_rows(case, wire, rows, task_id, runs):
     case.check(f"{wire}: the two older Run Sessions are superseded",
                all((by_id.get(run_id) or {}).get("superseded") is True for run_id in older),
                json.dumps({run_id: by_id.get(run_id) for run_id in older})[:800])
-    case.check(f"{wire}: the user's own Sessions carry neither field",
+    check_user_rows(case, wire, rows)
+
+
+def check_user_rows(case, listing, rows):
+    """Sessions that are not Runs: all five listed, with neither Run field."""
+    by_id = {row.get("id"): row for row in rows}
+    case.check(f"{listing}: the user's own Sessions carry neither field",
                all(session_id in by_id
                    and "scheduleID" not in by_id[session_id]
                    and "superseded" not in by_id[session_id]
@@ -156,6 +168,105 @@ def check_both_wires(case, service, task_id, runs, phone, stage):
     status, local = local_bootstrap(socket_path)
     case.check(f"{stage}: the Mac app's wire reads /mobile/bootstrap", status == 200, str(status))
     check_rows(case, f"{stage}, host.sock", local.get("sessions", []), task_id, runs)
+
+
+def ls_json(home, *flags):
+    listed = cli(home, "ls", "--json", *flags)
+    try:
+        return json.loads(listed.stdout)
+    except ValueError:
+        return []
+
+
+def run_lines(lines, run_id):
+    return [line for line in lines if line.startswith(run_id[:8])]
+
+
+def check_ls(case, home, task_id, runs, stage):
+    """`unpeel ls` hides superseded Runs the way the apps do; the latest Run
+    stays listed, and a superseded one is still reachable. `--all` lists them
+    too, marked."""
+    latest, older = runs[-1], runs[:-1]
+    rows = ls_json(home)
+    by_id = {row.get("id"): row for row in rows}
+    for run_id in runs:
+        case.note(f"{stage}: ls --json {'latest' if run_id == latest else 'older'} {run_id}: "
+                  f"{json.dumps(by_id.get(run_id))}")
+    case.check(f"{stage}: ls --json lists the latest Run, with its task",
+               (by_id.get(latest) or {}).get("scheduleID") == task_id
+               and by_id[latest].get("superseded") is False,
+               json.dumps(by_id.get(latest)))
+    case.check(f"{stage}: ls --json leaves out the superseded Runs",
+               not any(run_id in by_id for run_id in older),
+               json.dumps([run_id for run_id in older if run_id in by_id]))
+    check_user_rows(case, f"{stage}, ls --json", rows)
+
+    text = cli(home, "ls")
+    lines = text.stdout.splitlines()
+    for run_id in runs:
+        case.note(f"{stage}: ls {'latest' if run_id == latest else 'older'} {run_id[:8]}: "
+                  f"{run_lines(lines, run_id)!r}")
+    case.check(f"{stage}: ls lists the latest Run", bool(run_lines(lines, latest)), text.stdout)
+    case.check(f"{stage}: ls leaves out the superseded Runs",
+               not any(run_lines(lines, run_id) for run_id in older), text.stdout)
+
+    check_ls_all(case, home, task_id, runs, stage)
+
+    logs = cli(home, "logs", older[0])
+    case.note(f"{stage}: logs {older[0]}: exit {logs.returncode} "
+              f"stdout {logs.stdout[-200:]!r} stderr {logs.stderr.strip()!r}")
+    case.check(f"{stage}: a superseded Run is reachable by id (unpeel logs)",
+               logs.returncode == 0, logs.stderr)
+    named = history_sessions(home, task_id)
+    case.note(f"{stage}: schedules history sessions: {named}")
+    case.check(f"{stage}: a superseded Run is reachable through schedules history",
+               all(run_id in named for run_id in older), json.dumps(named))
+
+
+def check_ls_all(case, home, task_id, runs, stage):
+    """`unpeel ls --all` also lists the superseded Runs: marked in text, and
+    in JSON with `superseded: true` and the task's `scheduleID`."""
+    latest, older = runs[-1], runs[:-1]
+    rows = ls_json(home, "--all")
+    by_id = {row.get("id"): row for row in rows}
+    case.check(f"{stage}: ls --all --json lists every Run",
+               all(run_id in by_id for run_id in runs), json.dumps(sorted(by_id)))
+    case.check(f"{stage}: ls --all --json marks the older Runs superseded, with their task",
+               all((by_id.get(run_id) or {}).get("superseded") is True
+                   and by_id[run_id].get("scheduleID") == task_id for run_id in older),
+               json.dumps({run_id: by_id.get(run_id) for run_id in older})[:800])
+    case.check(f"{stage}: ls --all --json gives the latest Run superseded: false",
+               (by_id.get(latest) or {}).get("superseded") is False
+               and by_id[latest].get("scheduleID") == task_id,
+               json.dumps(by_id.get(latest))[:400])
+    check_user_rows(case, f"{stage}, ls --all --json", rows)
+
+    text = cli(home, "ls", "--all")
+    lines = text.stdout.splitlines()
+    shown = {run_id: run_lines(lines, run_id) for run_id in runs}
+    case.note(f"{stage}: ls --all runs: {json.dumps(shown)}")
+    case.check(f"{stage}: ls --all lists every Run", all(shown.values()), text.stdout)
+    case.check(f"{stage}: ls --all marks only the older Runs superseded",
+               all(line.endswith("superseded") for run_id in older for line in shown[run_id])
+               and not any(line.endswith("superseded") for line in shown[latest]),
+               text.stdout)
+    user_lines = run_lines(lines, USER_SESSIONS[0])
+    case.check(f"{stage}: ls --all lists the user's Sessions unmarked",
+               len(user_lines) == len(USER_SESSIONS)
+               and not any(line.endswith("superseded") for line in user_lines), text.stdout)
+
+
+def check_pinned_run_listed(case, home, run_id):
+    """A pinned older Run is never superseded, so `unpeel ls` lists it."""
+    home.pin(run_id)
+    row = next((row for row in ls_json(home) if row.get("id") == run_id), None)
+    case.check("a pinned older Run is listed by ls --json, not superseded",
+               bool(row) and row.get("pinned") is True and row.get("superseded") is False,
+               json.dumps(row))
+    lines = run_lines(cli(home, "ls").stdout.splitlines(), run_id)
+    case.check("a pinned older Run is listed by ls, unmarked",
+               bool(lines) and not any(line.endswith("superseded") for line in lines),
+               json.dumps(lines))
 
 
 def history_sessions(home, task_id):
@@ -269,9 +380,12 @@ def body(case):
             return
         phone = lambda: mobile_request(port, "/mobile/bootstrap", token, home=home)  # noqa: E731
         check_both_wires(case, service, task_id, runs, phone, "after three Runs")
+        check_ls(case, home, task_id, runs, "after three Runs")
         resumed = resume_latest_on_disk(case, home, task_id, runs)
         if resumed:
             check_both_wires(case, service, task_id, resumed, phone, "after a Resume")
+            check_ls(case, home, task_id, resumed, "after a Resume")
+            check_pinned_run_listed(case, home, resumed[0])
         check_resume_follows(case, service, home)
     finally:
         for session_id in list(home.manifests()):
