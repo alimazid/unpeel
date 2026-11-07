@@ -5256,6 +5256,9 @@ pub unsafe extern "C" fn unpeel_native_bridge_free(pointer: *mut u8, length: usi
 }
 
 #[cfg(test)]
+mod test_home;
+
+#[cfg(test)]
 mod tests {
     /// A Host route's own refusal reaches Swift as `hostStatus` and
     /// `hostCode` beside the bridge's `code`; any other failure adds none.

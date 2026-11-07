@@ -139,6 +139,17 @@ restores blocking `write_all` for the transient-thread paths by waiting for
 rest for the PTY's writable event (bounded at 1 MiB, then the input client
 is dropped).
 
+Fork-only (#38): `HostRuntime.typing` records when the user last typed.
+A `Write` with no `origin` (the Mac app's controller writes, the phone)
+and every `StreamInput` frame count, when they can change an input line:
+keys, text, the user's own bracketed paste. Mouse reports, focus in/out and
+terminal replies do not (`crate::typed_input`). `origin: "program"` writes
+(the Inbox paste, MCP `send_text`/`send_keys`, initial text and prompts,
+screenshot requests) never count. The menu/screen scan flushes the time to
+the manifest as `last_input_at`, coalesced like `screen_changed_at`. A
+`Write` with `unless_typed_since` is refused with the error `typed_since`
+when the user typed at or after that time; older cores ignore both fields.
+
 Session end (PTY EOF/error, Kill followed by a final drain, or a failed
 journal write) detaches the fds on the reactor and runs the old epilogue on
 a `session-exit` thread: journal flushed and closed, timer jobs retired, the

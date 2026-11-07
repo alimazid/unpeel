@@ -1111,7 +1111,7 @@ impl HostRuntime {
     /// re-read from `app-state.json` every sweep, so an edit takes effect on
     /// the next one; a file that will not read changes nothing. A Run whose
     /// Session came up stops its task's earlier idle Run Sessions
-    /// (`run_sessions.rs`).
+    /// (`run_sessions.rs`), even if the task was deleted meanwhile.
     fn sweep_schedules(&mut self, emitted: &mut Vec<ServeEvent>) {
         let definitions = unpeel_core::schedule_store::load_schedules_and_presets();
         let (schedules, known_presets) = match definitions {
@@ -1121,8 +1121,9 @@ impl HostRuntime {
                 return;
             }
         };
-        if schedules.is_empty() && !self.schedules.has_pending() {
-            // A workspace without tasks pays one small file read per rescan.
+        if !self.schedules.needs_sweep(&schedules) {
+            // A workspace without tasks, and no Run still coming up, pays
+            // one small file read per rescan.
             return;
         }
         let (projects, presets) = crate::mobile::create_catalog(&self.snapshot).unwrap_or_default();
@@ -1142,7 +1143,7 @@ impl HostRuntime {
         // per sweep).
         if events
             .iter()
-            .any(|event| !matches!(event, crate::schedules::SweepEvent::Warning(_)))
+            .any(crate::schedules::SweepEvent::changes_schedules)
         {
             unpeel_core::state_bus::announce(
                 unpeel_core::state_bus::Change::Schedules,
@@ -1199,6 +1200,10 @@ impl HostRuntime {
             }
             // Its ping is the sweep's one announce, above.
             crate::schedules::SweepEvent::Published { .. } => {}
+            crate::schedules::SweepEvent::Deleted { schedule_id } => crate::tracelog::trace(
+                "host-worker",
+                &format!("schedule {schedule_id} was deleted during a sweep: nothing ran"),
+            ),
             crate::schedules::SweepEvent::Warning(warning) => {
                 emitted.push(ServeEvent::Warning(warning))
             }

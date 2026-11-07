@@ -36,6 +36,14 @@ pub fn wire_row(row: &SessionRow) -> unpeel_core::schedules::run_sessions::RunSe
     }
 }
 
+/// Each task's latest Run Session as a scan's `rows` (all of them, not just
+/// its listed items) show it: what a listing of those rows marks the task's
+/// other Runs superseded against (`unpeel_core::schedules::run_sessions`).
+pub fn latest_runs(rows: &[SessionRow]) -> unpeel_core::schedules::run_sessions::LatestRunSessions {
+    let run_rows: Vec<_> = rows.iter().map(wire_row).collect();
+    unpeel_core::schedule_store::latest_run_sessions_of(&run_rows)
+}
+
 pub fn is_run_session(row: &SessionRow) -> bool {
     schedule_id(row).is_some()
 }

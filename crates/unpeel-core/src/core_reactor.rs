@@ -1394,6 +1394,7 @@ mod tests {
             last_runtime_observation: None,
             recent_write_ids: RecentWriteIds::default(),
             hook_input: crate::hook_cancellation::InputTracker::default(),
+            typing: Default::default(),
         }));
         let shared = Arc::new(SessionShared {
             session_id: "reactor-read-test".into(),

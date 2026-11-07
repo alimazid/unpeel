@@ -1366,7 +1366,9 @@ fn api_input<W: Write>(
         return;
     }
 
-    let result = session_input::deliver_sanitized_text(&manifest.session.id, &sanitized, submit);
+    // Fork-only (#38): the text box types for the user.
+    let result =
+        session_input::deliver_sanitized_text_as_user(&manifest.session.id, &sanitized, submit);
 
     let truncated: String = sanitized.chars().take(80).collect();
     ctx.audit.log(
@@ -1461,6 +1463,8 @@ fn write_session(session_id: &str, data: &str, write_id: Option<String>) -> Resu
         &SessionHostCommand::Write {
             data: data.to_string(),
             write_id,
+            origin: session_host::WriteOrigin::User, // Fork-only (#38)
+            unless_typed_since: None,
         },
     )
 }
@@ -3137,6 +3141,7 @@ mod tests {
             program_status: None,
             terminal_modes: None,
             screen_changed_at: None,
+            last_input_at: None,
             detected_local_urls: Vec::new(),
             heartbeat_at: 1,
             updated_at: 1,
@@ -3436,6 +3441,7 @@ mod tests {
             program_status: None,
             terminal_modes: None,
             screen_changed_at: None,
+            last_input_at: None,
             detected_local_urls: Vec::new(),
             heartbeat_at: current_timestamp_ms(),
             updated_at: current_timestamp_ms(),

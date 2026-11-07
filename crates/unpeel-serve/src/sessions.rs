@@ -1860,12 +1860,7 @@ pub fn mobile_snapshot(
 ) -> MobileSnapshot {
     // Fork-only: Scheduled Tasks. Each task's latest Run Session,
     // from its Run log, marks the task's other Runs superseded.
-    let run_rows: Vec<_> = model
-        .rows
-        .iter()
-        .map(crate::run_sessions::wire_row)
-        .collect();
-    let latest_runs = unpeel_core::schedule_store::latest_run_sessions_of(&run_rows);
+    let latest_runs = crate::run_sessions::latest_runs(&model.rows);
     mobile_snapshot_with_runs(model, overlay, extra_unread, activity_log, &latest_runs)
 }
 

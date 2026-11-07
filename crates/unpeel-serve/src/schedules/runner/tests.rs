@@ -17,8 +17,16 @@ struct Recording {
     /// (default: typed, or ready without instructions, at 09:00:01).
     delivered: Mutex<Vec<(String, Option<String>)>>,
     delivery: Option<Delivery>,
+    /// When set, each delivery waits for a message here before it returns.
+    held_delivery: Option<Mutex<mpsc::Receiver<()>>>,
     /// What the agent's screen shows as its reply.
     screen: Option<String>,
+    /// Tasks whose definition has left the saved Scheduled Tasks.
+    deleted: Mutex<HashSet<String>>,
+    /// A delete that lands mid-sweep: the definition leaves once this many
+    /// checks have seen it.
+    delete_after_checks: Option<usize>,
+    checks: Mutex<usize>,
 }
 
 impl Effects for Recording {
@@ -38,6 +46,9 @@ impl Effects for Recording {
             .lock()
             .unwrap()
             .push((session_id.to_string(), instructions.map(str::to_string)));
+        if let Some(held) = &self.held_delivery {
+            let _ = held.lock().unwrap().recv();
+        }
         let at_ms = clock::epoch_ms(&now(9, 0, 1));
         self.delivery.clone().unwrap_or(match instructions {
             Some(_) => Delivery::Typed { at_ms },
@@ -62,6 +73,41 @@ impl Effects for Recording {
         self.disabled.lock().unwrap().push(schedule_id.to_string());
         Ok(())
     }
+
+    fn is_defined(&self, schedule_id: &str) -> Result<bool, String> {
+        let mut checks = self.checks.lock().unwrap();
+        let mut deleted = self.deleted.lock().unwrap();
+        if self.delete_after_checks == Some(*checks) {
+            deleted.insert(schedule_id.to_string());
+        }
+        *checks += 1;
+        Ok(!deleted.contains(schedule_id))
+    }
+}
+
+/// Delete a task as `write.rs` `delete` and `unpeel schedules rm` do: its
+/// definition leaves app-state.json, then its store goes.
+fn delete(scheduler: &Scheduler, effects: &Recording, schedule_id: &str) {
+    effects
+        .deleted
+        .lock()
+        .unwrap()
+        .insert(schedule_id.to_string());
+    TaskStore::open(root_of(scheduler), schedule_id)
+        .unwrap()
+        .remove()
+        .unwrap();
+}
+
+/// What a task's directory holds, if it exists.
+fn entries(dir: &std::path::Path) -> Vec<std::ffi::OsString> {
+    std::fs::read_dir(dir)
+        .map(|entries| {
+            entries
+                .filter_map(|entry| entry.ok().map(|entry| entry.file_name()))
+                .collect()
+        })
+        .unwrap_or_default()
 }
 
 fn root_of(scheduler: &Scheduler) -> &std::path::Path {
@@ -783,5 +829,155 @@ fn instructions_on_a_preset_that_is_not_an_agent_fail_the_run_before_launch() {
         let run = latest(scheduler);
         assert_eq!(run.status, RunStatus::Failed);
         assert!(run.reason.unwrap().contains("not an Agent Preset"));
+    });
+}
+
+// ── A task deleted while its Run comes up (#30) ──
+
+/// The worker skips the sweep of a workspace with no task unless the
+/// Scheduler says otherwise. Deleting the only task while its Run's Session
+/// comes up must not leave that Session's outcome undrained (and the task's
+/// Superseded Runs live) until some later task is created; swept with no
+/// definition, the Run still says its Session is up.
+#[test]
+fn a_spawned_outcome_keeps_the_worker_sweeping_after_its_task_is_deleted() {
+    with_scheduler(Recording::default(), |scheduler, effects| {
+        let tasks = [schedule(ScheduleTrigger::Daily {
+            time: "09:00".into(),
+        })];
+        sweep(scheduler, &tasks, &now(9, 0, 0));
+        settle(effects, 1);
+        let session_id = effects.spawned.lock().unwrap()[0].0.session_id.clone();
+        assert!(
+            scheduler.needs_sweep(&[]),
+            "the worker skips the sweep, so the Session's Spawned outcome waits undrained"
+        );
+        let next = sweep(scheduler, &[], &now(9, 0, 1));
+        assert_eq!(spawned(&next), vec![session_id]);
+        assert!(!scheduler.needs_sweep(&[]), "nothing left to drain");
+    });
+}
+
+/// An agent Run's delivery outcome is drained the same way: a task deleted
+/// while its agent's instructions are typed leaves nothing held for a later
+/// sweep.
+#[test]
+fn an_agent_runs_delivery_keeps_the_worker_sweeping_after_its_task_is_deleted() {
+    let (release, held) = mpsc::channel();
+    let effects = Recording {
+        held_delivery: Some(Mutex::new(held)),
+        ..Recording::default()
+    };
+    with_scheduler(effects, |scheduler, effects| {
+        let session_id = start_agent_run(scheduler, effects);
+        let up = sweep(scheduler, &[], &now(9, 0, 1));
+        assert_eq!(spawned(&up), vec![session_id]);
+        assert!(
+            scheduler.needs_sweep(&[]),
+            "its instructions are still being typed"
+        );
+        release.send(()).unwrap();
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while scheduler.needs_sweep(&[]) && Instant::now() < deadline {
+            sweep(scheduler, &[], &now(9, 0, 2));
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert!(
+            !scheduler.needs_sweep(&[]),
+            "its delivery outcome was drained"
+        );
+    });
+}
+
+/// With no task and nothing starting, the worker still skips the sweep.
+#[test]
+fn a_workspace_with_no_task_and_no_run_starting_is_not_swept() {
+    with_scheduler(Recording::default(), |scheduler, _| {
+        assert!(!scheduler.needs_sweep(&[]));
+        let tasks = [schedule(ScheduleTrigger::Daily {
+            time: "09:00".into(),
+        })];
+        assert!(scheduler.needs_sweep(&tasks));
+    });
+}
+
+/// #29: the worker read the task's definition (`driver.rs`
+/// `load_schedules_and_presets`) just before the task was deleted, so this
+/// sweep still steps it. Deleting removed its directory; the sweep must not
+/// make it again.
+#[test]
+fn a_sweep_does_not_recreate_a_task_deleted_after_its_definition_was_read() {
+    with_scheduler(Recording::default(), |scheduler, effects| {
+        let tasks = [schedule(ScheduleTrigger::Daily {
+            time: "09:00".into(),
+        })];
+        let dir = root_of(scheduler).join("sch_1");
+        sweep(scheduler, &tasks, &now(8, 0, 0));
+        assert!(dir.join("clock.json").is_file(), "the first sweep saved it");
+
+        delete(scheduler, effects, "sch_1");
+        assert!(!dir.exists());
+
+        let events = sweep(scheduler, &tasks, &now(8, 0, 1));
+        assert!(!dir.exists(), "recreated: {:?} {events:?}", entries(&dir));
+    });
+}
+
+/// #29, at its task's due second: a task deleted after its definition was
+/// read must not fire, and its drop is quiet (no warning, no failed Run).
+#[test]
+fn a_task_deleted_at_its_due_time_starts_no_run() {
+    with_scheduler(Recording::default(), |scheduler, effects| {
+        let tasks = [schedule(ScheduleTrigger::Daily {
+            time: "09:00".into(),
+        })];
+        sweep(scheduler, &tasks, &now(8, 0, 0));
+        delete(scheduler, effects, "sch_1");
+
+        let events = sweep(scheduler, &tasks, &now(9, 0, 0));
+        assert_eq!(
+            events,
+            vec![SweepEvent::Deleted {
+                schedule_id: "sch_1".into()
+            }]
+        );
+        assert!(effects.spawned.lock().unwrap().is_empty());
+        let dir = root_of(scheduler).join("sch_1");
+        assert!(!dir.exists(), "recreated: {:?}", entries(&dir));
+    });
+}
+
+/// #29: the delete removes the definition after the sweep's clock save saw
+/// it but before the Run's start; the store goes only after that. The Run
+/// line is the start's own write, so it checks again: no Run of a task
+/// already deleted.
+#[test]
+fn a_task_deleted_between_its_clock_save_and_its_start_starts_no_run() {
+    let effects = Recording {
+        delete_after_checks: Some(1),
+        ..Recording::default()
+    };
+    with_scheduler(effects, |scheduler, effects| {
+        let tasks = [schedule(ScheduleTrigger::Daily {
+            time: "09:00".into(),
+        })];
+        let events = sweep(scheduler, &tasks, &now(9, 0, 0));
+        let runs = TaskStore::open(root_of(scheduler), "sch_1")
+            .unwrap()
+            .runs()
+            .unwrap();
+        assert!(runs.is_empty(), "a deleted task's Run: {runs:?} {events:?}");
+        assert_eq!(
+            events,
+            vec![
+                SweepEvent::Published {
+                    schedule_id: "sch_1".into()
+                },
+                SweepEvent::Deleted {
+                    schedule_id: "sch_1".into()
+                },
+            ]
+        );
+        assert!(effects.spawned.lock().unwrap().is_empty());
     });
 }

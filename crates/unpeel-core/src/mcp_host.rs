@@ -526,7 +526,12 @@ fn discover_result() -> Value {
     })
 }
 
+// Fork-only: the Super Agent's after-compaction rule joins the instructions.
 fn initialize_result(params: &Value) -> Value {
+    crate::supervision_mcp::extend_instructions(base_initialize_result(params))
+}
+
+fn base_initialize_result(params: &Value) -> Value {
     let protocol_version = params
         .get("protocolVersion")
         .and_then(Value::as_str)
@@ -4095,6 +4100,8 @@ fn write_to_session(session_id: &str, data: &str) -> Result<(), String> {
         &SessionHostCommand::Write {
             data: data.to_string(),
             write_id: None,
+            origin: session_host::WriteOrigin::Program, // Fork-only (#38)
+            unless_typed_since: None,
         },
     )
 }
@@ -4500,6 +4507,7 @@ mod tests {
             program_status: None,
             terminal_modes: None,
             screen_changed_at: None,
+            last_input_at: None,
             detected_local_urls: Vec::new(),
             heartbeat_at: 1,
             updated_at: 1,
@@ -5333,6 +5341,21 @@ mod tests {
             .as_str()
             .unwrap()
             .contains("call sessions current"));
+    }
+
+    /// Fork-only: the Super Agent's after-compaction rule.
+    #[test]
+    fn instructions_carry_the_super_agents_compaction_rule() {
+        let instructions = initialize_result(&json!({}))["instructions"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        assert!(instructions.contains(
+            "If you are this workspace's Super Agent, your instructions are skills read \
+             unpeel/router."
+        ));
+        assert!(instructions
+            .contains("After a compaction, call sessions current before starting anything"));
     }
 
     #[test]

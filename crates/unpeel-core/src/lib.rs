@@ -189,8 +189,15 @@ pub mod supervision_mcp;
 pub mod supervision_worktrees;
 #[cfg(feature = "native-host")]
 pub mod terminal_viewport;
+/// Before `main`, points this test binary at a private `UNPEEL_HOME` and
+/// guards that no test resolves the real `~/.unpeel`.
+#[cfg(all(test, feature = "native-host"))]
+mod test_home;
 #[cfg(feature = "native-host")]
 pub mod transcripts;
+// Fork-only
+#[cfg(feature = "native-host")]
+pub mod typed_input;
 // Fork-only
 #[cfg(feature = "native-host")]
 pub mod workspace_tools;

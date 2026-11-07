@@ -5,7 +5,7 @@
 //! Host actions such as screenshot requests. UI clients send semantic actions;
 //! they never construct terminal escape sequences themselves.
 
-use crate::session_host::{self, SessionHostCommand};
+use crate::session_host::{self, SessionHostCommand, WriteOrigin, TYPED_SINCE_ERROR};
 use std::thread;
 use std::time::Duration;
 
@@ -37,14 +37,42 @@ pub fn looks_like_it_contains_a_path(text: &str) -> bool {
         .any(|word| word.len() > 1 && word.contains('/'))
 }
 
-fn write_to_session(session_id: &str, data: &str, timeout: Option<Duration>) -> Result<(), String> {
+/// Fork-only (#38): who a write speaks for, its socket timeout, and the
+/// guard that refuses it once the user has typed.
+#[derive(Debug, Clone, Copy)]
+struct WriteTerms {
+    origin: WriteOrigin,
+    timeout: Option<Duration>,
+    unless_typed_since: Option<u64>,
+}
+
+impl WriteTerms {
+    fn program(timeout: Option<Duration>) -> Self {
+        Self {
+            origin: WriteOrigin::Program,
+            timeout,
+            unless_typed_since: None,
+        }
+    }
+}
+
+/// `Ok(false)`: the session host refused the write because the user typed
+/// at or after `terms.unless_typed_since` (fork-only, #38).
+fn write_to_session(session_id: &str, data: &str, terms: WriteTerms) -> Result<bool, String> {
     let command = SessionHostCommand::Write {
         data: data.to_string(),
         write_id: None,
+        origin: terms.origin,
+        unless_typed_since: terms.unless_typed_since,
     };
-    match timeout {
+    let sent = match terms.timeout {
         Some(timeout) => session_host::send_command_with_timeout(session_id, &command, timeout),
         None => session_host::send_command(session_id, &command),
+    };
+    match sent {
+        Ok(()) => Ok(true),
+        Err(error) if error == TYPED_SINCE_ERROR => Ok(false),
+        Err(error) => Err(error),
     }
 }
 
@@ -55,19 +83,71 @@ pub fn deliver_sanitized_text(
     sanitized: &str,
     submit: bool,
 ) -> Result<(), String> {
-    deliver_sanitized_text_with_timeout(session_id, sanitized, submit, None)
+    deliver_sanitized_text_with_timeout(session_id, sanitized, submit, WriteTerms::program(None))
+        .map(|_| ())
 }
 
-/// Fork-only `pub`: the Host supervisor pastes off its tick thread with a
-/// socket timeout (`None` blocks like `deliver_sanitized_text`).
-pub fn deliver_sanitized_text_with_timeout(
+/// Fork-only (#38): text the user typed elsewhere (the phone's text box);
+/// it counts as their typing in the session.
+pub fn deliver_sanitized_text_as_user(
     session_id: &str,
     sanitized: &str,
     submit: bool,
-    timeout: Option<Duration>,
 ) -> Result<(), String> {
-    if !sanitized.is_empty() {
-        write_to_session(session_id, &encode_bracketed_paste(sanitized), timeout)?;
+    let terms = WriteTerms {
+        origin: WriteOrigin::User,
+        ..WriteTerms::program(None)
+    };
+    deliver_sanitized_text_with_timeout(session_id, sanitized, submit, terms).map(|_| ())
+}
+
+/// Fork-only (#38): how a guarded paste went.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GuardedPaste {
+    Submitted,
+    /// The user typed before the paste: nothing was written.
+    NotPasted,
+    /// The user typed after the paste: it waits on the line, unsubmitted.
+    NotSubmitted,
+}
+
+/// Fork-only (#38): the Inbox's paste. The same recipe, but the session
+/// host refuses each write once the user has typed at or after `since`, so
+/// a half-typed prompt is never submitted with the paste. A host that
+/// predates the guard writes everything ([`GuardedPaste::Submitted`]).
+pub fn paste_unless_typed(
+    session_id: &str,
+    sanitized: &str,
+    since: u64,
+    timeout: Duration,
+) -> Result<GuardedPaste, String> {
+    let terms = WriteTerms {
+        unless_typed_since: Some(since),
+        ..WriteTerms::program(Some(timeout))
+    };
+    deliver_sanitized_text_with_timeout(session_id, sanitized, true, terms)
+}
+
+fn deliver_sanitized_text_with_timeout(
+    session_id: &str,
+    sanitized: &str,
+    submit: bool,
+    terms: WriteTerms,
+) -> Result<GuardedPaste, String> {
+    paste_recipe(sanitized, submit, |data| {
+        write_to_session(session_id, data, terms)
+    })
+}
+
+/// The bracketed paste, a settle, then Enter twice. Fork-only (#38):
+/// `write` answers `Ok(false)` when the session host refused it.
+fn paste_recipe(
+    sanitized: &str,
+    submit: bool,
+    mut write: impl FnMut(&str) -> Result<bool, String>,
+) -> Result<GuardedPaste, String> {
+    if !sanitized.is_empty() && !write(&encode_bracketed_paste(sanitized))? {
+        return Ok(GuardedPaste::NotPasted);
     }
     if submit {
         let settle = if looks_like_it_contains_a_path(sanitized) {
@@ -76,11 +156,15 @@ pub fn deliver_sanitized_text_with_timeout(
             TEXT_SETTLE_DELAY_MS
         };
         thread::sleep(Duration::from_millis(settle));
-        write_to_session(session_id, "\r", timeout)?;
+        if !write("\r")? {
+            return Ok(GuardedPaste::NotSubmitted);
+        }
         thread::sleep(Duration::from_millis(ENTER_FOLLOWUP_DELAY_MS));
-        write_to_session(session_id, "\r", timeout)?;
+        // The first Enter submitted the paste; a refused second one only
+        // keeps the user's new keys from being submitted too.
+        write("\r")?;
     }
-    Ok(())
+    Ok(GuardedPaste::Submitted)
 }
 
 /// Sanitize and submit one user-visible prompt to a hosted session.
@@ -114,7 +198,8 @@ fn request_screenshot_with_optional_timeout(
         return Err("invalid session id".into());
     }
     let sanitized = sanitize_paste_text(SCREENSHOT_REQUEST_PROMPT);
-    deliver_sanitized_text_with_timeout(session_id, &sanitized, true, timeout)
+    deliver_sanitized_text_with_timeout(session_id, &sanitized, true, WriteTerms::program(timeout))
+        .map(|_| ())
 }
 
 #[cfg(test)]
@@ -127,6 +212,41 @@ mod tests {
         assert!(SCREENSHOT_REQUEST_PROMPT.contains("screenshot artifact"));
         assert!(!SCREENSHOT_REQUEST_PROMPT.contains("Claude"));
         assert!(!SCREENSHOT_REQUEST_PROMPT.contains("Codex"));
+    }
+
+    /// The recipe against a session host that refuses every write after
+    /// the first `allowed`.
+    fn paste_with_refusals_after(allowed: usize) -> (Result<GuardedPaste, String>, Vec<String>) {
+        let mut written = Vec::new();
+        let result = paste_recipe("batch", true, |data| {
+            let refused = written.len() >= allowed;
+            if !refused {
+                written.push(data.to_owned());
+            }
+            Ok(!refused)
+        });
+        (result, written)
+    }
+
+    #[test]
+    fn a_refused_write_stops_the_guarded_paste() {
+        let (result, written) = paste_with_refusals_after(0);
+        assert_eq!(result, Ok(GuardedPaste::NotPasted));
+        assert!(written.is_empty());
+        let (result, written) = paste_with_refusals_after(1);
+        assert_eq!(result, Ok(GuardedPaste::NotSubmitted));
+        assert_eq!(
+            written,
+            ["\x1b[200~batch\x1b[201~"],
+            "pasted, never submitted"
+        );
+        // The first Enter went through: the paste was submitted.
+        let (result, written) = paste_with_refusals_after(2);
+        assert_eq!(result, Ok(GuardedPaste::Submitted));
+        assert_eq!(written.len(), 2);
+        let (result, written) = paste_with_refusals_after(3);
+        assert_eq!(result, Ok(GuardedPaste::Submitted));
+        assert_eq!(written.len(), 3);
     }
 
     #[test]

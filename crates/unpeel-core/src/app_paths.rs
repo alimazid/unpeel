@@ -116,13 +116,54 @@ pub fn machine_home_from(own_home: PathBuf, real_home: PathBuf, registered: bool
 }
 
 pub fn unpeel_home() -> PathBuf {
-    if let Some(override_dir) = std::env::var_os("UNPEEL_HOME") {
-        let trimmed = override_dir.to_string_lossy().trim().to_string();
-        if !trimmed.is_empty() {
-            return PathBuf::from(trimmed);
+    unpeel_home_override().unwrap_or_else(real_unpeel_home)
+}
+
+/// `UNPEEL_HOME`, trimmed, when it is set and non-empty.
+fn unpeel_home_override() -> Option<PathBuf> {
+    let override_dir = std::env::var_os("UNPEEL_HOME")?;
+    let trimmed = override_dir.to_string_lossy().trim().to_string();
+    (!trimmed.is_empty()).then(|| PathBuf::from(trimmed))
+}
+
+/// How many `/tmp/uth-<pid>-<n>` names [`use_private_test_home`] tries: a
+/// reused pid can find earlier runs' homes, which are never cleaned up.
+const PRIVATE_TEST_HOME_ATTEMPTS: u32 = 100;
+
+/// Point this process at a fresh private Unpeel home, `/tmp/uth-<pid>-<n>`
+/// ("Unpeel test home"), unless the caller already set `UNPEEL_HOME` (the
+/// verify scripts and the PTY matrix build their own). Every unit-test binary that resolves the home
+/// calls this from a `#[ctor]` before `main`: setting the env var once a test
+/// thread runs would race the others' reads. The root is `/tmp`, not
+/// `temp_dir()`: macOS's `/var/folders/…` would push session sockets past the
+/// `sockaddr_un` limit. The directory is left behind for post-mortems.
+#[doc(hidden)]
+pub fn use_private_test_home() -> std::io::Result<()> {
+    if unpeel_home_override().is_some() {
+        return Ok(());
+    }
+    let pid = std::process::id();
+    let mut builder = std::fs::DirBuilder::new();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::DirBuilderExt;
+        builder.mode(0o700);
+    }
+    for attempt in 0..PRIVATE_TEST_HOME_ATTEMPTS {
+        let home = PathBuf::from(format!("/tmp/uth-{pid}-{attempt}"));
+        match builder.create(&home) {
+            Ok(()) => {
+                std::env::set_var("UNPEEL_HOME", &home);
+                return Ok(());
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(error) => return Err(error),
         }
     }
-    real_unpeel_home()
+    Err(std::io::Error::new(
+        std::io::ErrorKind::AlreadyExists,
+        format!("every /tmp/uth-{pid}-<n> already exists"),
+    ))
 }
 
 /// Ensure `~/.unpeel` exists and is private to the current user (mode `0700`).

@@ -9,7 +9,9 @@
 //! The workspace worker is the writer; MCP, the CLI and Controller routes
 //! read through here, so none of them needs the scheduler. Every write, and
 //! deleting a task, takes the task's `<id>.lock` flock (beside its
-//! directory) and lands by temp file + rename or one `O_APPEND` write.
+//! directory) and lands by temp file + rename or one `O_APPEND` write. The
+//! scheduler's clock save and a Run's first line check under that lock that
+//! the task is still defined, so a delete that lands during a sweep wins.
 
 use std::fs::{self, OpenOptions};
 use std::io::Write;
@@ -62,6 +64,15 @@ pub fn presets_from_value(value: Option<&serde_json::Value>) -> Vec<Preset> {
         .unwrap_or_default()
 }
 
+/// What a write of a task's state did.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TaskWrite {
+    Written,
+    /// The task was deleted (its definition is gone, or for a Run line its
+    /// directory): nothing was written.
+    TaskDeleted,
+}
+
 /// One task's state directory.
 #[derive(Debug, Clone)]
 pub struct TaskStore {
@@ -103,29 +114,67 @@ impl TaskStore {
         serde_json::from_slice(&raw).map_err(|error| format!("parse {}: {error}", path.display()))
     }
 
-    /// Save the task's clock. The scheduler's first write for a new task,
-    /// so it makes the task's directory.
-    pub fn save_clock(&self, clock: &ScheduleClock) -> Result<(), String> {
+    /// Save the task's clock while `is_defined` says the task is still
+    /// saved ([`Self::write_if_defined`]). The scheduler's first write for
+    /// a new task, so it makes the task's directory; on disk a deleted task
+    /// looks like a new one, so only the definition tells them apart.
+    pub fn save_clock(
+        &self,
+        clock: &ScheduleClock,
+        is_defined: impl FnOnce() -> Result<bool, String>,
+    ) -> Result<TaskWrite, String> {
         let body = serde_json::to_vec_pretty(clock).map_err(|error| error.to_string())?;
-        let _lock = self.lock()?;
-        fs::create_dir_all(&self.dir)
-            .map_err(|error| format!("create {}: {error}", self.dir.display()))?;
-        replace_file(&self.dir.join(CLOCK_FILE), &body)
+        self.write_if_defined(is_defined, || {
+            fs::create_dir_all(&self.dir)
+                .map_err(|error| format!("create {}: {error}", self.dir.display()))?;
+            replace_file(&self.dir.join(CLOCK_FILE), &body)?;
+            Ok(TaskWrite::Written)
+        })
     }
 
     /// Append one Run line; compacts the log once it passes
     /// [`COMPACT_AFTER_LINES`]. The task's clock is always saved first, so
     /// a missing directory is a task deleted since: its Run is not
     /// recorded, and the directory is not made again.
-    pub fn append_run(&self, run: &ScheduleRun) -> Result<(), String> {
-        let mut line = serde_json::to_vec(run).map_err(|error| error.to_string())?;
-        line.push(b'\n');
+    pub fn append_run(&self, run: &ScheduleRun) -> Result<TaskWrite, String> {
+        let line = run_line(run)?;
         let _lock = self.lock()?;
+        self.append_line(&line)
+    }
+
+    /// Append a Run's first line while `is_defined` says the task is still
+    /// saved ([`Self::write_if_defined`]): a Run starts only from a task
+    /// that is not deleted.
+    pub fn append_run_if_defined(
+        &self,
+        run: &ScheduleRun,
+        is_defined: impl FnOnce() -> Result<bool, String>,
+    ) -> Result<TaskWrite, String> {
+        let line = run_line(run)?;
+        self.write_if_defined(is_defined, || self.append_line(&line))
+    }
+
+    /// Run `write` under the task's lock while `is_defined` says the task
+    /// is still saved. A delete takes the same lock after removing the
+    /// definition, so either the write lands before the delete removes the
+    /// directory, or the check sees the task gone and nothing is written.
+    /// A check that fails is an error, never "still defined".
+    fn write_if_defined(
+        &self,
+        is_defined: impl FnOnce() -> Result<bool, String>,
+        write: impl FnOnce() -> Result<TaskWrite, String>,
+    ) -> Result<TaskWrite, String> {
+        let _lock = self.lock()?;
+        if !is_defined()? {
+            return Ok(TaskWrite::TaskDeleted);
+        }
+        write()
+    }
+
+    /// The append itself, with the task's lock held.
+    fn append_line(&self, line: &[u8]) -> Result<TaskWrite, String> {
         if !self.dir.is_dir() {
-            return Err(format!(
-                "{} is gone: the Scheduled Task was deleted",
-                self.dir.display()
-            ));
+            return Ok(TaskWrite::TaskDeleted);
         }
         let path = self.dir.join(RUNS_FILE);
         let mut file = OpenOptions::new()
@@ -133,7 +182,7 @@ impl TaskStore {
             .append(true)
             .open(&path)
             .map_err(|error| format!("open {}: {error}", path.display()))?;
-        file.write_all(&line)
+        file.write_all(line)
             .and_then(|()| file.flush())
             .map_err(|error| format!("append {}: {error}", path.display()))?;
         drop(file);
@@ -141,7 +190,7 @@ impl TaskStore {
         if raw.iter().filter(|byte| **byte == b'\n').count() > COMPACT_AFTER_LINES {
             compact(&path, &raw)?;
         }
-        Ok(())
+        Ok(TaskWrite::Written)
     }
 
     /// Every Run's latest line, oldest Run first. A missing log is a task
@@ -265,6 +314,12 @@ pub fn latest_run_sessions_in<'a>(
         .collect()
 }
 
+fn run_line(run: &ScheduleRun) -> Result<Vec<u8>, String> {
+    let mut line = serde_json::to_vec(run).map_err(|error| error.to_string())?;
+    line.push(b'\n');
+    Ok(line)
+}
+
 fn parse_runs(raw: &[u8]) -> Vec<ScheduleRun> {
     schedules::fold_runs(
         raw.split(|byte| *byte == b'\n')
@@ -304,7 +359,7 @@ mod tests {
         let root = std::env::temp_dir().join(format!("unpeel-sched-{}", uuid::Uuid::new_v4()));
         let store = TaskStore::open(&root, "sch_test").expect("valid id");
         store
-            .save_clock(&ScheduleClock::default())
+            .save_clock(&ScheduleClock::default(), || Ok(true))
             .expect("first clock");
         let outcome = body(&store);
         let _ = fs::remove_dir_all(&root);
@@ -347,7 +402,7 @@ mod tests {
                 last_run_id: Some("run_1".into()),
                 last_run_status: Some(RunStatus::Done),
             };
-            store.save_clock(&clock).expect("save");
+            store.save_clock(&clock, || Ok(true)).expect("save");
             assert_eq!(store.clock(), Ok(clock));
 
             fs::write(store.dir().join("clock.json"), b"{not json").unwrap();
@@ -493,7 +548,7 @@ mod tests {
             let store = TaskStore::open(&root, task).expect("valid id");
             if !store.dir().exists() {
                 store
-                    .save_clock(&ScheduleClock::default())
+                    .save_clock(&ScheduleClock::default(), || Ok(true))
                     .expect("first clock");
             }
             store.append_run(&line).expect("append");
@@ -615,13 +670,17 @@ mod tests {
     }
 
     /// A Run recorded after its task was deleted (a sweep that read the
-    /// task first) does not bring the task's directory back.
+    /// task first) does not bring the task's directory back, and says why,
+    /// so the sweep drops it quietly.
     #[test]
     fn a_deleted_task_records_no_more_runs() {
         with_store(|store| {
             store.append_run(&run("run_1", RunStatus::Done)).unwrap();
             store.remove().unwrap();
-            assert!(store.append_run(&run("run_2", RunStatus::Done)).is_err());
+            assert_eq!(
+                store.append_run(&run("run_2", RunStatus::Done)),
+                Ok(TaskWrite::TaskDeleted)
+            );
             assert!(!store.dir().exists());
         });
     }
@@ -653,6 +712,137 @@ mod tests {
             remover.join().unwrap();
             assert!(!store.dir().exists());
         });
+    }
+
+    /// #29: on disk a deleted task and a new one look alike (no
+    /// directory); only the definition check tells them apart.
+    #[test]
+    fn a_clock_save_writes_only_while_its_task_is_defined() {
+        with_store(|store| {
+            store.remove().unwrap();
+            let clock = ScheduleClock::default();
+            assert_eq!(
+                store.save_clock(&clock, || Ok(false)),
+                Ok(TaskWrite::TaskDeleted)
+            );
+            assert!(!store.dir().exists(), "a deleted task gets no directory");
+            assert!(store
+                .save_clock(&clock, || Err("app-state.json will not read".into()))
+                .is_err());
+            assert!(!store.dir().exists(), "nor does one it cannot check");
+            assert_eq!(
+                store.append_run_if_defined(&run("run_1", RunStatus::Running), || Ok(false)),
+                Ok(TaskWrite::TaskDeleted)
+            );
+            assert!(!store.dir().exists());
+
+            assert_eq!(
+                store.save_clock(&clock, || Ok(true)),
+                Ok(TaskWrite::Written),
+                "a new task's first save"
+            );
+            assert_eq!(store.clock(), Ok(clock));
+            assert_eq!(
+                store.append_run_if_defined(&run("run_1", RunStatus::Running), || Ok(true)),
+                Ok(TaskWrite::Written)
+            );
+            assert_eq!(store.runs().unwrap().len(), 1);
+        });
+    }
+
+    /// A delete as the routes and `unpeel schedules rm` run it: the
+    /// definition goes, then the store.
+    fn delete(store: TaskStore, defined: &std::sync::atomic::AtomicBool) -> Result<(), String> {
+        defined.store(false, std::sync::atomic::Ordering::SeqCst);
+        store.remove()
+    }
+
+    /// One delete raced against a clock save whose definition check is
+    /// parked under the task's lock. `check_first`: the check answered
+    /// before the delete removed the definition (the save lands, then the
+    /// delete removes it); otherwise after (nothing is written).
+    fn race_a_delete_against_a_clock_save(check_first: bool) -> Result<TaskWrite, String> {
+        use std::sync::atomic::{AtomicBool, Ordering};
+        use std::sync::{mpsc, Arc};
+        use std::time::Duration;
+        with_store(|store| {
+            let defined = Arc::new(AtomicBool::new(true));
+            let (parked_tx, parked_rx) = mpsc::channel();
+            let (go_tx, go_rx) = mpsc::channel::<()>();
+            let saver = {
+                let (store, defined) = (store.clone(), Arc::clone(&defined));
+                std::thread::spawn(move || {
+                    store.save_clock(&ScheduleClock::default(), || {
+                        let early = defined.load(Ordering::SeqCst);
+                        parked_tx.send(()).unwrap();
+                        go_rx.recv().unwrap();
+                        Ok(if check_first {
+                            early
+                        } else {
+                            defined.load(Ordering::SeqCst)
+                        })
+                    })
+                })
+            };
+            parked_rx.recv().unwrap();
+            let (removed_tx, removed_rx) = mpsc::channel();
+            let deleter = {
+                let (store, defined) = (store.clone(), Arc::clone(&defined));
+                std::thread::spawn(move || removed_tx.send(delete(store, &defined)).unwrap())
+            };
+            while defined.load(Ordering::SeqCst) {
+                std::thread::yield_now();
+            }
+            assert!(
+                removed_rx.recv_timeout(Duration::from_millis(100)).is_err(),
+                "the delete waits for the save's lock"
+            );
+            go_tx.send(()).unwrap();
+            let saved = saver.join().unwrap();
+            deleter.join().unwrap();
+            assert_eq!(removed_rx.recv().unwrap(), Ok(()));
+            assert!(!store.dir().exists(), "orphaned: {saved:?}");
+            saved
+        })
+    }
+
+    #[test]
+    fn a_delete_racing_a_clock_save_never_leaves_the_task_directory() {
+        assert_eq!(
+            race_a_delete_against_a_clock_save(true),
+            Ok(TaskWrite::Written)
+        );
+        assert_eq!(
+            race_a_delete_against_a_clock_save(false),
+            Ok(TaskWrite::TaskDeleted)
+        );
+    }
+
+    /// The same race left to the scheduler, many times over.
+    #[test]
+    fn a_delete_racing_a_clock_save_freely_never_leaves_the_task_directory() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+        use std::sync::{Arc, Barrier};
+        for _ in 0..200 {
+            with_store(|store| {
+                let defined = Arc::new(AtomicBool::new(true));
+                let barrier = Arc::new(Barrier::new(2));
+                let saver = {
+                    let (store, defined, barrier) =
+                        (store.clone(), Arc::clone(&defined), Arc::clone(&barrier));
+                    std::thread::spawn(move || {
+                        barrier.wait();
+                        store.save_clock(&ScheduleClock::default(), || {
+                            Ok(defined.load(Ordering::SeqCst))
+                        })
+                    })
+                };
+                barrier.wait();
+                delete(store.clone(), &defined).unwrap();
+                let saved = saver.join().unwrap();
+                assert!(!store.dir().exists(), "orphaned: {saved:?}");
+            });
+        }
     }
 
     #[test]

@@ -9,13 +9,18 @@
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::Arc;
-use std::time::Duration;
 
-use unpeel_core::session_inbox::{Hold, PendingStats, Store};
+use unpeel_core::session_inbox::{Batch, Hold, PendingStats, Store};
+use unpeel_core::session_input::GuardedPaste;
 use unpeel_core::supervision::SupervisorConfig;
 
-use super::inbox_rules::{self, Facts, HoldReason, Readiness, Timing};
+use super::inbox_rules::{self, DraftFacts, DraftGuard, Facts, HoldReason, Readiness, Timing};
 use crate::sessions::{SessionRow, Status};
+
+mod host;
+#[cfg(test)]
+use host::cursor_line;
+pub use host::HostTerminal;
 
 /// A paste with no prompt submit or Busy edge this long after it is pasted
 /// again, as a redelivery of the same batch.
@@ -30,8 +35,6 @@ pub const DRAFT_NOTIFY_MS: u64 = 120_000;
 /// Inbox GC runs this often.
 const GC_INTERVAL_MS: u64 = 60_000;
 const HOUR_MS: u64 = 3_600_000;
-const SNAPSHOT_TIMEOUT: Duration = Duration::from_millis(100);
-const PASTE_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// What the drain reads and does outside its own state: the real Host in
 /// [`HostTerminal`], a fake in tests.
@@ -40,8 +43,9 @@ pub trait HostIo: Send + Sync {
     fn terminal(&self, session_id: &str) -> Option<TerminalFacts>;
     /// The line the cursor is on, from a quick viewport snapshot.
     fn cursor(&self, session_id: &str) -> Option<CursorLine>;
-    /// Paste already-sanitized text and submit it.
-    fn paste(&self, session_id: &str, text: &str) -> Result<(), String>;
+    /// Paste already-sanitized text and submit it, unless the user types
+    /// at or after `since` (`session_input::paste_unless_typed`).
+    fn paste(&self, session_id: &str, text: &str, since: u64) -> Result<GuardedPaste, String>;
     /// Session ids that still have a manifest (Inbox GC).
     fn live_session_ids(&self) -> HashSet<String>;
     /// The supervisor's settings and the app-wide write policy, from one
@@ -57,6 +61,9 @@ pub struct TerminalFacts {
     pub bracketed_paste: bool,
     pub screen_changed_at: Option<u64>,
     pub menu_prompt: bool,
+    /// When the user last typed into the session; `None` from a session
+    /// host that does not stamp it, or before anyone typed.
+    pub last_input_at: Option<u64>,
 }
 
 /// The draft guard's view of the input line.
@@ -96,13 +103,41 @@ struct Target {
     /// Paste times within the last hour (the budget).
     pastes: VecDeque<u64>,
     published: Option<HoldReason>,
+    /// The last baseline taken with nobody typing since the turn began:
+    /// the agent's own empty prompt, kept across episodes.
+    known_empty: Option<CursorLine>,
+    /// The line read against `known_empty` after the latest typing; read
+    /// again only once the user types again.
+    checked: Option<EmptyCheck>,
 }
 
 #[derive(Debug, Default)]
 struct Episode {
     baseline: Option<CursorLine>,
+    /// A paste found the line changed since the baseline: held until the
+    /// next Busy → Idle cycle.
+    line_changed: bool,
     draft_since: Option<u64>,
     notified: bool,
+}
+
+/// Whether the input line was the known-empty prompt after the typing
+/// stamped at `typed_at`.
+#[derive(Debug, Clone, Copy)]
+struct EmptyCheck {
+    typed_at: u64,
+    empty: bool,
+}
+
+/// When a session's current turn began (#38).
+#[derive(Debug, Clone, Copy)]
+struct Turn {
+    began_at: u64,
+    /// Busy, Starting or Attention at the last step. A menu is part of the
+    /// turn around it, never the start of one: keys that answer it are
+    /// typing within the turn, and a menu over an idle prompt leaves the
+    /// draft under it a draft.
+    active: bool,
 }
 
 /// A pasted batch waiting for the target to take it.
@@ -135,6 +170,9 @@ pub struct Drain {
     outcomes_rx: Receiver<(String, Outcome)>,
     /// Latest `UserPromptSubmit` per session.
     prompt_submits: HashMap<String, u64>,
+    /// Every row's current turn: the draft guard asks whether anyone typed
+    /// since it began.
+    turns: HashMap<String, Turn>,
     /// Sessions whose Inbox held undelivered items at the last step.
     pending: HashSet<String>,
     last_gc: Option<u64>,
@@ -164,16 +202,46 @@ impl Drain {
             outcomes_tx,
             outcomes_rx,
             prompt_submits: HashMap::new(),
+            turns: HashMap::new(),
             pending: HashSet::new(),
             last_gc: None,
         }
     }
 
-    /// One accepted hook event: a prompt submit may confirm a paste.
+    /// One accepted hook event: a prompt submit may confirm a paste, and
+    /// it begins a turn.
     pub fn observe_hook(&mut self, session_id: &str, canonical_event: &str, at_ms: u64) {
         if canonical_event == "UserPromptSubmit" {
             self.prompt_submits.insert(session_id.to_owned(), at_ms);
+            let turn = self.turns.entry(session_id.to_owned()).or_insert(Turn {
+                began_at: at_ms,
+                active: false,
+            });
+            turn.began_at = turn.began_at.max(at_ms);
         }
+    }
+
+    /// A turn begins at the step that sees a row turn Busy or Starting from
+    /// Idle. A row first seen counts from then: what was typed before the
+    /// drain watched it is not taken for a draft.
+    fn observe_turns(&mut self, rows: &[SessionRow], now: u64) {
+        for row in rows {
+            let active = matches!(
+                row.status,
+                Status::Busy | Status::Starting | Status::Attention
+            );
+            let turn = self.turns.entry(row.id.clone()).or_insert(Turn {
+                began_at: now,
+                active,
+            });
+            let begins = matches!(row.status, Status::Busy | Status::Starting);
+            if begins && !turn.active {
+                turn.began_at = now;
+            }
+            turn.active = active;
+        }
+        let live: HashSet<&str> = rows.iter().map(|row| row.id.as_str()).collect();
+        self.turns.retain(|id, _| live.contains(id.as_str()));
     }
 
     /// Once per rescan: settle finished pastes, then decide every Inbox
@@ -183,6 +251,7 @@ impl Drain {
             self.apply(&session_id, outcome, now);
         }
         self.collect_garbage(now);
+        self.observe_turns(rows, now);
         let ids = self.store.inbox_ids();
         let mut settings = None;
         let mut notices = Vec::new();
@@ -228,6 +297,7 @@ impl Drain {
         let Some(row) = row else {
             return Some(HoldReason::Exited);
         };
+        let turn_began_at = self.turns.get(id).map_or(now, |turn| turn.began_at);
         let target = self.targets.entry(id.to_owned()).or_default();
         let candidate = Candidate {
             id,
@@ -235,6 +305,7 @@ impl Drain {
             stats,
             settings,
             now,
+            turn_began_at,
         };
         let ready = match ready_to_paste(target, self.io.as_ref(), &candidate, notices) {
             Ok(ready) => ready,
@@ -319,7 +390,9 @@ impl Drain {
                 }
             }
             Outcome::Draft => {
+                target.checked = None;
                 if let Some(episode) = target.episode.as_mut() {
+                    episode.line_changed = true;
                     episode.draft_since.get_or_insert(now);
                 }
             }
@@ -394,7 +467,7 @@ impl Drain {
     fn settle_for_test(&mut self, now: u64) {
         let (session_id, outcome) = self
             .outcomes_rx
-            .recv_timeout(Duration::from_secs(5))
+            .recv_timeout(std::time::Duration::from_secs(5))
             .expect("a delivery thread reports back");
         self.apply(&session_id, outcome, now);
     }
@@ -434,6 +507,7 @@ struct Candidate<'a> {
     stats: PendingStats,
     settings: &'a Settings,
     now: u64,
+    turn_began_at: u64,
 }
 
 /// Everything a paste needs once nothing holds it.
@@ -443,8 +517,8 @@ struct Ready {
 }
 
 /// The gates before a paste, in order: the target's readiness, its quiet
-/// idle episode and draft-guard baseline, then the draft, retry and pacing
-/// holds. `Err` is the first hold that applies.
+/// idle episode and the line the draft guard allows, then the draft, retry
+/// and pacing holds. `Err` is the first hold that applies.
 fn ready_to_paste(
     target: &mut Target,
     io: &dyn HostIo,
@@ -457,19 +531,82 @@ fn ready_to_paste(
     if let Some(reason) = inbox_rules::quiet_hold(confident, candidate.now, screen_changed_at) {
         return Err(reason);
     }
-    let episode = target.episode.get_or_insert_with(Episode::default);
-    if episode.baseline.is_none() {
-        episode.baseline = io.cursor(candidate.id);
+    let facts = DraftFacts {
+        now: candidate.now,
+        turn_began_at: candidate.turn_began_at,
+        last_input_at: terminal.and_then(|terminal| terminal.last_input_at),
+    };
+    let line = guarded_line(target, io, candidate.id, &facts);
+    if line == Err(HoldReason::Snapshot) {
+        return Err(HoldReason::Snapshot);
     }
-    let baseline = episode.baseline.clone().ok_or(HoldReason::Snapshot)?;
     if !candidate.stats.wake {
         return Err(HoldReason::RideAlong);
     }
-    pacing(target, candidate, notices)?;
+    let baseline = line.map_err(|hold| draft_hold(target, candidate, hold, notices))?;
+    pacing(target, candidate)?;
     Ok(Ready {
         baseline,
         confident,
     })
+}
+
+/// The line a paste must find (`Ok`), or why the line may be a draft.
+/// With nobody typing since the turn began, the episode's baseline is the
+/// agent's own prompt and becomes the known-empty one; after typing, only
+/// the known-empty prompt is not a draft.
+fn guarded_line(
+    target: &mut Target,
+    io: &dyn HostIo,
+    id: &str,
+    facts: &DraftFacts,
+) -> Result<CursorLine, HoldReason> {
+    let episode = target.episode.get_or_insert_with(Episode::default);
+    match inbox_rules::draft_guard(facts)? {
+        DraftGuard::Baseline => {
+            if episode.line_changed {
+                return Err(HoldReason::Draft);
+            }
+            if episode.baseline.is_none() {
+                episode.baseline = io.cursor(id);
+            }
+            let baseline = episode.baseline.clone().ok_or(HoldReason::Snapshot)?;
+            target.known_empty = Some(baseline.clone());
+            Ok(baseline)
+        }
+        DraftGuard::KnownEmpty { typed_at } => {
+            let known_empty = target.known_empty.clone().ok_or(HoldReason::Draft)?;
+            let empty = match target.checked {
+                Some(check) if check.typed_at == typed_at => check.empty,
+                _ => {
+                    let empty = io.cursor(id).ok_or(HoldReason::Snapshot)? == known_empty;
+                    target.checked = Some(EmptyCheck { typed_at, empty });
+                    empty
+                }
+            };
+            empty.then_some(known_empty).ok_or(HoldReason::Draft)
+        }
+    }
+}
+
+/// A suspected draft holds the paste, telling the user once it has held
+/// long enough. Other holds pass through.
+fn draft_hold(
+    target: &mut Target,
+    candidate: &Candidate,
+    hold: HoldReason,
+    notices: &mut Vec<Notice>,
+) -> HoldReason {
+    if hold != HoldReason::Draft {
+        return hold;
+    }
+    let episode = target.episode.get_or_insert_with(Episode::default);
+    let since = *episode.draft_since.get_or_insert(candidate.now);
+    if candidate.now.saturating_sub(since) >= DRAFT_NOTIFY_MS && !episode.notified {
+        episode.notified = true;
+        notices.push(draft_notice(candidate.row, candidate.stats.items));
+    }
+    hold
 }
 
 /// Whether the target may take a paste now (`Ok(confident)`); a hold that
@@ -495,24 +632,10 @@ fn readiness(
     }
 }
 
-/// A suspected draft (telling the user once it has held long enough), a
-/// failed paste's retry delay, then the debounce and the hourly budget
+/// A failed paste's retry delay, then the debounce and the hourly budget
 /// (`inbox_rules::send_hold`).
-fn pacing(
-    target: &mut Target,
-    candidate: &Candidate,
-    notices: &mut Vec<Notice>,
-) -> Result<(), HoldReason> {
+fn pacing(target: &Target, candidate: &Candidate) -> Result<(), HoldReason> {
     let now = candidate.now;
-    if let Some(episode) = target.episode.as_mut() {
-        if let Some(since) = episode.draft_since {
-            if now.saturating_sub(since) >= DRAFT_NOTIFY_MS && !episode.notified {
-                episode.notified = true;
-                notices.push(draft_notice(candidate.row, candidate.stats.items));
-            }
-            return Err(HoldReason::Draft);
-        }
-    }
     if now < target.retry_at {
         return Err(HoldReason::Retry);
     }
@@ -574,7 +697,9 @@ fn draft_notice(row: &SessionRow, items: usize) -> Notice {
 
 /// One delivery, off the tick thread: re-check the draft guard, claim
 /// everything pending, paste it as one, and (for a best guess) mark it
-/// delivered at once.
+/// delivered at once. A key the user types from `now` on stops the paste: before
+/// it, nothing is written; after it, the paste waits on the line unsubmitted
+/// and confirms like any other.
 fn deliver(
     store: &Store,
     io: &dyn HostIo,
@@ -594,26 +719,30 @@ fn deliver(
         Err(error) => return Outcome::Failed(error.to_string()),
     };
     let text = unpeel_core::session_inbox::render_batch(&batch);
-    if let Err(error) = io.paste(id, &text) {
-        // The next paste is a fresh batch; a claim left behind would make it
-        // this one again, marked as a redelivery.
-        match store.release(id, &batch.batch_id) {
-            Ok(true) => io.announce(),
-            Ok(false) => {}
-            Err(release) => crate::tracelog::trace(
-                "supervisor",
-                &format!(
-                    "inbox claim {} for {id} not released: {release}",
-                    batch.batch_id
-                ),
-            ),
+    let submitted = match io.paste(id, &text, now) {
+        Ok(GuardedPaste::Submitted) => true,
+        Ok(GuardedPaste::NotSubmitted) => false,
+        Ok(GuardedPaste::NotPasted) => {
+            release_claim(store, io, id, &batch.batch_id);
+            return Outcome::Draft;
         }
-        return Outcome::Failed(error);
+        Err(error) => {
+            release_claim(store, io, id, &batch.batch_id);
+            return Outcome::Failed(error);
+        }
+    };
+    let delivered = submitted && delivered_at_once(store, id, &batch, confident, now);
+    Outcome::Pasted {
+        batch_id: batch.batch_id,
+        pasted_at: now,
+        delivered,
     }
-    // Nothing will confirm a best guess; a last attempt stops the loop.
+}
+
+/// A submitted paste that counts as delivered without a confirmation:
+/// nothing will confirm a best guess, and a last attempt stops the loop.
+fn delivered_at_once(store: &Store, id: &str, batch: &Batch, confident: bool, now: u64) -> bool {
     let last_attempt = batch.attempt >= MAX_PASTE_ATTEMPTS;
-    let delivered = (!confident || last_attempt)
-        && matches!(store.complete(id, &batch.batch_id, now), Ok(true));
     if confident && last_attempt {
         crate::tracelog::trace(
             "supervisor",
@@ -623,83 +752,20 @@ fn deliver(
             ),
         );
     }
-    Outcome::Pasted {
-        batch_id: batch.batch_id,
-        pasted_at: now,
-        delivered,
-    }
+    (!confident || last_attempt) && matches!(store.complete(id, &batch.batch_id, now), Ok(true))
 }
 
-/// The draft guard's view of `snapshot`'s input line. Suggested input (a
-/// reply the program proposes, drawn faint at the cursor) is left out: it
-/// comes and goes on its own and is never the user's draft.
-fn cursor_line(snapshot: &unpeel_core::terminal_viewport::TerminalViewportSnapshot) -> CursorLine {
-    CursorLine {
-        text: snapshot
-            .cursor_row_text_without_suggestion()
-            .unwrap_or_default(),
-        col: snapshot.cursor_col,
-    }
-}
-
-/// The real Host: manifests, viewport snapshots, the paste recipe.
-#[derive(Debug, Clone, Copy, Default)]
-pub struct HostTerminal;
-
-impl HostIo for HostTerminal {
-    fn terminal(&self, session_id: &str) -> Option<TerminalFacts> {
-        let manifest = unpeel_core::session_host::load_manifest(session_id)?;
-        Some(TerminalFacts {
-            bracketed_paste: manifest
-                .terminal_modes
-                .as_ref()
-                .is_some_and(|modes| modes.set.contains(&2004)),
-            screen_changed_at: manifest.screen_changed_at,
-            menu_prompt: manifest.menu_prompt_active,
-        })
-    }
-
-    fn cursor(&self, session_id: &str) -> Option<CursorLine> {
-        let snapshot = unpeel_core::session_host::request_current_viewport_snapshot_with_timeout(
-            session_id,
-            0,
-            None,
-            SNAPSHOT_TIMEOUT,
-        )
-        .ok()?;
-        Some(cursor_line(&snapshot))
-    }
-
-    fn paste(&self, session_id: &str, text: &str) -> Result<(), String> {
-        unpeel_core::session_input::deliver_sanitized_text_with_timeout(
-            session_id,
-            text,
-            true,
-            Some(PASTE_TIMEOUT),
-        )
-    }
-
-    fn live_session_ids(&self) -> HashSet<String> {
-        let Ok(entries) = std::fs::read_dir(unpeel_core::app_paths::app_sessions_root()) else {
-            return HashSet::new();
-        };
-        entries
-            .flatten()
-            .filter(|entry| entry.path().join("manifest.json").is_file())
-            .filter_map(|entry| entry.file_name().into_string().ok())
-            .collect()
-    }
-
-    fn settings(&self) -> Settings {
-        let (config, policy_deny) = unpeel_core::supervision::config_and_write_deny();
-        Settings {
-            config,
-            policy_deny,
-        }
-    }
-
-    fn announce(&self) {
-        unpeel_core::supervision::announce_markers();
+/// A paste that wrote nothing gives its claim back: the next paste is a
+/// fresh batch, where a claim left behind would make it this one again,
+/// marked as a redelivery.
+fn release_claim(store: &Store, io: &dyn HostIo, id: &str, batch_id: &str) {
+    match store.release(id, batch_id) {
+        Ok(true) => io.announce(),
+        Ok(false) => {}
+        Err(release) => crate::tracelog::trace(
+            "supervisor",
+            &format!("inbox claim {batch_id} for {id} not released: {release}"),
+        ),
     }
 }
 

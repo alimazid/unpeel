@@ -93,7 +93,9 @@ any fix.
     client suites after you touch `clients/`. A change to `docs/` still runs
     `scripts/check-links.sh`.
 
-  Every run uses a private `UNPEEL_HOME`.
+  Every run uses a private `UNPEEL_HOME`. `cargo test` sets its own (see
+  "Working in this repository" in [AGENTS.md](../../AGENTS.md)), and the PTY
+  matrix and the verify scripts build theirs.
 
 ## Taking a raw issue to done
 
