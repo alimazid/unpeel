@@ -1463,7 +1463,7 @@ fn write_session(session_id: &str, data: &str, write_id: Option<String>) -> Resu
         &SessionHostCommand::Write {
             data: data.to_string(),
             write_id,
-            origin: session_host::WriteOrigin::User,
+            origin: session_host::WriteOrigin::User, // Fork-only (#38)
             unless_typed_since: None,
         },
     )

@@ -10,11 +10,11 @@ use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::Arc;
 
-use unpeel_core::session_inbox::{Hold, PendingStats, Store};
+use unpeel_core::session_inbox::{Batch, Hold, PendingStats, Store};
 use unpeel_core::session_input::GuardedPaste;
 use unpeel_core::supervision::SupervisorConfig;
 
-use super::inbox_rules::{self, DraftGuard, Facts, HoldReason, Readiness, Timing, Typing};
+use super::inbox_rules::{self, DraftFacts, DraftGuard, Facts, HoldReason, Readiness, Timing};
 use crate::sessions::{SessionRow, Status};
 
 mod host;
@@ -43,7 +43,7 @@ pub trait HostIo: Send + Sync {
     fn terminal(&self, session_id: &str) -> Option<TerminalFacts>;
     /// The line the cursor is on, from a quick viewport snapshot.
     fn cursor(&self, session_id: &str) -> Option<CursorLine>;
-    /// Paste already-sanitized text and submit it, unless a person types
+    /// Paste already-sanitized text and submit it, unless the user types
     /// at or after `since` (`session_input::paste_unless_typed`).
     fn paste(&self, session_id: &str, text: &str, since: u64) -> Result<GuardedPaste, String>;
     /// Session ids that still have a manifest (Inbox GC).
@@ -61,7 +61,7 @@ pub struct TerminalFacts {
     pub bracketed_paste: bool,
     pub screen_changed_at: Option<u64>,
     pub menu_prompt: bool,
-    /// When a person last typed into the session; `None` from a session
+    /// When the user last typed into the session; `None` from a session
     /// host that does not stamp it, or before anyone typed.
     pub last_input_at: Option<u64>,
 }
@@ -106,9 +106,9 @@ struct Target {
     /// The last baseline taken with nobody typing since the turn began:
     /// the agent's own empty prompt, kept across episodes.
     known_empty: Option<CursorLine>,
-    /// Whether the line matched `known_empty` after the typing stamped at
-    /// this time; read again only once someone types again.
-    checked: Option<(u64, bool)>,
+    /// The line read against `known_empty` after the latest typing; read
+    /// again only once the user types again.
+    checked: Option<EmptyCheck>,
 }
 
 #[derive(Debug, Default)]
@@ -121,12 +121,22 @@ struct Episode {
     notified: bool,
 }
 
+/// Whether the input line was the known-empty prompt after the typing
+/// stamped at `typed_at`.
+#[derive(Debug, Clone, Copy)]
+struct EmptyCheck {
+    typed_at: u64,
+    empty: bool,
+}
+
 /// When a session's current turn began (#38).
 #[derive(Debug, Clone, Copy)]
 struct Turn {
     began_at: u64,
-    /// Busy, Starting or Attention at the last step: a menu mid-turn is
-    /// part of the turn, so keys that answer it are typing within it.
+    /// Busy, Starting or Attention at the last step. A menu is part of the
+    /// turn around it, never the start of one: keys that answer it are
+    /// typing within the turn, and a menu over an idle prompt leaves the
+    /// draft under it a draft.
     active: bool,
 }
 
@@ -211,9 +221,9 @@ impl Drain {
         }
     }
 
-    /// A turn begins at the step that sees a row leave Idle. A row first
-    /// seen counts from then: what was typed before the drain watched it is
-    /// not taken for a draft.
+    /// A turn begins at the step that sees a row turn Busy or Starting from
+    /// Idle. A row first seen counts from then: what was typed before the
+    /// drain watched it is not taken for a draft.
     fn observe_turns(&mut self, rows: &[SessionRow], now: u64) {
         for row in rows {
             let active = matches!(
@@ -224,7 +234,8 @@ impl Drain {
                 began_at: now,
                 active,
             });
-            if active && !turn.active {
+            let begins = matches!(row.status, Status::Busy | Status::Starting);
+            if begins && !turn.active {
                 turn.began_at = now;
             }
             turn.active = active;
@@ -520,12 +531,12 @@ fn ready_to_paste(
     if let Some(reason) = inbox_rules::quiet_hold(confident, candidate.now, screen_changed_at) {
         return Err(reason);
     }
-    let typing = Typing {
+    let facts = DraftFacts {
         now: candidate.now,
         turn_began_at: candidate.turn_began_at,
         last_input_at: terminal.and_then(|terminal| terminal.last_input_at),
     };
-    let line = guarded_line(target, io, candidate.id, &typing);
+    let line = guarded_line(target, io, candidate.id, &facts);
     if line == Err(HoldReason::Snapshot) {
         return Err(HoldReason::Snapshot);
     }
@@ -548,10 +559,10 @@ fn guarded_line(
     target: &mut Target,
     io: &dyn HostIo,
     id: &str,
-    typing: &Typing,
+    facts: &DraftFacts,
 ) -> Result<CursorLine, HoldReason> {
     let episode = target.episode.get_or_insert_with(Episode::default);
-    match inbox_rules::draft_guard(typing)? {
+    match inbox_rules::draft_guard(facts)? {
         DraftGuard::Baseline => {
             if episode.line_changed {
                 return Err(HoldReason::Draft);
@@ -563,14 +574,13 @@ fn guarded_line(
             target.known_empty = Some(baseline.clone());
             Ok(baseline)
         }
-        DraftGuard::KnownEmpty => {
+        DraftGuard::KnownEmpty { typed_at } => {
             let known_empty = target.known_empty.clone().ok_or(HoldReason::Draft)?;
-            let typed_at = typing.last_input_at.unwrap_or_default();
             let empty = match target.checked {
-                Some((at, empty)) if at == typed_at => empty,
+                Some(check) if check.typed_at == typed_at => check.empty,
                 _ => {
                     let empty = io.cursor(id).ok_or(HoldReason::Snapshot)? == known_empty;
-                    target.checked = Some((typed_at, empty));
+                    target.checked = Some(EmptyCheck { typed_at, empty });
                     empty
                 }
             };
@@ -687,7 +697,7 @@ fn draft_notice(row: &SessionRow, items: usize) -> Notice {
 
 /// One delivery, off the tick thread: re-check the draft guard, claim
 /// everything pending, paste it as one, and (for a best guess) mark it
-/// delivered at once. A person's key from `now` on stops the paste: before
+/// delivered at once. A key the user types from `now` on stops the paste: before
 /// it, nothing is written; after it, the paste waits on the line unsubmitted
 /// and confirms like any other.
 fn deliver(
@@ -713,19 +723,26 @@ fn deliver(
         Ok(GuardedPaste::Submitted) => true,
         Ok(GuardedPaste::NotSubmitted) => false,
         Ok(GuardedPaste::NotPasted) => {
-            release(store, io, id, &batch.batch_id);
+            release_claim(store, io, id, &batch.batch_id);
             return Outcome::Draft;
         }
         Err(error) => {
-            release(store, io, id, &batch.batch_id);
+            release_claim(store, io, id, &batch.batch_id);
             return Outcome::Failed(error);
         }
     };
-    // Nothing will confirm a best guess; a last attempt stops the loop.
+    let delivered = submitted && delivered_at_once(store, id, &batch, confident, now);
+    Outcome::Pasted {
+        batch_id: batch.batch_id,
+        pasted_at: now,
+        delivered,
+    }
+}
+
+/// A submitted paste that counts as delivered without a confirmation:
+/// nothing will confirm a best guess, and a last attempt stops the loop.
+fn delivered_at_once(store: &Store, id: &str, batch: &Batch, confident: bool, now: u64) -> bool {
     let last_attempt = batch.attempt >= MAX_PASTE_ATTEMPTS;
-    let delivered = submitted
-        && (!confident || last_attempt)
-        && matches!(store.complete(id, &batch.batch_id, now), Ok(true));
     if confident && last_attempt {
         crate::tracelog::trace(
             "supervisor",
@@ -735,17 +752,13 @@ fn deliver(
             ),
         );
     }
-    Outcome::Pasted {
-        batch_id: batch.batch_id,
-        pasted_at: now,
-        delivered,
-    }
+    (!confident || last_attempt) && matches!(store.complete(id, &batch.batch_id, now), Ok(true))
 }
 
 /// A paste that wrote nothing gives its claim back: the next paste is a
 /// fresh batch, where a claim left behind would make it this one again,
 /// marked as a redelivery.
-fn release(store: &Store, io: &dyn HostIo, id: &str, batch_id: &str) {
+fn release_claim(store: &Store, io: &dyn HostIo, id: &str, batch_id: &str) {
     match store.release(id, batch_id) {
         Ok(true) => io.announce(),
         Ok(false) => {}

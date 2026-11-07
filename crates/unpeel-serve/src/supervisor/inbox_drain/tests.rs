@@ -591,6 +591,21 @@ fn keys_that_answer_a_menu_do_not_hold_the_inbox() {
 }
 
 #[test]
+fn a_menu_over_an_idle_prompt_does_not_turn_a_draft_into_the_baseline() {
+    let mut fx = fixture();
+    let idle = router(Status::Idle);
+    deliver_once(&mut fx);
+    fx.step(&idle, T0 + 5_000);
+    typed(&fx, prompt("can yo"), T0 + 6_000);
+    report(&fx, "result", T0 + 7_000);
+    // A menu comes and goes over the idle prompt, with no key pressed.
+    fx.step(&router(Status::Attention), T0 + 8_000);
+    fx.step(&idle, T0 + 20_000);
+    assert_eq!(fx.hold().as_deref(), Some("draft"));
+    assert_eq!(fx.pastes().len(), 1);
+}
+
+#[test]
 fn the_known_empty_prompt_leaves_out_the_suggestion_drawn_on_it() {
     let mut fx = fixture();
     let idle = router(Status::Idle);

@@ -1,7 +1,7 @@
-//! Fork-only: when a person last typed into a session (#38). The Inbox
+//! Fork-only: when the user last typed into a session (#38). The Inbox
 //! drain must never paste onto a half-typed prompt, and the screen alone
 //! cannot tell an empty prompt from a paused draft. The PTY core records
-//! the time of every write that comes from a person and can change an input
+//! the time of every write that comes from the user and can change an input
 //! line, and the session manifest carries it as `last_input_at`.
 
 use serde::{Deserialize, Serialize};
@@ -12,7 +12,7 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum WriteOrigin {
-    /// A person: the attach stream, the Mac app, the phone.
+    /// The user: the attach stream, the Mac app, the phone.
     #[default]
     User,
     /// Unpeel or an agent: the Inbox paste, MCP `send_text`/`send_keys`,
@@ -26,11 +26,12 @@ impl WriteOrigin {
     }
 }
 
-/// The session host's answer to a `Write` it refused because a person
-/// typed at or after its `unless_typed_since`.
-pub const TYPED_SINCE_ERROR: &str = "a person typed into the session; nothing was written";
+/// The session host's error for a `Write` it refused because the user
+/// typed at or after its `unless_typed_since`. A wire code that PTY cores of
+/// every build answer with, since a core outlives upgrades: never reword it.
+pub const TYPED_SINCE_ERROR: &str = "typed_since";
 
-/// When a person last typed into one session, kept by the PTY core under
+/// When the user last typed into one session, kept by the PTY core under
 /// the session's runtime lock.
 #[derive(Debug, Default, Clone, Copy)]
 pub(crate) struct TypingClock {
@@ -49,7 +50,7 @@ impl TypingClock {
         self.typed_at
     }
 
-    /// A person typed at or after `since`.
+    /// The user typed at or after `since`.
     pub(crate) fn typed_since(&self, since: u64) -> bool {
         self.typed_at.is_some_and(|at| at >= since)
     }
@@ -206,6 +207,7 @@ mod tests {
                 ..
             }
         ));
+        assert_eq!(TYPED_SINCE_ERROR, "typed_since", "a wire code");
         let user = SessionHostCommand::Write {
             data: "x".into(),
             write_id: None,

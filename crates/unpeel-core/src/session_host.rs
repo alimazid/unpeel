@@ -399,7 +399,7 @@ pub struct HostedSessionManifest {
     /// to output.bin on manifests from older hosts (where it is None).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub screen_changed_at: Option<u64>,
-    /// Fork-only (#38): wall-clock ms a person last typed into the session
+    /// Fork-only (#38): wall-clock ms the user last typed into the session
     /// (`crate::typed_input`), written by the same viewport scan and
     /// coalesced like `screen_changed_at`. The Inbox's draft guard reads it.
     /// Absent before anyone typed and on manifests from older hosts.
@@ -486,6 +486,7 @@ const SCREEN_STAMP_COALESCE_MS: u64 = 2_000;
 struct ScreenChangeTracker {
     last_hash: Option<u64>,
     changed_at: Option<u64>,
+    // Fork-only (#38): the coalescing rule moved to `StampCoalescer`.
     stamps: StampCoalescer,
 }
 
@@ -503,10 +504,11 @@ impl ScreenChangeTracker {
     }
 }
 
-/// When a changing stamp is due a manifest write: the first change after
-/// quiet at once, then at most every `SCREEN_STAMP_COALESCE_MS` while
-/// changes keep coming, the trailing stamp on a later tick. Shared by
-/// `screen_changed_at` and (fork-only, #38) `last_input_at`.
+/// Fork-only (#38), lifted out of `ScreenChangeTracker` unchanged: when a
+/// changing stamp is due a manifest write. The first change after quiet at
+/// once, then at most every `SCREEN_STAMP_COALESCE_MS` while changes keep
+/// coming, the trailing stamp on a later tick. Shared by
+/// `screen_changed_at` and `last_input_at`.
 #[derive(Default)]
 struct StampCoalescer {
     written_at: Option<u64>,
@@ -643,11 +645,11 @@ pub enum SessionHostCommand {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         write_id: Option<String>,
         /// Fork-only (#38): who the bytes speak for. Absent means the user;
-        /// only a person's typing stamps `last_input_at`.
+        /// only the user's typing stamps `last_input_at`.
         #[serde(default, skip_serializing_if = "WriteOrigin::is_user")]
         origin: WriteOrigin,
-        /// Fork-only (#38): refuse the write ([`TYPED_SINCE_ERROR`]) when a
-        /// person typed at or after this wall-clock ms, so the Inbox never
+        /// Fork-only (#38): refuse the write ([`TYPED_SINCE_ERROR`]) when the
+        /// user typed at or after this wall-clock ms, so the Inbox never
         /// submits a paste merged with a half-typed prompt. Hosts that
         /// predate the field ignore it and write.
         #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -835,9 +837,9 @@ pub(crate) struct HostRuntime {
     last_runtime_observation: Option<ActiveRuntimeObservation>,
     recent_write_ids: RecentWriteIds,
     hook_input: crate::hook_cancellation::InputTracker,
-    /// Fork-only (#38): when a person last typed; flushed to the manifest's
+    /// Fork-only (#38): when the user last typed; flushed to the manifest's
     /// `last_input_at` by the viewport scan.
-    pub(crate) typing: crate::typed_input::TypingClock,
+    typing: crate::typed_input::TypingClock,
 }
 
 #[cfg(unix)]

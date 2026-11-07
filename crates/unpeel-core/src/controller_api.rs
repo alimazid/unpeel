@@ -1111,7 +1111,7 @@ fn write_session(body: &Value) -> Result<Value, ControllerApiError> {
         &SessionHostCommand::Write {
             data: data.to_owned(),
             write_id,
-            origin: session_host::WriteOrigin::User,
+            origin: session_host::WriteOrigin::User, // Fork-only (#38)
             unless_typed_since: None,
         },
         SESSION_COMMAND_TIMEOUT,
