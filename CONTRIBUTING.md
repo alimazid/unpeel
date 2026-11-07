@@ -65,7 +65,6 @@ UNPEEL_HOME=/tmp/unpeel-dev crates/target/debug/unpeel serve  # isolated state, 
 cargo test --manifest-path crates/Cargo.toml --workspace
 cargo test --manifest-path crates/unpeel-attach/Cargo.toml
 crates/unpeel-cli/tests/run.sh          # real-PTY case matrix (~8 min); ./run.sh <filter> for a subset
-scripts/verify-matrix-runner.sh         # run.sh itself: slots, -j, interrupt (fake cases, ~40 s)
 scripts/bench-memory.sh                 # memory ceilings after anything touching session hosting
 scripts/verify-attach.sh                # attach replay / live echo / reattach / snapshot
 scripts/verify-browser.sh               # Browser MCP end to end (needs an engine + Chrome; skips otherwise)
@@ -73,15 +72,11 @@ scripts/verify-browser.sh               # Browser MCP end to end (needs an engin
 
 PTY matrix rules:
 
-- Several `run.sh` invocations may run at once, from any worktrees, with no
-  lock of your own: each case takes one of `UNPEEL_TUI_SLOTS` machine-wide
-  slots (default 4) and waits while all are busy, and its home is named after
-  its slot. Use the same `UNPEEL_TUI_SLOTS` for every run on a machine;
-  `-j N` lets one run use up to N slots.
-- Leave `UNPEEL_TUI_TEST_BASE` unset. If you need a fixed home path, keep the
-  base as short as `/tmp/u1` and unique to you: Unix socket paths are capped
-  near 104 bytes and the case name is part of the path, so a long base makes
-  sessions fail to bind with no visible error.
+- Never run two `run.sh` invocations at once; the process suites share ports.
+- Use a short private base when several people or lanes share a machine:
+  `UNPEEL_TUI_TEST_BASE=/tmp/u1 crates/unpeel-cli/tests/run.sh`. Unix socket
+  paths are capped near 104 bytes and the case name is part of the path, so a
+  long base makes sessions fail to bind with no visible error.
 - The harness and every case are documented in `crates/unpeel-cli/tests/README.md`.
 - A Rust test fixture that starts a worker (`unpeel-host __serve__` or the
   local Host service under a temp home) must tear down the detached PTY cores
