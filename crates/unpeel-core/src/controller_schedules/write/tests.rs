@@ -557,14 +557,95 @@ fn a_paused_once_whose_time_passed_renames_but_does_not_resume() {
     let private = Private::new(state);
     let host = FakeHost::new();
     assert_eq!(edit(&private, &host, json!({"name": "Old"})).0, 200);
-    let (status, body) = edit(&private, &host, json!({"enabled": true}));
-    assert_eq!(status, 400, "{body}");
-    assert!(body["error"]
-        .as_str()
-        .unwrap_or_default()
-        .contains("in the past"));
+    for resume in [
+        json!({"enabled": true}),
+        json!({"enabled": true, "trigger": {"kind": "once", "at": "2000-01-01T00:00"}}),
+    ] {
+        let (status, body) = edit(&private, &host, resume);
+        assert_eq!(status, 400, "{body}");
+        assert_eq!(body["code"], "trigger_in_past");
+        assert_eq!(
+            body["error"],
+            "cannot resume: 2000-01-01T00:00 is in the past; give it a new time"
+        );
+    }
     assert_eq!(stored_entry(&private)["enabled"], false);
     assert_eq!(stored_entry(&private)["name"], "Old");
+}
+
+#[test]
+fn a_paused_task_saves_a_past_once_as_is() {
+    let mut state = stored();
+    state["schedules"][0]["enabled"] = json!(false);
+    let private = Private::new(state);
+    let host = FakeHost::new();
+    let past = json!({"kind": "once", "at": "2000-01-01T00:00"});
+    let (status, body) = edit(&private, &host, json!({ "trigger": past }));
+    assert_eq!(status, 200, "{body}");
+    assert_eq!(stored_entry(&private)["trigger"], past);
+    assert_eq!(stored_entry(&private)["enabled"], false);
+    assert_eq!(
+        host.checks(),
+        vec![(
+            ScheduleTrigger::Once {
+                at: "2000-01-01T00:00".into()
+            },
+            false
+        )],
+        "a paused task's Trigger need not come due"
+    );
+}
+
+/// A Once time that passed while no Host ran: the task is still enabled
+/// until the Host is back to run it, and an edit that sends its Trigger
+/// back unchanged is not checked again.
+#[test]
+fn an_enabled_task_keeps_a_stored_once_that_has_passed() {
+    let mut state = stored();
+    state["schedules"][0]["trigger"] = json!({"kind": "once", "at": "2000-01-01T00:00"});
+    let private = Private::new(state);
+    let host = FakeHost::new();
+    let (status, body) = edit(
+        &private,
+        &host,
+        json!({"name": "Missed", "trigger": {"kind": "once", "at": "2000-01-01T00:00"}}),
+    );
+    assert_eq!(status, 200, "{body}");
+    assert_eq!(stored_entry(&private)["name"], "Missed");
+    assert!(host.checks().is_empty());
+    let (status, body) = edit(
+        &private,
+        &host,
+        json!({"trigger": {"kind": "once", "at": "2000-02-01T00:00"}}),
+    );
+    assert_eq!(status, 400, "a new past Once on an enabled task: {body}");
+    assert_eq!(body["code"], "trigger_in_past");
+}
+
+#[test]
+fn a_project_with_no_folder_is_refused_for_every_preset() {
+    let host = FakeHost::new();
+    for (preset, instructions) in [("ok", Value::Null), ("claude", json!("brief me"))] {
+        let private = Private::new(json!({}));
+        let mut body = daily_body();
+        body["projectID"] = json!("group");
+        body["presetID"] = json!(preset);
+        body["instructions"] = instructions;
+        let (status, answer) = answer_with(&post(CREATE_PATH, body), Some(&host), &private);
+        assert_eq!(status, 400, "{preset}: {answer}");
+        assert_eq!(answer["code"], "project_missing", "{preset}");
+        assert!(private.listed().is_empty());
+
+        let private = Private::new(stored());
+        let (status, answer) = edit(
+            &private,
+            &host,
+            json!({"projectID": "group", "presetID": preset}),
+        );
+        assert_eq!(status, 400, "{preset}: {answer}");
+        assert_eq!(answer["code"], "project_missing", "{preset}");
+        assert_eq!(stored_entry(&private), stored()["schedules"][0]);
+    }
 }
 
 #[test]
@@ -782,6 +863,7 @@ fn every_refusal_code_is_in_the_conformance_vocabulary() {
         SaveRefusal::InstructionsTooLarge,
         SaveRefusal::InvalidTrigger("x".into()),
         SaveRefusal::TriggerInPast("x".into()),
+        SaveRefusal::TimePassed("x".into()),
         SaveRefusal::CatalogUnavailable,
     ]
     .map(|refusal| refusal.code());

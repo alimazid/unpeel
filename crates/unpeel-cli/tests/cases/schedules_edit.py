@@ -7,8 +7,12 @@ and change nothing. `edit` changes each field it names and passes fields
 it does not know through; a new Trigger restarts the task's clock. `pause`
 stops a task firing; `resume` restarts its clock from the resume, so an
 occurrence that fell while it was paused never fires, and the task then
-fires again on its own (a weekly Trigger, end to end). Mutating verbs
-refuse inside a Session.
+fires again on its own (a weekly Trigger, end to end). A Once task that
+ran and paused itself still edits, its stored time sent back included; a
+paused task saves a past Once as is and resumes only with a new time; an
+edit that sends back the stored Trigger is not checked again, while a new
+past Once on an enabled task is refused. A Project with no folder is
+refused for every preset. Mutating verbs refuse inside a Session.
 """
 
 import datetime
@@ -191,6 +195,8 @@ def check_edit(case, home):
         ([task_id, "--cron", "* * * * * *"], "5 fields"),
         ([task_id, "--preset", "missing"], "no preset"),
         ([task_id, "--name", "  "], "name"),
+        ([task_id, "--once", "2020-01-01T09:00"], "past"),
+        ([task_id, "--project", "g"], "has no folder"),
         ([task_id, "--notify", "--no-notify"], "--notify"),
         (["no such task", "--hourly", "5"], "no Scheduled Task"),
     ):
@@ -259,9 +265,66 @@ def check_pause_resume(case, service, home):
     once = add(case, home, "Spent", "--once", stored(local_now() + datetime.timedelta(seconds=4)))
     spent = service.wait_for(lambda: task(home, once).get("enabled") is False, timeout=30)
     case.check("a Once task disables itself after its Run", bool(spent), json.dumps(task(home, once)))
+    check_spent_once(case, home, once)
+
+
+def check_spent_once(case, home, once):
+    """A Once task that ran and paused itself: it edits, and resumes only with a new time."""
+    spent = task(home, once)
+    renamed = cli(home, "schedules", "edit", once, "--name", "Spent again")
+    case.check("a finished Once task still renames",
+               renamed.returncode == 0 and task(home, once).get("name") == "Spent again",
+               renamed.stderr)
+    resent = cli(home, "schedules", "edit", once, "--once", spent["trigger"]["at"])
+    entry = task(home, once)
+    case.check("sending its stored Once time back succeeds and changes nothing else",
+               resent.returncode == 0 and entry.get("trigger") == spent["trigger"]
+               and entry.get("clock_reset_at_ms") == spent.get("clock_reset_at_ms")
+               and entry.get("enabled") is False, resent.stderr or json.dumps(entry))
+    past = cli(home, "schedules", "edit", once, "--once", "2020-01-01T09:00")
+    entry = task(home, once)
+    case.check("a paused task saves a past Once time as is",
+               past.returncode == 0 and entry.get("trigger") == {"kind": "once", "at": "2020-01-01T09:00"}
+               and entry.get("enabled") is False, past.stderr or json.dumps(entry))
     refused = cli(home, "schedules", "resume", once)
-    case.check("resuming a Once task whose time has passed is refused",
-               refused.returncode != 0 and "passed" in refused.stderr, refused.stderr)
+    case.check("resuming a Once task whose time has passed is refused, asking for a new time",
+               refused.returncode != 0 and "give it a new time" in refused.stderr
+               and f"unpeel schedules edit {once} --once" in refused.stderr, refused.stderr)
+    case.check("and it stays paused", task(home, once).get("enabled") is False,
+               json.dumps(task(home, once)))
+
+
+def check_without_a_host(case, home):
+    """What the CLI decides alone, before the Host starts and could run a missed time."""
+    state = home.state()
+    state.setdefault("schedules", []).append({
+        "id": "sch_missed", "name": "Missed", "project_id": "p", "preset_id": "ok",
+        "trigger": {"kind": "once", "at": "2020-01-01T09:00"}, "enabled": True,
+        "notify_when_done": True, "created_at_ms": 1,
+    })
+    with open(home.path("app-state.json"), "w") as handle:
+        json.dump(state, handle, indent=2)
+    stored_trigger = task(home, "sch_missed").get("trigger")
+    renamed = cli(home, "schedules", "edit", "sch_missed", "--name", "Missed it",
+                  "--once", "2020-01-01T09:00")
+    entry = task(home, "sch_missed")
+    case.check("an enabled task whose Once passed with no Host renames, its stored time sent back",
+               renamed.returncode == 0 and entry.get("name") == "Missed it"
+               and entry.get("trigger") == stored_trigger and "clock_reset_at_ms" not in entry,
+               renamed.stderr or json.dumps(entry))
+    moved = cli(home, "schedules", "edit", "sch_missed", "--once", "2020-02-01T09:00")
+    case.check("a new past Once on an enabled task is still refused",
+               moved.returncode != 0 and "past" in moved.stderr
+               and task(home, "sch_missed").get("trigger") == stored_trigger, moved.stderr)
+    cli(home, "schedules", "rm", "sch_missed")
+
+    before = json.dumps(tasks(home), sort_keys=True)
+    for preset, extra in (("ok", []), ("claude", ["--instructions", "brief me"])):
+        refused = cli(home, "schedules", "add", "Nowhere", "--project", "g", "--preset", preset,
+                      "--daily", "09:00", *extra)
+        case.check(f"a Project with no folder is refused for the {preset} preset",
+                   refused.returncode != 0 and "has no folder" in refused.stderr, refused.stderr)
+    case.check("nothing was saved", json.dumps(tasks(home), sort_keys=True) == before)
 
 
 def check_inside_session(case, home):
@@ -287,6 +350,13 @@ def body(case):
     home.project("q", "other", home.root)
     home.preset(label="ok", command="true", preset_id="ok")
     home.preset(label="touch", command="true", preset_id="touch")
+    home.preset(label="Claude", command="claude", preset_id="claude")
+    state = home.state()
+    state["projects"].append({"id": "g", "name": "Docs", "path": "", "parent_project_id": "p",
+                              "is_folder": True})
+    with open(home.path("app-state.json"), "w") as handle:
+        json.dump(state, handle, indent=2)
+    check_without_a_host(case, home)
     service = case.serve(env={"TZ": ZONE})
     if not case.check("the Host starts with no app", bool(service.ready(timeout=25)), service.log()):
         return

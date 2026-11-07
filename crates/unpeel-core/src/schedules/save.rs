@@ -6,6 +6,15 @@
 //! catalog of Projects and presets its Runs resolve against) comes from the
 //! [`SaveHost`] each caller passes in.
 //!
+//! Two rules hold for every writer. A task's Project must have a folder
+//! for its Runs to start in, whatever the preset. A Once time that has
+//! passed is saved as is while the task is (or after the save will be)
+//! paused, and refused while it is enabled; an edit that sends the Trigger
+//! back as stored is no change and is never checked again
+//! ([`check_edited_trigger`]), and resuming checks the Trigger the task
+//! keeps ([`check_resume`]), so a finished Once task stays editable but
+//! resumes only with a new time.
+//!
 //! Definitions live raw in `app-state.json` (`schedules`), so fields this
 //! build does not model pass through every edit: [`new_entry`] builds the
 //! one stored shape of a new task and [`schedules_list_mut`] /
@@ -48,6 +57,8 @@ pub enum SaveRefusal {
     InstructionsTooLarge,
     InvalidTrigger(String),
     TriggerInPast(String),
+    /// Resuming a task whose Once time has passed: it needs a new time.
+    TimePassed(String),
     /// The Host has not published the catalog its Runs resolve against.
     CatalogUnavailable,
 }
@@ -63,7 +74,7 @@ impl SaveRefusal {
             Self::NotAgentPreset(_) => "not_agent_preset",
             Self::InstructionsTooLarge => "instructions_too_large",
             Self::InvalidTrigger(_) => "invalid_trigger",
-            Self::TriggerInPast(_) => "trigger_in_past",
+            Self::TriggerInPast(_) | Self::TimePassed(_) => "trigger_in_past",
             Self::CatalogUnavailable => "host_unavailable",
         }
     }
@@ -99,6 +110,7 @@ impl fmt::Display for SaveRefusal {
             ),
             Self::InvalidTrigger(detail) => write!(formatter, "invalid Trigger: {detail}"),
             Self::TriggerInPast(detail) => write!(formatter, "invalid Trigger: {detail}"),
+            Self::TimePassed(detail) => write!(formatter, "{detail}; give it a new time"),
             Self::CatalogUnavailable => write!(
                 formatter,
                 "the Host has not published its Projects yet; try again"
@@ -207,6 +219,43 @@ pub fn check_trigger(
 ) -> Result<ScheduleTrigger, SaveRefusal> {
     host.check_trigger(trigger, comes_due)
         .map_err(SaveRefusal::from)
+}
+
+/// A Trigger in its stored JSON form. A shape that does not decode reads
+/// as [`ScheduleTrigger::Unknown`], which no Host accepts.
+pub fn read_trigger(raw: &Value) -> ScheduleTrigger {
+    serde_json::from_value(raw.clone()).unwrap_or_default()
+}
+
+/// The Trigger an edit gives (`given`), against the one the task stores
+/// (`stored`, its entry's raw `trigger`), both in the stored JSON form. One
+/// equal to the stored Trigger is no change and is never checked again, so
+/// a finished Once task's name, instructions and preset stay editable; a
+/// different one is checked and must come due when the task will be
+/// `enabled` after the edit. `None`: the edit keeps the stored Trigger.
+pub fn check_edited_trigger(
+    host: &dyn SaveHost,
+    given: Option<&Value>,
+    stored: Option<&Value>,
+    enabled: bool,
+) -> Result<Option<ScheduleTrigger>, SaveRefusal> {
+    match given {
+        Some(raw) if Some(raw) != stored => {
+            check_trigger(host, &read_trigger(raw), enabled).map(Some)
+        }
+        _ => Ok(None),
+    }
+}
+
+/// Resuming a paused task with the Trigger it keeps: it must still come
+/// due. A Once time that has passed (a Once task pauses itself after its
+/// Run) is refused with how to fix it: give the task a new time.
+pub fn check_resume(host: &dyn SaveHost, trigger: &ScheduleTrigger) -> Result<(), SaveRefusal> {
+    match host.check_trigger(trigger, true) {
+        Ok(_) => Ok(()),
+        Err(TriggerRefusal::InPast(detail)) => Err(SaveRefusal::TimePassed(detail)),
+        Err(refusal) => Err(refusal.into()),
+    }
 }
 
 /// A new task as a writer gives it, every field already checked.

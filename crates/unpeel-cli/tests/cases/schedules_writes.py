@@ -7,8 +7,11 @@ Agent Presets. A task created over the protocol is saved in
 `app-state.json` with its Trigger in stored form and fires like one from
 the CLI; edit, pause and resume round-trip; Run now starts a Run and is
 refused (409) while one is in progress; delete removes the task and its
-history and leaves its Run Session. A past Once, instructions on a script
-preset, or an unknown task are refused and nothing is saved.
+history and leaves its Run Session. A past Once on an enabled task,
+instructions on a script preset, a Project with no folder (whatever the
+preset), or an unknown task are refused and nothing is saved. A paused task
+saves a past Once as is, edits with its stored Trigger sent back, and is
+refused resuming until it has a new time.
 """
 
 import base64
@@ -127,6 +130,10 @@ def check_create(case, home, phone):
         ("instructions on a script preset", {"instructions": "hello"}, "not_agent_preset"),
         ("an unknown preset", {"presetID": "gone"}, "preset_missing"),
         ("an unknown Project", {"projectID": "gone"}, "project_missing"),
+        ("a Project with no folder, script preset", {"projectID": "g"}, "project_missing"),
+        ("a Project with no folder, Agent Preset",
+         {"projectID": "g", "presetID": "claude", "instructions": "brief me"}, "project_missing"),
+        ("a top-level Project with no folder", {"projectID": "v"}, "project_missing"),
     ):
         body = {"name": "Bad", "projectID": "p", "presetID": "ok",
                 "trigger": {"kind": "daily", "time": "10:00"}}
@@ -176,6 +183,36 @@ def check_edit_pause_resume(case, service, home, local, task_id):
     status, _ = local.call("POST", "/mobile/schedules/edit", {"scheduleID": "sch_gone",
                                                               "name": "x"})
     case.check("an unknown task is 404", status == 404, str(status))
+
+
+def check_paused_past_once(case, home, local):
+    past = {"kind": "once", "at": "2001-01-01T09:00"}
+    status, body = local.call("POST", "/mobile/schedules", {
+        "name": "Later", "projectID": "p", "presetID": "ok", "trigger": past, "enabled": False,
+    })
+    task_id = (body.get("schedule") or {}).get("id", "")
+    case.check("a paused task is created with a past Once time as is",
+               status == 200 and (task(home, task_id) or {}).get("trigger") == past,
+               json.dumps(body))
+    status, body = local.call("POST", "/mobile/schedules/edit", {
+        "scheduleID": task_id, "name": "Later still", "trigger": past,
+    })
+    case.check("it edits with its stored Trigger sent back",
+               status == 200 and (task(home, task_id) or {}).get("name") == "Later still",
+               json.dumps(body))
+    status, body = local.call("POST", "/mobile/schedules/edit", {
+        "scheduleID": task_id, "trigger": {"kind": "once", "at": "2002-02-02T09:00"},
+    })
+    case.check("a paused task is edited to another past Once time",
+               status == 200 and (task(home, task_id) or {}).get("trigger", {}).get("at")
+               == "2002-02-02T09:00", json.dumps(body))
+    status, body = local.call("POST", "/mobile/schedules/edit", {"scheduleID": task_id,
+                                                                 "enabled": True})
+    case.check("resuming it is refused, asking for a new time",
+               status == 400 and body.get("code") == "trigger_in_past"
+               and "give it a new time" in body.get("error", ""), json.dumps(body))
+    case.check("and it stays paused", (task(home, task_id) or {}).get("enabled") is False)
+    local.call("POST", "/mobile/schedules/delete", {"scheduleID": task_id})
 
 
 def wait_last_run(service, transport, task_id, run_id, statuses, timeout=45):
@@ -236,6 +273,12 @@ def check_delete(case, home, phone, slow, session_id):
 def body(case):
     home = case.home
     home.project("p", "sched", home.root)
+    home.project("v", "virtual", "")
+    state = home.state()
+    state["projects"].append({"id": "g", "name": "Docs", "path": "", "parent_project_id": "p",
+                              "is_folder": True})
+    with open(home.path("app-state.json"), "w") as handle:
+        json.dump(state, handle, indent=2)
     home.preset(label="ok", command="true", preset_id="ok")
     home.preset(label="slow", command="sleep 25", preset_id="slow")
     home.preset(label="Claude", command="claude", preset_id="claude")
@@ -257,6 +300,7 @@ def body(case):
         check_bootstrap(case, phone, local)
         task_id = check_create(case, home, phone)
         check_edit_pause_resume(case, service, home, local, task_id)
+        check_paused_past_once(case, home, local)
         slow, session_id = check_run_now(case, service, home, phone, local)
         check_fires(case, service, home, phone)
         check_delete(case, home, phone, slow, session_id)

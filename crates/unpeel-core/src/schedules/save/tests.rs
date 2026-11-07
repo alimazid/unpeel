@@ -109,6 +109,7 @@ fn every_refusal_has_a_stable_code_and_a_sentence() {
         (SaveRefusal::InstructionsTooLarge, "instructions_too_large"),
         (SaveRefusal::InvalidTrigger("bad".into()), "invalid_trigger"),
         (SaveRefusal::TriggerInPast("then".into()), "trigger_in_past"),
+        (SaveRefusal::TimePassed("then".into()), "trigger_in_past"),
         (SaveRefusal::CatalogUnavailable, "host_unavailable"),
     ];
     for (refusal, code) in cases {
@@ -192,4 +193,138 @@ fn the_schedules_list_is_made_but_never_overwritten() {
     assert!(entry_mut(list, "sch_2").is_none());
     let mut broken = Map::from_iter([("schedules".to_owned(), json!({"not": "a list"}))]);
     assert!(schedules_list_mut(&mut broken).is_err());
+}
+
+/// A Host whose clock reads any Once before 2026 as past, and records each
+/// Trigger it is asked to check.
+#[derive(Default)]
+struct FakeHost {
+    checks: std::sync::Mutex<Vec<(ScheduleTrigger, bool)>>,
+}
+
+impl FakeHost {
+    fn checks(&self) -> Vec<(ScheduleTrigger, bool)> {
+        self.checks.lock().unwrap().clone()
+    }
+}
+
+impl SaveHost for FakeHost {
+    fn check_trigger(
+        &self,
+        trigger: &ScheduleTrigger,
+        comes_due: bool,
+    ) -> Result<ScheduleTrigger, TriggerRefusal> {
+        self.checks
+            .lock()
+            .unwrap()
+            .push((trigger.clone(), comes_due));
+        match trigger {
+            ScheduleTrigger::Once { at } if comes_due && at.as_str() < "2026" => {
+                Err(TriggerRefusal::InPast(format!("{at} is in the past")))
+            }
+            ScheduleTrigger::Unknown => Err(TriggerRefusal::Invalid("unknown Trigger kind".into())),
+            other => Ok(other.clone()),
+        }
+    }
+
+    fn catalog(&self) -> Option<(Vec<HostCreateProject>, Vec<HostCreatePreset>)> {
+        Some(catalog())
+    }
+}
+
+fn past_once() -> Value {
+    json!({"kind": "once", "at": "2001-01-01T09:00"})
+}
+
+#[test]
+fn an_edit_that_gives_no_trigger_or_the_stored_one_checks_nothing() {
+    let host = FakeHost::default();
+    let stored = past_once();
+    assert_eq!(
+        check_edited_trigger(&host, None, Some(&stored), true),
+        Ok(None)
+    );
+    assert_eq!(
+        check_edited_trigger(&host, Some(&past_once()), Some(&stored), true),
+        Ok(None),
+        "a finished Once sent back unchanged, even on an enabled task"
+    );
+    let newer = json!({"kind": "fortnightly", "on": "tuesday"});
+    assert_eq!(
+        check_edited_trigger(&host, Some(&newer), Some(&newer), true),
+        Ok(None),
+        "compared in the stored form, so a kind this build cannot read is kept"
+    );
+    assert!(host.checks().is_empty(), "{:?}", host.checks());
+}
+
+#[test]
+fn a_different_trigger_must_come_due_only_while_the_task_will_be_enabled() {
+    let host = FakeHost::default();
+    let stored = json!({"kind": "daily", "time": "09:00"});
+    assert_eq!(
+        check_edited_trigger(&host, Some(&past_once()), Some(&stored), true),
+        Err(SaveRefusal::TriggerInPast(
+            "2001-01-01T09:00 is in the past".into()
+        ))
+    );
+    let once = ScheduleTrigger::Once {
+        at: "2001-01-01T09:00".into(),
+    };
+    assert_eq!(
+        check_edited_trigger(&host, Some(&past_once()), Some(&stored), false),
+        Ok(Some(once.clone())),
+        "a paused task saves a past Once as is"
+    );
+    assert_eq!(host.checks(), vec![(once.clone(), true), (once, false)]);
+    let other = json!({"kind": "fortnightly"});
+    assert_eq!(
+        check_edited_trigger(&host, Some(&other), Some(&stored), false),
+        Err(SaveRefusal::InvalidTrigger("unknown Trigger kind".into())),
+        "an unreadable Trigger is never saved"
+    );
+}
+
+#[test]
+fn resuming_a_once_whose_time_passed_asks_for_a_new_time() {
+    let host = FakeHost::default();
+    let refusal = check_resume(
+        &host,
+        &ScheduleTrigger::Once {
+            at: "2001-01-01T09:00".into(),
+        },
+    )
+    .expect_err("refused");
+    assert_eq!(
+        refusal,
+        SaveRefusal::TimePassed("2001-01-01T09:00 is in the past".into())
+    );
+    assert_eq!(refusal.code(), "trigger_in_past");
+    assert_eq!(
+        refusal.to_string(),
+        "2001-01-01T09:00 is in the past; give it a new time"
+    );
+    assert_eq!(
+        check_resume(&host, &ScheduleTrigger::Unknown),
+        Err(SaveRefusal::InvalidTrigger("unknown Trigger kind".into()))
+    );
+    let daily = ScheduleTrigger::Daily {
+        time: "09:00".into(),
+    };
+    assert_eq!(check_resume(&host, &daily), Ok(()));
+    assert!(
+        host.checks().iter().all(|(_, comes_due)| *comes_due),
+        "a resumed task must come due"
+    );
+}
+
+#[test]
+fn a_project_with_no_folder_is_refused_for_every_preset() {
+    let host = FakeHost::default();
+    for (preset, instructions) in [("ok", None), ("claude", Some("brief me"))] {
+        let refusal = check_task_runs(&host, "no-folder", preset, instructions)
+            .expect_err("no folder for a Run to start in");
+        assert_eq!(refusal, SaveRefusal::ProjectHasNoFolder("no-folder".into()));
+        assert_eq!(refusal.code(), "project_missing", "{preset}");
+    }
 }

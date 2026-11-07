@@ -50,6 +50,11 @@ run (a new Trigger counts from the edit the same way). `run` starts a Run
 now. Only the user changes tasks, and the Super Agent for them: add, edit,
 pause, resume, run and rm refuse inside any other Session.
 
+A task's Project needs a folder for its Runs to start in, whatever the preset.
+A Once time that has passed is refused while the task is enabled; a paused task
+keeps one (a Once task pauses itself after its Run), edits as usual, and
+resumes only once `edit --once` gives it a new time.
+
 --instructions is for an Agent Preset (one that starts an agent Unpeel can
 tell is ready): each Run launches it as typed, types the instructions once
 the agent is ready, and follows it to done or needs you. Up to 256 KiB.
@@ -282,11 +287,14 @@ fn local_time(ms: u64) -> Option<String> {
 
 fn add(args: &Args, json: bool) -> Result<(), String> {
     let name = add_name(args)?;
-    let trigger = trigger_flags(args, true)?.ok_or_else(|| {
+    let (flag, trigger) = trigger_flag(args)?.ok_or_else(|| {
         format!(
             "give exactly one Trigger: --hourly, --daily, --weekdays, --weekly, --once or --cron\n\n{HELP}"
         )
     })?;
+    // A new task is enabled, so its Trigger must come due.
+    let trigger = save::check_trigger(&CliHost, &trigger, true)
+        .map_err(|refusal| flag_refusal(flag, &refusal))?;
     let notify = notify_flag(args)?.unwrap_or(true);
     let project_id = resolve_project(required(args, "project")?)?;
     let preset_id = resolve_preset(required(args, "preset")?, &project_id)?;
@@ -353,11 +361,11 @@ fn add_instructions(args: &Args) -> Result<Option<String>, String> {
     Ok(Some(text.clone()))
 }
 
-/// The Trigger the flags give, in its stored form, after the save check
-/// every writer runs (`save::check_trigger`, on this machine's clock, the
-/// Host's): with `comes_due` it must still come due. `None` when no
-/// Trigger flag is given.
-fn trigger_flags(args: &Args, comes_due: bool) -> Result<Option<ScheduleTrigger>, String> {
+/// The Trigger flag given and its Trigger in the stored form, not yet
+/// checked: `add` and `edit` check it by the save rules every writer runs
+/// (on this machine's clock, the Host's). `None` when no Trigger flag is
+/// given.
+fn trigger_flag(args: &Args) -> Result<Option<(&'static str, ScheduleTrigger)>, String> {
     let given: Vec<&str> = TRIGGER_FLAGS
         .iter()
         .copied()
@@ -375,19 +383,17 @@ fn trigger_flags(args: &Args, comes_due: bool) -> Result<Option<ScheduleTrigger>
         }
     };
     let value = args.values.get(flag).map(String::as_str).unwrap_or("");
-    let trigger = stored_trigger(flag, value)?;
-    save::check_trigger(&CliHost, &trigger, comes_due)
-        .map(Some)
-        .map_err(|refusal| format!("--{flag}: {}", trigger_detail(&refusal)))
+    Ok(Some((flag, stored_trigger(flag, value)?)))
 }
 
-/// What is wrong with a Trigger, without the "invalid Trigger" prefix a
-/// flag's own name already gives.
-fn trigger_detail(refusal: &SaveRefusal) -> String {
-    match refusal {
+/// What is wrong with a Trigger flag's value, without the "invalid
+/// Trigger" prefix the flag's own name already gives.
+fn flag_refusal(flag: &str, refusal: &SaveRefusal) -> String {
+    let detail = match refusal {
         SaveRefusal::InvalidTrigger(detail) | SaveRefusal::TriggerInPast(detail) => detail.clone(),
         other => other.to_string(),
-    }
+    };
+    format!("--{flag}: {detail}")
 }
 
 /// A Trigger flag's value in the stored form: times and dates without
@@ -531,15 +537,26 @@ fn pick<'a>(
 
 // ── edit / pause / resume ──
 
+/// The value flags `edit` changes a task with, besides a Trigger.
+const EDIT_VALUES: &[&str] = &["name", "project", "preset", "instructions"];
+
 fn edit(args: &Args, json: bool) -> Result<(), String> {
     let schedule = select(args)?;
-    let change = edit_change(args, &schedule)?;
-    if change == ScheduleEdit::default() {
+    // Judged by the flags given: the stored Trigger sent back changes
+    // nothing, yet is an edit, as on the write routes.
+    let edits = EDIT_VALUES
+        .iter()
+        .chain(TRIGGER_FLAGS)
+        .any(|flag| args.values.contains_key(*flag))
+        || args.switches.contains("notify")
+        || args.switches.contains("no-notify");
+    if !edits {
         return Err(format!(
             "nothing to change: give --name, --project, --preset, a Trigger, --instructions, \
              --notify or --no-notify\n\n{HELP}"
         ));
     }
+    let change = edit_change(args, &schedule)?;
     check_edit_runs(&schedule, &change)?;
     let edited = save_edit(&schedule.id, &change)?;
     if json {
@@ -558,8 +575,8 @@ fn edit(args: &Args, json: bool) -> Result<(), String> {
 }
 
 /// What `edit`'s flags change. A new Trigger must still come due while the
-/// task is enabled; a new preset is looked up in the Project the task will
-/// have.
+/// task is enabled ([`edited_trigger`]); a new preset is looked up in the
+/// Project the task will have.
 fn edit_change(args: &Args, schedule: &Schedule) -> Result<ScheduleEdit, String> {
     let project_id = args
         .values
@@ -580,7 +597,7 @@ fn edit_change(args: &Args, schedule: &Schedule) -> Result<ScheduleEdit, String>
             .transpose()?,
         project_id,
         preset_id,
-        trigger: trigger_flags(args, schedule.enabled)?,
+        trigger: edited_trigger(args, schedule)?,
         enabled: None,
         notify_when_done: notify_flag(args)?,
         // Absent: unchanged; empty: removed; text: set.
@@ -589,6 +606,34 @@ fn edit_change(args: &Args, schedule: &Schedule) -> Result<ScheduleEdit, String>
             .get("instructions")
             .map(|text| (!text.trim().is_empty()).then(|| text.clone())),
     })
+}
+
+/// `edit`'s Trigger by the save rule the write routes run
+/// (`save::check_edited_trigger`): the one the task stores, sent back, is
+/// no change and is not checked again; a different one must come due while
+/// the task is enabled (`edit` never resumes it).
+fn edited_trigger(args: &Args, schedule: &Schedule) -> Result<Option<ScheduleTrigger>, String> {
+    let Some((flag, trigger)) = trigger_flag(args)? else {
+        return Ok(None);
+    };
+    let given = serde_json::to_value(&trigger).map_err(|error| error.to_string())?;
+    let stored = stored_trigger_value(&schedule.id)?;
+    save::check_edited_trigger(&CliHost, Some(&given), stored.as_ref(), schedule.enabled)
+        .map_err(|refusal| flag_refusal(flag, &refusal))
+}
+
+/// The task's Trigger as `app-state.json` stores it, the form an edit's
+/// Trigger is compared in.
+fn stored_trigger_value(schedule_id: &str) -> Result<Option<Value>, String> {
+    let state = unpeel_core::app_state::load()?;
+    Ok(state
+        .get("schedules")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .find(|entry| entry.get("id").and_then(Value::as_str) == Some(schedule_id))
+        .and_then(|entry| entry.get("trigger"))
+        .cloned())
 }
 
 /// A new Project, preset or instructions must still make a task the Host
@@ -630,18 +675,19 @@ fn pause(args: &Args) -> Result<(), String> {
 }
 
 /// Resume restarts the task's clock from now: what fell while it was
-/// paused never runs.
+/// paused never runs. The Trigger it keeps must still come due
+/// (`save::check_resume`): a Once time that has passed needs a new one.
 fn resume(args: &Args) -> Result<(), String> {
     let schedule = select(args)?;
     if schedule.enabled {
         println!("{} is not paused", display_name(&schedule));
         return Ok(());
     }
-    match save::check_trigger(&CliHost, &schedule.trigger, true) {
-        Ok(_) => {}
-        Err(SaveRefusal::TriggerInPast(_)) => {
+    match save::check_resume(&CliHost, &schedule.trigger) {
+        Ok(()) => {}
+        Err(refusal @ SaveRefusal::TimePassed(_)) => {
             return Err(format!(
-                "{}'s time has passed; give it a new one with `unpeel schedules edit {} --once …`",
+                "cannot resume {}: {refusal} with `unpeel schedules edit {} --once …`",
                 display_name(&schedule),
                 schedule.id
             ))
@@ -751,5 +797,16 @@ mod tests {
     fn the_help_states_the_instructions_cap() {
         let limit = unpeel_core::schedules::save::instructions_limit();
         assert!(super::HELP.contains(&format!("Up to {limit}.")), "{limit}");
+    }
+
+    /// The two save rules every writer runs (`save` module docs).
+    #[test]
+    fn the_help_states_the_save_rules() {
+        for rule in [
+            "A task's Project needs a folder for its Runs to start in, whatever the preset.",
+            "A Once time that has passed is refused while the task is enabled; a paused task",
+        ] {
+            assert!(super::HELP.contains(rule), "{rule}");
+        }
     }
 }
