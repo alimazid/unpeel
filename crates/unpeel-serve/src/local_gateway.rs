@@ -30,6 +30,19 @@ const PAIRING_CONTROL_PATH: &str = "/_unpeel/pairing";
 /// Scheduled Task verbs that need the live worker (Run now owns the
 /// overlap rule); same framing and owner-only socket as pairing.
 const SCHEDULES_CONTROL_PATH: &str = "/_unpeel/schedules";
+
+fn reap_finished_workers(workers: &mut Vec<JoinHandle<()>>) {
+    let mut index = 0;
+    while index < workers.len() {
+        if workers[index].is_finished() {
+            let finished = workers.swap_remove(index);
+            let _ = finished.join();
+        } else {
+            index += 1;
+        }
+    }
+}
+
 /// Verbs the disk-backed runtime omits from its descriptor but this socket
 /// serves from the worker's live authorities; keep in step with
 /// `crate::mobile::handle_local_live_route`.
@@ -129,6 +142,13 @@ impl LocalGatewayServer {
             .name("unpeel-local-host-accept".into())
             .spawn(move || {
                 while !thread_shutdown.load(Ordering::Acquire) {
+                    // A persistent Host can see hundreds of thousands of
+                    // short-lived Controllers. Retaining completed handles
+                    // keeps their pthread stacks until shutdown on macOS.
+                    // Reap while idle too, without waiting on live clients.
+                    if let Ok(mut workers) = thread_workers.lock() {
+                        reap_finished_workers(&mut workers);
+                    }
                     match listener.accept() {
                         Ok((stream, _)) => {
                             if thread_shutdown.load(Ordering::Acquire) {
@@ -820,6 +840,7 @@ pub fn set_device_relay_allowed(home: &Path, device_id: &str, allowed: bool) -> 
 mod tests {
     use super::*;
     use crate::schedules::host::test_support::{morning, run_now_driver};
+    use std::time::Instant;
 
     fn run_now_request() -> unpeel_core::relay_wire::TunnelRequest {
         unpeel_core::relay_wire::TunnelRequest {
@@ -895,6 +916,43 @@ mod tests {
             (status, &body["code"]),
             (404, &"unknown_task".into()),
             "{body}"
+        );
+    }
+
+    #[test]
+    fn reaping_releases_completed_connections_and_preserves_live_controllers() {
+        let (finish, wait) = mpsc::channel();
+        let mut workers = vec![std::thread::spawn(move || wait.recv().unwrap())];
+        workers.extend((0..64).map(|_| std::thread::spawn(|| ())));
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while workers[1..].iter().any(|worker| !worker.is_finished()) {
+            assert!(
+                Instant::now() < deadline,
+                "short-lived connections did not finish"
+            );
+            std::thread::yield_now();
+        }
+
+        reap_finished_workers(&mut workers);
+        assert_eq!(
+            workers.len(),
+            1,
+            "finished connection handles must not accumulate"
+        );
+        assert!(
+            !workers[0].is_finished(),
+            "the live Controller must remain connected"
+        );
+
+        finish.send(()).unwrap();
+        while !workers[0].is_finished() {
+            assert!(Instant::now() < deadline, "live Controller did not finish");
+            std::thread::yield_now();
+        }
+        reap_finished_workers(&mut workers);
+        assert!(
+            workers.is_empty(),
+            "idle cleanup must release the last connection too"
         );
     }
 }
