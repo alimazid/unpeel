@@ -11,6 +11,8 @@ node_modules
 .vite
 packages/*/node_modules
 dist
+# The fork's landing page ships its built page from dist/
+!landing-page/dist
 dist-ssr
 packages/*/dist
 packages/*/.svelte-kit
