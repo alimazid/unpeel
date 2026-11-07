@@ -322,7 +322,9 @@ They check a task with the same save rules as the CLI and a starting Run
 (`unpeel_core::schedules::save`). What they cannot do from the disk comes
 from the `ScheduleHost` the workspace worker installs at start
 (`schedules::host::WorkerHost`): `trigger::for_save` on the Host's clock (a
-task saved enabled must come due; resuming re-checks), the create catalog
+task saved enabled must come due; the stored Trigger sent back in an edit is
+not checked again; resuming re-checks, and refuses a Once time that has
+passed until the task has a new one), the create catalog
 its Runs resolve against (a Project with a folder, an enabled preset,
 instructions only on an Agent Preset), Run now through the driver (the same request `unpeel schedules run` sends
 over `/_unpeel/schedules`, which answers its refusals with the same status
