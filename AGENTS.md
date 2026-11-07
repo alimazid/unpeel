@@ -116,7 +116,12 @@ makes sense for coding, it does not belong here.
 
 - Never write to a real `~/.unpeel` from tests: every test case and verify
   script uses a private `UNPEEL_HOME` (short paths — `sockaddr_un` caps a
-  socket path near 104 bytes).
+  socket path near 104 bytes). A unit-test binary that resolves the home
+  sets its own before `main` unless the caller already did (`src/test_home.rs`
+  in `unpeel-core`, `unpeel-serve` and `unpeel-native-bridge`: a `#[ctor]`
+  hook plus a guard test), so a plain `cargo test` needs no setup. A new
+  crate whose tests resolve the home gets the same `test_home.rs`; process
+  tests pass their own `HOME`/`UNPEEL_HOME` to the binaries they spawn.
 - Provider-specific code, assets, and fixtures belong together under
   `runtimes/<slug>/`; only provider-neutral enforcement lives in core.
 - Changing launching or hooks means updating `session_host.rs`, the
