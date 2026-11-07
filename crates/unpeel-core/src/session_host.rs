@@ -6766,6 +6766,17 @@ mod tests {
         assert_eq!(tracker.observe("e", 60_000), None);
     }
 
+    #[test]
+    fn input_stamps_coalesce_like_screen_stamps() {
+        let mut stamps = super::StampCoalescer::default();
+        assert_eq!(stamps.due(None, 1_000), None, "nobody typed yet");
+        assert_eq!(stamps.due(Some(1_000), 1_000), Some(1_000));
+        // Typing on: the latest key time waits out the window.
+        assert_eq!(stamps.due(Some(1_400), 1_500), None);
+        assert_eq!(stamps.due(Some(2_900), 3_000), Some(2_900));
+        assert_eq!(stamps.due(Some(2_900), 60_000), None, "written once");
+    }
+
     #[derive(Clone, Default)]
     struct RecordingWriter {
         writes: Arc<Mutex<Vec<Vec<u8>>>>,
