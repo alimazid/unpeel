@@ -302,6 +302,29 @@ def leftover_host_processes(home_root):
     return leftovers
 
 
+# `session_host::socket_path` keeps a session's socket at
+# <home>/app-sessions/<id>/session.sock only while that path is at most this
+# long; past it every Unpeel process looks in /tmp/unpeel-<uid>/<id>.sock
+# instead, one directory for the whole machine.
+MAX_UNIX_SOCKET_PATH_LEN = 100
+
+
+def fixture_socket_path(home, session_id):
+    """Where a fixture binds a session's control socket: the path the Host
+    will look in. A fixture session id is fixed, not a fresh UUID, so a
+    socket past the cap would move to the machine-wide fallback, where the
+    Host would miss this socket and another run's same-named fixture could
+    meet it. Refuse loudly instead; this also covers sub-homes, which the
+    budget check in `Case` cannot see."""
+    path = home.path("app-sessions", session_id, "session.sock")
+    if len(path) > MAX_UNIX_SOCKET_PATH_LEN:
+        raise RuntimeError(
+            f"fixture socket {path!r} is {len(path)} bytes, over the Host's "
+            f"{MAX_UNIX_SOCKET_PATH_LEN}: shorten the home or the session id"
+        )
+    return path
+
+
 # Every private home this process built, oldest first; `host_certificate_pin`
 # finds the Host certificate a running serve wrote under one of them.
 _HOMES = []
@@ -398,7 +421,7 @@ class Home:
             pid = child.pid
             state = "running"
             sock = socket.socket(socket.AF_UNIX)
-            sock_path = os.path.join(directory, "session.sock")
+            sock_path = fixture_socket_path(self, session_id)
             if os.path.exists(sock_path):
                 os.unlink(sock_path)
             sock.bind(sock_path)
@@ -760,7 +783,7 @@ class FakeHost:
         application_cursor=False,
         response_delay=0,
     ):
-        self.path = home.path("app-sessions", session_id, "session.sock")
+        self.path = fixture_socket_path(home, session_id)
         self._manifest_path = home.path("app-sessions", session_id, "manifest.json")
         self.writes = []
         self.resizes = []
@@ -1467,14 +1490,17 @@ class Case:
         self.notes = []
         root = os.environ.get("UNPEEL_TUI_TEST_HOME") or f"/tmp/ut-{os.getpid()}"
         # A hosted session binds `<home>/app-sessions/<uuid>/session.sock`,
-        # which adds ~55 bytes to the home path; sockaddr_un caps the total
-        # near 104. Over that, bind() fails and the host dies with nothing on
-        # screen to explain it — so fail loudly here instead.
+        # which adds ~63 bytes to the home path. Past the Host's cap the
+        # socket moves to a machine-wide fallback directory, and sockaddr_un
+        # caps any path near 104 bytes; either way a case breaks with nothing
+        # on screen to explain it — so fail loudly here instead. Fixture
+        # sessions, in sub-homes too, are checked by `fixture_socket_path`.
         budget = len(root) + len("/app-sessions/") + 36 + len("/session.sock")
-        if budget > 100:
+        if budget > MAX_UNIX_SOCKET_PATH_LEN:
             raise RuntimeError(
                 f"test home {root!r} is too long ({budget} bytes with a socket "
-                "suffix, limit ~104) — hosted sessions could not bind"
+                f"suffix, limit {MAX_UNIX_SOCKET_PATH_LEN}) — hosted sessions "
+                "could not bind"
             )
         shutil.rmtree(root, ignore_errors=True)
         self.home = Home(root)
@@ -1541,6 +1567,8 @@ class Case:
         return self.track(FakeHost(self.home, session_id, **kwargs))
 
     def finish(self):
+        # A second Ctrl-C must not cut the cleanup below short.
+        signal.signal(signal.SIGINT, signal.SIG_IGN)
         for closable in reversed(self._closables):
             try:
                 closable.close()
@@ -1590,5 +1618,7 @@ def run(name, body):
 
         case.check(f"{name} raised", False, traceback.format_exc().strip().splitlines()[-1])
         traceback.print_exc()
+    except KeyboardInterrupt:
+        case.check(f"{name} finished before it was interrupted", False)
     finally:
         case.finish()

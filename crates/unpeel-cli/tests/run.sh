@@ -17,7 +17,8 @@
 # share a home, and every sweep below is scoped to one home. Ports are never
 # fixed: the harness and the Host bind :0, or a random port outside the
 # kernel's ephemeral range when a port has to be released and bound again.
-# A short rerun waits for one case to free a slot, not for another whole run.
+# Waiting cases line up for the next free slot, so a short rerun waits for
+# one case to finish, not for another whole run.
 set -uo pipefail
 
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -60,6 +61,12 @@ if ! mkdir -p "$slot_dir"; then
   echo "cannot create the slot directory $slot_dir" >&2
   exit 1
 fi
+for lock_file in "$slot_dir/queue" "$slot_dir"/{1..9}; do
+  if ! { : >>"$lock_file"; } 2>/dev/null; then
+    echo "cannot open $lock_file: the slots belong to one user per machine" >&2
+    exit 1
+  fi
+done
 
 binary="${UNPEEL_TUI_BINARY:-$crates/target/debug/unpeel}"
 if [[ -z "${UNPEEL_TUI_SKIP_BUILD:-}" ]]; then
@@ -130,28 +137,54 @@ sweep_home() {
   sweep_cores_under "$home"
 }
 
-# Block until one of the machine's slots is free, then hold it on fd 9 of
-# this shell and set `slot`. flock(2) locks the open file, which python
-# shares with this shell, so the lock outlives python and lasts until fd 9
-# closes. Every case runs with fd 9 closed: a daemon that inherited it would
-# hold the slot for as long as the daemon lived.
+# flock(2) the file this shell holds open on fd $1, waiting for it unless
+# $2 is "nb". The lock belongs to the open file, which python shares with
+# this shell, so it outlives python and lasts until the shell closes the fd.
+lock_fd() {
+  python3 -c 'import fcntl, sys
+flags = fcntl.LOCK_EX | (fcntl.LOCK_NB if sys.argv[2] == "nb" else 0)
+fcntl.flock(int(sys.argv[1]), flags)' "$1" "$2" 2>/dev/null
+}
+
+# Wait for one of the machine's slots, then hold it on fd 9 and set `slot`.
+# Waiters line up on the queue lock (fd 8) first, and only its holder polls
+# the slots: a run that has just finished a case queues behind the runs
+# already waiting instead of taking its slot straight back. Every case runs
+# with fds 8 and 9 closed, since a daemon that inherited one would hold it
+# for as long as the daemon lived.
 take_slot() {
-  local i
-  while :; do
-    [[ -e "$results/.stop" ]] && return 1
+  local name="$1" i
+  exec 8>>"$slot_dir/queue"
+  lock_fd 8 wait &
+  echo "$!" >"$results/$name.queue"
+  wait "$!"
+  local queued=$?
+  rm -f "$results/$name.queue"
+  while (( queued == 0 )) && [[ ! -e "$results/.stop" ]]; do
     for (( i = 1; i <= slots; i++ )); do
       exec 9>>"$slot_dir/$i"
-      if python3 -c 'import fcntl; fcntl.flock(9, fcntl.LOCK_EX | fcntl.LOCK_NB)' 2>/dev/null; then
-        if [[ -e "$results/.stop" ]]; then
-          exec 9>&-
-          return 1
-        fi
+      if lock_fd 9 nb; then
+        exec 8>&-
         slot=$i
         return 0
       fi
       exec 9>&-
     done
-    sleep 1
+    sleep 0.5
+  done
+  exec 8>&-
+  return 1
+}
+
+# A run holding slot N owns every /tmp/sN-* home, since no live case of any
+# run can be using one: clear what a run that died left behind there, so a
+# leaked host stops writing into a home nobody will reuse soon.
+clear_slot_homes() {
+  local home
+  for home in /tmp/s"$1"-*; do
+    [[ -e "$home" ]] || continue
+    sweep_home "$home"
+    rm -rf "$home"
   done
 }
 
@@ -164,24 +197,28 @@ run_case() {
   local name="$1" case_file="$here/cases/$1.py" home queued waited start output status
   local elapsed case_pass case_fail
   queued=$(date +%s)
-  if ! take_slot; then
+  if ! take_slot "$name"; then
     : >"$results/$name.skipped"
     : >"$results/$name.done"
     return
   fi
   waited=$(( $(date +%s) - queued ))
-  home="${base:+$base-$name}"
-  home="${home:-/tmp/s$slot-$name}"
-  # The slot is ours, but a run that died may have left processes here.
-  sweep_home "$home"
-  rm -rf "$home"
+  if [[ -n "$base" ]]; then
+    home="$base-$name"
+    sweep_home "$home"
+    rm -rf "$home"
+  else
+    home="/tmp/s$slot-$name"
+    clear_slot_homes "$slot"
+  fi
   start=$(date +%s)
   # In the background so its pid is known: on_interrupt signals the case
   # itself, which a `$(...)` would have hidden one subshell further down.
-  UNPEEL_TUI_TEST_HOME="$home" python3 "$case_file" </dev/null 9>&- >"$results/$name.log" 2>&1 &
+  UNPEEL_TUI_TEST_HOME="$home" python3 "$case_file" </dev/null 8>&- 9>&- >"$results/$name.log" 2>&1 &
   echo "$!" >"$results/$name.pid"
   wait "$!"
   status=$?
+  rm -f "$results/$name.pid"
   elapsed=$(( $(date +%s) - start ))
   output="$(cat "$results/$name.log")"
 
@@ -236,21 +273,25 @@ for case_file in "$here"/cases/*.py; do
 done
 
 # Cases run as background jobs, which a shell starts with SIGINT ignored;
-# the harness restores it, so Ctrl-C still unwinds each case through its
-# cleanup while the jobs themselves go on to sweep. A TERM sent to this
-# script alone is handed to the running cases the same way. Either way no
-# new case starts.
+# the harness restores it, so a Ctrl-C at the terminal reaches every running
+# case directly and each unwinds through its cleanup, while the jobs go on to
+# sweep. A TERM sent to this script alone is passed to the running cases as
+# that same SIGINT. Either way waiting cases give up and no new case starts.
 interrupted=0
 on_interrupt() {
-  interrupted=1
+  interrupted=$1
   : >"$results/.stop"
   local name
   for name in ${names[@]+"${names[@]}"}; do
-    [[ -e "$results/$name.pid" && ! -e "$results/$name.done" ]] || continue
-    kill -INT "$(cat "$results/$name.pid")" 2>/dev/null || true
+    [[ -e "$results/$name.done" ]] && continue
+    [[ -e "$results/$name.queue" ]] && kill -TERM "$(cat "$results/$name.queue")" 2>/dev/null
+    (( $1 == 143 )) && [[ -e "$results/$name.pid" ]] &&
+      kill -INT "$(cat "$results/$name.pid")" 2>/dev/null
   done
+  true
 }
-trap on_interrupt INT TERM
+trap 'on_interrupt 130' INT
+trap 'on_interrupt 143' TERM
 trap 'rm -rf "$results"' EXIT
 
 pass=0; fail=0; failed_cases=()
@@ -294,7 +335,7 @@ printf 'total: %d passed, %d failed, %ds\n' "$pass" "$fail" \
   "$(( $(date +%s) - start_all ))"
 if (( interrupted )); then
   echo "interrupted after $finished of $total cases"
-  exit 130
+  exit "$interrupted"
 fi
 if (( ${#failed_cases[@]} )); then
   printf 'failing cases: %s\n' "${failed_cases[*]}"
