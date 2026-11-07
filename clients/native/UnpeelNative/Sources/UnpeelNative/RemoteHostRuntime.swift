@@ -164,6 +164,10 @@ private enum RemoteHostContinuityKey: Hashable, Sendable {
 
 @MainActor
 final class RemoteHostRuntime: ObservableObject {
+    /// One output page: the Host contract caps pages at 200 KiB; this keeps
+    /// a little headroom for adapters.
+    nonisolated static let outputPageLimit = 192 * 1024
+
     typealias BackendFactory = (
         _ transport: RemoteHostTransport
     ) throws -> any NativeRemoteBackendProtocol
@@ -2453,7 +2457,7 @@ final class RemoteHostRuntime: ObservableObject {
                 // headroom for adapters while still amortizing long output.
                 page = try await connection.backend.pollOutput(
                     sessionID: identity.paneKey.sessionID,
-                    limit: 192 * 1024,
+                    limit: Self.outputPageLimit,
                     waitMilliseconds: 1_000
                 )
             } catch is CancellationError {

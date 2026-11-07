@@ -2601,6 +2601,13 @@ pub fn output_retained_from(session_id: &str) -> u64 {
     read_output_retention_path(&output_retention_path(session_id))
 }
 
+/// Whether a Session's journal still holds readable output: its logical
+/// length is past the retention floor. A missing journal holds none.
+pub fn journal_has_retained_output(session_id: &str) -> bool {
+    fs::metadata(output_path(session_id))
+        .is_ok_and(|metadata| metadata.len() > output_retained_from(session_id))
+}
+
 fn read_output_retention_path(path: &Path) -> u64 {
     fs::read(path)
         .ok()
@@ -6591,21 +6598,22 @@ mod tests {
         attach_ready_path, attach_ready_wait_snippet, build_startup_shell_script,
         cleanup_session_artifacts, compact_output_journal_path, ensure_managed_storage_path,
         env_keys_with_prefix, extract_submitted_prompt, fallback_shell_exec_snippet,
-        fish_bridge_script, fish_single_quote, load_manifest, manifest_child_is_definitively_gone,
-        manifest_heartbeat_is_stale, manifest_host_is_healthy, manifest_last_heartbeat_at,
-        manifest_pid_identity, normalize_prompt_title, output_path, output_retained_from,
-        prepare_startup_exit_record, process_exists, process_is_zombie, process_start_time_ms,
-        read_input_stream_frame, read_output_chunk, read_output_stream_frame,
-        read_startup_exit_path, recorded_pid_identity, refresh_manifest_health_from_manifest,
-        retry_manifest_write, run_batched_output_stream_forwarder, run_batched_output_writer,
-        run_host, runtime_generation_scoped_command, safe_output_retention_boundary, save_manifest,
-        shell_family, strip_env_prefix_from_process_command, strip_env_prefix_from_pty_command,
-        update_manifest_session, write_output_stream_frame, HostAnsweredQuery,
-        HostedSessionManifest, HostedSessionRuntime, HostedSessionState, OscTitleScanner,
-        OutputBroadcaster, OutputQueryScanner, OutputStreamRead, PidIdentity, RetainedOutputWriter,
-        RuntimeObservationTracker, SessionExecutionScope, SessionHostCommand, SessionHostLaunch,
-        SessionOutputChunk, ShellFamily, HERDR_ENV_PREFIX, LEAKED_LAUNCHER_ENV_KEYS,
-        OSC_TITLE_MAX_PAYLOAD_BYTES, PRIMARY_DEVICE_ATTRIBUTES_RESPONSE,
+        fish_bridge_script, fish_single_quote, journal_has_retained_output, load_manifest,
+        manifest_child_is_definitively_gone, manifest_heartbeat_is_stale, manifest_host_is_healthy,
+        manifest_last_heartbeat_at, manifest_pid_identity, normalize_prompt_title, output_path,
+        output_retained_from, output_retention_path, prepare_startup_exit_record, process_exists,
+        process_is_zombie, process_start_time_ms, read_input_stream_frame, read_output_chunk,
+        read_output_stream_frame, read_startup_exit_path, recorded_pid_identity,
+        refresh_manifest_health_from_manifest, retry_manifest_write,
+        run_batched_output_stream_forwarder, run_batched_output_writer, run_host,
+        runtime_generation_scoped_command, safe_output_retention_boundary, save_manifest,
+        save_output_retention_path, shell_family, strip_env_prefix_from_process_command,
+        strip_env_prefix_from_pty_command, update_manifest_session, write_output_stream_frame,
+        HostAnsweredQuery, HostedSessionManifest, HostedSessionRuntime, HostedSessionState,
+        OscTitleScanner, OutputBroadcaster, OutputQueryScanner, OutputStreamRead, PidIdentity,
+        RetainedOutputWriter, RuntimeObservationTracker, SessionExecutionScope, SessionHostCommand,
+        SessionHostLaunch, SessionOutputChunk, ShellFamily, HERDR_ENV_PREFIX,
+        LEAKED_LAUNCHER_ENV_KEYS, OSC_TITLE_MAX_PAYLOAD_BYTES, PRIMARY_DEVICE_ATTRIBUTES_RESPONSE,
         SESSION_RUNTIME_CLEAR_MISSES, SESSION_TITLE_MODE_FOR_TEST,
     };
     #[cfg(unix)]
@@ -8169,6 +8177,25 @@ exit "${UNPEEL_FAKE_PROVIDER_STATUS:-0}"
         worker.join().unwrap().unwrap();
 
         assert_eq!(recorded.snapshots(), vec![b"ab".to_vec(), b"cd".to_vec()]);
+    }
+
+    /// A stopped Run's row says `keptOutput` from this: bytes past the
+    /// retention floor, never a missing, emptied, or fully aged-out journal.
+    #[test]
+    fn a_journal_has_retained_output_only_past_its_retention_floor() {
+        let session_id = unique_session_id("kept-output");
+        let path = output_path(&session_id);
+        assert!(!journal_has_retained_output(&session_id), "no journal");
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(&path, b"").unwrap();
+        assert!(!journal_has_retained_output(&session_id), "emptied on Stop");
+        fs::write(&path, b"run-1\r\n").unwrap();
+        assert!(journal_has_retained_output(&session_id));
+        save_output_retention_path(&output_retention_path(&session_id), 7).unwrap();
+        assert!(
+            !journal_has_retained_output(&session_id),
+            "every byte is behind the floor"
+        );
     }
 
     #[cfg(any(target_os = "macos", target_os = "linux"))]

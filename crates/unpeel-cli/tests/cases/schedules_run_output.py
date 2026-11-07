@@ -9,8 +9,14 @@ Session; a Session that is not a Run still loses its output on Stop (an
 empty `output.bin`, no retention marker); and both Runs' output survives a
 Host restart and the exited-journal compaction pass. Retention removing a
 Run Session's directory, output included, is `schedules_retention`.
+
+What the Mac app reads (#36), on both session-row builders (`/mobile` as a
+paired phone sees it, `host.sock` as the app does): the stopped Runs' rows
+carry `keptOutput: true` and a tail read of `/mobile/output` returns the
+Run's line; the user's stopped Session's row carries no `keptOutput`.
 """
 
+import base64
 import datetime
 import json
 import os
@@ -21,7 +27,10 @@ import time
 import zoneinfo
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from harness import BINARY, CRATES, run, run_cli  # noqa: E402
+from harness import (  # noqa: E402
+    BINARY, CRATES, host_certificate_pin, host_sock_request, mobile_port, mobile_request, run,
+    run_cli,
+)
 
 ZONE = "America/New_York"
 SESSION_ID = re.compile(r"[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}")
@@ -133,6 +142,61 @@ def check_user_stop_drops(case, home, session_id):
                f"size={size} retention={os.path.exists(retention)}")
 
 
+def wires(service, home, token):
+    """`(name, read)` per session-row builder; `read(path, query)` answers
+    `(status, json)`."""
+    port = mobile_port(home)
+
+    def phone(path, query):
+        if not query:
+            return mobile_request(port, path, token, home=home)
+        pairs = "&".join(f"{key}={value}" for key, value in query.items())
+        return mobile_request(port, f"{path}?{pairs}", token, home=home)
+
+    def app(path, query):
+        socket_path = (service.status() or {}).get("localSocket")
+        if not socket_path or not os.path.exists(socket_path):
+            return None, {"error": "no host.sock"}
+        return host_sock_request(socket_path, path, query)
+
+    return [("phone", phone), ("host.sock", app)]
+
+
+def session_row(read, session_id):
+    status, boot = read("/mobile/bootstrap", {})
+    if status != 200:
+        return None
+    return next((row for row in boot.get("sessions", []) if row.get("id") == session_id), None)
+
+
+def check_kept_output(case, service, home, token, stopped_run, stage):
+    """The Mac app's view of a stopped Run: `keptOutput` on its row, and the
+    line from a tail read of `/mobile/output` (no offset)."""
+    run_id, session_id = stopped_run
+    for name, read in wires(service, home, token):
+        row = service.wait_for(
+            lambda: (session_row(read, session_id) or {}).get("keptOutput") and True,
+            timeout=15,
+        )
+        case.check(f"{stage}, {name}: the stopped Run's row has keptOutput", bool(row),
+                   json.dumps(session_row(read, session_id))[:600])
+        status, tail = read("/mobile/output", {"session_id": session_id, "limit": "196608"})
+        shown = base64.b64decode(tail.get("dataBase64") or "").decode(errors="replace")
+        case.check(f"{stage}, {name}: a /mobile/output tail read returns the Run's line",
+                   status == 200 and f"run-{run_id}" in shown, f"{status} {shown[-300:]}")
+
+
+def check_user_row_keeps_nothing(case, service, home, token, session_id):
+    for name, read in wires(service, home, token):
+        row = service.wait_for(
+            lambda: (session_row(read, session_id) or {}).get("status") == "exited"
+            and session_row(read, session_id),
+            timeout=15,
+        )
+        case.check(f"{name}: the user's stopped Session's row has no keptOutput",
+                   bool(row) and "keptOutput" not in row, json.dumps(row)[:600])
+
+
 def compact_exited_journals(home):
     return subprocess.run(
         [HOST_BIN, "__compact_output_journals__"],
@@ -160,8 +224,14 @@ def body(case):
     home.project("p", "output", home.root)
     home.preset(label="script", command=SCRIPT, preset_id="script")
     home.preset(label="talk", command=USER_COMMAND, preset_id="talk")
+    token = home.pair_device()
+    home.reserve_mobile_port()
     service = case.serve(env={"TZ": ZONE})
     if not case.check("the Host starts with no app", bool(service.ready(timeout=25)), service.log()):
+        return
+    pinned = service.wait_for(lambda: host_certificate_pin(home), timeout=20)
+    if not case.check("the Host serves /mobile", mobile_port(home) is not None and bool(pinned),
+                      service.log()[-1500:]):
         return
     try:
         added = cli(home, "schedules", "add", "Report", "--project", "p", "--preset", "script",
@@ -176,11 +246,14 @@ def body(case):
                           json.dumps([first, second])):
             return
         check_superseded(case, service, home, first)
+        check_kept_output(case, service, home, token, first, "superseded")
         check_stopped_by_hand(case, home, second)
+        check_kept_output(case, service, home, token, second, "stopped by hand")
         caller = launch_user_session(case, service, home)
         if caller:
             check_read_output(case, home, caller, first)
             check_user_stop_drops(case, home, caller)
+            check_user_row_keeps_nothing(case, service, home, token, caller)
         check_after_restart(case, service, home, [first, second])
     finally:
         for session_id in list(home.manifests()):

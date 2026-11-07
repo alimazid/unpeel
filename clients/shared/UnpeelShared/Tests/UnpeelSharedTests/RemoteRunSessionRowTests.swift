@@ -22,8 +22,15 @@ struct RemoteRunSessionRowTests {
         #expect(!row.superseded)
     }
 
+    /// ADR 0006: a stopped Run whose output the Host kept says so.
+    @Test func aStoppedRunsRowSaysWhetherItKeptOutput() throws {
+        #expect(try decode(#"{"scheduleID":"sch_a","superseded":true,"keptOutput":true}"#).keptOutput)
+        #expect(!(try decode(#"{"scheduleID":"sch_a","superseded":true}"#).keptOutput))
+        #expect(!(try decode("").keptOutput))
+    }
+
     @Test func theFieldsRoundTrip() throws {
-        let older = try decode(#"{"scheduleID":"sch_a","superseded":true}"#)
+        let older = try decode(#"{"scheduleID":"sch_a","superseded":true,"keptOutput":true}"#)
         let again = try JSONDecoder().decode(
             RemoteSessionSummary.self, from: try JSONEncoder().encode(older)
         )

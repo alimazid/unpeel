@@ -23,19 +23,18 @@ resumed for real: the task's Run history names the replacement id instead
 of the old one.
 """
 
-import base64
 import datetime
 import json
 import os
 import shlex
-import socket
-import struct
 import sys
 import time
 import zoneinfo
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from harness import host_certificate_pin, mobile_port, mobile_request, run, run_cli  # noqa: E402
+from harness import (  # noqa: E402
+    host_certificate_pin, host_sock_request, mobile_port, mobile_request, run, run_cli,
+)
 
 ZONE = "America/New_York"
 USER_SESSIONS = [f"user-stopped-{n}" for n in range(1, 6)]
@@ -68,26 +67,8 @@ def tomorrow():
 
 
 def local_bootstrap(socket_path):
-    """`GET /mobile/bootstrap` over the UPL1 `host.sock` framing the Mac app
-    speaks (`host_launch_conformance.py` has the full client)."""
-    payload = json.dumps({"id": 1, "method": "GET", "path": "/mobile/bootstrap",
-                          "query": {}, "auth": None, "contentType": None,
-                          "bodyB64": None}).encode()
-    with socket.socket(socket.AF_UNIX) as conn:
-        conn.settimeout(20)
-        conn.connect(socket_path)
-        conn.sendall(b"UPL1" + bytes([1, 0, 0, 0]) + struct.pack(">I", len(payload)) + payload)
-        received = b""
-        while len(received) < 12 or len(received) < 12 + struct.unpack(">I", received[8:12])[0]:
-            chunk = conn.recv(65536)
-            if not chunk:
-                break
-            received += chunk
-    if len(received) < 12 or received[:4] != b"UPL1":
-        return None, {}
-    envelope = json.loads(received[12:12 + struct.unpack(">I", received[8:12])[0]])
-    body = base64.b64decode(envelope["bodyB64"]) if envelope.get("bodyB64") else b"{}"
-    return envelope.get("status"), json.loads(body)
+    """`GET /mobile/bootstrap` over `host.sock`, as the Mac app reads it."""
+    return host_sock_request(socket_path, "/mobile/bootstrap")
 
 
 def run_entry(home, task_id, run_id):

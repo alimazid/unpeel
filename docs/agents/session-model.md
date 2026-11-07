@@ -231,7 +231,14 @@ keeps its output (it may explain why it died). So does a **Run Session** (its
 `spawned_by` is `schedule:<task id>`), agent or script, whoever stops it: the
 next Run stopping it as it comes up, auto-stop, or the user
 ([ADR 0006](../adr/0006-a-stopped-run-session-keeps-its-output.md)).
-`unpeel logs <id>` and the MCP `sessions read_output` action read it; the
+`unpeel logs <id>` and the MCP `sessions read_output` action read it. Its
+row carries `keptOutput: true` while it is stopped with bytes past the
+retention floor (`run_sessions::publish`, both row builders), and the Mac app
+then shows that output read-only in its terminal area instead of the stopped
+placeholder, with Resume in the bar above it (`KeptOutputView`). The app
+reads it with one tail read of `GET /mobile/output` (no offset, the bridge's
+`outputTail` resource operation, so no output cursor moves) through the
+selected scope's Host connection, Local included, never from disk. The
 journal's own cap still applies, and it goes with the directory when Run
 retention removes the Session (five stopped Runs per task). Resume of a
 stopped Run still starts a fresh terminal. Each `unpeel serve` worker
