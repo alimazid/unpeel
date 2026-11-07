@@ -526,7 +526,12 @@ fn discover_result() -> Value {
     })
 }
 
+// Fork-only: the Super Agent's after-compaction rule joins the instructions.
 fn initialize_result(params: &Value) -> Value {
+    crate::supervision_mcp::extend_instructions(base_initialize_result(params))
+}
+
+fn base_initialize_result(params: &Value) -> Value {
     let protocol_version = params
         .get("protocolVersion")
         .and_then(Value::as_str)
@@ -5333,6 +5338,21 @@ mod tests {
             .as_str()
             .unwrap()
             .contains("call sessions current"));
+    }
+
+    #[test]
+    fn instructions_carry_the_super_agents_compaction_rule() {
+        // Instructions stay in the system prompt, which compaction keeps.
+        let instructions = initialize_result(&json!({}))["instructions"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        assert!(instructions.contains(
+            "If you are this workspace's Super Agent, your instructions are skills read \
+             unpeel/router."
+        ));
+        assert!(instructions
+            .contains("After a compaction, call sessions current before starting anything"));
     }
 
     #[test]

@@ -102,6 +102,30 @@ fn merge_properties(definition: Value, properties: Vec<(&'static str, Value)>) -
     definition
 }
 
+/// The unified server's `initialize` result with the Super Agent's
+/// after-compaction rule after upstream's `instructions`.
+pub(crate) fn extend_instructions(result: Value) -> Value {
+    let mut result = result;
+    if let Some(upstream) = result.get("instructions").and_then(Value::as_str) {
+        let extended = format!("{upstream} {}", compaction_rule());
+        result["instructions"] = Value::String(extended);
+    }
+    result
+}
+
+/// MCP server instructions stay in Claude Code's system prompt, which a
+/// compaction does not summarize, so this rule outlasts a summary that drops
+/// the Router skill. Every Session receives it, so it says whom it is for.
+fn compaction_rule() -> String {
+    format!(
+        "If you are this workspace's Super Agent, your instructions are skills read {}. \
+         After a compaction, call sessions current before starting anything: super_agent: \
+         true there means you are the Super Agent, and its Worker cards show what is \
+         already running.",
+        crate::skills_builtin::ROUTER_SKILL_ID
+    )
+}
+
 /// `action: "help"` sections for the extra actions of `tool`, shaped like
 /// `legacy_sessions_tool_definitions` entries: `(action, {description,
 /// inputSchema})`.
