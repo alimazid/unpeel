@@ -970,6 +970,12 @@ enum SidebarListPageMetrics {
     // Fork-only: sidebar sections. Was 48 (rows scrolled up under the
     // traffic-light glass); the PROJECTS section header now sits above.
     static let topInset: CGFloat = SidebarSectionMetrics.projectsTopInset
+    /// Between top-level projects; rows inside a project sit flush.
+    static let blockSpacing: CGFloat = 1
+    /// Clearance below the last row. It must cover SessionScrollTarget's
+    /// margin, or auto-scrolls to the last rows clamp back under the bottom
+    /// fade.
+    static let bottomInset: CGFloat = SessionScrollTarget.margin + 12
 }
 
 /// Which truth a `SidebarListPage` renders from.
@@ -1021,65 +1027,14 @@ extension SidebarListPage where LiveTree == EmptyView {
     }
 }
 
-/// Read-only sidebar tree for one peeked workspace, carrying exactly the
-/// inputs the REAL sidebar row components (`ProjectRowView`/`SessionRowView`)
-/// render from — so the panel is pixel-identical to the sidebar the commit
-/// scopes into. Grouped like the real list: a top-level project header plus
-/// the flattened rows inside it (pinned Sessions first, then the ordinary
-/// mixed folder/Session rows), because the real tree lays out top-level items at
-/// 1pt spacing and everything inside an expanded project at 0pt.
+/// Read-only sidebar tree for one peeked workspace: the shared flat row
+/// list (`SidebarTreeFlattener`, the same rows the live tree is built from)
+/// plus the display state the REAL row components
+/// (`ProjectRowView`/`SessionRowView`) paint them with, so the page is
+/// pixel-identical to the sidebar the commit scopes into.
 struct SidebarListContent: Equatable {
-    struct FolderRow: Equatable, Identifiable {
-        let node: ProjectNode
-        let depth: Int
-        let isExpanded: Bool
-        let showsAttentionDot: Bool
-        let showsUnreadDot: Bool
-        let showsBusyShimmer: Bool
-        let folderColor: ProjectFolderColor?
-        var id: String { node.id }
-    }
-
-    struct SessionRow: Equatable, Identifiable {
-        let entry: SessionEntry
-        let depth: Int
-        let isPinned: Bool
-        /// The session the target workspace will show after the swipe lands.
-        /// Painting its glass state in the pooled page prevents the commit
-        /// swap from producing a one-pixel-looking active-row jump.
-        let isSelected: Bool
-        let isUnread: Bool
-        /// Runtime marks for the pane group carried by this representative row.
-        let paneItems: [UnpeelStore.PaneSidebarItem]
-        /// Non-nil in date-sorted groups, matching the real row's age source.
-        let ageTimestampMs: Int64?
-        var id: String { entry.id }
-    }
-
-    enum InnerRow: Equatable, Identifiable {
-        case folder(FolderRow)
-        case session(SessionRow)
-        /// The muted "No sessions yet." / "No active sessions." row an
-        /// expanded empty project shows.
-        case emptyPlaceholder(projectID: String, label: String, depth: Int)
-
-        var id: String {
-            switch self {
-            case .folder(let row): return "folder:\(row.id)"
-            case .session(let row): return "session:\(row.id)"
-            case .emptyPlaceholder(let projectID, _, _): return "empty:\(projectID)"
-            }
-        }
-    }
-
-    struct Group: Equatable, Identifiable {
-        let header: FolderRow
-        /// Rows inside the expanded header; empty while collapsed.
-        let rows: [InnerRow]
-        var id: String { header.id }
-    }
-
-    let groups: [Group]
+    let rows: [SidebarTreeRow]
+    let inputs: SidebarPooledRowInputs
 }
 
 /// Pane-group projection for a carousel page. Pane layouts belong to this
@@ -1223,106 +1178,9 @@ enum SidebarListContentBuilder {
 
     // MARK: Shared row assembly
 
-    /// Rollups copied from ProjectNodeView: attention > unread on the
-    /// collapsed folder mark; busy shimmer over own sessions always plus
-    /// worktree descendants while collapsed, suppressed by attention.
-    private static func folderRow(
-        _ node: ProjectNode,
-        depth: Int,
-        isExpanded: Bool,
-        isUnread: (String) -> Bool,
-        folderColor: ProjectFolderColor?
-    ) -> SidebarListContent.FolderRow {
-        func attention(_ n: ProjectNode) -> Bool {
-            n.sessions.contains { $0.status == .attention }
-                || n.worktrees.contains(where: attention)
-        }
-        func unread(_ n: ProjectNode) -> Bool {
-            n.sessions.contains { isUnread($0.id) }
-                || n.worktrees.contains(where: unread)
-        }
-        func busy(_ n: ProjectNode) -> Bool {
-            n.sessions.contains { $0.status == .starting || $0.status == .busy }
-                || n.worktrees.contains(where: busy)
-        }
-        let hasAttention = attention(node)
-        let busyNow = node.sessions.contains { $0.status == .starting || $0.status == .busy }
-            || (!isExpanded && node.worktrees.contains(where: busy))
-        return SidebarListContent.FolderRow(
-            node: node,
-            depth: depth,
-            isExpanded: isExpanded,
-            showsAttentionDot: !isExpanded && hasAttention,
-            showsUnreadDot: !isExpanded && unread(node),
-            showsBusyShimmer: !hasAttention && busyNow,
-            folderColor: folderColor
-        )
-    }
-
-    /// One project's flattened inner rows, in the real sessionList's order:
-    /// the mixed pinned partition first (pinned sessions and pinned child
-    /// groups interleaved), then the regular section's interleaved Session
-    /// and child-folder rows (recursing when a folder is expanded), then the
-    /// empty placeholder. `budget` bounds total row production.
-    private static func innerRows(
-        for node: ProjectNode,
-        depth: Int,
-        budget: inout Int,
-        hiddenSessionIDs: Set<String>,
-        isExpanded: (String) -> Bool,
-        folder: (ProjectNode, Int, Bool) -> SidebarListContent.FolderRow,
-        pinnedItems: (ProjectNode) -> [SidebarMixedItem],
-        sessionLists: (ProjectNode) -> (pinned: [SessionEntry], displayed: [SessionEntry]),
-        displayedItems: (ProjectNode, [SessionEntry]) -> [SidebarMixedItem],
-        sessionRow: (SessionEntry, Int, Bool) -> SidebarListContent.SessionRow,
-        emptyLabel: (ProjectNode) -> String
-    ) -> [SidebarListContent.InnerRow] {
-        var rows: [SidebarListContent.InnerRow] = []
-        func appendItems(_ items: [SidebarMixedItem], pinned: Bool) -> Bool {
-            for item in items {
-                if case .session(let entry) = item,
-                   hiddenSessionIDs.contains(entry.id) {
-                    continue
-                }
-                guard budget > 0 else { return false }
-                budget -= 1
-                switch item {
-                case .session(let entry):
-                    rows.append(.session(sessionRow(entry, depth, pinned)))
-                case .folder(let child):
-                    let expanded = isExpanded(child.id)
-                    rows.append(.folder(folder(child, depth + 1, expanded)))
-                    if expanded {
-                        rows += innerRows(
-                            for: child,
-                            depth: depth + 1,
-                            budget: &budget,
-                            hiddenSessionIDs: hiddenSessionIDs,
-                            isExpanded: isExpanded,
-                            folder: folder,
-                            pinnedItems: pinnedItems,
-                            sessionLists: sessionLists,
-                            displayedItems: displayedItems,
-                            sessionRow: sessionRow,
-                            emptyLabel: emptyLabel
-                        )
-                    }
-                }
-            }
-            return true
-        }
-        let pinned = pinnedItems(node)
-        guard appendItems(pinned, pinned: true) else { return rows }
-        let regularItems = displayedItems(node, sessionLists(node).displayed)
-        guard appendItems(regularItems, pinned: false) else { return rows }
-        if pinned.isEmpty, regularItems.isEmpty {
-            rows.append(.emptyPlaceholder(
-                projectID: node.id,
-                label: emptyLabel(node),
-                depth: depth
-            ))
-        }
-        return rows
+    /// Every node in the trees, parents before children.
+    private static func allNodes(_ nodes: [ProjectNode]) -> [ProjectNode] {
+        nodes.flatMap { [$0] + allNodes($0.worktrees) }
     }
 
     // MARK: Current instance (local truth)
@@ -1353,67 +1211,32 @@ enum SidebarListContentBuilder {
         let selectedSessionID = paneProjection.representativeSessionID(
             for: store.sidebarCarouselLocalSelectedSessionID
         )
-        var budget = maximumRows
-        var groups: [SidebarListContent.Group] = []
-        for node in store.nodes {
-            guard budget > 0 else { break }
-            budget -= 1
-            let isOpen = expanded.contains(node.id)
-            let header = folderRow(
-                node,
-                depth: 0,
-                isExpanded: isOpen,
-                isUnread: { store.sessionIsUnread($0) },
-                folderColor: store.projectFolderColor(for: node.id)
-            )
-            var rows: [SidebarListContent.InnerRow] = []
-            if isOpen {
-                rows = innerRows(
-                    for: node,
-                    depth: 0,
-                    budget: &budget,
-                    hiddenSessionIDs: paneProjection.hiddenSessionIDs,
-                    isExpanded: { expanded.contains($0) },
-                    folder: { child, depth, childOpen in
-                        folderRow(
-                            child,
-                            depth: depth,
-                            isExpanded: childOpen,
-                            isUnread: { store.sessionIsUnread($0) },
-                            folderColor: store.projectFolderColor(for: child.id)
-                        )
-                    },
-                    pinnedItems: { n in
-                        store.renderedPinnedItems(in: n)
-                    },
-                    sessionLists: { n in
-                        (store.renderedPinnedSessions(in: n),
-                         store.renderedDisplayedSessions(in: n))
-                    },
-                    displayedItems: { n, _ in
-                        store.renderedDisplayedItems(in: n)
-                    },
-                    sessionRow: { entry, depth, pinned in
-                        SidebarListContent.SessionRow(
-                            entry: entry,
-                            depth: depth,
-                            isPinned: pinned,
-                            isSelected: entry.id == selectedSessionID,
-                            isUnread: store.sessionIsUnread(entry.id),
-                            paneItems: paneProjection.itemsByRepresentative[entry.id] ?? [],
-                            ageTimestampMs: store.isDateSorted(projectID: entry.projectID)
-                                ? max(entry.createdAt, entry.lifecycleAtMs ?? 0)
-                                : nil
-                        )
-                    },
-                    emptyLabel: { n in
-                        n.sessions.isEmpty ? "No sessions yet." : "No active sessions."
-                    }
-                )
+        let rows = SidebarTreeFlattener.rows(
+            topLevelNodes: store.nodes,
+            expandedProjectIDs: expanded,
+            hiddenSessionIDs: paneProjection.hiddenSessionIDs,
+            pinnedItems: { store.renderedPinnedItems(in: $0) },
+            regularItems: { store.renderedDisplayedItems(in: $0) },
+            budget: maximumRows
+        )
+        let nodes = allNodes(store.nodes)
+        let inputs = SidebarPooledRowInputs(
+            selectedSessionID: selectedSessionID,
+            highlightedFolderIDs: Set(SidebarTreeFlattener.washedFolderIDs(
+                containing: selectedSessionID, in: store.nodes
+            )),
+            unreadSessionIDs: Set(nodes.flatMap(\.sessions).map(\.id).filter {
+                store.sessionIsUnread($0)
+            }),
+            paneItemsByRepresentative: paneProjection.itemsByRepresentative,
+            dateSortedProjectIDs: Set(
+                nodes.map(\.id) + nodes.flatMap(\.sessions).map(\.projectID)
+            ).filter { store.isDateSorted(projectID: $0) },
+            folderColors: nodes.reduce(into: [:]) { colors, node in
+                colors[node.id] = store.projectFolderColor(for: node.id)
             }
-            groups.append(SidebarListContent.Group(header: header, rows: rows))
-        }
-        return SidebarListContent(groups: groups)
+        )
+        return SidebarListContent(rows: rows, inputs: inputs)
     }
 
     // MARK: Pooled snapshot (any other workspace)
@@ -1588,37 +1411,6 @@ enum SidebarListContentBuilder {
             // appends `sortedStopped` after the active section).
             return (pinned, active + visibleStopped)
         }
-        func makeSessionRow(
-            _ entry: SessionEntry, depth: Int, pinned: Bool
-        ) -> SidebarListContent.SessionRow {
-            let summary = summariesByID[entry.id]
-            return SidebarListContent.SessionRow(
-                entry: entry,
-                depth: depth,
-                isPinned: pinned,
-                isSelected: entry.id == displayedSelectedSessionID,
-                isUnread: summary?.unread == true,
-                paneItems: paneProjection.itemsByRepresentative[entry.id] ?? [],
-                ageTimestampMs: projectSummaries[entry.projectID]?.dateSorted == true
-                    ? recency(entry)
-                    : nil
-            )
-        }
-        let isUnread: (String) -> Bool = { summariesByID[$0]?.unread == true }
-        // Remote scope never shows Controller-local folder tints; nil keeps
-        // parity with the real remote sidebar.
-        func makeFolder(
-            _ n: ProjectNode, depth: Int, isOpen: Bool
-        ) -> SidebarListContent.FolderRow {
-            folderRow(
-                n,
-                depth: depth,
-                isExpanded: isOpen,
-                isUnread: isUnread,
-                folderColor: isLocalScope ? store.projectFolderColor(for: n.id) : nil
-            )
-        }
-
         /// The exact mixed regular-section order used by
         /// UnpeelStore.renderedDisplayedItems for a remote projection.
         func displayedItems(
@@ -1677,39 +1469,37 @@ enum SidebarListContentBuilder {
             return pinnedGroupsFirst(unrankedSessions + unrankedFolders + ranked)
         }
 
-        var budget = maximumRows
-        var groups: [SidebarListContent.Group] = []
-        for rootNode in rootNodes {
-            guard budget > 0 else { break }
-            budget -= 1
-            let isOpen = expanded.contains(rootNode.id)
-            let header = makeFolder(rootNode, depth: 0, isOpen: isOpen)
-            var rows: [SidebarListContent.InnerRow] = []
-            if isOpen {
-                rows = innerRows(
-                    for: rootNode,
-                    depth: 0,
-                    budget: &budget,
-                    hiddenSessionIDs: paneProjection.hiddenSessionIDs,
-                    isExpanded: { expanded.contains($0) },
-                    folder: makeFolder,
-                    // Remote pooled snapshots keep the shipped Host-resolved
-                    // behavior: pinned sessions only; pinned groups stay in
-                    // the regular section's pinned-first block.
-                    pinnedItems: { n in
-                        sessionLists(n).pinned.map { .session($0) }
-                    },
-                    sessionLists: sessionLists,
-                    displayedItems: displayedItems,
-                    sessionRow: makeSessionRow,
-                    emptyLabel: { n in
-                        n.sessions.isEmpty ? "No sessions yet." : "No active sessions."
-                    }
-                )
-            }
-            groups.append(SidebarListContent.Group(header: header, rows: rows))
-        }
-        return SidebarListContent(groups: groups)
+        let rows = SidebarTreeFlattener.rows(
+            topLevelNodes: rootNodes,
+            expandedProjectIDs: expanded,
+            hiddenSessionIDs: paneProjection.hiddenSessionIDs,
+            // Remote pooled snapshots keep the shipped Host-resolved
+            // behavior: pinned sessions only; pinned groups stay in the
+            // regular section's pinned-first block.
+            pinnedItems: { sessionLists($0).pinned.map { .session($0) } },
+            regularItems: { displayedItems($0, displayed: sessionLists($0).displayed) },
+            budget: maximumRows
+        )
+        let nodes = allNodes(rootNodes)
+        let inputs = SidebarPooledRowInputs(
+            selectedSessionID: displayedSelectedSessionID,
+            highlightedFolderIDs: Set(SidebarTreeFlattener.washedFolderIDs(
+                containing: displayedSelectedSessionID, in: rootNodes
+            )),
+            unreadSessionIDs: Set(snapshot.sessions.filter { $0.unread == true }.map(\.id)),
+            paneItemsByRepresentative: paneProjection.itemsByRepresentative,
+            dateSortedProjectIDs: Set(
+                snapshot.projects.filter { $0.dateSorted == true }.map(\.id)
+            ),
+            // Remote scope never shows Controller-local folder tints; none
+            // keeps parity with the real remote sidebar.
+            folderColors: isLocalScope
+                ? nodes.reduce(into: [:]) { colors, node in
+                    colors[node.id] = store.projectFolderColor(for: node.id)
+                }
+                : [:]
+        )
+        return SidebarListContent(rows: rows, inputs: inputs)
     }
 
     /// Controller pane-scope identity for a workspace-list row. The current
@@ -1762,7 +1552,7 @@ private struct SidebarPooledListBody: View {
         GeometryReader { page in
             VStack(alignment: .leading, spacing: 0) {
                 if let content {
-                    if content.groups.isEmpty {
+                    if content.rows.isEmpty {
                         Text("No projects yet")
                             .font(Theme.rowLabelFont)
                             .foregroundStyle(Theme.mutedForeground)
@@ -1771,33 +1561,24 @@ private struct SidebarPooledListBody: View {
                                 leading: 17, bottom: 0, trailing: 16
                             ))
                     } else {
-                        // Same container metrics as the real project tree:
-                        // 1pt between top-level items, 0pt inside an
-                        // expanded project, and the SHARED top inset under
-                        // the titlebar glass (SidebarListPageMetrics — one
-                        // constant for both carousel pages).
-                        LazyVStack(spacing: 1) {
-                            ForEach(content.groups) { group in
-                                // One project is one outer-stack child, just
-                                // like the live ProjectNodeView. Without this
-                                // wrapper the outer 1pt project spacing also
-                                // landed between the folder header and its
-                                // first session, then vanished on commit.
-                                VStack(alignment: .leading, spacing: 0) {
-                                    folderRow(group.header)
-                                    if !group.rows.isEmpty {
-                                        LazyVStack(alignment: .leading, spacing: 0) {
-                                            ForEach(group.rows) { inner in
-                                                innerRow(inner)
-                                            }
-                                        }
-                                    }
-                                }
+                        // ONE stack whose children are rows (ADR 0009): no
+                        // lazy stack nests inside another. Each top-level
+                        // header carries the 1pt between projects, so it
+                        // can never leak between a header and its first
+                        // row. Same container metrics as the real project
+                        // tree, including the SHARED insets
+                        // (SidebarListPageMetrics — one contract for both
+                        // carousel pages).
+                        LazyVStack(alignment: .leading, spacing: 0) {
+                            ForEach(content.rows) { row in
+                                SidebarPooledTreeRow(row: row, inputs: content.inputs)
                             }
                         }
                         .padding(EdgeInsets(
                             top: SidebarListPageMetrics.topInset,
-                            leading: 8, bottom: 12, trailing: 8
+                            leading: 8,
+                            bottom: SidebarListPageMetrics.bottomInset,
+                            trailing: 8
                         ))
                     }
                 } else {
@@ -1818,57 +1599,6 @@ private struct SidebarPooledListBody: View {
             // real list (which masks its ScrollView with the same ramp).
             // Fork-only: sidebar sections — same ramp as the live list.
             .mask(SidebarListFadeMask(opaqueAt: SidebarSectionMetrics.projectsFadeRamp))
-        }
-    }
-
-    private func folderRow(_ row: SidebarListContent.FolderRow) -> some View {
-        ProjectRowView(
-            node: row.node,
-            depth: row.depth,
-            isExpanded: row.isExpanded,
-            showsAttentionDot: row.showsAttentionDot,
-            showsUnreadDot: row.showsUnreadDot,
-            showsBusyShimmer: row.showsBusyShimmer,
-            quickGroups: [],
-            menuPresets: [],
-            folderColor: row.folderColor,
-            onToggle: {},
-            onLaunchPreset: { _ in },
-            isPinned: row.node.project.acceptsSessionDrop
-                && row.node.project.pinnedAt != nil
-        ).equatable()
-    }
-
-    @ViewBuilder
-    private func innerRow(_ inner: SidebarListContent.InnerRow) -> some View {
-        switch inner {
-        case .folder(let row):
-            folderRow(row)
-        case .session(let row):
-            SessionRowView(
-                session: row.entry,
-                depth: row.depth,
-                indentBase: 9,
-                isSelected: row.isSelected,
-                isUnread: row.isUnread,
-                isPinned: row.isPinned,
-                canPin: false,
-                canClearAttention: false,
-                paneItems: row.paneItems,
-                ageTimestampMs: row.ageTimestampMs,
-                onSelect: {}
-            ).equatable()
-        case .emptyPlaceholder(_, let label, let depth):
-            // The REAL component with inert inputs (the page never
-            // hit-tests), so the label's Menu-chrome metrics are identical
-            // to the live sidebar and the snap cannot restyle it.
-            EmptySessionsPlaceholderRow(
-                label: label,
-                depth: depth,
-                menuPresets: [],
-                onLaunch: { _ in },
-                showsManagePresets: false
-            )
         }
     }
 }
