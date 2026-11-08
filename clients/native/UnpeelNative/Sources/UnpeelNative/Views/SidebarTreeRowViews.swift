@@ -1,3 +1,5 @@
+// Fork-only file (ADR 0009, #41): PROJECTS as one flat list of rows.
+
 import SwiftUI
 
 /// The group/worktree wash, shared by the live tree's cluster background and
@@ -15,36 +17,75 @@ enum SidebarGroupWash {
     }
 }
 
+/// The two washes a group draws as per-row slices: its hover/selection
+/// wash, and the "files into this group" wash while an accepted Session
+/// drag hovers it (#45). The drop wash keeps the old whole-cluster drop
+/// highlight's look: a 9 pt radius, no trailing overhang, the full hover fill.
+enum SidebarWashStyle {
+    case group
+    case dropTarget
+
+    var cornerRadius: CGFloat {
+        switch self {
+        case .group: SidebarGroupWash.cornerRadius
+        case .dropTarget: 9
+        }
+    }
+
+    var trailingOverhang: CGFloat {
+        switch self {
+        case .group: SidebarGroupWash.trailingOverhang
+        case .dropTarget: 0
+        }
+    }
+
+    func fill(isHighlighted: Bool) -> Color {
+        switch self {
+        case .group: SidebarGroupWash.fill(isHighlighted: isHighlighted)
+        case .dropTarget: isHighlighted ? Theme.hoverRow : .clear
+        }
+    }
+
+    var animation: Animation {
+        switch self {
+        case .group: SidebarGroupWash.animation
+        case .dropTarget: .easeInOut(duration: 0.12)
+        }
+    }
+}
+
 /// One row's slice of a group wash. A slice that does not round an edge
 /// draws its rounded rectangle past that edge and clips it at the row, so
 /// stacked slices read as one continuous rounded shape with the exact
-/// corners of a whole-cluster wash (`GroupClusterBackground`).
+/// corners of a whole-cluster wash.
 struct SidebarGroupWashSliceView: View {
     let slice: SidebarWashSlice
     let isHighlighted: Bool
-
-    /// Far enough past a straight edge that the clipped-off corner is fully
-    /// outside the row, and the rectangle is tall enough for its corners to
-    /// keep their full continuous curve.
-    private static let straightEdgeOverhang = SidebarGroupWash.cornerRadius * 2
+    var style: SidebarWashStyle = .group
 
     var body: some View {
-        RoundedRectangle(cornerRadius: SidebarGroupWash.cornerRadius, style: .continuous)
-            .fill(SidebarGroupWash.fill(isHighlighted: isHighlighted))
-            .padding(.top, slice.roundsTop ? 0 : -Self.straightEdgeOverhang)
-            .padding(.bottom, slice.roundsBottom ? 0 : -Self.straightEdgeOverhang)
-            .padding(.trailing, -SidebarGroupWash.trailingOverhang)
-            .clipShape(RowClip())
-            .animation(SidebarGroupWash.animation, value: isHighlighted)
+        // Far enough past a straight edge that the clipped-off corner is
+        // fully outside the row, and the rectangle is tall enough for its
+        // corners to keep their full continuous curve.
+        let straightEdgeOverhang = style.cornerRadius * 2
+        RoundedRectangle(cornerRadius: style.cornerRadius, style: .continuous)
+            .fill(style.fill(isHighlighted: isHighlighted))
+            .padding(.top, slice.roundsTop ? 0 : -straightEdgeOverhang)
+            .padding(.bottom, slice.roundsBottom ? 0 : -straightEdgeOverhang)
+            .padding(.trailing, -style.trailingOverhang)
+            .clipShape(RowClip(trailingOverhang: style.trailingOverhang))
+            .animation(style.animation, value: isHighlighted)
     }
 
     /// The row's own frame, widened by the wash's trailing overhang.
     private struct RowClip: Shape {
+        let trailingOverhang: CGFloat
+
         func path(in rect: CGRect) -> Path {
             Path(CGRect(
                 x: rect.minX,
                 y: rect.minY,
-                width: rect.width + SidebarGroupWash.trailingOverhang,
+                width: rect.width + trailingOverhang,
                 height: rect.height
             ))
         }

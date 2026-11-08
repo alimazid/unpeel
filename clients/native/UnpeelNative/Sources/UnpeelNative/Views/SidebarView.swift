@@ -329,7 +329,8 @@ final class SidebarDragState: ObservableObject {
 /// reorder isn't active), and the drop would never fall through to the list's
 /// `.onDrop(of: [.fileURL])`. That is why folders only dropped in the gaps
 /// between rows before.
-private struct SidebarReorderDropDelegate: DropDelegate {
+// Fork-only (#45): internal, so the flat list's row containers can use it.
+struct SidebarReorderDropDelegate: DropDelegate {
     /// Whether an internal sidebar reorder is in flight (vs. a foreign drag).
     /// Internal project/session reorders use the manual detached drag
     /// (SidebarSessionDrag.swift), which hit-tests row frames itself and
@@ -464,7 +465,12 @@ enum SidebarMotion {
     /// Row entrance: 380ms cubic-bezier(0.18, 0.86, 0.26, 1).
     static func rowEnter(index: Int) -> Animation {
         .timingCurve(0.18, 0.86, 0.26, 1, duration: 0.38)
-            .delay(Double(index) * 0.014)
+            .delay(staggerDelay(index: index))
+    }
+
+    // Fork-only (#45): shared with the per-row expand transition.
+    static func staggerDelay(index: Int) -> Double {
+        Double(index) * 0.014
     }
 
     static var reduceMotion: Bool {
@@ -513,16 +519,20 @@ extension AnyTransition {
         )
     }
 
-    /// The session-list container: fade in 220ms ease-out from
-    /// translateY(-6) scale(0.992); fade out 140ms.
-    static var sessionListContent: AnyTransition {
+    /// The session-list container's fade, per row: fade in 220ms ease-out
+    /// from translateY(-6) scale(0.992) after the row's stagger delay; fade
+    /// out 140ms.
+    // Fork-only (#45): was the expanded block's `sessionListContent`. The flat
+    // list (ADR 0009) has no block container, so each row an expansion
+    // reveals takes it; the scale anchors at each row's top (accepted, #41).
+    static func sessionRowExpand(index: Int) -> AnyTransition {
         if SidebarMotion.reduceMotion { return .opacity }
         return .asymmetric(
             insertion: .modifier(
                 active: SessionListContentModifier(active: true),
                 identity: SessionListContentModifier(active: false)
             )
-            .animation(.easeOut(duration: 0.22)),
+            .animation(.easeOut(duration: 0.22).delay(SidebarMotion.staggerDelay(index: index))),
             removal: .opacity.animation(.easeOut(duration: 0.14))
         )
     }
@@ -825,25 +835,12 @@ struct SidebarView: View {
     private var projectTreePanel: some View {
         ScrollViewReader { proxy in
             ScrollView {
-                LazyVStack(spacing: SidebarListPageMetrics.blockSpacing) {
-                    // This reads the workspace registry's modification stamp.
-                    // Resolve it once for the tree instead of once per top-level
-                    // project whenever an unrelated store publication redraws
-                    // the sidebar.
-                    let workspaceMoveTargets = store.localWorkspaceMoveTargets()
-                    // Workspace switching lives in the footer dots, their
-                    // secondary-click popover, and the trackpad swipe.
-                    ForEach(store.displayNodes) { node in
-                        ProjectNodeView(
-                            store: store,
-                            dragState: dragState,
-                            node: node,
-                            depth: 0,
-                            workspaceMoveTargets: workspaceMoveTargets,
-                            ancestorOwners: []
-                        )
-                    }
-                }
+                // Fork-only (#45): one flat lazy list of rows (ADR 0009). No
+                // lazy stack nests inside another; the list's identity is
+                // keyed by the Host scope. Workspace switching lives in the
+                // footer dots, their secondary-click popover, and the
+                // trackpad swipe.
+                SidebarLiveTreeList(store: store, dragState: dragState)
                 // Keep rows entering the fixed top chrome inside the fade ramp,
                 // so they dissolve before reaching the titlebar controls. The
                 // top inset is the SHARED SidebarListPageMetrics constant both
@@ -851,7 +848,8 @@ struct SidebarView: View {
                 // at exactly this y or the commit swap would jump. The
                 // bottom padding must cover SessionScrollTarget.margin, or
                 // auto-scrolls to the last rows clamp back under the bottom
-                // fade.
+                // fade. Fork-only (#42): the bottom inset is the shared
+                // SidebarListPageMetrics constant too.
                 .padding(EdgeInsets(
                     top: SidebarListPageMetrics.topInset, leading: 8,
                     bottom: SidebarListPageMetrics.bottomInset, trailing: 8
@@ -1254,654 +1252,8 @@ extension ProjectRowView: @MainActor Equatable {
     }
 }
 
-struct ProjectNodeView: View {
-    @ObservedObject var store: UnpeelStore
-    /// Plain reference, NOT observed (the old `@EnvironmentObject` here made
-    /// every drag-state publish re-evaluate every project node — the whole
-    /// heavy tree — per hover change during a drag). The drag-driven row
-    /// effects live in the small observing modifiers below
-    /// (`SidebarProjectRowDragEffects` / `SidebarSessionRowDragEffects`), so
-    /// only those leaf bodies re-run.
-    let dragState: SidebarDragState
-    let node: ProjectNode
-    let depth: Int
-    /// Resolved once by the root tree and threaded through child folders.
-    /// Only top-level project menus consume it.
-    let workspaceMoveTargets: [WorkspaceMoveTarget]
-    /// The blocks enclosing this node, outermost first (empty at top level).
-    let ancestorOwners: [SidebarSessionDragController.ShellOwner]
-
-    private var isExpanded: Bool { store.expandedProjectIDs.contains(node.id) }
-
-    /// The owner chain every row of this node registers: the enclosing
-    /// blocks plus this node's own. The drag controller derives each
-    /// block's drop shell from the rows that name it.
-    private var rowOwners: [SidebarSessionDragController.ShellOwner] {
-        ancestorOwners + [isInlineFolder ? .group(node.id) : .project(node.id)]
-    }
-
-    /// Group or worktree — inline child-folder row with a leading disclosure
-    /// chevron and a wash behind the whole cluster on hover.
-    private var isInlineFolder: Bool { node.isSidebarInlineFolder }
-
-    /// Hover wash behind the whole cluster (header + sessions), not just
-    /// the title row.
-    @State private var groupHovering = false
-
-    /// Top-level projects and child folders both use the detached drag;
-    /// children interleave with sessions, while top-level projects reorder
-    /// only among their siblings.
-    private var isProjectDraggable: Bool { node.project.parentProjectID == nil }
-
-    // Whether an in-flight session drag may drop on a project row is decided
-    // by the detached-drag controller's hit-test through the SAME store
-    // predicate (`canMoveSession`) that mirrors `moveSession`'s own guards —
-    // a target that highlights always moves. This row only renders the
-    // highlight (`SidebarProjectRowDragEffects`) and registers its frame.
-
-    /// Pinned/regular/displayed lists live on the store now. The rendered
-    /// lists are parent-ordered so ⌘1–9 shortcut targets match the visual
-    /// rows. The pinned partition is ONE mixed list: pinned sessions and
-    /// pinned child groups interleave in the user's order.
-    private var renderedPinnedItems: [SidebarMixedItem] {
-        store.renderedPinnedItems(in: node)
-    }
-
-    /// Collapsed-project state rollup over this project's sessions plus
-    /// worktree descendants. Precedence attention > unread mirrors the
-    /// `project-state-dot` markup (ProjectItem.svelte:1228-1232).
-    private var aggregateHasAttention: Bool {
-        func check(_ node: ProjectNode) -> Bool {
-            node.sessions.contains { $0.status == .attention }
-                || node.worktrees.contains(where: check)
-        }
-        return check(node)
-    }
-
-    /// projectHasUnread (ProjectItem.svelte:352-354) incl. worktree children.
-    private var aggregateHasUnread: Bool {
-        func check(_ node: ProjectNode) -> Bool {
-            node.sessions.contains { store.sessionIsUnread($0.id) }
-                || node.worktrees.contains(where: check)
-        }
-        return check(node)
-    }
-
-    var body: some View {
-        if isInlineFolder {
-            groupCluster
-                // "Files into this group" wash while an accepted session
-                // drag hovers the header OR the expanded shell (both set
-                // this node as the drop target).
-                .modifier(SidebarProjectRowDragEffects(
-                    dragState: dragState, nodeID: node.id
-                ))
-                // Same-section transform gap: the WHOLE cluster (header +
-                // expanded contents + wash) rides as one unit. The shift
-                // must never sit on the header row alone — that tore the
-                // header out of its block, leaving empty space inside and
-                // below the group.
-                .modifier(SidebarFolderClusterDragEffects(
-                    dragState: dragState,
-                    folderID: node.id,
-                    parentID: node.project.parentProjectID ?? ""
-                ))
-        } else {
-            // The header remains the only project-drag SOURCE. The whole
-            // expanded block is still a reliable top-level reorder TARGET:
-            // the controller derives its shell from the rows that name it.
-            VStack(alignment: .leading, spacing: 0) {
-                projectRow
-                if isExpanded {
-                    sessionList
-                        .transition(.sessionListContent)
-                }
-            }
-            .modifier(SidebarProjectBlockDragEffects(
-                dragState: dragState, nodeID: node.id
-            ))
-        }
-    }
-
-    /// Header + sessions as one hover target so a muted wash can sit
-    /// behind the whole group or worktree.
-    private var groupCluster: some View {
-        VStack(alignment: .leading, spacing: 0) {
-            projectRow
-            if isExpanded {
-                sessionList
-                    .transition(.sessionListContent)
-            }
-        }
-        // The group's drop shell is not a frame of this cluster: the drag
-        // controller derives it from the rows that name this group (header,
-        // Sessions, nested groups, the empty placeholder), so it never
-        // follows the hover-animated wash.
-        .background {
-            GroupClusterBackground(
-                selection: store.sessionSelection,
-                node: node,
-                isHovering: groupHovering
-            )
-        }
-        .onHover { groupHovering = $0 }
-    }
-
-    /// Busy shimmer on the project NAME (ProjectItem.svelte:1268,
-    /// `class:shimmer={aggregateState === 'busy'}`). Rolls up over the OWN
-    /// sessions always, and over worktree descendants while collapsed —
-    /// matching the attention/unread dots, so a busy session hidden inside
-    /// a folded subtree still reads as activity on the visible row.
-    /// Attention outranks busy, so attention suppresses the shimmer.
-    private var showsBusyShimmer: Bool {
-        func busy(_ n: ProjectNode) -> Bool {
-            n.sessions.contains { $0.status == .starting || $0.status == .busy }
-                || n.worktrees.contains(where: busy)
-        }
-        let busyNow = node.sessions.contains { $0.status == .starting || $0.status == .busy }
-            || (!isExpanded && node.worktrees.contains(where: busy))
-        return !aggregateHasAttention && busyNow
-    }
-
-    @ViewBuilder
-    private var projectRow: some View {
-        // `showsLocalProjectVerbs` is the pure-`.local` gate: native preset
-        // management (Settings ▸ Agents edits THIS instance's home).
-        // `isLocalMachine` gates the verbs that ARE valid against a scoped
-        // local workspace on this Mac: organization verbs (folder color, sort,
-        // groups, rename — Host carriers or the scoped home's own records),
-        // filesystem verbs (Reveal/Open in editor operate on the real path),
-        // and Remove/Add (they run local-against the scoped workspace's home).
-        // A true remote Host scope hides all of them.
-        let isLocalScope = store.selectedHostScope == .local
-        let isLocalMachine = store.selectedHostScope.isLocalMachine
-        let worktreesEnabled = store.isExperimentalEnabled(.worktrees)
-        // Local machine, not just Local scope: a scoped workspace's project
-        // paths are real paths on this Mac, so git worktree verbs are valid
-        // there too (the store routes their session/record halves per scope).
-        let isGitProject = isLocalMachine
-            && node.project.isFolder != true
-            && UnpeelStore.isGitRepo(path: node.project.path)
-        let canCreateWorktree = worktreesEnabled
-            && isGitProject && node.project.worktreeBranch == nil
-        let row = ProjectRowView(
-            node: node,
-            depth: depth,
-            isExpanded: isExpanded,
-            showsAttentionDot: !isExpanded && aggregateHasAttention,
-            showsUnreadDot: !isExpanded && aggregateHasUnread,
-            showsBusyShimmer: showsBusyShimmer,
-            quickGroups: store.displayQuickPresetGroups,
-            menuPresets: store.displayAvailablePresets,
-            folderColor: isLocalMachine ? store.projectFolderColor(for: node.id) : nil,
-            // Worktree menu toggle gate (ProjectItem.svelte:843-848):
-            // real project (not a plain folder), not a worktree child,
-            // and the path is a git repo.
-            showsWorktreeCreate: canCreateWorktree,
-            showsLocalProjectVerbs: isLocalScope,
-            showsOrganizationVerbs: isLocalMachine,
-            showsFilesystemVerbs: isLocalMachine,
-            isConfirmingRemove: store.confirmingRemoveProjectID == node.id,
-            shortcutHint: store.projectShortcutHintIndex(forProject: node.id),
-            hasLiveSessions: node.sessions.contains(where: \.isLive),
-            // Host-probed live URLs are family-wide, so only the top-level
-            // project row wears the globe — child groups/worktrees would
-            // repeat the same links.
-            localSiteURLs: isLocalScope && node.project.parentProjectID == nil
-                ? store.localSiteURLs(forProjectFamilyOf: node.id)
-                : [],
-            // Plain git projects (worktree children already carry their
-            // branch in the model) show the checked-out branch while they
-            // hold the selected session.
-            activeBranchStore: node.project.worktreeBranch == nil ? store : nil,
-            // Top-level projects reorder among projects; child groups and
-            // worktrees already interleave with sessions through the same
-            // detached controller. Every reorderable project row therefore
-            // advertises the same anywhere-on-row interaction.
-            onToggle: toggleExpansion,
-            onLaunchPreset: { preset in
-                // startSessionOrToast via launchPresetForProject
-                // (App.svelte:1168-1175): command = preset command,
-                // label = command for non-blank / "Terminal" for blank —
-                // which is exactly what launchSession derives.
-                store.launchSession(
-                    projectID: node.id,
-                    command: preset.command,
-                    sourcePresetID: preset.command.isEmpty ? nil : preset.id
-                )
-            },
-            onCreateWorktree: { store.promptCreateWorktree(projectID: node.id) },
-            onCreateGroup: { store.promptCreateGroup(projectID: node.id) },
-            onRemoveGroup: { store.removeGroupProject(node.id) },
-            onStopAll: { store.stopAllSessions(projectID: node.id) },
-            onRevealInFinder: { store.revealInFinder(path: node.project.path) },
-            onOpenIn: { target in
-                store.openWorkspace(path: node.project.path, in: target)
-            },
-            onRequestRemove: { store.requestRemoveProject(node.id) },
-            onConfirmRemove: { store.removeProject(node.id) },
-            onCancelRemove: { store.cancelRemoveProjectConfirm() },
-            onRenameWorktree: { store.promptRenameWorktreeProject(node.id) },
-            onRemoveWorktree: { store.removeWorktreeProject(node.id) },
-            onSetFolderColor: { color in
-                store.setProjectFolderColor(color, for: node.id)
-            },
-            isPinned: store.isGroupPinned(node.id),
-            canPin: store.groupCanPin(node.id),
-            onSetPinned: { pinned in
-                store.setGroupPinned(node.id, pinned: pinned)
-            },
-            isDateSorted: store.isDateSorted(projectID: node.id),
-            onSetSessionDateSorted: { dateSorted in
-                store.setSessionDateSorted(dateSorted, for: node.id)
-            },
-            onManagePresets: { store.openSettings(tab: .agents) },
-            onManagePlugins: { store.openSettings(tab: .plugins) },
-            workspaceMoveTargets: node.project.parentProjectID == nil
-                && isLocalMachine
-                ? workspaceMoveTargets
-                : [],
-            onMoveToWorkspace: { dest in
-                store.moveProjectToLocalWorkspace(projectID: node.id, dest: dest)
-            }
-        ).equatable()
-
-        if isProjectDraggable {
-            row
-                // Source-row dim during a project drag + the session-drag
-                // drop-target highlight, in one small observing modifier so
-                // drag-state churn never re-evaluates this node's body.
-                .modifier(SidebarProjectRowDragEffects(
-                    dragState: dragState, nodeID: node.id
-                ))
-                // Project reordering is handled by the same detached drag
-                // controller as sessions. This drop delegate now only keeps
-                // Finder folder drops working directly over the row.
-                .onDrop(of: [.fileURL], delegate: SidebarReorderDropDelegate(
-                    isReorderActive: { false },
-                    moveOver: { false },
-                    finishReorder: {},
-                    setFolderHover: { [weak dragState] hovering in
-                        hovering ? dragState?.folderHoverEnter() : dragState?.folderHoverExit()
-                    },
-                    addFolders: { [weak store, weak dragState] providers in
-                        dragState?.folderHoverReset()
-                        return store?.addProjectFolders(from: providers) ?? false
-                    }
-                ))
-                // Group/root move target for the detached session drag: the
-                // controller hit-tests this frame and gates the highlight +
-                // drop through `UnpeelStore.canMoveSession`.
-                .sidebarDragRowFrame(id: node.id, kind: .project, owners: rowOwners)
-        } else if let parentID = node.project.parentProjectID {
-            row
-                .modifier(SidebarSessionRowDragEffects(
-                    dragState: dragState,
-                    sessionID: node.id,
-                    projectID: parentID,
-                    // The whole cluster shifts as one unit (see the
-                    // SidebarFolderClusterDragEffects on `groupCluster`);
-                    // shifting the header here too would double-move it.
-                    shiftsWithReorder: false
-                ))
-                .sidebarDragRowFrame(
-                    id: node.id,
-                    kind: .folderItem(
-                        parentID: parentID,
-                        pinned: store.isGroupPinned(node.id),
-                        depth: depth
-                    ),
-                    owners: rowOwners
-                )
-                .onDrop(of: [.fileURL], delegate: SidebarReorderDropDelegate(
-                    isReorderActive: { false },
-                    moveOver: { false },
-                    finishReorder: {},
-                    setFolderHover: { [weak dragState] hovering in
-                        hovering ? dragState?.folderHoverEnter() : dragState?.folderHoverExit()
-                    },
-                    addFolders: { [weak store, weak dragState] providers in
-                        dragState?.folderHoverReset()
-                        return store?.addProjectFolders(from: providers) ?? false
-                    }
-                ))
-        } else {
-            row
-        }
-    }
-
-    /// Whole-row click toggles expansion (ProjectItem.svelte:654-659);
-    /// open 340ms cubic-bezier(0.16,1,0.3,1), close 240ms cubicInOut.
-    private func toggleExpansion() {
-        let opening = !isExpanded
-        withAnimation(opening ? SidebarMotion.accordionOpen : SidebarMotion.accordionClose) {
-            store.toggleProjectExpanded(node.id)
-        }
-    }
-
-    /// One container so the accordion content transition applies to the
-    /// whole block, like .session-list in ProjectItem.svelte (worktree
-    /// child rows live inside the same shell there too).
-    private var sessionList: some View {
-        // The outer project tree is lazy, but each expanded project is one of
-        // its children. A regular VStack here therefore constructed every
-        // Session row in that project at once. Keep the hierarchy/accordion
-        // behavior while virtualizing rows inside large expanded projects.
-        LazyVStack(alignment: .leading, spacing: 0) {
-            // ⌘N hints while ⌘ is held and this is the shortcut project
-            // (empty otherwise).
-            let shortcutHints = store.sessionShortcutHintIndices(forProject: node.id)
-
-            // Pane-group hiding: while a group is open, each non-representative
-            // member leaves the list; closing the group fades it back into its
-            // own spot. Animation lives HERE (not on the store mutation)
-            // so the Metal terminal does not inherit a fade.
-            let hiddenPaneMemberIDs = store.activePaneMemberSessionIDs
-
-            // Pinned partition: pinned sessions AND pinned child groups in
-            // one mixed list, ordered by the project's pin records — a
-            // pinned group can sit between two pinned sessions.
-            let pinnedItems = renderedPinnedItems
-            ForEach(Array(pinnedItems.enumerated()), id: \.element.id) { index, item in
-                switch item {
-                case .folder(let child):
-                    ProjectNodeView(
-                        store: store,
-                        dragState: dragState,
-                        node: child,
-                        depth: depth + 1,
-                        workspaceMoveTargets: workspaceMoveTargets,
-                        ancestorOwners: rowOwners
-                    )
-                    .transition(.sessionRowStagger(index: index))
-                case .session(let session):
-                    if !hiddenPaneMemberIDs.contains(session.id) {
-                        sessionRow(
-                            session,
-                            staggerIndex: index,
-                            pinnedRow: true,
-                            shortcutHint: shortcutHints[session.id]
-                        )
-                    }
-                }
-            }
-
-            // Regular section: sessions AND child folders in one list so a
-            // group can sit between any two sessions. Folders stay on top
-            // until a drag writes them into session-order.json.
-            let mixedItems = store.renderedDisplayedItems(in: node)
-            ForEach(Array(mixedItems.enumerated()), id: \.element.id) { index, item in
-                switch item {
-                case .folder(let child):
-                    ProjectNodeView(
-                        store: store,
-                        dragState: dragState,
-                        node: child,
-                        depth: depth + 1,
-                        workspaceMoveTargets: workspaceMoveTargets,
-                        ancestorOwners: rowOwners
-                    )
-                    .transition(.sessionRowStagger(index: pinnedItems.count + index))
-                case .session(let session):
-                    if !hiddenPaneMemberIDs.contains(session.id) {
-                        sessionRow(
-                            session,
-                            staggerIndex: pinnedItems.count + index,
-                            pinnedRow: false,
-                            shortcutHint: shortcutHints[session.id]
-                        )
-                    }
-                }
-            }
-
-            // Empty state: a project whose only history is stopped rows past
-            // the inactive-preview window still reads as empty here.
-            if pinnedItems.isEmpty && mixedItems.isEmpty {
-                EmptySessionsPlaceholderRow(
-                    label: EmptySessionsPlaceholderRow.label(for: node),
-                    depth: depth,
-                    indentBase: 28,
-                    menuPresets: store.displayAvailablePresets,
-                    onLaunch: { preset in
-                        store.launchSession(
-                            projectID: node.id,
-                            command: preset.command,
-                            sourcePresetID: preset.command.isEmpty ? nil : preset.id
-                        )
-                    },
-                    onManagePresets: { store.openSettings(tab: .agents) },
-                    onManagePlugins: { store.openSettings(tab: .plugins) },
-                    showsManagePresets: store.selectedHostScope == .local
-                )
-                // Shell-only: a drop on the placeholder files into this
-                // group or project, never onto the row itself.
-                .sidebarDragShellFrame(id: "empty:\(node.id)", owners: rowOwners)
-            }
-
-            // Everything past the inactive-preview window leaves the sidebar.
-            // Hidden stopped rows remain available through search/history —
-            // no sidebar footer row.
-        }
-        // Rows keep stable ids across the live → stopped move, so a
-        // just-stopped session glides into the stopped section instead of
-        // teleporting. Suppressed from lift until one tick AFTER a drag
-        // lands (`listGlideSuppressed`): the drop applies its reorder in an
-        // animation-disabled transaction (rows are already visually in
-        // place via the transform gap), but a value-keyed animation
-        // OVERRIDES that transaction — it replayed the swap as a bounce
-        // from the old order to the drop position. The flag outlives the
-        // land transaction on purpose; everything cleared inside it (drag
-        // state, lifted row) reads as already-idle by the commit render.
-        .animation(
-            dragState.listGlideSuppressed ? nil : SidebarMotion.accordionOpen,
-            value: store.renderedPinnedItems(in: node).map(\.id)
-                + store.renderedDisplayedItems(in: node).map(\.id)
-        )
-        .animation(
-            .easeOut(duration: 0.28),
-            value: store.activePaneMemberSessionIDs
-        )
-    }
-
-    @ViewBuilder
-    private func sessionRow(
-        _ session: SessionEntry,
-        staggerIndex: Int,
-        pinnedRow: Bool,
-        shortcutHint: Int? = nil
-    ) -> some View {
-        // A date-sorted group has no manual order to write, so re-ordering
-        // is off entirely.
-        let isReorderable = !store.isDateSorted(projectID: node.id)
-        // Detached-drag participation is broader than reordering: a LOCAL
-        // session in a date-sorted group must still lift, so it can be
-        // dragged OUT of the group (a committed within-list reorder flips
-        // the group to custom order — see commitSessionReorder). Host-backed
-        // lists commit that flip through `project.organization.set`.
-        //
-        // Rename and inline remove-confirm must NOT drop this row from the
-        // drag-frame registry. Swapping the wrapper off (and back) remounts
-        // the row: the title editor blinks, focus-loss can immediately
-        // commit, and `onGeometryChange` can skip a re-report when the
-        // replacement lands on the same frame — leaving the row undraggable
-        // until the project list rebuilds. The controller refuses to arm a
-        // press while those modes own the pointer (text selection / confirm
-        // buttons).
-        let isDraggable = isReorderable
-            || store.canLiftSessionFromDateSortedList(session.id)
-        // Native-only within-project drag reorder (the Svelte app has no
-        // within-project reorder). Session rows use the manual detached drag
-        // (SidebarSessionDrag.swift): mouse-down anywhere on the row plus
-        // ~6pt of travel lifts the row into a floating card; the registered
-        // frame below is what the controller hit-tests. Pinned and regular
-        // rows each reorder only within their own section — the controller
-        // gates on `drag.pinned` exactly as the drop delegates used to.
-        let superAgentMenu = store.superAgentMenu(forSession: session.id)
-        let row = SessionRowView(
-            session: session,
-            depth: depth,
-            // Depth alone supplies the standard 14pt nesting step beneath a
-            // child folder; no extra child-folder offset is needed.
-            indentBase: 9,
-            isSelected: false,
-            selectionState: store.sessionSelection.rowState(for: session.id),
-            shortcutHint: shortcutHint,
-            isUnread: store.sessionIsUnread(session.id),
-            isPinned: store.isPinned(sessionID: session.id, projectID: node.id),
-            canPin: store.sessionCanPin(session.id),
-            canMarkUnread: store.sessionCanMarkUnread(session.id),
-            // Fork-only: a confirmation armed from the AGENTS row stays there.
-            isConfirmingRemove: store.confirmingRemoveSessionID == session.id
-                && store.confirmingSessionSurface == .sidebar,
-            isConfirmingStop: store.confirmingStopSessionID == session.id
-                && store.confirmingSessionSurface == .sidebar,
-            isRemoving: store.removingSessionIDs.contains(session.id),
-            isRestarting: store.restartingSessionIDs.contains(session.id),
-            isResumingAgent: store.resumingAgentSessionIDs.contains(session.id),
-            isEditing: store.editingSessionID == session.id
-                && store.editingSessionSurface == .sidebar,
-            notifyWhenDone: store.notifyWhenDoneSessionIDs.contains(session.id),
-            canRestart: store.sessionCanRestart(session.id),
-            canResumeAgent: store.sessionCanResumeAgent(session.id),
-            canStop: store.sessionCanStop(session.id),
-            canNotifyWhenDone: store.sessionCanNotifyWhenDone(session.id),
-            canClearAttention: store.sessionCanClearAttention(session.id),
-            paneItems: store.paneSidebarItems(
-                forRepresentative: session.id
-            ),
-            ageTimestampMs: store.isDateSorted(projectID: node.id)
-                ? max(session.createdAt, session.lifecycleAtMs ?? 0)
-                : nil,
-            onSelect: {
-                store.selectedSessionID = session.id
-            },
-            onFocusPane: { paneSessionID in
-                store.requestTerminalPaneFocus(
-                    representativeSessionID: session.id,
-                    sessionID: paneSessionID
-                )
-            },
-            onHoverIntent: { store.prewarmSession(session.id) },
-            onSetNotifyWhenDone: {
-                store.setNotifyWhenDone(session.id, enabled: $0)
-            },
-            onResume: { store.resumeAgentOrSession(session.id) },
-            onRestartApp: store.sessionCanRestartApp(session.id)
-                ? { store.restartApp(session.id) }
-                : nil,
-            onClearAttention: { store.clearAttention(session.id) },
-            onSetPinned: { pinned in
-                if pinned {
-                    store.pinSession(projectID: node.id, sessionID: session.id)
-                } else {
-                    store.unpinSession(projectID: node.id, sessionID: session.id)
-                }
-                store.followSessionRowInSidebar(session.id)
-            },
-            onSetUnread: { store.setSessionUnread(session.id, unread: $0) },
-            onRequestRemove: { store.requestRemoveSession(session.id) },
-            onConfirmRemove: { store.confirmRemoveSession(session.id) },
-            onCancelRemove: { store.cancelRemoveConfirm() },
-            onStop: { store.requestStopSession(session.id) },
-            onConfirmStop: { store.confirmStopSession(session.id) },
-            onCancelStop: { store.cancelStopConfirm() },
-            onCopyTranscript: {
-                store.copyTranscriptMarkdown($0, entries: $1)
-            },
-            agentAccessRole: store.canSetAgentAccess(session.id)
-                ? store.agentAccessRole(for: session.id)
-                : nil,
-            onSetAgentAccessRole: { store.setAgentAccessRole($0, for: session.id) },
-            onBeginEdit: {
-                store.beginEditingSessionTitle(session.id, on: .sidebar)
-            },
-            onCommitRename: { store.renameSession(session.id, to: $0) },
-            onEndEdit: {
-                if store.editingSessionID == session.id {
-                    store.editingSessionID = nil
-                }
-            },
-            moveTargets: store.isExperimentalEnabled(.worktrees)
-                ? store.moveDestinations(forSession: session.id)
-                    .map { SessionMoveTarget(id: $0.id, name: $0.name) }
-                : [],
-            onMoveTo: { store.moveSession(session.id, toProjectID: $0) },
-            onMoveToProjectSidebar: store.canMoveSessionToProjectSidebar(session.id)
-                ? { store.moveSessionToProjectSidebar(session.id) }
-                : nil,
-            onMoveToMainArea: store.sessionIsInProjectSidebar(session.id)
-                ? { store.moveSessionToMainArea(session.id) }
-                : nil,
-            onMakeSuperAgent: superAgentMenu.canMake
-                ? { store.makeSuperAgent(session.id) }
-                : nil,
-            onStopBeingSuperAgent: superAgentMenu.canStopBeing
-                ? { store.stopBeingSuperAgent(session.id) }
-                : nil,
-            onHandToSuperAgent: superAgentMenu.canHandOver
-                ? { store.handToSuperAgent(session.id) }
-                : nil
-        ).equatable()
-        .id(session.id)
-        .background {
-            // The `.id()` inside is on the un-padded Color.clear, so the
-            // registered frame is the row grown by `margin` on both ends —
-            // scroll targets aim at this, not the bare row.
-            Color.clear
-                .id(SessionScrollTarget.id(session.id))
-                .padding(.vertical, -SessionScrollTarget.margin)
-        }
-        .transition(.sessionRowStagger(index: staggerIndex))
-
-        if isDraggable {
-            row
-                // Lifted-slot gap + the cross-group insertion gaps, in
-                // one small observing modifier (see its doc) so drag-state
-                // churn re-runs only that leaf body — never this row body.
-                .modifier(SidebarSessionRowDragEffects(
-                    dragState: dragState,
-                    sessionID: session.id,
-                    projectID: node.id
-                ))
-                // Frame registry for the detached drag's hit-testing (live
-                // reorder preview + press detection).
-                .sidebarDragRowFrame(
-                    id: session.id,
-                    kind: .session(
-                        projectID: node.id, pinned: pinnedRow, depth: depth
-                    ),
-                    owners: rowOwners,
-                    isDraggable: true
-                )
-                // Finder folder drops on a row still mean "add project"; the
-                // session reorder itself no longer arrives as a system drop.
-                .onDrop(of: [.fileURL], delegate: SidebarReorderDropDelegate(
-                    isReorderActive: { false },
-                    moveOver: { false },
-                    finishReorder: {},
-                    setFolderHover: { [weak dragState] hovering in
-                        hovering ? dragState?.folderHoverEnter() : dragState?.folderHoverExit()
-                    },
-                    addFolders: { [weak store, weak dragState] providers in
-                        dragState?.folderHoverReset()
-                        return store?.addProjectFolders(from: providers) ?? false
-                    }
-                ))
-        } else {
-            // Non-reorderable rows still report their geometry to the shared
-            // mouse-down monitor so selection has the same immediate feel in
-            // date-sorted/remote lists.
-            row.sidebarDragRowFrame(
-                id: session.id,
-                kind: .session(
-                    projectID: node.id, pinned: pinnedRow, depth: depth
-                ),
-                owners: rowOwners,
-                isDraggable: false
-            )
-        }
-    }
-}
+// Fork-only (#45): `ProjectNodeView` is gone. PROJECTS renders one flat
+// lazy list of rows (ADR 0009); see SidebarLiveTreeList.swift.
 
 /// Empty-project placeholder: a muted status row shown when an expanded
 /// project has no active sessions. Clicking it opens the same new-session menu
@@ -1921,6 +1273,7 @@ struct EmptySessionsPlaceholderRow: View {
 
     /// A project whose only history is stopped rows past the inactive-preview
     /// window still reads as having no active sessions.
+    // Fork-only (#42): shared with the pooled carousel page.
     static func label(for owner: ProjectNode) -> String {
         owner.sessions.isEmpty ? "No sessions yet." : "No active sessions."
     }
@@ -1962,30 +1315,6 @@ struct EmptySessionsPlaceholderRow: View {
             bottom: 4,
             trailing: 0
         ))
-    }
-}
-
-/// A selection switch publishes through `SessionSelectionState`, not the
-/// whole store. Keeping this observer in the background leaf lets ancestor
-/// group/worktree washes follow selection without rebuilding their rows.
-private struct GroupClusterBackground: View {
-    @ObservedObject var selection: SessionSelectionState
-    let node: ProjectNode
-    let isHovering: Bool
-
-    private var isHighlighted: Bool {
-        isHovering || node.containsSidebarSession(selection.sessionID)
-    }
-
-    var body: some View {
-        RoundedRectangle(cornerRadius: SidebarGroupWash.cornerRadius, style: .continuous)
-            .fill(SidebarGroupWash.fill(isHighlighted: isHighlighted))
-            // Child-group layout is already inset by its parent list. Expand
-            // the wash back toward the Session-row bounds. Its natural height
-            // gives the shell one extra point above and below compared with
-            // the previous vertically-inset shape.
-            .padding(.trailing, -SidebarGroupWash.trailingOverhang)
-            .animation(SidebarGroupWash.animation, value: isHighlighted)
     }
 }
 
