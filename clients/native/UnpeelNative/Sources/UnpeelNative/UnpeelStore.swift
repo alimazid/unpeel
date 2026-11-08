@@ -1028,8 +1028,8 @@ final class UnpeelStore: ObservableObject {
     /// sidebar's worktree gates re-evaluate live when a toggle flips.
     @Published private(set) var enabledExperimentalKeys: Set<String> =
         Set(AppFeature.all.filter { UnpeelFeatureFlags.isEnabled($0) }.map(\.key)) {
-        // The worktrees flag filters the sidebar's child folders
-        // (`visibleChildFolders`).
+        // Fork-only (#44): the worktrees flag filters the sidebar's child
+        // folders (`visibleChildFolders`), an input of the cached rows.
         didSet { if enabledExperimentalKeys != oldValue { invalidateSidebarLists() } }
     }
 
@@ -1183,8 +1183,9 @@ final class UnpeelStore: ObservableObject {
     /// Per-project memo of the sidebar's rendered row lists; see
     /// `sidebarLists(in:)`. Cleared whenever an input changes.
     private var sidebarListsCache: [String: (pinned: [SessionEntry], displayed: [SessionEntry])] = [:]
+    // Fork-only (#44): the live PROJECTS row cache.
     /// Bumped by every `invalidateSidebarLists`, so the live PROJECTS rows
-    /// see each pins, order or stopped-windowing change (#44).
+    /// see each pins, order or stopped-windowing change.
     private var sidebarListsRevision = 0
     /// `sidebarTreeRows` and the inputs it was built from. Plain storage:
     /// never observed, and never published from the getter.
@@ -2069,9 +2070,9 @@ final class UnpeelStore: ObservableObject {
         connectLocalHostServiceIfNeeded()
     }
 
-    /// Test seam (#44): Local becomes a Host client without connecting to
-    /// the service, so a test drives `projectRemoteScope` with fixture
-    /// bootstraps. Reached only through `@testable import`.
+    /// Fork-only test hook (#44): Local becomes a Host client without
+    /// connecting to the service, so a test drives `projectRemoteScope`
+    /// with fixture bootstraps. Production code never calls it.
     func markLocalHostClientStartedForTesting() {
         localHostClientStarted = true
     }
@@ -14891,23 +14892,23 @@ final class UnpeelStore: ObservableObject {
     }
 
     /// THE invalidation choke-point for the sidebar's list inputs (pins,
-    /// order, stopped windowing): drops the per-project memo and moves the
-    /// live rows' revision.
+    /// order, stopped windowing): drops the per-project memo and (fork-only,
+    /// #44) moves the live rows' revision.
     func invalidateSidebarLists() {
         sidebarListsCache.removeAll(keepingCapacity: true)
         sidebarListsRevision &+= 1
     }
 
-    /// The same choke-point for a Host projection that changed only some
-    /// projects: their memo entries go, and the revision still moves (a pin
-    /// flag or order change leaves the nodes themselves equal).
+    /// Fork-only (#44): the choke-point's form for a Host projection that
+    /// changed only some projects. Their memo entries go, and the revision
+    /// still moves (a pin flag or order change leaves the nodes equal).
     private func invalidateSidebarLists(projectIDs: Set<String>) {
         guard !projectIDs.isEmpty else { return }
         for id in projectIDs { sidebarListsCache.removeValue(forKey: id) }
         sidebarListsRevision &+= 1
     }
 
-    // MARK: - Live PROJECTS rows (#44)
+    // MARK: - Live PROJECTS rows (fork-only, #44)
 
     /// Everything the live PROJECTS rows are built from. Pins, order and
     /// stopped windowing reach it through `listsRevision`.
@@ -16036,7 +16037,7 @@ extension UnpeelStore {
             previousProjects: previousProjectSummaries, nextProjects: projectSummaries,
             previousOrder: previousOrder, nextOrder: orderByProject
         )
-        invalidateSidebarLists(projectIDs: affectedProjects)
+        invalidateSidebarLists(projectIDs: affectedProjects) // Fork-only (#44)
         if newNodes != remoteNodes {
             remoteNodes = newNodes
         }

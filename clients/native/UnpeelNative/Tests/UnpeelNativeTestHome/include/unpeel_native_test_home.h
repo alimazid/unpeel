@@ -11,4 +11,9 @@ const char *unpeel_native_test_home_created(void);
 /// for `home` into `out`. False when `out` is too small.
 _Bool unpeel_native_test_home_suite_name(const char *home, char *out, size_t size);
 
+/// Replaces whatever sits at `home` with a fresh, empty 0700 directory,
+/// never walking out of the path: a symlink or file there is unlinked, and
+/// only a directory this user owns is emptied. False when it can't.
+_Bool unpeel_native_test_home_reset(const char *home);
+
 #endif

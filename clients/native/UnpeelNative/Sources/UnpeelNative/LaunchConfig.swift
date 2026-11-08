@@ -196,7 +196,9 @@ enum AppDefaults {
 
     /// Deterministic FNV-1a hash — Swift's `String.hashValue` is salted per
     /// process, which would change the suite name every launch and lose
-    /// persistence for a fixed `UNPEEL_HOME`.
+    /// persistence for a fixed `UNPEEL_HOME`. Fork-only: the test bundle's
+    /// `Tests/UnpeelNativeTestHome/test_home.c` mirrors this derivation, and
+    /// `TestHomeIsolationTests` fails if the two drift.
     private static func stableHash(_ string: String) -> UInt64 {
         var hash: UInt64 = 0xcbf29ce484222325
         for byte in string.utf8 {

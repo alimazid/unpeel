@@ -122,6 +122,52 @@ final class SidebarTreeRowsCacheTests: XCTestCase {
         }
     }
 
+    /// The Controller's own stopped window applies to lists it scans from
+    /// disk (Host-served lists arrive windowed): the launch seed, before
+    /// the first bootstrap.
+    func testTheLocalStoppedWindowKeepsTheCacheEqualToAFreshFlatten() throws {
+        _ = NSApplication.shared
+        let store = UnpeelStore(paneLayoutController: PaneLayoutController(
+            fileURL: LaunchConfig.unpeelDir
+                .appendingPathComponent("panes-\(UUID().uuidString.prefix(6)).json")
+        ))
+        let token = UUID().uuidString.prefix(6).lowercased()
+        let projectDirectory = LaunchConfig.unpeelDir.appendingPathComponent("window-\(token)")
+        try FileManager.default.createDirectory(at: projectDirectory, withIntermediateDirectories: true)
+        let projectID = store.addEphemeralProject(path: projectDirectory.path)
+        let stoppedIDs = (0..<8).map { "stopped-\(token)-\($0)" }
+        for (index, id) in stoppedIDs.enumerated() {
+            try writeStoppedManifest(id: id, projectID: projectID, createdAt: 1_000 + Int64(index))
+        }
+        defer { store.setSidebarStoppedLimit(UnpeelStore.defaultSidebarStoppedLimit) }
+        store.setSidebarStoppedLimit(3)
+        store.rescan()
+        store.expandedProjectIDs = [projectID]
+        XCTAssertTrue(
+            store.sidebarTreeRows.contains { $0.id == "session:\(stoppedIDs[7])" },
+            "the scanned stopped rows render"
+        )
+
+        expectFreshRows(store, "a smaller stopped limit") {
+            store.setSidebarStoppedLimit(1)
+        }
+        expectFreshRows(store, "a larger stopped limit") {
+            store.setSidebarStoppedLimit(10)
+        }
+        expectFreshRows(store, "the window closing again") {
+            store.setSidebarStoppedLimit(3)
+        }
+        expectFreshRows(store, "selecting a stopped row past the window") {
+            store.selectedSessionID = stoppedIDs[0]
+        }
+        expectFreshRows(store, "a newly stopped Session") {
+            try? self.writeStoppedManifest(
+                id: "stopped-\(token)-new", projectID: projectID, createdAt: 2_000
+            )
+            store.rescan()
+        }
+    }
+
     func testReadingTheRowsNeverPublishes() {
         let store = makeStore(FixtureHost())
         var publishes = 0
@@ -175,6 +221,22 @@ final class SidebarTreeRowsCacheTests: XCTestCase {
             "after \(change), the cached row ids are stale", file: file, line: line
         )
         XCTAssertEqual(cached, fresh, "after \(change), the cached rows are stale", file: file, line: line)
+    }
+
+    /// An exited hosted Session as the disk scan reads it.
+    private func writeStoppedManifest(id: String, projectID: String, createdAt: Int64) throws {
+        let directory = LaunchConfig.appSessionsDir.appendingPathComponent(id)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let manifest: [String: Any] = [
+            "session": [
+                "id": id, "project_id": projectID, "label": id,
+                "command": "zsh", "created_at": createdAt,
+            ],
+            "state": "exited",
+            "updated_at": createdAt,
+        ]
+        try JSONSerialization.data(withJSONObject: manifest)
+            .write(to: directory.appendingPathComponent("manifest.json"))
     }
 
     /// The live page's flatten with every store memo dropped first.
