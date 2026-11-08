@@ -66,6 +66,10 @@ struct SidebarGroupWashSliceView: View {
             .padding(.trailing, -style.trailingOverhang)
             .clipShape(RowClip(trailingOverhang: style.trailingOverhang))
             .animation(style.animation, value: isHighlighted)
+            // A clip limits what's drawn, not what's hit: the overhang would
+            // sit over the row above and swallow its clicks. A later row in
+            // the stack is on top, so a group's first row covered its header.
+            .allowsHitTesting(false)
     }
 
     /// The row's own frame, widened by the wash's trailing overhang.

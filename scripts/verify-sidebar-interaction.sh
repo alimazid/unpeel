@@ -1,0 +1,215 @@
+#!/usr/bin/env bash
+# verify-sidebar-interaction.sh — drive a built Unpeel Dev bundle's PROJECTS
+# list with real pointer events on a throwaway home: toggle group headers, and
+# drag rows every way the sidebar allows, checking each step against the app's
+# accessibility tree and the Host's session list.
+#
+#   scripts/verify-sidebar-interaction.sh --app clients/native/dist/Unpeel.app \
+#       [--clicks 30] [--drags 20] [--only toggle-project,toggle,group-reorder,group-drop,out-and-back,folder-reorder,project-reorder] \
+#       [--report FILE] [--quiet SECONDS] [--app-log FILE] [--dump DIR]
+#
+# It moves the real pointer, so it needs an unlocked screen and a quiet
+# machine: it starts after 20 s without input, and any input it did not make
+# pauses it until the machine is quiet again. Exits 1 on any failed step.
+# Accessibility permission is required for the process running it.
+#
+# The fixture is two plain-shell trees under a private HOME and UNPEEL_HOME; a
+# real Host serves it, so a drop commits the way it does in the app.
+set -euo pipefail
+
+ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+APP="" CLICKS=30 DRAGS=20 ONLY="" REPORT="" QUIET=20 APP_LOG="" DUMP=""
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --app) APP="$2"; shift 2 ;;
+    --clicks) CLICKS="$2"; shift 2 ;;
+    --drags) DRAGS="$2"; shift 2 ;;
+    --only) ONLY="$2"; shift 2 ;;
+    --report) REPORT="$2"; shift 2 ;;
+    --quiet) QUIET="$2"; shift 2 ;;
+    --app-log) APP_LOG="$2"; shift 2 ;;
+    --dump) DUMP="$2"; shift 2 ;;
+    *) echo "unknown argument: $1" >&2; exit 2 ;;
+  esac
+done
+[ -n "$APP" ] || { echo "--app <Unpeel.app> is required" >&2; exit 2; }
+APP="$(cd "$APP" && pwd)"
+case "$APP" in /Applications/*) echo "refusing: never drive the installed app" >&2; exit 2 ;; esac
+MACOS="$APP/Contents/MacOS"
+[ "$(plutil -extract CFBundleName raw "$APP/Contents/Info.plist")" = "Unpeel Dev" ] \
+  || { echo "refusing: $APP is not a dev build" >&2; exit 2; }
+
+# sockaddr_un caps a socket path near 104 bytes.
+H="$(mktemp -d /tmp/usi.XXXXXX)"
+TOOLS="$(mktemp -d /tmp/usit.XXXXXX)"
+HOME_A="$H/.unpeel"
+ME="$(id -un)"
+REAL_HOME="$(eval echo "~$ME")"
+SUITE="com.unpeel.devhome.$(python3 -I -c '
+import sys
+x = 0xcbf29ce484222325
+for b in sys.argv[1].encode(): x = ((x ^ b) * 0x100000001b3) & 0xFFFFFFFFFFFFFFFF
+d = "0123456789abcdefghijklmnopqrstuvwxyz"; o = ""
+while x: o = d[x % 36] + o; x //= 36
+print(o)' "$HOME_A")"
+
+# The caller's shell may export UNPEEL_* vars that point at the real home.
+uenv() {
+  env -i HOME="$H" CFFIXED_USER_HOME="$H" PATH=/usr/bin:/bin:/usr/sbin:/sbin \
+    USER="$ME" LOGNAME="$ME" SHELL=/bin/zsh TMPDIR="$H/tmp" LANG=en_US.UTF-8 "$@"
+}
+ucli() { uenv UNPEEL_HOME="$HOME_A" "$MACOS/unpeel" "$@"; }
+
+# Every pid whose environment carries this exact HOME, plus descendants.
+fixture_pids() {
+  local queue seen pid child
+  queue="$(ps -A -E -ww -o pid=,uid=,command= 2>/dev/null \
+    | awk -v me="$(id -u)" -v pat="(^| )HOME=$H( |\$)" '$2 == me && $0 ~ pat { print $1 }' | grep -vx "$$" || true)"
+  seen=" "
+  while [ -n "$queue" ]; do
+    set -- $queue; pid="$1"; shift; queue="$*"
+    case "$seen" in *" $pid "*) continue ;; esac
+    seen="$seen$pid "
+    for child in $(pgrep -P "$pid" 2>/dev/null); do queue="$queue $child"; done
+  done
+  echo "$seen"
+}
+lstart() { ps -o lstart= -p "$1" 2>/dev/null | sed 's/^ *//; s/ *$//'; }
+
+APP_PID=""
+cleanup() {
+  local status=$? round pid reg now
+  trap - EXIT INT TERM
+  set +e # A pid can be gone by the time it is read; finish the cleanup anyway.
+  if [ -n "$APP_LOG" ] && [ -f "$H/app.log" ]; then cp "$H/app.log" "$APP_LOG"; fi
+  if [ -n "$DUMP" ]; then
+    mkdir -p "$DUMP"
+    cp "$HOME_A"/app-state.json "$HOME_A"/session-order.json "$HOME_A"/project-order.json "$DUMP"/ 2>/dev/null
+    "$H/ls.sh" > "$DUMP/manifests.json" 2>/dev/null
+    ucli ls --json > "$DUMP/ls.json" 2>/dev/null
+    uenv defaults read "$SUITE" unpeel.native.expandedProjects > "$DUMP/expanded.txt" 2>/dev/null
+  fi
+  for round in TERM TERM KILL; do
+    reg="$(for pid in $(fixture_pids); do echo "$pid|$(lstart "$pid")"; done)"
+    [ -n "$reg" ] || break
+    for pid in $(echo "$reg" | cut -d'|' -f1); do
+      # A recycled pid is never signalled: the start time must still match.
+      now="$(lstart "$pid")"
+      [ -n "$now" ] && echo "$reg" | grep -qxF "$pid|$now" && kill "-$round" "$pid" 2>/dev/null || true
+    done
+    sleep 3
+  done
+  uenv defaults delete "$SUITE" >/dev/null 2>&1 || true
+  sleep 6 # cfprefsd may write the emptied plist back.
+  rm -f "$REAL_HOME/Library/Preferences/$SUITE.plist"
+  rm -rf "$H" "$TOOLS"
+  exit "$status"
+}
+trap cleanup EXIT INT TERM
+
+swiftc -O -o "$TOOLS/driver" "$ROOT/scripts/verify-sidebar-interaction.swift"
+
+# --- Fixture: projects and groups first, then the Host, then the Sessions, so
+# every Session lives in the Host's PTY core and a drop can commit.
+mkdir -p "$H/tmp" "$HOME_A" "$H/w"
+: > "$H/.zshrc"
+for name in Big Small Quiet Empty; do
+  mkdir -p "$H/w/$name"
+  ucli projects add "$name" "$H/w/$name" >/dev/null
+done
+python3 -I - "$HOME_A" <<'PY'
+import fcntl, json, os, sys, tempfile
+home = sys.argv[1]
+path = os.path.join(home, "app-state.json")
+with open(os.path.join(home, "app-state.lock"), "a") as lock:
+    fcntl.flock(lock, fcntl.LOCK_EX)
+    state = json.load(open(path))
+    projects = state["projects"]
+    for order, project in enumerate(projects):
+        project["sort_order"] = order
+    big = next(p for p in projects if p["name"] == "Big")
+    for group_id, name, parent, order in (
+        ("g-alpha", "Alpha", big["id"], 1),
+        ("g-inner", "Inner", "g-alpha", 0),
+        ("g-beta", "Beta", big["id"], 2),
+    ):
+        projects.append({"id": group_id, "name": name, "path": big["path"],
+                         "parent_project_id": parent, "is_folder": True, "sort_order": order})
+    fd, tmp = tempfile.mkstemp(dir=home, prefix=".app-state.", suffix=".tmp")
+    with os.fdopen(fd, "w") as f:
+        json.dump(state, f, indent=2)
+    os.chmod(tmp, 0o644)
+    os.replace(tmp, path)
+PY
+project_id() {
+  python3 -I -c 'import json,sys; print(next(p["id"] for p in json.load(open(sys.argv[1]))["projects"] if p["name"]==sys.argv[2]))' \
+    "$HOME_A/app-state.json" "$1"
+}
+(cd "$H" && exec env -i HOME="$H" CFFIXED_USER_HOME="$H" PATH=/usr/bin:/bin:/usr/sbin:/sbin \
+  USER="$ME" LOGNAME="$ME" SHELL=/bin/zsh TMPDIR="$H/tmp" LANG=en_US.UTF-8 \
+  nohup "$MACOS/unpeel-host" __serve__ > "$H/host.log" 2>&1 < /dev/null) &
+for _ in $(seq 1 60); do [ -S "$HOME_A/host.sock" ] && [ -s "$HOME_A/serve.json" ] && break; sleep 0.5; done
+[ -S "$HOME_A/host.sock" ] || { echo "the fixture Host did not come up" >&2; exit 1; }
+
+new_session() { # <project> <dir name>; the row label is the abbreviated cwd.
+  mkdir -p "$H/w/Big/$2"
+  ucli new --project "$1" --cwd "$H/w/Big/$2" >/dev/null
+}
+BIG="$(project_id Big)"
+for n in 01 02 03 04 05 06 07 08 09 10 11 12; do new_session "$BIG" "big-$n"; done
+for n in 1 2 3; do new_session g-alpha "alpha-$n"; new_session g-beta "beta-$n"; done
+new_session g-inner inner-2
+sleep 1.1 # Newest first: inner-1 is the top row, and the selection.
+mkdir -p "$H/w/Big/inner-1"
+SELECTED="$(ucli new --project g-inner --cwd "$H/w/Big/inner-1" --json | python3 -I -c 'import json,sys; print(json.load(sys.stdin)["id"])')"
+SMALL="$(project_id Small)"
+for n in 1 2 3; do new_session "$SMALL" "small-$n"; done
+QUIET="$(project_id Quiet)"
+new_session "$QUIET" "quiet-1"
+
+# Everything expanded but Quiet; only PROJECTS open, so the whole tree fits.
+uenv defaults write "$SUITE" unpeel.native.expandedProjects -array \
+  "$BIG" g-alpha g-inner g-beta "$SMALL" "$(project_id Empty)"
+uenv defaults write "$SUITE" unpeel.native.selectedSession -string "$SELECTED"
+uenv defaults write "$SUITE" unpeel.native.notifyWhenDoneAllAgents -bool false
+LAYOUT='{"version":1,"order":["projects","agents","scheduled","explorer","gitHistory"],"hidden":[],"collapsed":["agents","explorer","gitHistory","scheduled"],"weights":{"projects":0.4,"agents":0.25,"scheduled":0.2,"explorer":0.6,"gitHistory":0.4}}'
+uenv defaults write "$SUITE" unpeel.sidebarSections.layout -data "$(printf '%s' "$LAYOUT" | xxd -p | tr -d '\n')"
+
+# Which project each Session is in: the manifest, or the override marker the
+# Host writes when a Session moves (a move never edits the manifest).
+cat > "$H/ls.sh" <<LS
+#!/usr/bin/python3 -I
+import glob, json, os
+rows = []
+for path in glob.glob("$HOME_A/app-sessions/*/manifest.json"):
+    try:
+        manifest = json.load(open(path))
+    except (OSError, ValueError):
+        continue
+    project = manifest["session"]["project_id"]
+    try:
+        project = json.load(open(os.path.join(os.path.dirname(path), "project-override.json")))["project_id"] or project
+    except (OSError, ValueError, KeyError):
+        pass
+    rows.append({"id": manifest["session"]["id"], "cwd": manifest["cwd"], "project_id": project})
+print(json.dumps(rows))
+LS
+chmod +x "$H/ls.sh"
+
+# --- The app.
+(cd "$H" && exec env -i HOME="$H" CFFIXED_USER_HOME="$H" PATH=/usr/bin:/bin:/usr/sbin:/sbin \
+  USER="$ME" LOGNAME="$ME" SHELL=/bin/zsh TMPDIR="$H/tmp" LANG=en_US.UTF-8 \
+  UNPEEL_HOME="$HOME_A" UNPEEL_NATIVE_SERVICE_LAUNCHER=direct \
+  "$MACOS/UnpeelNative" > "$H/app.log" 2>&1 < /dev/null) &
+APP_PID=$!
+sleep 1
+[ "$(ps -o comm= -p "$APP_PID")" = "$MACOS/UnpeelNative" ] || { echo "the app did not start" >&2; exit 1; }
+for _ in $(seq 1 40); do
+  rows="$("$TOOLS/driver" prepare --pid "$APP_PID" 2>/dev/null || true)"
+  case "$rows" in *small-1*) break ;; esac
+  sleep 0.5
+done
+case "$rows" in *small-1*) ;; *) echo "the rows never appeared: $rows" >&2; exit 1 ;; esac
+
+"$TOOLS/driver" run --pid "$APP_PID" --ls "$H/ls.sh" --order-file "$HOME_A/session-order.json" --clicks "$CLICKS" --drags "$DRAGS" --quiet "$QUIET" \
+  ${ONLY:+--only "$ONLY"} ${REPORT:+--report "$REPORT"}
