@@ -699,8 +699,9 @@ func runScrolledGroupDrop(count: Int) {
     let home = hostProjects()[session] ?? ""
     log("file \(summary([session])) into off-screen Beta x\(count)")
     func location() -> String { hostProjects()[session] ?? "nothing" }
-    // Both are near the top by now.
+    // From the top: auto-scroll can stop with Big just above the list.
     func sendHome(attempt: Int) {
+        scrollToTop()
         let rows = readRows()
         guard let filed = rows.first(where: { $0.label == session }),
               let big = rows.first(where: { $0.label == "Big" }) else {
@@ -718,7 +719,6 @@ func runScrolledGroupDrop(count: Int) {
     for attempt in 1 ... count {
         // A Session already in Beta would pass this drop without filing anything.
         if hostProjects()[session] != home {
-            scrollToTop()
             sendHome(attempt: attempt)
             guard hostProjects()[session] == home else {
                 scenario.fail("drag \(attempt): \(summary([session])) isn't home, so a drop proves nothing: it is in \(location())")
