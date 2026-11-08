@@ -15,6 +15,8 @@ pub(super) struct Caller<'a> {
     pub id: &'a str,
     pub label: &'a str,
     pub task: Option<&'a str>,
+    /// The manifest's `session.spawned_by`: a Run's names its task.
+    pub spawned_by: Option<&'a str>,
 }
 
 impl<'a> Caller<'a> {
@@ -23,6 +25,7 @@ impl<'a> Caller<'a> {
             id: &manifest.session.id,
             label: &manifest.session.label,
             task: manifest.session.task.as_deref(),
+            spawned_by: manifest.session.spawned_by.as_deref(),
         }
     }
 }
@@ -193,6 +196,16 @@ fn router_link(home: &Home, caller_id: &str, target_id: &str) -> Option<WorkerMa
         .filter(|marker| marker.router_id == target_id)
 }
 
+/// A Scheduled Task's Run Session reporting to the Router (ADR 0010):
+/// nobody is there to approve a Run, and each Run is a new Session, so an
+/// approved pair never carries over. Its task need not still exist. A Run
+/// made the Router itself still meets the gate's own-Session refusal.
+fn run_reports_to_router(home: &Home, caller: &Caller<'_>, target_id: &str) -> bool {
+    caller.id != target_id
+        && home.is_router(target_id)
+        && crate::schedules::run_sessions::schedule_id(caller.spawned_by).is_some()
+}
+
 pub(super) fn report_through_inbox(
     home: &Home,
     args: &Value,
@@ -201,7 +214,7 @@ pub(super) fn report_through_inbox(
     gate: &dyn Fn() -> Result<(), String>,
 ) -> Result<Value, String> {
     let link = router_link(home, caller.id, target_id);
-    if link.is_none() {
+    if link.is_none() && !run_reports_to_router(home, caller, target_id) {
         gate()?;
     }
     let item = report_item(args, caller)?;
@@ -390,7 +403,8 @@ pub(super) fn help_doc() -> Vec<(String, Value)> {
             Inbox instead of typing, and its result says queued, item_id, pending and delivery \
             (when_idle or held:<reason>); status done or blocked, or questions, wakes the \
             target, while update and progress ride along with the next batch (submit is \
-            ignored).",
+            ignored). A report to the Super Agent from its Worker, or from a Scheduled Task's \
+            Run, needs no approval.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -414,6 +428,7 @@ mod tests {
             id: "w1",
             label: "fix-login",
             task: None,
+            spawned_by: None,
         }
     }
 
@@ -611,6 +626,7 @@ mod tests {
             id,
             label: "w label",
             task: None,
+            spawned_by: None,
         }
     }
 
@@ -624,8 +640,88 @@ mod tests {
         target: &str,
         status: &str,
     ) -> Result<Value, String> {
-        let args = json!({ "summary": format!("{worker} {status}"), "status": status });
-        home.run(|ctx| report_through_inbox(ctx, &args, &as_caller(worker), target, &prompted))
+        report_as(home, &as_caller(worker), target, status)
+    }
+
+    fn report_as(
+        home: &TestHome,
+        caller: &Caller<'_>,
+        target: &str,
+        status: &str,
+    ) -> Result<Value, String> {
+        let args = json!({ "summary": format!("{} {status}", caller.id), "status": status });
+        home.run(|ctx| report_through_inbox(ctx, &args, caller, target, &prompted))
+    }
+
+    /// A Session stamped `spawned_by`, as the Host's runner stamps a Run's.
+    fn stamped<'a>(id: &'a str, spawned_by: &'a str) -> Caller<'a> {
+        Caller {
+            spawned_by: Some(spawned_by),
+            ..as_caller(id)
+        }
+    }
+
+    #[test]
+    fn a_runs_report_to_the_router_skips_the_approval_prompt() {
+        // No task `sch_1` in this home's app-state: a Run whose task was
+        // deleted still reports.
+        let home = TestHome::new().session("run-1", true);
+        let run = stamped("run-1", "schedule:sch_1");
+        let queued = report_as(&home, &run, ROUTER, "done").unwrap();
+        assert_eq!(queued["queued"], true);
+        assert_eq!(queued["delivery"], "when_idle");
+        let pending = home.inbox.list(ROUTER).unwrap().pending;
+        assert_eq!(pending.len(), 1);
+        assert_eq!(
+            (pending[0].kind, pending[0].priority),
+            (ItemKind::Report, Priority::Wake)
+        );
+        assert_eq!(pending[0].sender, Sender::Session("run-1".into()));
+    }
+
+    #[test]
+    fn only_a_run_stamp_skips_the_gate_and_only_to_the_router() {
+        let home = TestHome::new().session("s-1", true);
+        // Not a Run: an empty task id, a look-alike prefix, `unpeel new`'s
+        // stamp, an MCP create's (the caller's id), none at all.
+        for spawned_by in ["schedule:", "scheduleX:sch_1", "schedule", "cli", ROUTER] {
+            let refused = report_as(&home, &stamped("s-1", spawned_by), ROUTER, "done");
+            assert_eq!(refused.unwrap_err(), "asked the user", "{spawned_by}");
+        }
+        let refused = report_as(&home, &as_caller("s-1"), ROUTER, "done");
+        assert_eq!(refused.unwrap_err(), "asked the user");
+        // A Run writing to anyone but the Router.
+        let run = stamped("s-1", "schedule:sch_1");
+        let refused = report_as(&home, &run, "user-1", "done");
+        assert_eq!(refused.unwrap_err(), "asked the user");
+        // A Run Session made the Super Agent, reporting to itself: the
+        // gate's own-Session refusal still applies.
+        let itself = stamped(ROUTER, "schedule:sch_1");
+        let refused = report_as(&home, &itself, ROUTER, "done");
+        assert_eq!(refused.unwrap_err(), "asked the user");
+        assert!(home.inbox.list(ROUTER).unwrap().pending.is_empty());
+        assert!(home.inbox.list("user-1").unwrap().pending.is_empty());
+    }
+
+    #[test]
+    fn a_runs_report_wakes_by_the_workers_rules_and_is_never_a_hand_over() {
+        let home = TestHome::new().session("run-1", true);
+        let run = stamped("run-1", "schedule:sch_1");
+        let queued = report_as(&home, &run, ROUTER, "update").unwrap();
+        assert_eq!(queued["delivery"], "held:ride_along");
+        report_as(&home, &run, ROUTER, "blocked").unwrap();
+        let pending = home.inbox.list(ROUTER).unwrap().pending;
+        let kinds: Vec<(ItemKind, Priority)> = pending
+            .iter()
+            .map(|item| (item.kind, item.priority))
+            .collect();
+        assert_eq!(
+            kinds,
+            [
+                (ItemKind::Report, Priority::RideAlong),
+                (ItemKind::Report, Priority::Wake),
+            ]
+        );
     }
 
     #[test]

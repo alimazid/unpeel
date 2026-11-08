@@ -141,5 +141,5 @@ delegation
 The messages waiting for one Session: its Workers' reports and Unpeel's
 alerts about them. They arrive together as one batch when the Session is
 idle and nobody is typing into it. A Worker reaches its Router only through
-the Router's Inbox.
+the Router's Inbox; so does a Run's report, with no approval prompt.
 _Avoid_: queue, mailbox, message buffer

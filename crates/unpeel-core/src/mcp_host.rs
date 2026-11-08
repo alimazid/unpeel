@@ -2264,8 +2264,11 @@ pub(crate) fn legacy_sessions_tool_definitions() -> Vec<Value> {
         }),
         json!({
             "name": "report_to_group",
+            // Fork-only: a Worker's or a Run's report to the Super Agent (ADR 0010).
             "description": "Send a structured update or final result to another session. \
-        The ordinary write policy applies, regardless of sidebar group.",
+        The ordinary write policy applies, regardless of sidebar group, except that while a \
+        Host runs a report to the Super Agent from its Worker or a Scheduled Task's Run needs no \
+        approval.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
