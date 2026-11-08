@@ -130,6 +130,9 @@ final class HostServiceIdentityTests: XCTestCase {
         var env = ProcessInfo.processInfo.environment
         env["UNPEEL_HOME"] = home.path
         env = env.filter { !$0.key.hasPrefix("UNPEEL_TEST_") && !$0.key.hasPrefix("UNPEEL_SNAPSHOT") }
+        // Fork-only (#44): the test bundle points UNPEEL_HOST_CMD at
+        // /usr/bin/false; a real worker must resolve its own binary.
+        env.removeValue(forKey: "UNPEEL_HOST_CMD")
         stale.environment = env
         stale.standardOutput = FileHandle.nullDevice
         stale.standardError = FileHandle.nullDevice

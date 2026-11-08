@@ -110,8 +110,13 @@ any fix.
   `unpeel-native-bridge`: a `#[ctor]` hook plus a guard test), so a plain
   `cargo test` needs no setup. A new crate whose tests resolve the home gets
   the same `test_home.rs`; process tests pass their own `HOME`/`UNPEEL_HOME`
-  to the binaries they spawn. The PTY matrix and the verify scripts build
-  their own homes.
+  to the binaries they spawn. The Mac app's test bundle does the same from
+  C (`clients/native/UnpeelNative/Tests/UnpeelNativeTestHome`, guarded by
+  `TestHomeIsolationTests`). It claims a reused `/tmp/unt-<n>` slot under
+  an flock, and that slot also names its defaults suite. It sets
+  `UNPEEL_TEST_NATIVE_SUITE` and points `UNPEEL_HOST_CMD` at
+  `/usr/bin/false`, so no test starts a Host. The PTY matrix and the
+  verify scripts build their own homes.
 
 ## Taking a raw issue to done
 

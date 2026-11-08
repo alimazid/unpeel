@@ -1027,7 +1027,11 @@ final class UnpeelStore: ObservableObject {
     /// stored preference is reflected at launch; publishing it lets the
     /// sidebar's worktree gates re-evaluate live when a toggle flips.
     @Published private(set) var enabledExperimentalKeys: Set<String> =
-        Set(AppFeature.all.filter { UnpeelFeatureFlags.isEnabled($0) }.map(\.key))
+        Set(AppFeature.all.filter { UnpeelFeatureFlags.isEnabled($0) }.map(\.key)) {
+        // Fork-only (#44): the worktrees flag filters the sidebar's child
+        // folders (`visibleChildFolders`), an input of the cached rows.
+        didSet { if enabledExperimentalKeys != oldValue { invalidateSidebarLists() } }
+    }
 
     /// This app's Host-side remote-control server. Mobile was its first
     /// Controller, so the shipped implementation and routes retain legacy
@@ -1179,6 +1183,13 @@ final class UnpeelStore: ObservableObject {
     /// Per-project memo of the sidebar's rendered row lists; see
     /// `sidebarLists(in:)`. Cleared whenever an input changes.
     private var sidebarListsCache: [String: (pinned: [SessionEntry], displayed: [SessionEntry])] = [:]
+    // Fork-only (#44): the live PROJECTS row cache.
+    /// Bumped by every `invalidateSidebarLists`, so the live PROJECTS rows
+    /// see each pins, order or stopped-windowing change.
+    private var sidebarListsRevision = 0
+    /// `sidebarTreeRows` and the inputs it was built from. Plain storage:
+    /// never observed, and never published from the getter.
+    private var sidebarTreeRowsCache: (key: SidebarTreeRowsKey, rows: [SidebarTreeRow])?
 
     /// Last observed foreground-runtime identity (`id:pid`, "" while none),
     /// tracked only for sessions whose launch command is not hook-capable.
@@ -2057,6 +2068,13 @@ final class UnpeelStore: ObservableObject {
         // service cannot resurrect an intentionally removed legacy project.
         mirrorProjectsToSharedState()
         connectLocalHostServiceIfNeeded()
+    }
+
+    /// Fork-only test hook (#44): Local becomes a Host client without
+    /// connecting to the service, so a test drives `projectRemoteScope`
+    /// with fixture bootstraps. Production code never calls it.
+    func markLocalHostClientStartedForTesting() {
+        localHostClientStarted = true
     }
 
     /// Pull `name` from `app-state.json` into the native project records for
@@ -14873,8 +14891,74 @@ final class UnpeelStore: ObservableObject {
         return (pinned, rendered)
     }
 
+    /// THE invalidation choke-point for the sidebar's list inputs (pins,
+    /// order, stopped windowing): drops the per-project memo and (fork-only,
+    /// #44) moves the live rows' revision.
     func invalidateSidebarLists() {
         sidebarListsCache.removeAll(keepingCapacity: true)
+        sidebarListsRevision &+= 1
+    }
+
+    /// Fork-only (#44): the choke-point's form for a Host projection that
+    /// changed only some projects. Their memo entries go, and the revision
+    /// still moves (a pin flag or order change leaves the nodes equal).
+    private func invalidateSidebarLists(projectIDs: Set<String>) {
+        guard !projectIDs.isEmpty else { return }
+        for id in projectIDs { sidebarListsCache.removeValue(forKey: id) }
+        sidebarListsRevision &+= 1
+    }
+
+    // MARK: - Live PROJECTS rows (fork-only, #44)
+
+    /// Everything the live PROJECTS rows are built from. Pins, order and
+    /// stopped windowing reach it through `listsRevision`.
+    private struct SidebarTreeRowsKey: Equatable {
+        let topLevelNodes: [ProjectNode]
+        let expandedProjectIDs: Set<String>
+        let hiddenSessionIDs: Set<String>
+        let listsRevision: Int
+    }
+
+    /// The live PROJECTS row list: the #41 flattener over the displayed
+    /// tree with the live accessors and no row budget. Rebuilt by
+    /// `makeSidebarTreeRows` only when its inputs change: the displayed
+    /// tree (the selected scope's nodes with the MCP-attention overlay),
+    /// expansion, hidden pane members, and the lists revision. No mutation
+    /// site writes it.
+    ///
+    /// Every field a row view reads from a cached `ProjectNode` or
+    /// `SessionEntry` changes only through a nodes mutation, which changes
+    /// the key: renames, label edits, live/stopped and busy/idle status all
+    /// live in nodes. Display inputs are resolved by the row view at render
+    /// time and are never cached: unread, collapsed rollups, confirm,
+    /// rename and edit state, menus, shortcut hints and pane items.
+    var sidebarTreeRows: [SidebarTreeRow] {
+        let key = SidebarTreeRowsKey(
+            topLevelNodes: displayNodes,
+            expandedProjectIDs: expandedProjectIDs,
+            hiddenSessionIDs: activePaneMemberSessionIDs,
+            listsRevision: sidebarListsRevision
+        )
+        if let cache = sidebarTreeRowsCache, cache.key == key {
+            // Equal inputs in a new buffer: keep the new one, so the next
+            // read compares by identity instead of deeply.
+            sidebarTreeRowsCache = (key, cache.rows)
+            return cache.rows
+        }
+        let rows = makeSidebarTreeRows(key)
+        sidebarTreeRowsCache = (key, rows)
+        return rows
+    }
+
+    /// The one recompute of `sidebarTreeRows`.
+    private func makeSidebarTreeRows(_ key: SidebarTreeRowsKey) -> [SidebarTreeRow] {
+        SidebarTreeFlattener.rows(
+            topLevelNodes: key.topLevelNodes,
+            expandedProjectIDs: key.expandedProjectIDs,
+            hiddenSessionIDs: key.hiddenSessionIDs,
+            pinnedItems: { renderedPinnedItems(in: $0) },
+            regularItems: { renderedDisplayedItems(in: $0) }
+        )
     }
 
     private func orderedSessions(
@@ -15953,7 +16037,7 @@ extension UnpeelStore {
             previousProjects: previousProjectSummaries, nextProjects: projectSummaries,
             previousOrder: previousOrder, nextOrder: orderByProject
         )
-        for id in affectedProjects { sidebarListsCache.removeValue(forKey: id) }
+        invalidateSidebarLists(projectIDs: affectedProjects) // Fork-only (#44)
         if newNodes != remoteNodes {
             remoteNodes = newNodes
         }
