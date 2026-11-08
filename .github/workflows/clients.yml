@@ -13,11 +13,15 @@ on:
     paths:
       - 'clients/**'
       - 'crates/unpeel-native-bridge/**'
+      - 'scripts/verify-sidebar-interaction.*'
+      - 'scripts/ci/check-sidebar-driver.sh'
       - '.github/workflows/clients.yml'
   pull_request:
     paths:
       - 'clients/**'
       - 'crates/unpeel-native-bridge/**'
+      - 'scripts/verify-sidebar-interaction.*'
+      - 'scripts/ci/check-sidebar-driver.sh'
       - '.github/workflows/clients.yml'
 
 permissions:
@@ -62,6 +66,8 @@ jobs:
             swiftpm-${{ runner.os }}-
       - name: Runtime catalog copies agree
         run: bun run check:runtimes
+      - name: Sidebar driver builds (it needs a display only to run)
+        run: scripts/ci/check-sidebar-driver.sh
       - name: UnpeelShared tests
         run: swift test --package-path clients/shared/UnpeelShared
       - name: Unsigned Mac app (server + bridge built from this tree)

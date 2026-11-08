@@ -108,7 +108,11 @@ any fix.
     on a dev build, then again with the long-list options in its header. It
     clicks and drags with the real pointer on a throwaway home, because xctest
     can't reach those paths. It needs an unlocked screen and pauses on any
-    input from the user.
+    input from the user. When a change can look different at 2x, run it there
+    too (`--scale`, also in the header). `clients/native/test-native.sh` and CI
+    only compile the driver (`scripts/ci/check-sidebar-driver.sh`), so a change
+    to its checks needs a real run, and one that goes red on a build with the
+    bug put back.
 
   Every run uses a private `UNPEEL_HOME`. A unit-test binary that resolves
   the home sets its own before `main` unless the caller already did
