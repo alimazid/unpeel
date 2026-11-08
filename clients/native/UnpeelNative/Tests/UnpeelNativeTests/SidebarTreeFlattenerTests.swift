@@ -133,7 +133,7 @@ final class SidebarTreeFlattenerTests: XCTestCase {
             "folder:p", "session:s1", "folder:outer", "session:o1", "folder:inner", "session:i1",
         ])
         // Sessions sit at their owner's depth; a child folder header one
-        // level below its parent (the live tree's ProjectNodeView depths).
+        // level below its parent.
         XCTAssertEqual(rows.map(\.depth), [0, 0, 1, 1, 2, 2])
         XCTAssertEqual(rows.map(\.topLevelProjectID), Array(repeating: "p", count: 6))
         XCTAssertEqual(rows.map(\.folderChain), [

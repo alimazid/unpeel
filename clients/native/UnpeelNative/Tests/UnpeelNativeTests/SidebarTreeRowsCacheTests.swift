@@ -185,19 +185,10 @@ final class SidebarTreeRowsCacheTests: XCTestCase {
     // MARK: Helpers
 
     private func makeStore(_ host: FixtureHost) -> UnpeelStore {
-        // Scope switches set NSApp.appearance.
-        _ = NSApplication.shared
-        let panes = PaneLayoutController(
-            fileURL: LaunchConfig.unpeelDir
-                .appendingPathComponent("panes-\(UUID().uuidString.prefix(6)).json")
+        let store = UnpeelStore.sidebarFixture(
+            snapshot: host.snapshot,
+            expandedProjectIDs: ["project", "group", "wt", "other"]
         )
-        let store = UnpeelStore(paneLayoutController: panes)
-        if !store.isExperimentalEnabled(.worktrees) {
-            store.setExperimental(true, for: .worktrees)
-        }
-        store.markLocalHostClientStartedForTesting()
-        store.expandedProjectIDs = ["project", "group", "wt", "other"]
-        store.projectRemoteScope(snapshot: host.snapshot)
         XCTAssertFalse(store.sidebarTreeRows.isEmpty, "the fixture Host's tree renders")
         return store
     }

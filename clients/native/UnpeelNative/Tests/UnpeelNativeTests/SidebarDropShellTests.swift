@@ -120,47 +120,6 @@ final class SidebarDropShellTests: XCTestCase {
         XCTAssertEqual(hit(1.5 * Self.row, in: rows)?.id, "short")
     }
 
-    /// root ▸ worktree (header, s1, s2, collapsed group g2), then root's own
-    /// p1. Dragging s1 down onto g2 shifts s2 and g2 up one row. A Session
-    /// row's shift sits inside its own reporter, so s2 stays registered at
-    /// its slot; g2's whole cluster moves as an offset its header reports.
-    private var shiftedClusterLayout: [String: Controller.RowRecord] {
-        let worktree: [Controller.ShellOwner] = [.project("root"), .group("worktree")]
-        return [
-            "root": record(.project, frame(y: 0), owners: [.project("root")]),
-            "worktree": record(folder(in: "root", depth: 1), frame(y: Self.row), owners: worktree),
-            "s1": record(session(in: "worktree", depth: 1), frame(y: 2 * Self.row), owners: worktree),
-            "s2": record(session(in: "worktree", depth: 1), frame(y: 3 * Self.row), owners: worktree),
-            "g2": record(
-                folder(in: "worktree", depth: 2),
-                frame(y: 3 * Self.row),
-                owners: worktree + [.group("g2")]
-            ),
-            "p1": record(session(in: "root", depth: 0), frame(y: 5 * Self.row), owners: [.project("root")]),
-        ]
-    }
-
-    func testAClusterRidingTheReorderGapKeepsItsParentsShellAtItsLayoutSlot() {
-        let shifts: [String: CGFloat] = ["s2": -Self.row, "g2": -Self.row]
-
-        let vacated = Controller.row(
-            at: CGPoint(x: 120, y: 4.5 * Self.row),
-            in: shiftedClusterLayout,
-            clusterShifts: shifts
-        )
-
-        XCTAssertEqual(
-            vacated?.kind, .groupShell(projectID: "worktree"),
-            "the strip g2 vacated is still the worktree's, never its project's"
-        )
-        let shells = Controller.shellFrames(in: shiftedClusterLayout, clusterShifts: shifts)
-        XCTAssertEqual(shells[.group("worktree")], frame(y: Self.row, height: 4 * Self.row))
-        XCTAssertEqual(
-            shells[.group("g2")], frame(y: 3 * Self.row),
-            "the moving cluster's own shell rides with it"
-        )
-    }
-
     func testAPointOutsideEveryBlockHitsNothing() {
         XCTAssertNil(hit(20 * Self.row, in: groupWithBlankWash))
     }

@@ -2,6 +2,8 @@
 //  SidebarDropShells.swift
 //  UnpeelNative
 //
+//  Fork-only file (ADR 0009, #41).
+//
 //  Hit-testing over the detached drag's row-frame registry. A project's or
 //  group's drop shell is never a registered frame: every row carries its
 //  owner chain, and a block's shell is the union of the registered frames of
@@ -78,12 +80,9 @@ extension SidebarSessionDragController {
     /// frame is the most specific target. Only a point no semantic row
     /// covers (blank wash, a placeholder) falls through to the shells, where
     /// the smallest containing one, the innermost group, wins.
-    /// `clusterShifts` is the live same-section reorder offset of each
-    /// shifted item (see `shellFrames(in:clusterShifts:)`).
     nonisolated static func row(
         at point: CGPoint,
-        in rows: [String: RowRecord],
-        clusterShifts: [String: CGFloat] = [:]
+        in rows: [String: RowRecord]
     ) -> RowHit? {
         let semantic = rows.lazy.filter { $0.value.kind != nil }
         if let hit = smallest(semantic, containing: point, frame: \.value.frame),
@@ -93,7 +92,7 @@ extension SidebarSessionDragController {
                 isDraggable: hit.value.isDraggable
             )
         }
-        let shells = shellFrames(in: rows, clusterShifts: clusterShifts)
+        let shells = shellFrames(in: rows)
         return smallest(shells, containing: point, frame: \.value)
             .map { owner, frame in
                 RowHit(
@@ -130,30 +129,15 @@ extension SidebarSessionDragController {
     /// that name it. Only mounted rows are registered, so a block taller
     /// than the lazy window covers just its mounted part.
     ///
-    /// A group cluster riding the same-section reorder gap is an `offset`
-    /// its rows' reporters sit inside, so they register shifted frames. The
-    /// cluster's own shell rides with it, but the blocks around it keep the
-    /// cluster's layout slot: their rows are unshifted by `clusterShifts`
-    /// (item id to its current reorder offset) before joining their shells.
+    /// Registered frames are static for the whole drag: every row's
+    /// same-section reorder shift, a riding group's included, is an offset
+    /// inside its own reporter (#45), so a shell is a plain union.
     nonisolated static func shellFrames(
-        in rows: [String: RowRecord],
-        clusterShifts: [String: CGFloat] = [:]
+        in rows: [String: RowRecord]
     ) -> [ShellOwner: CGRect] {
         rows.values.reduce(into: [:]) { frames, record in
-            // At most one group in a chain rides the gap: the origin
-            // section is one parent's list.
-            let ride = record.owners.enumerated().lazy
-                .compactMap { index, owner -> (index: Int, offset: CGFloat)? in
-                    guard case let .group(id) = owner,
-                          let offset = clusterShifts[id], offset != 0
-                    else { return nil }
-                    return (index, offset)
-                }
-                .first
-            for (index, owner) in record.owners.enumerated() {
-                let offset = ride.flatMap { index < $0.index ? $0.offset : nil } ?? 0
-                let frame = record.frame.offsetBy(dx: 0, dy: -offset)
-                frames[owner] = frames[owner]?.union(frame) ?? frame
+            for owner in record.owners {
+                frames[owner] = frames[owner]?.union(record.frame) ?? record.frame
             }
         }
     }

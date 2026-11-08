@@ -378,6 +378,11 @@ final class SidebarSessionDragController: ObservableObject {
         )
     }
 
+    /// Fork-only (#45): a mounted row's registered frame, in content space.
+    func registeredRowFrame(id: String) -> CGRect? {
+        rows[id]?.frame
+    }
+
     /// Scoped to the registering reporter: a moved row's OLD view tears down
     /// after the new one registered the same id, and must not delete it.
     func removeRowFrame(id: String, token: UUID) {
@@ -2920,17 +2925,10 @@ final class SidebarSessionDragController: ObservableObject {
     // MARK: Geometry
 
     private func row(at content: CGPoint) -> RowHit? {
-        Self.row(at: content, in: rows, clusterShifts: clusterShifts)
-    }
-
-    /// The live transform-gap offset of each shifted item in the drag's
-    /// origin section; empty when no same-section gap is open.
-    private var clusterShifts: [String: CGFloat] {
-        guard let dragState, let drag = dragState.sessionDrag else { return [:] }
-        return dragState.sessionReorderIndexByID.keys.reduce(into: [:]) { shifts, id in
-            let shift = dragState.reorderShift(for: id, inProject: drag.projectID)
-            if shift != 0 { shifts[id] = shift }
-        }
+        // Fork-only (#43, #45): shells derive from the rows that name them.
+        // Registered frames are static for the whole drag: every row's
+        // reorder shift sits inside its own reporter.
+        Self.row(at: content, in: rows)
     }
 
     private func sessionRow(at content: CGPoint) -> RowHit? {
@@ -3038,6 +3036,14 @@ struct SidebarSessionDragFrameReporter: ViewModifier {
     let isDraggable: Bool
     /// Per-view-instance registration identity — see removeRowFrame.
     @State private var token = UUID()
+    /// Fork-only (#45): the last report, never observed. A lazy row that
+    /// scrolls away and back keeps this view and its frame, so
+    /// `onGeometryChange` has nothing new to publish; the appear re-registers.
+    @State private var lastReport = LastReport()
+
+    private final class LastReport {
+        var geometry: ReportedGeometry?
+    }
 
     /// `onGeometryChange` normally publishes only when the CGRect changes.
     /// A cross-group move can reparent a row into the exact same coordinates,
@@ -3061,16 +3067,24 @@ struct SidebarSessionDragFrameReporter: ViewModifier {
                     isDraggable: isDraggable
                 )
             } action: { reported in
-                controller?.setRowFrame(
-                    id: id,
-                    kind: reported.kind,
-                    frame: reported.frame,
-                    owners: reported.owners,
-                    isDraggable: reported.isDraggable,
-                    token: token
-                )
+                lastReport.geometry = reported
+                register(reported)
+            }
+            .onAppear {
+                if let geometry = lastReport.geometry { register(geometry) }
             }
             .onDisappear { controller?.removeRowFrame(id: id, token: token) }
+    }
+
+    private func register(_ reported: ReportedGeometry) {
+        controller?.setRowFrame(
+            id: id,
+            kind: reported.kind,
+            frame: reported.frame,
+            owners: reported.owners,
+            isDraggable: reported.isDraggable,
+            token: token
+        )
     }
 }
 
@@ -3109,7 +3123,10 @@ extension View {
 
 // MARK: - Scoped drag-state observers
 //
-// SidebarView and ProjectNodeView hold `SidebarDragState` as a plain,
+// Fork-only (#45): the per-row drag effects moved to the flat list's one
+// observing leaf per row, `SidebarTreeRowDragEffects`.
+//
+// SidebarView and the flat list hold `SidebarDragState` as a plain,
 // UNOBSERVED reference (the heavy tree must never re-evaluate per drag-state
 // publish — with 100+ sessions that re-built every row's view value on every
 // hovered-row change). Everything that renders FROM drag state lives in the
@@ -3129,70 +3146,6 @@ struct SidebarSessionDragHitTestGate: ViewModifier {
 
     func body(content: Content) -> some View {
         content.allowsHitTesting(!dragState.isActive)
-    }
-}
-
-/// Project/group row drag chrome: dims the source row of an in-flight
-/// project drag, and paints the muted "files into this group" fill while the
-/// detached session drag hovers this row as an accepted drop target (same
-/// hover fill the row itself uses — no accent ring, see the old inline
-/// comment: accent read as "new item", not filing).
-struct SidebarProjectRowDragEffects: ViewModifier {
-    @ObservedObject var dragState: SidebarDragState
-    let nodeID: String
-
-    func body(content: Content) -> some View {
-        let isDropTarget = dragState.sessionDropTargetProjectID == nodeID
-        let isLifted = dragState.liftedProjectRowID == nodeID
-        content
-            // Match Session dragging: the detached card owns the visible
-            // header, while its original row becomes a true empty slot.
-            // Expanded descendants stay mounted so this remains the cheap,
-            // stable project path that avoids rebuilding large subtrees on
-            // every pointer move.
-            .opacity(isLifted ? 0 : 1)
-            .background(
-                RoundedRectangle(cornerRadius: 9, style: .continuous)
-                    .fill(isDropTarget ? Theme.hoverRow : .clear)
-            )
-            .animation(
-                SidebarMotion.reduceMotion || !isLifted
-                    ? nil
-                    : SidebarSessionDragController.slotAnimation,
-                value: isLifted
-            )
-            .animation(.easeInOut(duration: 0.12), value: isDropTarget)
-    }
-}
-
-/// Top-level project insertion feedback without a tree reorder. Only this
-/// small leaf observes the drag state; adding one header-sized padding slot
-/// shifts layout cheaply while the Store's project tree remains untouched.
-struct SidebarProjectBlockDragEffects: ViewModifier {
-    @ObservedObject var dragState: SidebarDragState
-    let nodeID: String
-
-    static let insertionGap: CGFloat = 30
-
-    func body(content: Content) -> some View {
-        let insertion = dragState.projectInsertion
-        let gapAbove = insertion?.projectID == nodeID && insertion?.below == false
-        let gapBelow = insertion?.projectID == nodeID && insertion?.below == true
-        content
-            .padding(.top, gapAbove ? Self.insertionGap : 0)
-            .padding(.bottom, gapBelow ? Self.insertionGap : 0)
-            .animation(
-                SidebarMotion.reduceMotion
-                    ? nil
-                    : SidebarSessionDragController.slotAnimation,
-                value: gapAbove
-            )
-            .animation(
-                SidebarMotion.reduceMotion
-                    ? nil
-                    : SidebarSessionDragController.slotAnimation,
-                value: gapBelow
-            )
     }
 }
 
@@ -3246,125 +3199,6 @@ extension SidebarDragState {
             draggedIndex: sessionReorderDraggedIndex,
             targetIndex: target
         )) * sessionReorderShiftDistance
-    }
-}
-
-struct SidebarSessionRowDragEffects: ViewModifier {
-    @ObservedObject var dragState: SidebarDragState
-    let sessionID: String
-    /// The row's owning group — insertion bars match on (project, anchor).
-    let projectID: String
-    /// False for an inline folder HEADER: its whole cluster shifts as one
-    /// unit via `SidebarFolderClusterDragEffects` instead, so the header
-    /// must not also move on its own.
-    var shiftsWithReorder = true
-
-    /// Height of the slot that opens for a cross-group positional insert —
-    /// a row-sized gap, so the drop target reads as "the card lands here".
-    static let insertionGap: CGFloat = 26
-
-    func body(content: Content) -> some View {
-        let isLifted = dragState.liftedSessionRowID == sessionID
-        // Card outside the sidebar: the empty origin slot closes entirely
-        // (the row "left the list"); it reopens when the card comes back.
-        let isCollapsed = isLifted && dragState.liftedSlotCollapsed
-        let gapAbove = matchesInsertion(below: false)
-        let gapBelow = matchesInsertion(below: true)
-        let shift = shiftsWithReorder
-            ? dragState.reorderShift(for: sessionID, inProject: projectID)
-            : 0
-        // The lifted row renders as pure empty space at its ORIGINAL layout
-        // slot; the same-section reorder gap is a pure `offset` — rows
-        // between the origin slot and the hovered target ride one slot
-        // toward the origin, opening the gap at the target without any
-        // layout or tree work (see `sessionReorderTargetIndex`). Cross-group
-        // inserts open a row-sized layout gap against the anchor instead.
-        // The registered drag frame wraps this modifier, so row frames stay
-        // static through the whole drag — hit-testing is against geometry
-        // that never moves under the cursor.
-        content
-            .opacity(isLifted ? 0 : 1)
-            .frame(height: isCollapsed ? 0 : nil)
-            .clipped()
-            .offset(y: shift)
-            // Refused-drop "no" shake (pinned Sessions/groups). The beat only
-            // ever grows, and only for this row, so the effect rests at
-            // identity for everyone else.
-            .modifier(SidebarDeniedShakeEffect(
-                progress: CGFloat(dragState.deniedShakeBeats[sessionID] ?? 0)
-            ))
-            .padding(.top, gapAbove ? Self.insertionGap : 0)
-            .padding(.bottom, gapBelow ? Self.insertionGap : 0)
-            // While the drag is active the shift springs (rows part and
-            // close live); the drop's final clear happens in the same
-            // transaction that ends the drag, so the new value resolves a
-            // nil animation — the transform hands off to the identical real
-            // layout with no double motion.
-            .animation(
-                SidebarMotion.reduceMotion || dragState.sessionDrag == nil
-                    ? nil
-                    : SidebarSessionDragController.slotAnimation,
-                value: shift
-            )
-            .animation(
-                SidebarMotion.reduceMotion
-                    ? nil
-                    : SidebarSessionDragController.slotAnimation,
-                value: isCollapsed
-            )
-            // Hide animates (the row dissolves under the lifting card);
-            // reveal is INSTANT — it fires in the same beat the landed card
-            // window closes, and the card content is sitting exactly over
-            // the slot, so an animated fade-in here reads as the dropped
-            // row blinking out and back.
-            .animation(
-                SidebarMotion.reduceMotion || !isLifted
-                    ? nil
-                    : SidebarSessionDragController.slotAnimation,
-                value: isLifted
-            )
-            .animation(
-                SidebarMotion.reduceMotion
-                    ? nil
-                    : SidebarSessionDragController.slotAnimation,
-                value: gapAbove
-            )
-            .animation(
-                SidebarMotion.reduceMotion
-                    ? nil
-                    : SidebarSessionDragController.slotAnimation,
-                value: gapBelow
-            )
-    }
-
-    private func matchesInsertion(below: Bool) -> Bool {
-        guard let insertion = dragState.sessionInsertion else { return false }
-        return insertion.projectID == projectID
-            && insertion.anchorID == sessionID
-            && insertion.below == below
-    }
-}
-
-/// Whole-cluster transform shift for an inline folder: the header, its
-/// expanded contents, and the group wash ride the same-section gap as ONE
-/// unit (an in-between folder shifts by the same one-slot stride as any
-/// row). Offsetting just the header row tore it out of its cluster —
-/// empty space opened inside and below the group.
-struct SidebarFolderClusterDragEffects: ViewModifier {
-    @ObservedObject var dragState: SidebarDragState
-    let folderID: String
-    let parentID: String
-
-    func body(content: Content) -> some View {
-        let shift = dragState.reorderShift(for: folderID, inProject: parentID)
-        content
-            .offset(y: shift)
-            .animation(
-                SidebarMotion.reduceMotion || dragState.sessionDrag == nil
-                    ? nil
-                    : SidebarSessionDragController.slotAnimation,
-                value: shift
-            )
     }
 }
 

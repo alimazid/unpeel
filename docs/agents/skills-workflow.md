@@ -103,6 +103,12 @@ any fix.
     the CLI, `unpeel serve` or anything they share with the clients, and the
     client suites after you touch `clients/`. A change to `docs/` still runs
     `scripts/check-links.sh`.
+  - After you touch the sidebar's PROJECTS list, also run
+    `scripts/verify-sidebar-interaction.sh --app clients/native/dist/Unpeel.app`
+    on a dev build, then again with the long-list options in its header. It
+    clicks and drags with the real pointer on a throwaway home, because xctest
+    can't reach those paths. It needs an unlocked screen and pauses on any
+    input from the user.
 
   Every run uses a private `UNPEEL_HOME`. A unit-test binary that resolves
   the home sets its own before `main` unless the caller already did

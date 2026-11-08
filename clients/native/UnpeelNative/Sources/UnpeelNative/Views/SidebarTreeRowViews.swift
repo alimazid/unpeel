@@ -1,7 +1,9 @@
+// Fork-only file (ADR 0009, #41): PROJECTS as one flat list of rows.
+
 import SwiftUI
 
-/// The group/worktree wash, shared by the live tree's cluster background and
-/// the flat list's per-row slices so the two can never disagree on its look.
+/// The group/worktree wash, shared by both carousel pages' per-row slices so
+/// the two can never disagree on its look.
 enum SidebarGroupWash {
     static let cornerRadius: CGFloat = 10
     /// Child-group layout is already inset by its parent list. The wash
@@ -15,36 +17,70 @@ enum SidebarGroupWash {
     }
 }
 
+/// The two washes a group draws as per-row slices: its hover/selection
+/// wash, and the "files into this group" wash while an accepted Session
+/// drag hovers it (#45): a 9 pt radius, no trailing overhang, the full
+/// hover fill.
+struct SidebarWashStyle {
+    let cornerRadius: CGFloat
+    let trailingOverhang: CGFloat
+    let litFill: Color
+    let animation: Animation
+
+    static let group = SidebarWashStyle(
+        cornerRadius: SidebarGroupWash.cornerRadius,
+        trailingOverhang: SidebarGroupWash.trailingOverhang,
+        litFill: SidebarGroupWash.fill(isHighlighted: true),
+        animation: SidebarGroupWash.animation
+    )
+    static let dropTarget = SidebarWashStyle(
+        cornerRadius: 9,
+        trailingOverhang: 0,
+        litFill: Theme.hoverRow,
+        animation: .easeInOut(duration: 0.12)
+    )
+
+    func fill(isHighlighted: Bool) -> Color {
+        isHighlighted ? litFill : .clear
+    }
+}
+
 /// One row's slice of a group wash. A slice that does not round an edge
 /// draws its rounded rectangle past that edge and clips it at the row, so
 /// stacked slices read as one continuous rounded shape with the exact
-/// corners of a whole-cluster wash (`GroupClusterBackground`).
+/// corners of a whole-cluster wash.
 struct SidebarGroupWashSliceView: View {
     let slice: SidebarWashSlice
     let isHighlighted: Bool
-
-    /// Far enough past a straight edge that the clipped-off corner is fully
-    /// outside the row, and the rectangle is tall enough for its corners to
-    /// keep their full continuous curve.
-    private static let straightEdgeOverhang = SidebarGroupWash.cornerRadius * 2
+    var style: SidebarWashStyle = .group
 
     var body: some View {
-        RoundedRectangle(cornerRadius: SidebarGroupWash.cornerRadius, style: .continuous)
-            .fill(SidebarGroupWash.fill(isHighlighted: isHighlighted))
-            .padding(.top, slice.roundsTop ? 0 : -Self.straightEdgeOverhang)
-            .padding(.bottom, slice.roundsBottom ? 0 : -Self.straightEdgeOverhang)
-            .padding(.trailing, -SidebarGroupWash.trailingOverhang)
-            .clipShape(RowClip())
-            .animation(SidebarGroupWash.animation, value: isHighlighted)
+        // Far enough past a straight edge that the clipped-off corner is
+        // fully outside the row, and the rectangle is tall enough for its
+        // corners to keep their full continuous curve.
+        let straightEdgeOverhang = style.cornerRadius * 2
+        RoundedRectangle(cornerRadius: style.cornerRadius, style: .continuous)
+            .fill(style.fill(isHighlighted: isHighlighted))
+            .padding(.top, slice.roundsTop ? 0 : -straightEdgeOverhang)
+            .padding(.bottom, slice.roundsBottom ? 0 : -straightEdgeOverhang)
+            .padding(.trailing, -style.trailingOverhang)
+            .clipShape(RowClip(trailingOverhang: style.trailingOverhang))
+            .animation(style.animation, value: isHighlighted)
+            // A clip limits what's drawn, not what's hit: the overhang would
+            // sit over the row above and swallow its clicks. A later row in
+            // the stack is on top, so a group's first row covered its header.
+            .allowsHitTesting(false)
     }
 
     /// The row's own frame, widened by the wash's trailing overhang.
     private struct RowClip: Shape {
+        let trailingOverhang: CGFloat
+
         func path(in rect: CGRect) -> Path {
             Path(CGRect(
                 x: rect.minX,
                 y: rect.minY,
-                width: rect.width + SidebarGroupWash.trailingOverhang,
+                width: rect.width + trailingOverhang,
                 height: rect.height
             ))
         }
@@ -53,7 +89,7 @@ struct SidebarGroupWashSliceView: View {
 
 extension View {
     /// Draws a row's group wash slices behind it, the outermost group
-    /// furthest back, the way nested cluster backgrounds stack.
+    /// furthest back, so nested groups' washes stack.
     func sidebarGroupWash(
         _ slices: [SidebarWashSlice],
         isHighlighted: @escaping (String) -> Bool
