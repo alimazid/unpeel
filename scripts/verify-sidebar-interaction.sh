@@ -5,8 +5,13 @@
 # accessibility tree and the Host's session list.
 #
 #   scripts/verify-sidebar-interaction.sh --app clients/native/dist/Unpeel.app \
-#       [--clicks 30] [--drags 20] [--only toggle-project,toggle,group-reorder,group-drop,out-and-back,folder-reorder,project-reorder] \
+#       [--clicks 30] [--drags 20] [--only toggle-project,toggle,group-reorder,list-reorder,group-drop,out-and-back,folder-reorder,project-reorder] \
 #       [--report FILE] [--quiet SECONDS] [--app-log FILE] [--dump DIR]
+#
+# The default tree fits the window. To drive a list that scrolls, use a longer
+# one in a shorter window, and name its scenarios (they don't run by default):
+#
+#   --big-rows 30 --window-height 760 --only scrolled-list-reorder,scrolled-group-drop,long-list-drop,scrolled-back-reorder
 #
 # It moves the real pointer, so it needs an unlocked screen and a quiet
 # machine: it starts after 20 s without input, and any input it did not make
@@ -18,7 +23,7 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-APP="" CLICKS=30 DRAGS=20 ONLY="" REPORT="" QUIET=20 APP_LOG="" DUMP=""
+APP="" CLICKS=30 DRAGS=20 ONLY="" REPORT="" QUIET=20 APP_LOG="" DUMP="" BIG_ROWS=12 WINDOW_HEIGHT=1280
 while [ $# -gt 0 ]; do
   case "$1" in
     --app) APP="$2"; shift 2 ;;
@@ -29,6 +34,8 @@ while [ $# -gt 0 ]; do
     --quiet) QUIET="$2"; shift 2 ;;
     --app-log) APP_LOG="$2"; shift 2 ;;
     --dump) DUMP="$2"; shift 2 ;;
+    --big-rows) BIG_ROWS="$2"; shift 2 ;;
+    --window-height) WINDOW_HEIGHT="$2"; shift 2 ;;
     *) echo "unknown argument: $1" >&2; exit 2 ;;
   esac
 done
@@ -156,7 +163,7 @@ new_session() { # <project> <dir name>; the row label is the abbreviated cwd.
   ucli new --project "$1" --cwd "$H/w/Big/$2" >/dev/null
 }
 BIG="$(project_id Big)"
-for n in 01 02 03 04 05 06 07 08 09 10 11 12; do new_session "$BIG" "big-$n"; done
+for n in $(seq -w 1 "$BIG_ROWS"); do new_session "$BIG" "$(printf 'big-%02d' "$((10#$n))")"; done
 for n in 1 2 3; do new_session g-alpha "alpha-$n"; new_session g-beta "beta-$n"; done
 new_session g-inner inner-2
 sleep 1.1 # Newest first: inner-1 is the top row, and the selection.
@@ -205,11 +212,11 @@ APP_PID=$!
 sleep 1
 [ "$(ps -o comm= -p "$APP_PID")" = "$MACOS/UnpeelNative" ] || { echo "the app did not start" >&2; exit 1; }
 for _ in $(seq 1 40); do
-  rows="$("$TOOLS/driver" prepare --pid "$APP_PID" 2>/dev/null || true)"
-  case "$rows" in *small-1*) break ;; esac
+  rows="$("$TOOLS/driver" prepare --pid "$APP_PID" --window-height "$WINDOW_HEIGHT" 2>/dev/null || true)"
+  case "$rows" in *big-*) break ;; esac
   sleep 0.5
 done
-case "$rows" in *small-1*) ;; *) echo "the rows never appeared: $rows" >&2; exit 1 ;; esac
+case "$rows" in *big-*) ;; *) echo "the rows never appeared: $rows" >&2; exit 1 ;; esac
 
 "$TOOLS/driver" run --pid "$APP_PID" --ls "$H/ls.sh" --order-file "$HOME_A/session-order.json" --clicks "$CLICKS" --drags "$DRAGS" --quiet "$QUIET" \
   ${ONLY:+--only "$ONLY"} ${REPORT:+--report "$REPORT"}

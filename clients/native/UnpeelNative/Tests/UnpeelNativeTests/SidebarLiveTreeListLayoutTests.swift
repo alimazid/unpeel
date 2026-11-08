@@ -39,7 +39,62 @@ final class SidebarLiveTreeListLayoutTests: XCTestCase {
         XCTAssertEqual(store.sidebarTreeRows.count, rows.count, "the round trip restores every row")
     }
 
+    /// A lazy row that scrolls away drops out of the drag registry, and it must
+    /// come back with the row. Its frame in the list is unchanged, so geometry
+    /// alone never reports it again: the row would look fine and refuse every
+    /// press and drop until something moved it.
+    func testARowScrolledAwayAndBackIsADragTargetAgain() throws {
+        let store = UnpeelStore.sidebarFixture(
+            snapshot: Self.largeTree,
+            expandedProjectIDs: ["big", "group", "nested", "wt", "second", "topGroup", "empty"]
+        )
+        let controller = SidebarSessionDragController()
+        let dragState = SidebarDragState()
+        let list = ScrollView {
+            SidebarLiveTreeList(store: store, dragState: dragState)
+                .padding(.horizontal, 8)
+                .coordinateSpace(name: SidebarSessionDragController.contentSpace)
+        }
+        .environment(\.sidebarSessionDragController, controller)
+        let window = NSWindow(
+            contentRect: NSRect(x: -4000, y: -4000, width: 260, height: 600),
+            styleMask: [.borderless],
+            backing: .buffered,
+            defer: false
+        )
+        let host = NSHostingView(rootView: list.frame(width: 260, height: 600))
+        window.contentView = host
+        window.orderBack(nil)
+        defer { window.orderOut(nil) }
+        flush(host)
+        let scrollView = try XCTUnwrap(Self.firstScrollView(in: host))
+
+        let header = "group"
+        let registered = try XCTUnwrap(controller.registeredRowFrame(id: header), "mounted at the top")
+
+        scrollView.contentView.scroll(to: NSPoint(x: 0, y: 3000))
+        scrollView.reflectScrolledClipView(scrollView.contentView)
+        flush(host)
+        flush(host)
+        XCTAssertNil(controller.registeredRowFrame(id: header), "the lazy list unmounted it")
+
+        scrollView.contentView.scroll(to: .zero)
+        scrollView.reflectScrolledClipView(scrollView.contentView)
+        flush(host)
+        flush(host)
+        let frame = try XCTUnwrap(controller.registeredRowFrame(id: header), "back on screen, back in the registry")
+        XCTAssertEqual(frame.minY, registered.minY, accuracy: 1)
+    }
+
     // MARK: Helpers
+
+    private static func firstScrollView(in view: NSView) -> NSScrollView? {
+        if let scrollView = view as? NSScrollView { return scrollView }
+        for child in view.subviews {
+            if let found = firstScrollView(in: child) { return found }
+        }
+        return nil
+    }
 
     private func render(_ store: UnpeelStore) -> NSHostingView<some View> {
         let list = ScrollView {

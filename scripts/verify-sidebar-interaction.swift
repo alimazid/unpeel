@@ -210,7 +210,9 @@ enum DragResult {
 /// Rows part around a drag, so a target moves under it. `aim`, when given, is
 /// asked for the target's current spot after the path, and the pointer follows,
 /// the way a person aims at what they see.
-func drag(from: CGPoint, path: [CGPoint], holdMs: Int = 200, aim: (() -> CGPoint?)? = nil) -> DragResult {
+func drag(
+    from: CGPoint, path: [CGPoint], holdMs: Int = 200, aim: (() -> CGPoint?)? = nil, aimWait: Double = 0
+) -> DragResult {
     let windowsBefore = appWindowNumbers()
     post(.mouseMoved, from)
     Thread.sleep(forTimeInterval: 0.12)
@@ -235,10 +237,20 @@ func drag(from: CGPoint, path: [CGPoint], holdMs: Int = 200, aim: (() -> CGPoint
         lifted = lifted || !appWindowNumbers().subtracting(windowsBefore).isEmpty
     }
     if let aim {
-        for _ in 0 ..< 3 {
+        // Hold where the path ended until the target comes into view.
+        let waitEnd = Date().addingTimeInterval(aimWait)
+        while aim() == nil, Date() < waitEnd, !userInterfered() {
+            post(.leftMouseDragged, current)
+            Thread.sleep(forTimeInterval: 0.05)
+        }
+        // Follow it until it stops moving: rows part, and auto-scroll may run on.
+        var settled = 0
+        for _ in 0 ..< 16 where settled < 2 {
             Thread.sleep(forTimeInterval: 0.25)
-            guard let target = aim(), userInterfered() == false else { break }
-            let steps = max(1, Int(hypot(target.x - current.x, target.y - current.y) / 5))
+            guard let target = aim(), !userInterfered() else { break }
+            let distance = hypot(target.x - current.x, target.y - current.y)
+            settled = distance < 2 ? settled + 1 : 0
+            let steps = max(1, Int(distance / 5))
             let start = current
             for step in 1 ... steps {
                 let t = CGFloat(step) / CGFloat(steps)
@@ -343,12 +355,25 @@ func hostOrder(of projectID: String) -> [String] {
     return (orders[projectID] ?? []).compactMap { labels[$0] }
 }
 
-/// SwiftUI refreshes its accessibility tree lazily: a just-landed row can stay
-/// missing from it until a view nearby changes. Hovering another row makes one.
+/// Moves the pointer off the rows. A hovered row's title leaves the
+/// accessibility tree's flat text, so the row under the pointer reads as missing.
 func nudge() {
-    guard let big = readRows().first(where: { $0.label == "Big" }) else { return }
-    post(.mouseMoved, CGPoint(x: big.frame.midX + 60, y: big.frame.midY))
+    guard let window = mainWindow().flatMap({ frame(of: $0) }) else { return }
+    post(.mouseMoved, CGPoint(x: window.minX + 700, y: window.midY))
     Thread.sleep(forTimeInterval: 0.15)
+}
+
+/// Blocks until the rows' positions have held still for a moment: a wheel
+/// scroll keeps moving after its last event.
+func waitForStillRows() {
+    var last = readRows().map(\.frame.minY)
+    var still = 0
+    for _ in 0 ..< 60 where still < 4 {
+        Thread.sleep(forTimeInterval: 0.1)
+        let now = readRows().map(\.frame.minY)
+        still = now == last ? still + 1 : 0
+        last = now
+    }
 }
 
 // MARK: - Scenarios
@@ -408,6 +433,7 @@ func runDrag(
     describe: String,
     holdMs: Int = 200,
     aim: (() -> CGPoint?)? = nil,
+    aimWait: Double = 0,
     expected: @escaping () -> Bool,
     actual: () -> String
 ) {
@@ -416,7 +442,7 @@ func runDrag(
             scenario.fail("drag \(attempt): the app's window is not on top")
             return
         }
-        switch drag(from: from, path: path, holdMs: holdMs, aim: aim) {
+        switch drag(from: from, path: path, holdMs: holdMs, aim: aim, aimWait: aimWait) {
         case .interrupted:
             pauses += 1
             log("  drag \(attempt) interrupted by the user: retrying after quiet")
@@ -474,6 +500,218 @@ func runGroupReorder(count: Int) {
             expected: { hostOrder(of: "g-beta") == expected && rowsOfBeta() == expected },
             actual: { "the Host has \(summary(hostOrder(of: "g-beta"))); on screen \(layout(readRows()))" }
         )
+    }
+}
+
+/// Reorder in a project's own list, past no folder: one Session moves down two
+/// rows, then back up. The Host's order and the rows on screen both show it.
+func runListReorder(count: Int) {
+    let scenario = Scenario("list-reorder")
+    scenarios.append(scenario)
+    let session = "~/w/Big/big-05"
+    let home = hostProjects()[session] ?? ""
+    log("reorder \(summary([session])) in Big's own list x\(count)")
+    func rowsOfBig() -> [String] { labels(readRows()).filter { $0.hasPrefix("~/w/Big/big-") } }
+    for attempt in 1 ... count {
+        let rows = readRows()
+        let order = rowsOfBig()
+        guard let from = order.firstIndex(of: session),
+              let source = rows.first(where: { $0.label == session }) else {
+            scenario.fail("drag \(attempt): \(summary([session])) is not on screen: \(layout(rows))")
+            nudge()
+            Thread.sleep(forTimeInterval: 1)
+            continue
+        }
+        let to = attempt % 2 == 1 ? from + 2 : from - 2
+        guard order.indices.contains(to),
+              let anchor = rows.first(where: { $0.label == order[to] }) else {
+            scenario.fail("drag \(attempt): no row two away from \(summary([session]))")
+            continue
+        }
+        var expected = order
+        expected.remove(at: from)
+        expected.insert(session, at: to)
+        runDrag(
+            scenario, attempt: attempt, from: press(source.frame),
+            path: [CGPoint(x: source.frame.minX + 6, y: anchor.frame.midY)],
+            describe: "\(summary([session])) to \(summary([order[to]]))'s place",
+            expected: {
+                hostOrder(of: home).filter { $0.hasPrefix("~/w/Big/big-") } == expected && rowsOfBig() == expected
+            },
+            actual: { "the Host has \(summary(hostOrder(of: home))); on screen \(layout(readRows()))" }
+        )
+    }
+}
+
+/// Wheel-scrolls the list to one end, with the pointer over it.
+func scroll(by pixels: Int32) {
+    guard let area = mainWindow().flatMap({ firstScrollArea(in: $0) }).flatMap({ frame(of: $0) }) else { return }
+    post(.mouseMoved, CGPoint(x: area.midX, y: area.midY))
+    Thread.sleep(forTimeInterval: 0.1)
+    for _ in 0 ..< 12 {
+        CGEvent(
+            scrollWheelEvent2Source: nil, units: .pixel, wheelCount: 1, wheel1: pixels, wheel2: 0, wheel3: 0
+        )?.post(tap: .cghidEventTap)
+        Thread.sleep(forTimeInterval: 0.04)
+    }
+    nudge()
+    waitForStillRows()
+}
+
+func scrollToBottom() { scroll(by: -300) }
+func scrollToTop() { scroll(by: 300) }
+
+/// The same reorder as `runListReorder`, in a list scrolled to its end: the
+/// rows at the top are unmounted by then.
+func runScrolledListReorder(count: Int) {
+    let scenario = Scenario("scrolled-list-reorder")
+    scenarios.append(scenario)
+    let session = "~/w/Big/big-05"
+    let home = hostProjects()[session] ?? ""
+    log("reorder \(summary([session])) in a scrolled list x\(count)")
+    func rowsOfBig() -> [String] { labels(readRows()).filter { $0.hasPrefix("~/w/Big/big-") } }
+    for attempt in 1 ... count {
+        scrollToBottom()
+        let rows = readRows()
+        let order = rowsOfBig()
+        guard let from = order.firstIndex(of: session),
+              let source = rows.first(where: { $0.label == session }) else {
+            scenario.fail("drag \(attempt): \(summary([session])) is not on screen: \(layout(rows))")
+            continue
+        }
+        let to = attempt % 2 == 1 ? from + 2 : from - 2
+        guard order.indices.contains(to),
+              let anchor = rows.first(where: { $0.label == order[to] }) else {
+            scenario.fail("drag \(attempt): no row two away from \(summary([session]))")
+            continue
+        }
+        var expected = order
+        expected.remove(at: from)
+        expected.insert(session, at: to)
+        // The whole list, since the visible rows are only part of what's ordered.
+        let before = hostOrder(of: home).filter { $0.hasPrefix("~/w/Big/big-") }
+        runDrag(
+            scenario, attempt: attempt, from: press(source.frame),
+            path: [CGPoint(x: source.frame.minX + 6, y: anchor.frame.midY)],
+            describe: "\(summary([session])) to \(summary([order[to]]))'s place",
+            expected: {
+                let host = hostOrder(of: home).filter { $0.hasPrefix("~/w/Big/big-") }
+                guard let index = host.firstIndex(of: session) else { return false }
+                return before.firstIndex(of: session).map { abs($0 - index) == 2 } ?? (host != before)
+            },
+            actual: { "the Host has \(summary(hostOrder(of: home))); on screen \(layout(readRows()))" }
+        )
+    }
+}
+
+/// A row that scrolled away and back still lifts and reorders. A row missing
+/// from the drag registry looks fine and ignores the press.
+func runScrolledBackReorder(count: Int) {
+    let scenario = Scenario("scrolled-back-reorder")
+    scenarios.append(scenario)
+    let session = "~/w/Big/big-28"
+    let home = hostProjects()[session] ?? ""
+    log("reorder \(summary([session])) after scrolling away and back x\(count)")
+    func rowsOfBig() -> [String] { labels(readRows()).filter { $0.hasPrefix("~/w/Big/big-") } }
+    for attempt in 1 ... count {
+        scrollToBottom()
+        scrollToTop()
+        let rows = readRows()
+        let order = rowsOfBig()
+        guard let from = order.firstIndex(of: session),
+              let source = rows.first(where: { $0.label == session }) else {
+            scenario.fail("drag \(attempt): \(summary([session])) is not on screen: \(layout(rows))")
+            continue
+        }
+        let to = attempt % 2 == 1 ? from + 2 : from - 2
+        guard order.indices.contains(to),
+              let anchor = rows.first(where: { $0.label == order[to] }) else {
+            scenario.fail("drag \(attempt): no row two away from \(summary([session]))")
+            continue
+        }
+        let before = hostOrder(of: home).filter { $0.hasPrefix("~/w/Big/big-") }
+        runDrag(
+            scenario, attempt: attempt, from: press(source.frame),
+            path: [CGPoint(x: source.frame.minX + 6, y: anchor.frame.midY)],
+            describe: "\(summary([session])) to \(summary([order[to]]))'s place",
+            expected: {
+                let host = hostOrder(of: home).filter { $0.hasPrefix("~/w/Big/big-") }
+                guard let index = host.firstIndex(of: session) else { return false }
+                return before.firstIndex(of: session).map { abs($0 - index) == 2 } ?? (host != before)
+            },
+            actual: { "the Host has \(summary(hostOrder(of: home)))" }
+        )
+    }
+}
+
+/// Filing a Session from a list that overflows the window, with both rows on
+/// screen and no auto-scroll: the rows below the fold are unmounted.
+func runLongListDrop(count: Int) {
+    let scenario = Scenario("long-list-drop")
+    scenarios.append(scenario)
+    let session = "~/w/Big/big-28"
+    let home = hostProjects()[session] ?? ""
+    log("file \(summary([session])) into Beta in a long list x\(count)")
+    for attempt in 1 ... count {
+        nudge()
+        let rows = readRows()
+        let goal = hostProjects()[session] == home ? ("Beta", "g-beta") : ("Big", home)
+        guard let source = rows.first(where: { $0.label == session }),
+              let header = rows.first(where: { $0.label == goal.0 }) else {
+            scenario.fail("drag \(attempt): the rows are not on screen: \(layout(rows))")
+            continue
+        }
+        runDrag(
+            scenario, attempt: attempt, from: press(source.frame), path: [press(header.frame)],
+            describe: "\(summary([session])) onto \(goal.0)", holdMs: 350,
+            aim: { readRows().first(where: { $0.label == goal.0 }).map { press($0.frame) } },
+            expected: { hostProjects()[session] == goal.1 },
+            actual: { "the Host has it in \(hostProjects()[session] ?? "nothing"); \(layout(readRows()))" }
+        )
+    }
+}
+
+/// Filing a Session whose group is off screen: the drag holds at the list's top
+/// edge until auto-scroll brings the group in, then drops on it.
+func runScrolledGroupDrop(count: Int) {
+    let scenario = Scenario("scrolled-group-drop")
+    scenarios.append(scenario)
+    let session = "~/w/Big/big-05"
+    let home = hostProjects()[session] ?? ""
+    log("file \(summary([session])) into off-screen Beta x\(count)")
+    for attempt in 1 ... count {
+        scrollToBottom()
+        var rows = readRows()
+        if !labels(rows).contains(session) {
+            // A drop that landed elsewhere left it nearer the top.
+            scrollToTop()
+            rows = readRows()
+        }
+        guard let source = rows.first(where: { $0.label == session }),
+              let area = mainWindow().flatMap({ firstScrollArea(in: $0) }).flatMap({ frame(of: $0) }) else {
+            scenario.fail("drag \(attempt): \(summary([session])) is not on screen: \(layout(rows))")
+            continue
+        }
+        let edge = CGPoint(x: source.frame.minX + 6, y: area.minY + 6)
+        runDrag(
+            scenario, attempt: attempt, from: press(source.frame), path: [edge],
+            describe: "\(summary([session])) onto Beta past the edge", holdMs: 350,
+            aim: { readRows().first(where: { $0.label == "Beta" }).map { press($0.frame) } },
+            aimWait: 12,
+            expected: { hostProjects()[session] == "g-beta" },
+            actual: { "the Host has it in \(hostProjects()[session] ?? "nothing"); \(layout(readRows()))" }
+        )
+        // Back home for the next round: both are near the top now.
+        let now = readRows()
+        if hostProjects()[session] == "g-beta",
+           let filed = now.first(where: { $0.label == session }),
+           let big = now.first(where: { $0.label == "Big" }) {
+            _ = ready(for: press(filed.frame))
+            _ = drag(from: press(filed.frame), path: [press(big.frame)], holdMs: 350,
+                     aim: { readRows().first(where: { $0.label == "Big" }).map { press($0.frame) } })
+            _ = waitUntil(seconds: 3) { hostProjects()[session] == home }
+        }
+        Thread.sleep(forTimeInterval: 0.4)
     }
 }
 
@@ -591,7 +829,7 @@ if command == "prepare" {
         exit(1)
     }
     var origin = CGPoint(x: 60, y: 60)
-    var size = CGSize(width: 1100, height: 1280)
+    var size = CGSize(width: 1100, height: option("--window-height").flatMap(Double.init) ?? 1280)
     AXUIElementSetAttributeValue(window, kAXPositionAttribute as CFString, AXValueCreate(.cgPoint, &origin)!)
     AXUIElementSetAttributeValue(window, kAXSizeAttribute as CFString, AXValueCreate(.cgSize, &size)!)
     print(summary(labels(readRows())))
@@ -631,6 +869,11 @@ if wanted("toggle") {
     }
 }
 if wanted("group-reorder") { runGroupReorder(count: dragCount) }
+if only?.contains("scrolled-list-reorder") == true { runScrolledListReorder(count: dragCount) }
+if only?.contains("scrolled-group-drop") == true { runScrolledGroupDrop(count: dragCount) }
+if only?.contains("long-list-drop") == true { runLongListDrop(count: dragCount) }
+if only?.contains("scrolled-back-reorder") == true { runScrolledBackReorder(count: dragCount) }
+if wanted("list-reorder") { runListReorder(count: dragCount) }
 if wanted("group-drop") { runGroupDrop(count: dragCount) }
 if wanted("out-and-back") { runDragOutAndBack(count: dragCount) }
 func setExpanded(_ group: String, children: [String], _ expanded: Bool) {
@@ -642,9 +885,9 @@ func setExpanded(_ group: String, children: [String], _ expanded: Bool) {
 }
 
 if wanted("folder-reorder") {
-    // A folder lifts and shows its gap, but a Host-served list persists only
-    // its Sessions' order (`commitSessionReorder`), so the drop snaps back, on
-    // every build since the Host took the verb. Collapsed and expanded alike.
+    // A folder lifts and shows its gap, but a Host-served list commits only its
+    // Sessions' order (`commitSessionReorder`), so the drop snaps back, collapsed
+    // or expanded. This asserts today's behaviour; a fix for it flips this check.
     runFolderStaysPut("folder-expanded", count: dragCount)
     setExpanded("Alpha", children: alphaChildren, false)
     setExpanded("Beta", children: betaChildren, false)

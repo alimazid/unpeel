@@ -378,6 +378,11 @@ final class SidebarSessionDragController: ObservableObject {
         )
     }
 
+    /// Fork-only (#45): a mounted row's registered frame, in content space.
+    func registeredRowFrame(id: String) -> CGRect? {
+        rows[id]?.frame
+    }
+
     /// Scoped to the registering reporter: a moved row's OLD view tears down
     /// after the new one registered the same id, and must not delete it.
     func removeRowFrame(id: String, token: UUID) {
@@ -3031,6 +3036,14 @@ struct SidebarSessionDragFrameReporter: ViewModifier {
     let isDraggable: Bool
     /// Per-view-instance registration identity — see removeRowFrame.
     @State private var token = UUID()
+    /// Fork-only (#45): the last report, never observed. A lazy row that
+    /// scrolls away and back keeps this view and its frame, so
+    /// `onGeometryChange` has nothing new to publish; the appear re-registers.
+    @State private var lastReport = LastReport()
+
+    private final class LastReport {
+        var geometry: ReportedGeometry?
+    }
 
     /// `onGeometryChange` normally publishes only when the CGRect changes.
     /// A cross-group move can reparent a row into the exact same coordinates,
@@ -3054,16 +3067,24 @@ struct SidebarSessionDragFrameReporter: ViewModifier {
                     isDraggable: isDraggable
                 )
             } action: { reported in
-                controller?.setRowFrame(
-                    id: id,
-                    kind: reported.kind,
-                    frame: reported.frame,
-                    owners: reported.owners,
-                    isDraggable: reported.isDraggable,
-                    token: token
-                )
+                lastReport.geometry = reported
+                register(reported)
+            }
+            .onAppear {
+                if let geometry = lastReport.geometry { register(geometry) }
             }
             .onDisappear { controller?.removeRowFrame(id: id, token: token) }
+    }
+
+    private func register(_ reported: ReportedGeometry) {
+        controller?.setRowFrame(
+            id: id,
+            kind: reported.kind,
+            frame: reported.frame,
+            owners: reported.owners,
+            isDraggable: reported.isDraggable,
+            token: token
+        )
     }
 }
 
