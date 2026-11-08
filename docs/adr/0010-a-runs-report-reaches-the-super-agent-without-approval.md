@@ -26,8 +26,9 @@ to the replacement Session. The skip holds whether or not the task still
 exists, so a Run that removes its own task can still report.
 
 Everything else keeps the ordinary policy: a Run's `send_text` and
-`send_keys`, a Run's report to any other Session, and any other Session's
-report to the Router unless it is the Router's Worker. App-wide Deny still
+`send_keys`; a Run's report to any other Session; another Session's report
+to the Router, unless it is the Router's Worker; and a report from a Run
+Session that was made the Super Agent to itself. App-wide Deny still
 holds when the Inbox drains. Without a Host worker, `report` keeps
 upstream's paste through the gate. A Run is not a Worker: it gets no
 marker, no Worker card and no `handover` kind, and its report wakes the

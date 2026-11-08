@@ -1,8 +1,8 @@
 """Fork-only: a Scheduled Task's Run reports to the Super Agent unasked (#47).
 
-A task on an Agent Preset (a fake `claude` that reports idle over OSC 7501)
-is started with Run now; its Run Session stays live once the agent is
-ready. With the write policy at its default, Ask, and no Controller to
+The Super Agent creates a task on an Agent Preset (a fake `claude` that
+reports idle over OSC 7501) and starts it with `run_schedule`; its Run
+Session stays live once the agent is ready. With the write policy at its default, Ask, and no Controller to
 answer a prompt, the Run's `sessions report` to the Session marked Super
 Agent comes back queued at once and waits in the Super Agent's Inbox
 (ADR 0010). The same report from the user's own Session still waits on
@@ -78,18 +78,29 @@ def run_entry(home, task_id, run_id):
     return next((entry for entry in entries if entry.get("run_id") == run_id), {})
 
 
-def start_run(case, service, home):
-    """Run now on the agent task; the Run's live Session id."""
-    added = cli(home, "schedules", "add", "Watch", "--project", "p", "--preset", "agent",
-                "--once", tomorrow())
-    task_id = added.stdout.strip()
-    if not case.check("a task on the Agent Preset is added",
-                      added.returncode == 0 and task_id.startswith("sch_"), detail(added)):
+def as_json(result):
+    try:
+        return json.loads(result.stdout)
+    except ValueError:
+        return {}
+
+
+def start_run(case, service, home, router):
+    """The Super Agent's task on the Agent Preset, run now; the Run's live Session id."""
+    def workspace(*words):
+        return cli(home, "mcp", "workspace", *words, env={"UNPEEL_SESSION_ID": router})
+
+    trigger = json.dumps({"kind": "once", "at": tomorrow()})
+    created = workspace("create_schedule", "name=Watch", "project_id=p", "preset=agent",
+                        f"trigger={trigger}")
+    task_id = (as_json(created).get("schedule") or {}).get("id", "")
+    if not case.check("the Super Agent creates a task on the Agent Preset",
+                      created.returncode == 0 and task_id.startswith("sch_"), detail(created)):
         return ""
-    started = cli(home, "schedules", "run", task_id)
-    run_id = started.stdout.strip()
-    if not case.check("Run now starts a Run", started.returncode == 0 and run_id.startswith("run_"),
-                      detail(started)):
+    started = workspace("run_schedule", f"schedule_id={task_id}")
+    run_id = as_json(started).get("runID", "")
+    if not case.check("run_schedule starts a Run",
+                      started.returncode == 0 and run_id.startswith("run_"), detail(started)):
         return ""
     done = service.wait_for(lambda: run_entry(home, task_id, run_id).get("status") == "done"
                             and run_entry(home, task_id, run_id), timeout=45)
@@ -175,7 +186,7 @@ def body(case):
         case.check("the write policy is at its default, Ask",
                    home.state().get("mcp_nonchild_write_access") in (None, "ask"),
                    str(home.state().get("mcp_nonchild_write_access")))
-        run_session = start_run(case, service, home)
+        run_session = start_run(case, service, home, router)
         if not run_session:
             return
         check_run_report(case, home, router, run_session)

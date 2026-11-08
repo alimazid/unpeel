@@ -198,9 +198,11 @@ fn router_link(home: &Home, caller_id: &str, target_id: &str) -> Option<WorkerMa
 
 /// A Scheduled Task's Run Session reporting to the Router (ADR 0010):
 /// nobody is there to approve a Run, and each Run is a new Session, so an
-/// approved pair never carries over. Its task need not still exist.
+/// approved pair never carries over. Its task need not still exist. A Run
+/// made the Router itself still meets the gate's own-Session refusal.
 fn run_reports_to_router(home: &Home, caller: &Caller<'_>, target_id: &str) -> bool {
-    home.is_router(target_id)
+    caller.id != target_id
+        && home.is_router(target_id)
         && crate::schedules::run_sessions::schedule_id(caller.spawned_by).is_some()
 }
 
@@ -669,6 +671,7 @@ mod tests {
         assert_eq!(queued["queued"], true);
         assert_eq!(queued["delivery"], "when_idle");
         let pending = home.inbox.list(ROUTER).unwrap().pending;
+        assert_eq!(pending.len(), 1);
         assert_eq!(
             (pending[0].kind, pending[0].priority),
             (ItemKind::Report, Priority::Wake)
@@ -690,6 +693,11 @@ mod tests {
         // A Run writing to anyone but the Router.
         let run = stamped("s-1", "schedule:sch_1");
         let refused = report_as(&home, &run, "user-1", "done");
+        assert_eq!(refused.unwrap_err(), "asked the user");
+        // A Run Session made the Super Agent, reporting to itself: the
+        // gate's own-Session refusal still applies.
+        let itself = stamped(ROUTER, "schedule:sch_1");
+        let refused = report_as(&home, &itself, ROUTER, "done");
         assert_eq!(refused.unwrap_err(), "asked the user");
         assert!(home.inbox.list(ROUTER).unwrap().pending.is_empty());
         assert!(home.inbox.list("user-1").unwrap().pending.is_empty());
