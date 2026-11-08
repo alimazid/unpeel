@@ -115,6 +115,10 @@ cleanup() {
 trap cleanup EXIT INT TERM
 
 swiftc -O -o "$TOOLS/driver" "$ROOT/scripts/verify-sidebar-interaction.swift"
+if "$TOOLS/driver" locked; then
+  echo "the screen is locked: a locked screen has no windows to drive" >&2
+  exit 3
+fi
 
 # --- Fixture: projects and groups first, then the Host, then the Sessions, so
 # every Session lives in the Host's PTY core and a drop can commit.

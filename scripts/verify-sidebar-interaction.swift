@@ -20,6 +20,10 @@ func option(_ name: String) -> String? {
     guard let index = arguments.firstIndex(of: name), index + 1 < arguments.count else { return nil }
     return arguments[index + 1]
 }
+if command == "locked" {
+    let session = CGSessionCopyCurrentDictionary() as? [String: Any]
+    exit((session?["CGSSessionScreenIsLocked"] as? Bool) == true ? 0 : 1)
+}
 guard let pidValue = option("--pid").flatMap({ pid_t($0) }) else {
     print("usage: driver prepare|run --pid P [--ls script] [--clicks N] [--drags N] [--only a,b] [--report F]")
     exit(2)
