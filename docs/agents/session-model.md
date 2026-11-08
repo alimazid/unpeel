@@ -252,6 +252,11 @@ default is 5. Unread stopped rows stay past the cap and are never removed.
 "Recently updated" applies the shared lifecycle rank inside the live and
 stopped sections; the final exited manifest timestamp makes a newly stopped
 row recent. The phone mirrors the model from the same Host snapshot.
+`invalidateSidebarLists()` is the one choke-point for these lists' inputs
+(pins, order, stopped windowing). The live PROJECTS rows
+(`sidebarTreeRows`, #44) are the flattener's output over the displayed
+tree. They are cached against a key of that tree, expansion, hidden pane
+members and the choke-point's revision.
 
 Stop vs Remove is offered from Host resume evidence, published as
 `capabilities.resumable` on every Session summary: the launch names a managed

@@ -111,10 +111,19 @@ let package = Package(
                 ),
             ]
         ),
+        // Fork-only: gives the test bundle a private UNPEEL_HOME before any
+        // test runs (#44), so no test resolves the real ~/.unpeel.
+        .target(
+            name: "UnpeelNativeTestHome",
+            path: "Tests/UnpeelNativeTestHome",
+            linkerSettings: [.linkedFramework("CoreFoundation")]
+        ),
         .testTarget(
             name: "UnpeelNativeTests",
             dependencies: [
                 "UnpeelNative",
+                // Fork-only: private test home (#44)
+                "UnpeelNativeTestHome",
             ],
             path: "Tests/UnpeelNativeTests"
         ),
