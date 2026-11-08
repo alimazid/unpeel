@@ -1,3 +1,5 @@
+// Fork-only file (ADR 0009, #41).
+
 import Foundation
 
 // PROJECTS as one flat list of rows (ADR 0009, #41). A lazy stack whose

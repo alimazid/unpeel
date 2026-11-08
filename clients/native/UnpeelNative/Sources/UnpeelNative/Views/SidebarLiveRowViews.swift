@@ -1,7 +1,6 @@
 // Fork-only file (ADR 0009, #45): the live PROJECTS list's row views, built
 // with every display input resolved from the store when the list body
-// builds the row. Moved from the per-project node view the flat list
-// replaced.
+// builds the row.
 
 import SwiftUI
 
@@ -138,7 +137,7 @@ extension SidebarLiveTreeList {
             isPinned: store.isPinned(sessionID: session.id, projectID: ownerID),
             canPin: store.sessionCanPin(session.id),
             canMarkUnread: store.sessionCanMarkUnread(session.id),
-            // Fork-only: a confirmation armed from the AGENTS row stays there.
+            // A confirmation armed from the AGENTS row stays there.
             isConfirmingRemove: store.confirmingRemoveSessionID == session.id
                 && store.confirmingSessionSurface == .sidebar,
             isConfirmingStop: store.confirmingStopSessionID == session.id

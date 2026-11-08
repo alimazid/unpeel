@@ -29,6 +29,9 @@ final class SidebarGroupWashStates {
         }
     }
 
+    /// Prune dead weak entries once the map grows past this.
+    private static let compactionThreshold = 1_024
+
     private var states: [String: WeakState] = [:]
     /// The one row under the pointer and the groups it lights. Rows are
     /// siblings in one list, so at most one is hovered at a time.
@@ -45,7 +48,7 @@ final class SidebarGroupWashStates {
         let state = SidebarGroupWashState()
         state.isHighlighted = isHighlighted(folderID)
         states[folderID] = WeakState(state)
-        if states.count > 1_024 {
+        if states.count > Self.compactionThreshold {
             states = states.filter { $0.value.value != nil }
         }
         return state
@@ -185,54 +188,56 @@ struct SidebarTreeRowDragEffects: ViewModifier {
             ))
             .background {
                 if row.kind == .projectHeader {
-                    RoundedRectangle(cornerRadius: SidebarWashStyle.dropTarget.cornerRadius, style: .continuous)
-                        .fill(SidebarWashStyle.dropTarget.fill(isHighlighted: isDropTarget(row.topLevelProjectID)))
-                        .animation(SidebarWashStyle.dropTarget.animation, value: isDropTarget(row.topLevelProjectID))
+                    SidebarGroupWashSliceView(
+                        slice: SidebarWashSlice(folderID: row.topLevelProjectID, roundsTop: true, roundsBottom: true),
+                        isHighlighted: isDropTarget(row.topLevelProjectID),
+                        style: .dropTarget
+                    )
                 }
             }
             .offset(y: ride.offset)
             .background { washSlices(ride: ride) }
-            .animation(
-                SidebarMotion.reduceMotion || dragState.sessionDrag == nil
-                    ? nil
-                    : SidebarSessionDragController.slotAnimation,
-                value: ride.offset
-            )
+            .animation(dragState.sessionDrag == nil ? nil : Self.slot, value: ride.offset)
             // Match Session dragging: the detached card owns the visible
             // header, while its original row becomes a true empty slot.
             .opacity(isLiftedProject ? 0 : 1)
-            .animation(
-                SidebarMotion.reduceMotion || !isLiftedProject
-                    ? nil
-                    : SidebarSessionDragController.slotAnimation,
-                value: isLiftedProject
-            )
+            .animation(isLiftedProject ? Self.slot : nil, value: isLiftedProject)
             .padding(.top, projectGap.above ? Self.projectInsertionGap : 0)
             .padding(.bottom, projectGap.below ? Self.projectInsertionGap : 0)
-            .animation(
-                SidebarMotion.reduceMotion ? nil : SidebarSessionDragController.slotAnimation,
-                value: projectGap
-            )
+            .animation(Self.slot, value: projectGap)
     }
 
-    /// The reorder shift this row takes and the first ancestor level that
-    /// rides with it. The frozen map holds one section's items, so at most
-    /// one of the row's own id and its ancestor folders is in it.
-    private var reorderRide: (offset: CGFloat, fromLevel: Int) {
+    /// The drag's slot spring, or none under Reduce Motion.
+    fileprivate static var slot: Animation? {
+        SidebarMotion.reduceMotion ? nil : SidebarSessionDragController.slotAnimation
+    }
+
+    /// The same-section reorder shift a row takes, and the first level of
+    /// its `folderChain` (and so of its `washSlices`, one per level) that
+    /// rides with it; levels above stay put.
+    private struct ReorderRide {
+        let offset: CGFloat
+        let fromLevel: Int
+    }
+
+    /// The frozen map holds one section's items, so at most one of the
+    /// row's own id and its ancestor folders is in it.
+    private var reorderRide: ReorderRide {
         let chain = row.folderChain
-        guard let drag = dragState.sessionDrag else { return (0, chain.count) }
+        let still = ReorderRide(offset: 0, fromLevel: chain.count)
+        guard let drag = dragState.sessionDrag else { return still }
         if row.kind == .session, let item {
             let shift = dragState.reorderShift(for: item.id, inProject: drag.projectID)
-            if shift != 0 { return (shift, chain.count) }
+            if shift != 0 { return ReorderRide(offset: shift, fromLevel: chain.count) }
         }
         for level in chain.indices.reversed() {
             let shift = dragState.reorderShift(for: chain[level], inProject: drag.projectID)
-            if shift != 0 { return (shift, level) }
+            if shift != 0 { return ReorderRide(offset: shift, fromLevel: level) }
         }
-        return (0, chain.count)
+        return still
     }
 
-    private func washSlices(ride: (offset: CGFloat, fromLevel: Int)) -> some View {
+    private func washSlices(ride: ReorderRide) -> some View {
         ZStack {
             ForEach(Array(row.washSlices.enumerated()), id: \.element.folderID) { level, slice in
                 ZStack {
@@ -307,17 +312,13 @@ struct SidebarTreeRowDragEffects: ViewModifier {
                 .modifier(SidebarDeniedShakeEffect(progress: CGFloat(shakeBeats)))
                 .padding(.top, gapAbove ? SidebarTreeRowDragEffects.insertionGap : 0)
                 .padding(.bottom, gapBelow ? SidebarTreeRowDragEffects.insertionGap : 0)
-                .animation(slot, value: isCollapsed)
+                .animation(SidebarTreeRowDragEffects.slot, value: isCollapsed)
                 // Hide animates (the row dissolves under the lifting card);
                 // reveal is INSTANT: it fires in the same beat the landed
                 // card window closes, with the card exactly over the slot.
-                .animation(SidebarMotion.reduceMotion || !isLifted ? nil : SidebarSessionDragController.slotAnimation, value: isLifted)
-                .animation(slot, value: gapAbove)
-                .animation(slot, value: gapBelow)
-        }
-
-        private var slot: Animation? {
-            SidebarMotion.reduceMotion ? nil : SidebarSessionDragController.slotAnimation
+                .animation(isLifted ? SidebarTreeRowDragEffects.slot : nil, value: isLifted)
+                .animation(SidebarTreeRowDragEffects.slot, value: gapAbove)
+                .animation(SidebarTreeRowDragEffects.slot, value: gapBelow)
         }
     }
 }

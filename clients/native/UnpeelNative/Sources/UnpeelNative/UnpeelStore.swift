@@ -14531,7 +14531,7 @@ final class UnpeelStore: ObservableObject {
 
     // MARK: - Sidebar session lists (shared with the PROJECTS rows)
     // Fork-only (#45): the flat list's row cache and the drag controller read
-    // these; the per-project node view is gone (ADR 0009).
+    // these (ADR 0009).
 
     /// Pins resolved against the node's sessions, mirroring
     /// resolvedPinnedItems in ProjectItem.svelte:405-423.
@@ -14848,11 +14848,12 @@ final class UnpeelStore: ObservableObject {
         }
     }
 
-    /// Memoized per-project sidebar row lists. Every store publish re-ran
-    /// each visible project node body, which asked for both lists —
+    /// Memoized per-project sidebar row lists. Every store publish rebuilds
+    /// the visible PROJECTS rows, which ask for both lists —
     /// ordering plus a UserDefaults read per project per render pass. The
     /// inputs only change on tree/pin rebuilds and the explicit mutations
     /// that call `invalidateSidebarLists()`.
+    // Fork-only (#45): the doc names the flat list's rows.
     private func sidebarLists(
         in node: ProjectNode
     ) -> (pinned: [SessionEntry], displayed: [SessionEntry]) {

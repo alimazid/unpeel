@@ -96,7 +96,8 @@ final class SidebarDragState: ObservableObject {
     /// Same-section reorder gap, driven WITHOUT touching the store. The
     /// origin section's order and geometry are frozen at lift; while the
     /// card rides over a sibling row only this index changes, and each row's
-    /// `SidebarSessionRowDragEffects` derives a pure visual `offset` from it
+    // Fork-only (#45): the per-row leaf is `SidebarTreeRowDragEffects`.
+    /// `SidebarTreeRowDragEffects` derives a pure visual `offset` from it
     /// (rows between the origin slot and the target shift one slot toward
     /// the origin, opening the gap at the target). The tree itself reorders
     /// exactly once, at drop. The previous design ran `previewSessionMove`
@@ -505,8 +506,9 @@ private struct SessionListContentModifier: ViewModifier {
 }
 
 extension AnyTransition {
-    /// Per-row staggered entrance; rows simply fade with the collapsing
-    /// shell on removal (140ms, ProjectItem.svelte sessionListContentOutro).
+    /// Per-row staggered entrance; on removal a row fades in 140ms
+    /// (ProjectItem.svelte sessionListContentOutro).
+    // Fork-only (#45): the flat list has no collapsing shell to fade with.
     static func sessionRowStagger(index: Int) -> AnyTransition {
         if SidebarMotion.reduceMotion { return .opacity }
         return .asymmetric(
@@ -1333,8 +1335,8 @@ struct ProjectRowView: View {
     /// (.project-name.shimmer, ProjectItem.svelte:2083-2102).
     var showsBusyShimmer = false
     // (The session-drag drop-target highlight is applied OUTSIDE this row by
-    // `SidebarProjectRowDragEffects`, so drag-state churn never re-evaluates
-    // this row body.)
+    // `SidebarTreeRowDragEffects`, so drag-state churn never re-evaluates
+    // this row body.) Fork-only (#45): renamed from the removed modifier.
     /// Strip contents: starred presets grouped per CLI, flat-list order (the
     /// strip appends the blank-terminal chip itself).
     let quickGroups: [QuickPresetGroup]

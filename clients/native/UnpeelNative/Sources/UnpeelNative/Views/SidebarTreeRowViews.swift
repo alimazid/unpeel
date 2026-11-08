@@ -2,8 +2,8 @@
 
 import SwiftUI
 
-/// The group/worktree wash, shared by the live tree's cluster background and
-/// the flat list's per-row slices so the two can never disagree on its look.
+/// The group/worktree wash, shared by both carousel pages' per-row slices so
+/// the two can never disagree on its look.
 enum SidebarGroupWash {
     static let cornerRadius: CGFloat = 10
     /// Child-group layout is already inset by its parent list. The wash
@@ -19,38 +19,29 @@ enum SidebarGroupWash {
 
 /// The two washes a group draws as per-row slices: its hover/selection
 /// wash, and the "files into this group" wash while an accepted Session
-/// drag hovers it (#45). The drop wash keeps the old whole-cluster drop
-/// highlight's look: a 9 pt radius, no trailing overhang, the full hover fill.
-enum SidebarWashStyle {
-    case group
-    case dropTarget
+/// drag hovers it (#45): a 9 pt radius, no trailing overhang, the full
+/// hover fill.
+struct SidebarWashStyle {
+    let cornerRadius: CGFloat
+    let trailingOverhang: CGFloat
+    let litFill: Color
+    let animation: Animation
 
-    var cornerRadius: CGFloat {
-        switch self {
-        case .group: SidebarGroupWash.cornerRadius
-        case .dropTarget: 9
-        }
-    }
-
-    var trailingOverhang: CGFloat {
-        switch self {
-        case .group: SidebarGroupWash.trailingOverhang
-        case .dropTarget: 0
-        }
-    }
+    static let group = SidebarWashStyle(
+        cornerRadius: SidebarGroupWash.cornerRadius,
+        trailingOverhang: SidebarGroupWash.trailingOverhang,
+        litFill: SidebarGroupWash.fill(isHighlighted: true),
+        animation: SidebarGroupWash.animation
+    )
+    static let dropTarget = SidebarWashStyle(
+        cornerRadius: 9,
+        trailingOverhang: 0,
+        litFill: Theme.hoverRow,
+        animation: .easeInOut(duration: 0.12)
+    )
 
     func fill(isHighlighted: Bool) -> Color {
-        switch self {
-        case .group: SidebarGroupWash.fill(isHighlighted: isHighlighted)
-        case .dropTarget: isHighlighted ? Theme.hoverRow : .clear
-        }
-    }
-
-    var animation: Animation {
-        switch self {
-        case .group: SidebarGroupWash.animation
-        case .dropTarget: .easeInOut(duration: 0.12)
-        }
+        isHighlighted ? litFill : .clear
     }
 }
 
@@ -94,7 +85,7 @@ struct SidebarGroupWashSliceView: View {
 
 extension View {
     /// Draws a row's group wash slices behind it, the outermost group
-    /// furthest back, the way nested cluster backgrounds stack.
+    /// furthest back, so nested groups' washes stack.
     func sidebarGroupWash(
         _ slices: [SidebarWashSlice],
         isHighlighted: @escaping (String) -> Bool

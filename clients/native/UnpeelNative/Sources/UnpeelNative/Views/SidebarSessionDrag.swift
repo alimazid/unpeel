@@ -2920,9 +2920,9 @@ final class SidebarSessionDragController: ObservableObject {
     // MARK: Geometry
 
     private func row(at content: CGPoint) -> RowHit? {
-        // Fork-only (#45): registered frames are static for the whole drag
-        // (every row's reorder shift sits inside its own reporter), so the
-        // #43 cluster unshift is gone.
+        // Fork-only (#43, #45): shells derive from the rows that name them.
+        // Registered frames are static for the whole drag: every row's
+        // reorder shift sits inside its own reporter.
         Self.row(at: content, in: rows)
     }
 

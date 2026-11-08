@@ -37,11 +37,12 @@ extension SidebarTreeRow {
 }
 
 /// Which rows an expansion just revealed. They take the expand transition
-/// (the old block container's fade, offset and scale plus the stagger);
-/// a row inserted any other way, a new Session for one, keeps the plain
-/// stagger. Read while the list body runs and never observed: it compares
-/// the expanded set with the previous body's, and forgets a change one
-/// main-queue turn later.
+/// (`sessionRowExpand`: fade, offset and scale plus the stagger); a row
+/// inserted any other way, a new Session for one, keeps the plain stagger.
+/// Read while the list body runs and never observed: it compares the
+/// expanded set with the previous body's in the same Host scope (a scope
+/// switch swaps in a fresh list and is never an expansion), and forgets a
+/// change one main-queue turn later.
 @MainActor
 final class SidebarTreeExpansionTracker {
     struct Motion {
@@ -56,14 +57,33 @@ final class SidebarTreeExpansionTracker {
                 || row.folderChain.contains(where: revealedFolderIDs.contains)
         }
 
+        /// A Session or folder header's insertion: the expand transition
+        /// when an expansion revealed it, the plain stagger otherwise.
+        func transition(for row: SidebarTreeRow) -> AnyTransition {
+            reveals(row)
+                ? .sessionRowExpand(index: row.staggerIndex)
+                : .sessionRowStagger(index: row.staggerIndex)
+        }
+
+        /// The placeholder: no stagger of its own outside an expansion,
+        /// and the same 140 ms fade out as every row.
+        func placeholderTransition(for row: SidebarTreeRow) -> AnyTransition {
+            if reveals(row) { return .sessionRowExpand(index: row.staggerIndex) }
+            return .asymmetric(
+                insertion: .opacity,
+                removal: .opacity.animation(.easeOut(duration: 0.14))
+            )
+        }
+
         /// The list-wide glide. An expansion change moves the rows below
-        /// with its accordion curve, as the old per-block height change did
-        /// (a spring-open mid-drag included). Anything else glides, except
-        /// while a just-landed drag suppresses it: the drop applies its
-        /// reorder in an animation-disabled transaction, and a value-keyed
-        /// animation would override that and replay the swap as a bounce.
+        /// with its accordion curve, the way a toggle or a spring-open
+        /// animates it, even mid-drag (a spring-open under Reduce Motion
+        /// does not animate). Anything else glides, except while a
+        /// just-landed drag suppresses it: the drop applies its reorder in
+        /// an animation-disabled transaction, and a value-keyed animation
+        /// would override that and replay the swap as a bounce.
         func glide(suppressed: Bool) -> Animation? {
-            if isExpansionChange {
+            if isExpansionChange, !(suppressed && SidebarMotion.reduceMotion) {
                 return revealedFolderIDs.isEmpty
                     ? SidebarMotion.accordionClose
                     : SidebarMotion.accordionOpen
@@ -72,15 +92,19 @@ final class SidebarTreeExpansionTracker {
         }
     }
 
-    private var lastExpanded: Set<String>?
+    private var last: (scope: String, expanded: Set<String>)?
     private var current = Motion.none
     private var generation = 0
 
-    func motion(expanded: Set<String>) -> Motion {
-        defer { lastExpanded = expanded }
-        guard let last = lastExpanded, last != expanded else { return current }
+    func motion(expanded: Set<String>, scope: String) -> Motion {
+        defer { last = (scope, expanded) }
+        guard let last, last.scope == scope else {
+            current = .none
+            return current
+        }
+        guard last.expanded != expanded else { return current }
         current = Motion(
-            revealedFolderIDs: expanded.subtracting(last),
+            revealedFolderIDs: expanded.subtracting(last.expanded),
             isExpansionChange: true
         )
         generation &+= 1
@@ -109,7 +133,8 @@ struct SidebarLiveTreeList: View {
 
     var body: some View {
         let rows = store.sidebarTreeRows
-        let motion = expansion.motion(expanded: store.expandedProjectIDs)
+        let scope = store.selectedHostScope.sidebarListIdentity
+        let motion = expansion.motion(expanded: store.expandedProjectIDs, scope: scope)
         let inputs = SidebarLiveRowInputs(store: store)
         LazyVStack(alignment: .leading, spacing: 0) {
             ForEach(rows) { row in
@@ -123,7 +148,7 @@ struct SidebarLiveTreeList: View {
         // their own spots. The animation lives HERE, not on the store
         // mutation, so the Metal terminal does not inherit a fade.
         .animation(.easeOut(duration: 0.28), value: store.activePaneMemberSessionIDs)
-        .id(store.selectedHostScope.sidebarListIdentity)
+        .id(scope)
         .onAppear { washStates.bind(to: store) }
         .onChange(of: rows) { _ in washStates.refreshSelection() }
     }
@@ -134,7 +159,6 @@ struct SidebarLiveTreeList: View {
         inputs: SidebarLiveRowInputs,
         motion: SidebarTreeExpansionTracker.Motion
     ) -> some View {
-        let revealed = motion.reveals(row)
         switch row.content {
         case let .projectHeader(node, isExpanded):
             SidebarLiveProjectHeaderRow(
@@ -150,9 +174,7 @@ struct SidebarLiveTreeList: View {
                 node: node,
                 rowView: headerRowView(node, row: row, isExpanded: isExpanded, inputs: inputs),
                 isPinnedGroup: store.isGroupPinned(node.id),
-                transition: revealed
-                    ? .sessionRowExpand(index: row.staggerIndex)
-                    : .sessionRowStagger(index: row.staggerIndex),
+                transition: motion.transition(for: row),
                 store: store,
                 dragState: dragState,
                 washStates: washStates
@@ -167,9 +189,7 @@ struct SidebarLiveTreeList: View {
                 // (a committed reorder flips the group to custom order).
                 isDraggable: !store.isDateSorted(projectID: row.listOwnerID)
                     || store.canLiftSessionFromDateSortedList(entry.id),
-                transition: revealed
-                    ? .sessionRowExpand(index: row.staggerIndex)
-                    : .sessionRowStagger(index: row.staggerIndex),
+                transition: motion.transition(for: row),
                 store: store,
                 dragState: dragState,
                 washStates: washStates
@@ -179,7 +199,7 @@ struct SidebarLiveTreeList: View {
                 row: row,
                 ownerID: owner.id,
                 rowView: placeholderRowView(owner, depth: row.depth, inputs: inputs),
-                transition: revealed ? .sessionRowExpand(index: row.staggerIndex) : .opacity,
+                transition: motion.placeholderTransition(for: row),
                 dragState: dragState,
                 washStates: washStates
             )
