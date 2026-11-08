@@ -85,6 +85,10 @@ is a Session you started, or one the user handed to you.
 - Remove or pause only the tasks the user asked about. A Run's Session is
   not your Worker: its prompts go to the user, so leave it to them unless
   they ask you.
+- A Run's `sessions report` to you reaches your Inbox without an approval
+  prompt. When a task's instructions ask the Run to report to you, tell it
+  to report with status `done` (or `blocked` to ask you something): an
+  `update` waits until something else wakes you.
 
 ## After a compaction or a Resume
 
