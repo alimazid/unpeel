@@ -13,8 +13,19 @@
 // deletes it, so fresh paths would leave one plist per run behind. Reused
 // slots bound that to one per slot. Each run replaces its slot's home with a
 // fresh directory and empties the slot's suite on the way in (a crashed
-// run's leftovers), and removes both on the way out. Nothing outside the
-// slot path is ever removed, even when the path is a symlink.
+// run's leftovers), and removes both on the way out.
+//
+// The slot rule:
+// - Only the claimed slot's own path is ever removed. A symlink there is
+//   unlinked, never followed.
+// - A directory there is emptied only if this user owns it. Otherwise the
+//   slot is skipped.
+// - A caller-set UNPEEL_HOME and its defaults suite are never touched.
+//
+// The constructor also sets two variables, so no test ever starts a Host:
+// UNPEEL_TEST_NATIVE_SUITE, which HostServiceManager's existing
+// UNPEEL_TEST_* guard reads, and UNPEEL_HOST_CMD=/usr/bin/false unless the
+// caller already set it.
 // The Swift side's guard is `TestHomeIsolationTests`.
 
 #include "unpeel_native_test_home.h"
