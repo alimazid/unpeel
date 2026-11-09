@@ -19,7 +19,7 @@ import time
 import zoneinfo
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from harness import BINARY, CRATES, run, run_cli  # noqa: E402
+from harness import BINARY, CRATES, run, run_cli, TRUST_SESSION_ENV  # noqa: E402
 from hook_cancellation import control, fixture_started  # noqa: E402
 
 ZONE = "America/New_York"
@@ -118,7 +118,7 @@ def start_run(case, service, home, router):
 
 
 def mcp(home, session_id, action, args, timeout):
-    env = dict(os.environ, UNPEEL_HOME=home.root, UNPEEL_TEST="1", UNPEEL_SESSION_ID=session_id)
+    env = dict(os.environ, UNPEEL_HOME=home.root, UNPEEL_TEST="1", UNPEEL_SESSION_ID=session_id, **TRUST_SESSION_ENV)
     started = time.monotonic()
     done = subprocess.run([BINARY, "mcp", "sessions", action, "--json", json.dumps(args)],
                           capture_output=True, text=True, timeout=timeout, env=env, cwd=CRATES)

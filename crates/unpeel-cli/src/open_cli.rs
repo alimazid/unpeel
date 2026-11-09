@@ -439,11 +439,10 @@ fn confirm_install(app_name: &str) -> Result<bool, String> {
     ))
 }
 
+/// The Session this process belongs to, by the same rule as every MCP and CLI
+/// caller: an exported id it does not descend from names no one (#71).
 fn caller_session_id() -> Option<String> {
-    std::env::var("UNPEEL_SESSION_ID")
-        .ok()
-        .map(|value| value.trim().to_string())
-        .filter(|value| !value.is_empty() && value != "${UNPEEL_SESSION_ID}")
+    unpeel_core::mcp_host::self_session_id()
 }
 
 fn launch_editor(state: &serde_json::Value, resource: &ResolvedResource) -> Result<i32, String> {

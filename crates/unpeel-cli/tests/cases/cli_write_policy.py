@@ -14,7 +14,7 @@ import threading
 import time
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from harness import BINARY, CRATES, mobile_request, run, run_cli, wait_running  # noqa: E402
+from harness import BINARY, CRATES, mobile_request, run, run_cli, wait_running, TRUST_SESSION_ENV  # noqa: E402
 
 
 def body(case):
@@ -41,7 +41,7 @@ def body(case):
     caller, target = ids
 
     def send_from_caller(text):
-        env = dict(os.environ, UNPEEL_HOME=home.root, UNPEEL_TEST="1", UNPEEL_SESSION_ID=caller)
+        env = dict(os.environ, UNPEEL_HOME=home.root, UNPEEL_TEST="1", UNPEEL_SESSION_ID=caller, **TRUST_SESSION_ENV)
         return subprocess.run(
             [BINARY, "send", target, text, "--enter"],
             capture_output=True, text=True, timeout=60, env=env, cwd=CRATES,
@@ -101,7 +101,7 @@ def body(case):
     case.check("a denied send writes nothing", "denied-write" not in screen(target), screen(target)[-200:])
 
     # 4. A Session can never write into itself through this path.
-    env = dict(os.environ, UNPEEL_HOME=home.root, UNPEEL_TEST="1", UNPEEL_SESSION_ID=caller)
+    env = dict(os.environ, UNPEEL_HOME=home.root, UNPEEL_TEST="1", UNPEEL_SESSION_ID=caller, **TRUST_SESSION_ENV)
     own = subprocess.run([BINARY, "send", caller, "self", "--enter"], capture_output=True, text=True, timeout=30, env=env, cwd=CRATES)
     case.check("a Session cannot send into itself", own.returncode != 0, own.stderr[:200])
 

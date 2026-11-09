@@ -78,7 +78,7 @@ fn shell_double_quote_safe(value: &str) -> String {
 /// The Host binary an installer records: `unpeel-host` itself when the
 /// installer runs inside it (the worker's post-upgrade refresh), otherwise
 /// the `unpeel-host` shipped next to the running `unpeel` CLI.
-fn installing_host_binary() -> Result<PathBuf, String> {
+pub(crate) fn installing_host_binary() -> Result<PathBuf, String> {
     let path = crate::session_ops::resolve_host_binary()?;
     if path.is_absolute() {
         return Ok(path);

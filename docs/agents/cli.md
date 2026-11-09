@@ -276,7 +276,8 @@ browser: /Applications/Google Chrome.app/Contents/MacOS/Google Chrome
 
 Everything the unified `unpeel` MCP server can do, the CLI can do, through
 the same in-process dispatcher (`unpeel_core::mcp_host::call_tool`): the
-same caller identity (`UNPEEL_SESSION_ID`, or process ancestry), the same
+same caller identity (process ancestry, which an exported
+`UNPEEL_SESSION_ID` must agree with; ADR 0013), the same
 per-call grants from the Session manifest, and the same cooperative write
 policy with its approval prompt. An agent that prefers shell verbs over an
 MCP client loses nothing.

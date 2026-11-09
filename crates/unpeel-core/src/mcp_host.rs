@@ -4143,93 +4143,11 @@ fn send_initial_text_to_session(session_id: &str, text: &str, submit: bool) -> R
     }
 }
 
+/// The Session this process speaks for: the exported `UNPEEL_SESSION_ID`
+/// once process ancestry backs it, or the verified Session ancestor when the
+/// launcher stripped the environment (`session_identity`, #71).
 pub fn self_session_id() -> Option<String> {
-    env_session_id().or_else(ancestral_session_id)
-}
-
-fn env_session_id() -> Option<String> {
-    let value = std::env::var("UNPEEL_SESSION_ID").ok()?;
-    let trimmed = value.trim();
-    // An unexpanded "${UNPEEL_SESSION_ID}" literal means the launcher did not
-    // substitute the variable; treat it as unknown rather than a real id.
-    if trimmed.is_empty() || trimmed.starts_with("${") {
-        return None;
-    }
-    Some(trimmed.to_string())
-}
-
-/// Some launchers (cursor-agent) spawn MCP stdio servers with a stripped
-/// environment, so `UNPEEL_SESSION_ID` never reaches this process even though
-/// the agent itself runs inside a hosted session. Recover the identity from
-/// process ancestry instead: the hosted login shell (`manifest.pid`) is an
-/// ancestor of every process the session's agent starts. Only a
-/// `PidIdentity::Matches` ancestor counts — a recycled pid or an unverifiable
-/// legacy manifest must never grant another session's identity.
-fn ancestral_session_id() -> Option<String> {
-    static RESOLVED: std::sync::OnceLock<String> = std::sync::OnceLock::new();
-    if let Some(id) = RESOLVED.get() {
-        return Some(id.clone());
-    }
-
-    // Cache only a successful lookup. The hosted child can start cursor-agent
-    // just before the Host replaces its preliminary manifest pid with the
-    // child's pid; caching that brief miss would leave the MCP process
-    // unauthorized for its entire lifetime.
-    let manifests = running_manifests_unrefreshed();
-    let found = session_for_ancestors(std::process::id(), parent_pid_of, &manifests)?;
-    let id = RESOLVED.get_or_init(|| found).clone();
-    trace(&format!(
-        "recovered caller identity from process ancestry self={id} pid={}",
-        std::process::id()
-    ));
-    Some(id)
-}
-
-/// Raw manifest scan without the health-refresh pass `list_manifests` runs —
-/// identity resolution must not rewrite manifests as a side effect.
-fn running_manifests_unrefreshed() -> Vec<HostedSessionManifest> {
-    let Ok(entries) = std::fs::read_dir(crate::app_paths::app_sessions_root()) else {
-        return Vec::new();
-    };
-    entries
-        .flatten()
-        .filter_map(|entry| std::fs::read(entry.path().join("manifest.json")).ok())
-        .filter_map(|raw| serde_json::from_slice::<HostedSessionManifest>(&raw).ok())
-        .filter(|manifest| manifest.state == HostedSessionState::Running)
-        .collect()
-}
-
-fn parent_pid_of(pid: u32) -> Option<u32> {
-    let output = std::process::Command::new("ps")
-        .args(["-p", &pid.to_string(), "-o", "ppid="])
-        .output()
-        .ok()?;
-    String::from_utf8_lossy(&output.stdout).trim().parse().ok()
-}
-
-fn session_for_ancestors(
-    start: u32,
-    parent_of: impl Fn(u32) -> Option<u32>,
-    manifests: &[HostedSessionManifest],
-) -> Option<String> {
-    const MAX_ANCESTOR_HOPS: u32 = 12;
-    let by_pid: HashMap<u32, &HostedSessionManifest> = manifests
-        .iter()
-        .filter_map(|manifest| manifest.pid.map(|pid| (pid, manifest)))
-        .collect();
-    let mut current = start;
-    for _ in 0..MAX_ANCESTOR_HOPS {
-        if let Some(manifest) = by_pid.get(&current) {
-            if session_host::manifest_pid_identity(manifest) == session_host::PidIdentity::Matches {
-                return Some(manifest.session.id.clone());
-            }
-        }
-        match parent_of(current) {
-            Some(parent) if parent > 1 => current = parent,
-            _ => return None,
-        }
-    }
-    None
+    crate::session_identity::current_session_id()
 }
 
 fn required_str<'a>(args: &'a Value, key: &str) -> Result<&'a str, String> {
@@ -4346,7 +4264,7 @@ pub(crate) fn strip_ansi(text: &str) -> String {
     collapsed
 }
 
-fn trace(message: &str) {
+pub(crate) fn trace(message: &str) {
     let path = crate::app_paths::unpeel_home()
         .join("hooks")
         .join("trace.log");
@@ -4690,60 +4608,6 @@ mod tests {
             transcript_binding_json(&bound)["bound_to_active_agent"],
             true
         );
-    }
-
-    #[test]
-    fn ancestry_fallback_identifies_start_time_verified_ancestor() {
-        let self_pid = std::process::id();
-        let mut manifest = test_manifest("ancestral", "p", Path::new("/tmp"), "cursor-agent");
-        manifest.pid = Some(self_pid);
-        manifest.pid_started_at = session_host::process_start_time_ms(self_pid);
-        let found = session_for_ancestors(self_pid, |_| None, &[manifest]);
-        assert_eq!(found.as_deref(), Some("ancestral"));
-    }
-
-    #[test]
-    fn ancestry_fallback_walks_up_through_parents() {
-        let self_pid = std::process::id();
-        let mut manifest = test_manifest("ancestral", "p", Path::new("/tmp"), "cursor-agent");
-        manifest.pid = Some(self_pid);
-        manifest.pid_started_at = session_host::process_start_time_ms(self_pid);
-        // Fake MCP-child pid whose only ancestor is this test process.
-        let child_pid = u32::MAX;
-        let found = session_for_ancestors(
-            child_pid,
-            |pid| (pid == child_pid).then_some(self_pid),
-            &[manifest],
-        );
-        assert_eq!(found.as_deref(), Some("ancestral"));
-    }
-
-    #[test]
-    fn ancestry_fallback_rejects_recycled_pid() {
-        let self_pid = std::process::id();
-        let mut manifest = test_manifest("recycled", "p", Path::new("/tmp"), "cursor-agent");
-        manifest.pid = Some(self_pid);
-        // A start time far from the live process's proves the recorded child
-        // is gone and this pid was recycled; identity must not transfer.
-        manifest.pid_started_at = session_host::process_start_time_ms(self_pid)
-            .map(|started_at| started_at.saturating_add(3_600_000));
-        let found = session_for_ancestors(self_pid, |_| None, &[manifest]);
-        assert_eq!(found, None);
-    }
-
-    #[test]
-    fn ancestry_fallback_fails_closed_on_unverifiable_legacy_manifest() {
-        let self_pid = std::process::id();
-        let mut manifest = test_manifest(
-            "legacy-unverifiable-zz",
-            "p",
-            Path::new("/tmp"),
-            "cursor-agent",
-        );
-        manifest.pid = Some(self_pid);
-        manifest.pid_started_at = None;
-        let found = session_for_ancestors(self_pid, |_| None, &[manifest]);
-        assert_eq!(found, None);
     }
 
     #[test]

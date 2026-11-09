@@ -11,7 +11,7 @@ pub(crate) const AMP_PLUGIN_SCRIPT: &str = include_str!(concat!(
 
 pub fn install() -> Result<(), String> {
     let notify_path = notify_hook_script_path();
-    write_executable_script(&notify_path, NOTIFY_HOOK_SCRIPT, "notify hook script")?;
+    write_executable_script(&notify_path, &crate::hook_assets::reporter_script(NOTIFY_HOOK_SCRIPT), "notify hook script")?;
     Ok(())
 }
 pub fn prepare_amp_project_plugin(cwd: &str) -> Result<(), String> {

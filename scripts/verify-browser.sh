@@ -179,7 +179,10 @@ done
 cat > "$SCRATCH/app-state.json" <<'EOF'
 {"projects":[{"id":"vb-proj","name":"VB","path":"/tmp"}],"presets":[],"active_tabs":{},"browser_access":{"vb-session-a":"off","vb-session-b":"off"}}
 EOF
+# The fixture Sessions have no live process to descend from, so this private
+# home trusts the exported id (ADR 0013; never honored for a real home).
 mcp() { local sess="$1"; UNPEEL_HOME="$SCRATCH" UNPEEL_SESSION_ID="$sess" \
+  UNPEEL_TEST=1 UNPEEL_TEST_TRUST_SESSION_ENV=1 \
   UNPEEL_BROWSER_BIN="$ENGINE" "$HOST_BIN" __browser_mcp__; }
 
 refused="$(printf '%s\n' \

@@ -67,14 +67,16 @@ channel semantics.
   policy, approvals, and semantic effects converge on the worker/capability
   adapters, while terminal data operations may remain direct to Session
   artifacts and `session.sock`.
-- Caller identity comes from `UNPEEL_SESSION_ID` in the inherited env; when a
-  launcher strips the environment from its MCP children (cursor-agent does),
-  `self_session_id` falls back to walking the server's process ancestry against
-  the running manifests — the hosted login shell (`manifest.pid`) is an
-  ancestor of everything the session's agent spawns, and only a
-  start-time-verified `PidIdentity::Matches` ancestor grants identity (fail
-  closed on recycled pids and unverifiable legacy manifests). Writing into the
-  calling session's own terminal is refused.
+- Caller identity is process ancestry (`session_identity`, ADR 0013): the
+  hosted login shell (`manifest.pid`) is an ancestor of everything the
+  session's agent spawns, and only a start-time-verified
+  `PidIdentity::Matches` ancestor grants identity (fail closed on recycled
+  pids and unverifiable legacy manifests). An inherited `UNPEEL_SESSION_ID`
+  is a claim: it holds only when that Session is such an ancestor, and a
+  process that kept the variable but left the tree (Codex's shared daemon)
+  is refused, never redirected. When a launcher strips the environment from
+  its MCP children (cursor-agent does), the nearest verified ancestor is the
+  identity. Writing into the calling session's own terminal is refused.
 - `agents.read_transcript` uses the shared provider transcript API in
   `crates/unpeel-core/src/transcripts/mod.rs`, so adapter/parser changes affect
   MCP and remote clients together. It refuses a transcript when the observed
@@ -295,7 +297,7 @@ Registration per provider (all through the explicitly installed integration,
   execs the current `unpeel-host`; inside a hosted shell it prefers the
   exported `UNPEEL_HOST_BIN`.
 - Launchers that strip their MCP children's environment (codex, cursor-agent,
-  muse) get identity from `self_session_id`'s process-ancestry fallback (for
+  muse) get identity from `self_session_id`'s nearest verified ancestor (for
   Codex only under `--no-daemon`: its shared daemon starts MCP servers
   outside the Session, where the gate serves no tools; see the Codex notes
   in `providers.md`); Kiro v3 passes only a declared env block, so its entry

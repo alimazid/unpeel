@@ -28,7 +28,7 @@ pub(crate) const CLINE_HOOK_EVENTS: &[&str] = &[
 /// distinct without per-session hubs.
 pub fn install() -> Result<(), String> {
     let script_path = cline_hook_script_path();
-    write_executable_script(&script_path, CLINE_HOOK_SCRIPT, "Cline hook script")?;
+    write_executable_script(&script_path, &crate::hook_assets::reporter_script(CLINE_HOOK_SCRIPT), "Cline hook script")?;
 
     let hooks_dir = cline_home_dir().join("hooks");
     fs::create_dir_all(&hooks_dir).map_err(|e| {

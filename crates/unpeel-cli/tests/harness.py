@@ -1428,6 +1428,7 @@ class McpClient:
             "UNPEEL_HOME": home.root,
             "UNPEEL_TEST": "1",
             "UNPEEL_SESSION_ID": session_id,
+            **TRUST_SESSION_ENV,
         }
         self.proc = subprocess.Popen(
             [host, "__mcp__"],
@@ -1485,9 +1486,18 @@ class McpClient:
             self.proc.kill()
 
 
+# Test-only: lets a harness process act as a Session from outside that
+# Session's process tree, which the identity check otherwise refuses (#71).
+# Only callers get it, never the Host, so every in-session process is
+# checked for real; Unpeel ignores it against the user's real home.
+TRUST_SESSION_ENV = {"UNPEEL_TEST_TRUST_SESSION_ENV": "1"}
+
+
 def run_cli(home, args, timeout=30, expect_ok=None, env=None):
-    """Run `unpeel <args>` against the fixture home."""
-    env = dict(os.environ, UNPEEL_HOME=home.root, UNPEEL_TEST="1", **(env or {}))
+    """Run `unpeel <args>` against the fixture home. An `UNPEEL_SESSION_ID`
+    in `env` acts as that Session (see `TRUST_SESSION_ENV`)."""
+    trust = TRUST_SESSION_ENV if "UNPEEL_SESSION_ID" in (env or {}) else {}
+    env = dict(os.environ, UNPEEL_HOME=home.root, UNPEEL_TEST="1", **trust, **(env or {}))
     result = subprocess.run(
         [BINARY, *args],
         capture_output=True,
@@ -1558,7 +1568,7 @@ class Case:
         for key in (
             "UNPEEL_SESSION_ID", "UNPEEL_SESSION_DIR", "UNPEEL_APP_PORT",
             "UNPEEL_APP_PORT_REGISTRY_FILE", "UNPEEL_RUNTIME_GENERATION",
-            "UNPEEL_HOOK_TRACE_FILE", "CODEWHALE_CONFIG_PATH", "DEEPSEEK_CONFIG_PATH",
+            "UNPEEL_HOOK_TRACE_FILE", "UNPEEL_HOST_BIN", "CODEWHALE_CONFIG_PATH", "DEEPSEEK_CONFIG_PATH",
             "DEEPSEEK_MCP_CONFIG",
         ):
             os.environ.pop(key, None)

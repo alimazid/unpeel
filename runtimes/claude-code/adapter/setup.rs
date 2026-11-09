@@ -29,7 +29,7 @@ pub(crate) const HOOK_EVENTS: &[&str] = &[
 /// rewrite only on change.
 pub fn install() -> Result<(), String> {
     let script_path = claude_hook_script_path();
-    write_executable_script(&script_path, CLAUDE_HOOK_SCRIPT, "Claude hook script")?;
+    write_executable_script(&script_path, &crate::hook_assets::reporter_script(CLAUDE_HOOK_SCRIPT), "Claude hook script")?;
     ensure_claude_settings_hook(&script_path)?;
     let shim = crate::integrations::install::write_mcp_shim()?;
     ensure_claude_user_mcp_server(&shim)

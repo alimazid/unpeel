@@ -15,7 +15,7 @@ pub(crate) const KIMI_HOOK_SCRIPT: &str = include_str!(concat!(
 /// keeps hooks and detection but no MCP.
 pub fn install() -> Result<(), String> {
     let script_path = kimi_hook_script_path();
-    write_executable_script(&script_path, KIMI_HOOK_SCRIPT, "Kimi hook script")?;
+    write_executable_script(&script_path, &crate::hook_assets::reporter_script(KIMI_HOOK_SCRIPT), "Kimi hook script")?;
     ensure_kimi_config_hooks()?;
     write_kimi_code_mcp_config()
 }

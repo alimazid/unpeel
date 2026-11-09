@@ -552,6 +552,20 @@ pub(crate) fn ensure_project_exclude_entry(cwd: &str, entry: &str) {
     let _ = write_project_file_no_symlinks(root, relative, updated.as_bytes());
 }
 
+/// Where an owned hook reporter's identity guard names its checker.
+pub(crate) const REPORTER_HOST_BIN_PLACEHOLDER: &str = "{{UNPEEL_HOST_BIN}}";
+
+/// An owned hook reporter as installed: its identity guard (#70) runs the
+/// installing Host binary, which knows `__session_identity__`. Not the
+/// Session's `UNPEEL_HOST_BIN`: an older Host reads an unknown argument as a
+/// launch file. When no binary resolves, the guard is left inert.
+pub(crate) fn reporter_script(contents: &str) -> String {
+    let host = crate::integrations::install::installing_host_binary()
+        .map(|path| crate::integrations::shared::shell_quote(&path.to_string_lossy()))
+        .unwrap_or_else(|_| "''".to_string());
+    contents.replace(REPORTER_HOST_BIN_PLACEHOLDER, &host)
+}
+
 /// Shared reporter path used by runtime-owned setup adapters.
 pub(crate) fn notify_hook_script_path() -> PathBuf {
     crate::app_paths::machine_home()

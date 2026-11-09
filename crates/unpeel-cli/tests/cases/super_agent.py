@@ -26,7 +26,7 @@ import sys
 import time
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from harness import BINARY, CRATES, run, run_cli, wait_running  # noqa: E402
+from harness import BINARY, CRATES, run, run_cli, wait_running, TRUST_SESSION_ENV  # noqa: E402
 from hook_cancellation import control, fixture_started, read_json  # noqa: E402
 from host_launch_conformance import LocalHostClient  # noqa: E402
 
@@ -151,7 +151,7 @@ def body(case):
         return {item.get("id"): item for item in boot.get("sessions", [])} if status == 200 else {}
 
     def mcp(session_id, action, args, domain="sessions", timeout=60):
-        env = dict(os.environ, UNPEEL_HOME=home.root, UNPEEL_TEST="1", UNPEEL_SESSION_ID=session_id)
+        env = dict(os.environ, UNPEEL_HOME=home.root, UNPEEL_TEST="1", UNPEEL_SESSION_ID=session_id, **TRUST_SESSION_ENV)
         started = time.monotonic()
         done = subprocess.run([BINARY, "mcp", domain, action, "--json", json.dumps(args)],
                               capture_output=True, text=True, timeout=timeout, env=env, cwd=CRATES)

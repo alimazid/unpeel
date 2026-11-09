@@ -14,7 +14,7 @@ import sys
 import time
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from harness import BINARY, CRATES, run, run_cli, wait_running  # noqa: E402
+from harness import BINARY, CRATES, run, run_cli, wait_running, TRUST_SESSION_ENV  # noqa: E402
 
 # The prompt row as captured from a live Claude Code session: grey `❯` +
 # NBSP, the suggestion faint, the cursor back on its first cell. Drawn on the
@@ -45,7 +45,7 @@ def body(case):
         # Each session reads the other; reads are open to any hosted caller.
         target = next((word.split("=", 1)[1] for word in words if word.startswith("session_id=")), "")
         caller = ids["typed"] if target == ids["suggestion"] else ids["suggestion"]
-        env = dict(os.environ, UNPEEL_HOME=home.root, UNPEEL_TEST="1", UNPEEL_SESSION_ID=caller)
+        env = dict(os.environ, UNPEEL_HOME=home.root, UNPEEL_TEST="1", UNPEEL_SESSION_ID=caller, **TRUST_SESSION_ENV)
         return subprocess.run(
             [BINARY, "mcp", "sessions", *words],
             capture_output=True, text=True, timeout=60, env=env, cwd=CRATES,

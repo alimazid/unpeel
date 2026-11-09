@@ -149,7 +149,11 @@ fn apps_open_creates_the_companion_session_without_approval() {
         .env("UNPEEL_HOME", &home)
         .env("HOME", &home)
         .env("SHELL", "/bin/bash")
+        // This test process is outside the Session's tree; the private home lets
+        // it act as the Session from here (ADR 0013).
         .env("UNPEEL_SESSION_ID", caller_id)
+        .env("UNPEEL_TEST", "1")
+        .env("UNPEEL_TEST_TRUST_SESSION_ENV", "1")
         // Keep the companion a plain per-process host: this home has no
         // workspace worker to adopt a PTY core.
         .env("UNPEEL_PTY_CORE", "0")

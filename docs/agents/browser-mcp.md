@@ -16,10 +16,11 @@ own** — Unpeel authors the server and owns the tool schema).
 
 - Server: `crates/unpeel-core/src/browser_mcp.rs`, run as
   `unpeel-host __browser_mcp__` (stdio JSON-RPC, hand-rolled like `mcp_host.rs`).
-  Caller identity via `UNPEEL_SESSION_ID`. 13 tools (`browser_open`,
-  `browser_snapshot`, `browser_click`, `browser_fill`, `browser_type`,
-  `browser_press`, `browser_get`, `browser_screenshot`, `browser_wait`,
-  `browser_scroll`, `browser_console`, `browser_close`, `browser_context`), each
+  Caller identity via `self_session_id` (process ancestry; ADR 0013). 13
+  tools (`browser_open`, `browser_snapshot`, `browser_click`, `browser_fill`,
+  `browser_type`, `browser_press`, `browser_get`, `browser_screenshot`,
+  `browser_wait`, `browser_scroll`, `browser_console`, `browser_close`,
+  `browser_context`), each
   translated into one CLI invocation of the bundled `agent-browser` engine. The
   server builds the argv itself, so agents can never pass policy-overriding
   flags. `browser_context` is always callable (it explains access state); the
@@ -161,7 +162,9 @@ own** — Unpeel authors the server and owns the tool schema).
   policies/confirmations, the engine auth vault, per-origin header injection,
   extensions.
 - Debugging: `browser-mcp` lines in `~/.unpeel/hooks/trace.log`. Test with
-  `printf '...' | UNPEEL_SESSION_ID=<id> unpeel-host __browser_mcp__`.
+  `printf '...' | unpeel-host __browser_mcp__` from inside the Session; an
+  exported `UNPEEL_SESSION_ID` from outside its process tree is refused
+  (`scripts/verify-browser.sh` uses the test switch on a private home).
 - **Host-owned install (2026-09-03, open-source prerequisite 2):** the pin
   is `protocol/browser-engine-v1.json` (`version`, `license`, the Apache-2.0
   `notice` URL + sha256, and one `{platform, url, sha256}` per

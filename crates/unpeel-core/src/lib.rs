@@ -160,6 +160,9 @@ pub mod runtime_observer;
 pub mod session_artifacts;
 #[cfg(feature = "native-host")]
 pub mod session_host;
+// Fork-only (#70, #71)
+#[cfg(feature = "native-host")]
+pub mod session_identity;
 // Fork-only (the marker sits apart so `portable_gating_tests` reads the
 // declaration).
 #[cfg(feature = "native-host")]

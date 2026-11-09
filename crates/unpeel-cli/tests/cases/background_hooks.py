@@ -9,7 +9,7 @@ import sys
 import time
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from harness import run, run_cli  # noqa: E402
+from harness import run, run_cli, TRUST_SESSION_ENV  # noqa: E402
 from hook_cancellation import control, fixture_started, read_json  # noqa: E402
 
 
@@ -76,6 +76,7 @@ while True:
         env = dict(os.environ, HOME=home.root, UNPEEL_HOME=home.root,
                    UNPEEL_HOOK_TRACE_FILE=home.path("hooks", "trace.log"),
                    UNPEEL_SESSION_ID=session_id, UNPEEL_SESSION_DIR=session_dir,
+                   UNPEEL_TEST="1", **TRUST_SESSION_ENV,
                    UNPEEL_RUNTIME_GENERATION=str(generation if generation is not None else manifest["runtime_launch_generation"]),
                    UNPEEL_APP_PORT=str(ready["hookPort"]) if deliver else "",
                    UNPEEL_APP_PORT_REGISTRY_FILE=home.path("no-ports"))

@@ -11,7 +11,7 @@ pub(crate) const CURSOR_HOOK_SCRIPT: &str = include_str!(concat!(
 
 pub fn install() -> Result<(), String> {
     let script_path = cursor_hook_script_path();
-    write_executable_script(&script_path, CURSOR_HOOK_SCRIPT, "Cursor hook script")?;
+    write_executable_script(&script_path, &crate::hook_assets::reporter_script(CURSOR_HOOK_SCRIPT), "Cursor hook script")?;
     ensure_cursor_hooks(&script_path)?;
     write_cursor_mcp_config()
 }

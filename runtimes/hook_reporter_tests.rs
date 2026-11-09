@@ -539,6 +539,108 @@ fn every_owned_hook_reporter_tags_http_payload_and_durable_seed_generation() {
     assert!(super::AMP_PLUGIN_SCRIPT.contains("Bun.spawn([\"bash\", notifyPath, body]"));
 }
 
+/// A stand-in for `unpeel-host __session_identity__` that answers `exit_code`
+/// and records the Session variables it was given.
+fn fake_identity_checker(label: &str, exit_code: i32) -> (PathBuf, PathBuf) {
+    let root = temp_path(&format!("{label}-checker-{exit_code}"));
+    let record = root.join("checked");
+    let checker = root.join("unpeel-host");
+    let body = format!(
+        "#!/bin/bash\nprintf '%s|%s|%s\\n' \"$1\" \"$UNPEEL_SESSION_ID\" \"$UNPEEL_SESSION_DIR\" > '{}'\n\
+         printf 'not-an-ancestor\\n'\nexit {exit_code}\n",
+        record.display()
+    );
+    super::write_executable_script(&checker, &body, "fake identity checker").unwrap();
+    (checker, record)
+}
+
+#[test]
+fn every_owned_hook_reporter_drops_a_refused_poster_before_any_marker_or_post() {
+    for case in reporter_cases() {
+        assert_eq!(
+            case.script
+                .matches(super::REPORTER_HOST_BIN_PLACEHOLDER)
+                .count(),
+            1,
+            "{} names the identity checker once, for the installer to fill in",
+            case.label
+        );
+        // 3 is a definite refusal; a verified caller (0), an undecided one
+        // (4) and a checker that fails (1) all keep the old behavior.
+        for (exit_code, delivered) in [(3, false), (0, true), (4, true), (1, true)] {
+            let capture = CaptureServer::start();
+            let session_dir = temp_path(&format!("{}-identity-{exit_code}", case.label));
+            let trace = hook_trace_file(&format!("{}-identity-{exit_code}", case.label));
+            let (checker, record) = fake_identity_checker(case.label, exit_code);
+            let script = case.script.replace(
+                super::REPORTER_HOST_BIN_PLACEHOLDER,
+                &crate::integrations::shared::shell_quote(&checker.to_string_lossy()),
+            );
+            let script = write_temp_hook_script(&format!("{}-identity", case.label), &script);
+            let mut command = Command::new("bash");
+            command
+                .arg(&script)
+                .args(case.args)
+                .env("HOME", hook_env_home(case.label))
+                .env("UNPEEL_APP_PORT", capture.port.to_string())
+                .env("UNPEEL_SESSION_ID", "identity-session")
+                .env("UNPEEL_SESSION_DIR", &session_dir)
+                .env("UNPEEL_RUNTIME_GENERATION", "7")
+                .env_remove("UNPEEL_HOOK_POST_SYNC")
+                .env("UNPEEL_APP_PORT_REGISTRY_FILE", session_dir.join("no-ports"))
+                .env("UNPEEL_HOOK_TRACE_FILE", &trace)
+                .stdin(Stdio::piped())
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped());
+            let mut child = command.spawn().expect("spawn reporter");
+            child
+                .stdin
+                .take()
+                .expect("hook stdin")
+                .write_all(case.input.as_bytes())
+                .expect("write hook stdin");
+            let output = child.wait_with_output().expect("wait for reporter");
+            let label = format!("{} with checker exit {exit_code}", case.label);
+            assert!(output.status.success(), "{label}: {output:?}");
+            assert_eq!(
+                fs::read_to_string(&record).unwrap_or_default().trim(),
+                format!("__session_identity__|identity-session|{}", session_dir.display()),
+                "{label}: the checker gets the Session it must vouch for"
+            );
+            let seeded = session_dir.join("last-hook-event.json").exists();
+            let posted = capture.events_snapshot().len();
+            let refusals = fs::read_to_string(&trace)
+                .unwrap_or_default()
+                .lines()
+                .filter(|line| {
+                    line.contains("hook-refused session=identity-session reason=not-an-ancestor")
+                })
+                .count();
+            if delivered {
+                assert!(seeded, "{label}: durable seed written");
+                assert_eq!(posted, 1, "{label}: event posted");
+                assert_eq!(refusals, 0, "{label}: no refusal traced");
+            } else {
+                assert!(!seeded, "{label}: a refused poster must not write the seed");
+                assert_eq!(posted, 0, "{label}: a refused poster must not post");
+                assert_eq!(refusals, 1, "{label}: the refusal is traced");
+            }
+        }
+    }
+}
+
+#[test]
+fn installed_reporters_name_the_installing_host_binary() {
+    let installed = super::reporter_script(super::NOTIFY_HOOK_SCRIPT);
+    assert!(!installed.contains(super::REPORTER_HOST_BIN_PLACEHOLDER));
+    let host = crate::integrations::install::installing_host_binary().expect("host binary");
+    assert!(host.is_absolute(), "{}", host.display());
+    assert!(installed.contains(&format!(
+        "_unpeel_identity_bin={}",
+        crate::integrations::shared::shell_quote(&host.to_string_lossy())
+    )));
+}
+
 #[test]
 fn notify_hook_script_records_mapped_last_hook_event() {
     let session_dir = temp_path("notify-record-session");
