@@ -6,6 +6,9 @@ import UnpeelShared
 /// follow it). Cheap enough to run per project on every bootstrap.
 enum GitHeadReader {
     private static let branchPrefix = "ref: refs/heads/"
+    private static let symbolicPrefix = "ref:"
+    /// A reftable repo's HEAD text. No branch can have this name.
+    private static let reftableStub = "refs/heads/.invalid"
 
     /// Fork-only (#57): the branch HEAD itself names, or nil when it names
     /// none: a detached checkout, a ref outside refs/heads, or a reftable
@@ -21,15 +24,16 @@ enum GitHeadReader {
     /// Fork-only (#59): the rule of the Rust Host's `git_head::branch`. A ref
     /// outside refs/heads is named after `refs/<kind>/`, as
     /// `WorktreeGit.checkedOutBranch` names it, and the reftable stub is no
-    /// branch.
+    /// branch. Only `remoteProjectSummary` reads it, and only its tests call
+    /// that: the Rust Host publishes every wire's `gitBranch`.
     static func currentBranch(repoPath: String) -> String? {
         guard let trimmed = headContents(repoPath: repoPath) else { return nil }
-        guard trimmed.hasPrefix("ref:") else {
+        guard trimmed.hasPrefix(symbolicPrefix) else {
             // Detached HEAD: show the short commit instead of nothing.
             return trimmed.isEmpty ? nil : String(trimmed.prefix(7))
         }
-        let target = trimmed.dropFirst("ref:".count).trimmingCharacters(in: .whitespaces)
-        guard target != "refs/heads/.invalid" else { return nil }
+        let target = trimmed.dropFirst(symbolicPrefix.count).trimmingCharacters(in: .whitespaces)
+        guard target != reftableStub else { return nil }
         let parts = target.split(separator: "/", maxSplits: 2, omittingEmptySubsequences: false)
         let name = parts.count == 3 && parts[0] == "refs" ? String(parts[2]) : target
         return name.isEmpty ? nil : name

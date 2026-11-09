@@ -114,7 +114,7 @@ final class GitHeadReaderTests: XCTestCase {
         XCTAssertNil(GitHeadReader.currentBranch(repoPath: path))
     }
 
-    func testCurrentBranchKeepsASlashBranchsWholeName() throws {
+    func testCurrentBranchKeepsASlashBranchWhole() throws {
         let path = try checkout(head: "ref: refs/heads/feat/some-thing\n")
 
         XCTAssertEqual(GitHeadReader.currentBranch(repoPath: path), "feat/some-thing")

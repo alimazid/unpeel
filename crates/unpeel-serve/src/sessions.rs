@@ -3895,18 +3895,27 @@ mod tests {
     }
 
     fn git(dir: &std::path::Path, args: &[&str]) {
-        let status = std::process::Command::new("git")
+        let output = std::process::Command::new("git")
             .arg("-C")
             .arg(dir)
-            .args(["-c", "user.name=t", "-c", "user.email=t@t", "-c"])
-            .arg("protocol.file.allow=always")
+            .args([
+                "-c",
+                "user.name=t",
+                "-c",
+                "user.email=t@t",
+                "-c",
+                "commit.gpgsign=false",
+                // `submodule add` clones from a local path.
+                "-c",
+                "protocol.file.allow=always",
+            ])
             .args(args)
             .output()
-            .expect("run git");
+            .expect("git runs");
         assert!(
-            status.status.success(),
+            output.status.success(),
             "git {args:?}: {}",
-            String::from_utf8_lossy(&status.stderr)
+            String::from_utf8_lossy(&output.stderr)
         );
     }
 
