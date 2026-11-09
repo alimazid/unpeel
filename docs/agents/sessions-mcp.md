@@ -108,8 +108,9 @@ Advertised ownership (old mixed `sessions` spellings remain decode-only):
     draft whose keys the user erased, or that a program took without Enter
     and moved on from (#65), is no draft either; one that wraps or whose
     input box moves still is. The call refuses rather than waits: send again
-    once the user is done, or ask them. A target whose PTY core predates the guard (no `draft_guard` in its
-    manifest) is written unchecked, and the result ends `(unguarded: …)`.
+    once the user is done, or ask them. A target whose PTY core predates the
+    guard (no `draft_guard` in its manifest) is written unchecked, and the
+    result ends `(unguarded: …)`.
     PTY proof: `send_text_draft_guard`.
 - `agents`: `list`, `get`, `read_transcript`, `wait`. Every action targets one
   explicit recognized occurrence; the unreleased group-wide wait and summary

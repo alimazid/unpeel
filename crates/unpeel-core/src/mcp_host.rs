@@ -3205,15 +3205,6 @@ fn compact_tail_lines(text: &str, max_lines: usize) -> Vec<String> {
 /// Render a viewport snapshot to plain screen text (right-trimmed rows,
 /// newline-joined) for wait_for_text; the reads use `screen_read`, which
 /// also marks suggested input.
-fn snapshot_screen_text(snapshot: &crate::terminal_viewport::TerminalViewportSnapshot) -> String {
-    let mut body = String::new();
-    for row in &snapshot.viewport_rows {
-        body.push_str(row.text.trim_end());
-        body.push('\n');
-    }
-    body
-}
-
 /// First line of `screen` containing `needle` under the given case rule.
 /// `needle` must already be lowercased when `case_sensitive` is false.
 fn find_matching_line<'a>(screen: &'a str, needle: &str, case_sensitive: bool) -> Option<&'a str> {
@@ -3254,7 +3245,7 @@ fn tool_wait_for_text(args: &Value) -> Result<String, String> {
         crate::mcp_cancel::bail_if_cancelled()?;
         match session_host::request_current_viewport_snapshot(session_id, 0, None) {
             Ok(snapshot) => {
-                let screen = snapshot_screen_text(&snapshot);
+                let screen = snapshot.screen_text();
                 if let Some(line) = find_matching_line(&screen, &needle_cmp, case_sensitive) {
                     return Ok(format!(
                         "Found {needle:?} after {}ms on session {session_id}:\n{}",

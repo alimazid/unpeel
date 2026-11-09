@@ -144,6 +144,15 @@ impl TerminalViewportSnapshot {
             .get(suggested.byte_start as usize..suggested.byte_end as usize)
     }
 
+    /// The rows as newline-terminated lines, right-trimmed: what the menu
+    /// detector and `wait_for_text` read.
+    pub fn screen_text(&self) -> String {
+        self.viewport_rows
+            .iter()
+            .map(|row| format!("{}\n", row.text.trim_end()))
+            .collect()
+    }
+
     /// The cursor's row, right-trimmed, with the suggested input cut out:
     /// what is really on an input line. `None` when the cursor row is
     /// outside `viewport_rows`.
@@ -703,7 +712,7 @@ impl VtTerminal {
         &mut self,
         with_styles: bool,
         cursor: Option<(usize, u16)>,
-    ) -> (Vec<TerminalViewportRow>, Option<AtCursor>) {
+    ) -> (Vec<TerminalViewportRow>, Option<AroundCursor>) {
         let row_count = self.rows as usize;
         let pending_wrap = cursor.is_some() && self.cursor_pending_wrap();
         with_render_scratch(self, |scratch| unsafe {
@@ -717,7 +726,7 @@ impl VtTerminal {
             }
 
             let mut rows = Vec::with_capacity(row_count);
-            let mut at_cursor = None;
+            let mut around_cursor = None;
             while vt::ghostty_render_state_row_iterator_next(scratch.row_iter) {
                 let mut wrapped = false;
                 let mut raw_row: vt::GhosttyRow = 0;
@@ -749,24 +758,24 @@ impl VtTerminal {
                 let cursor_col = cursor
                     .filter(|(row, _)| *row == rows.len())
                     .map(|(_, col)| (col, pending_wrap));
-                let (mut row, marks) = read_row_cells(scratch.cells, with_styles, cursor_col);
+                let (mut row, around) = read_row_cells(scratch.cells, with_styles, cursor_col);
                 row.wrapped = wrapped;
                 rows.push(row);
-                at_cursor = at_cursor.or(marks);
+                around_cursor = around_cursor.or(around);
             }
-            (rows, at_cursor)
+            (rows, around_cursor)
         })
     }
 }
 
 /// What the cursor's row shows around the cursor.
 #[derive(Debug)]
-struct AtCursor {
+struct AroundCursor {
     /// The byte range of the faint text that starts at the cursor (see
     /// [`faint_text_from`]).
     faint_tail: Option<Range<usize>>,
     /// See [`TerminalViewportSnapshot::last_char_before_cursor`].
-    last_before: Option<char>,
+    last_char_before: Option<char>,
 }
 
 /// One rendered cell: its text piece (empty for wide-char spacers, a space
@@ -908,7 +917,7 @@ fn read_row_cells(
     cells: vt::GhosttyRenderStateRowCells,
     with_styles: bool,
     cursor: Option<(u16, bool)>,
-) -> (TerminalViewportRow, Option<AtCursor>) {
+) -> (TerminalViewportRow, Option<AroundCursor>) {
     let mut pieces: Vec<String> = Vec::new();
     let mut cell_styles: Vec<CellStyle> = Vec::new();
     let mut previous_style = CellStyle::default();
@@ -928,11 +937,11 @@ fn read_row_cells(
         .map(|index| index + 1)
         .unwrap_or(0);
     let text: String = pieces[..text_end].concat();
-    let at_cursor = cursor.map(|(col, pending_wrap)| {
+    let around = cursor.map(|(col, pending_wrap)| {
         let col = usize::from(col);
-        AtCursor {
+        AroundCursor {
             faint_tail: faint_text_from(&pieces[..text_end], &cell_styles, col),
-            last_before: last_char_before(&pieces, col + usize::from(pending_wrap)),
+            last_char_before: last_char_before(&pieces, col + usize::from(pending_wrap)),
         }
     });
 
@@ -946,7 +955,7 @@ fn read_row_cells(
         styles,
         wrapped: false,
     };
-    (row, at_cursor)
+    (row, around)
 }
 
 /// The last character in the cells before `end`, blanks and wide-character
@@ -1066,13 +1075,13 @@ fn snapshot_terminal(
             .checked_sub(position)
             .filter(|row| *row >= skip && cursor_absolute_row < end_row)
             .map(|row| (row, cursor_col));
-        let (rendered, at_cursor) = term.viewport_rows_at_cursor(true, cursor_in_pass);
+        let (rendered, around_cursor) = term.viewport_rows_at_cursor(true, cursor_in_pass);
         if skip >= rendered.len() {
             break;
         }
-        if let Some(at_cursor) = at_cursor {
-            last_char_before_cursor = at_cursor.last_before;
-            if let Some(range) = at_cursor.faint_tail {
+        if let Some(around) = around_cursor {
+            last_char_before_cursor = around.last_char_before;
+            if let Some(range) = around.faint_tail {
                 suggested_input = Some(TerminalSuggestedInput {
                     row: (cursor_absolute_row - viewport_start_row) as u16,
                     byte_start: range.start as u32,

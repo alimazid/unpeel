@@ -1497,14 +1497,8 @@ enum Applied {
 fn input_screen(viewport: &Mutex<TerminalViewportState>) -> crate::typed_input::InputScreen {
     let mut viewport = viewport.lock().unwrap();
     let snapshot = viewport.snapshot(0, None);
-    // The visible rows, as `current_screen_text` renders them a second time.
-    let screen_text: String = snapshot
-        .viewport_rows
-        .iter()
-        .map(|row| format!("{}\n", row.text.trim_end()))
-        .collect();
     crate::typed_input::InputScreen {
-        menu: viewport_has_menu_prompt(&screen_text),
+        menu: viewport_has_menu_prompt(&snapshot.screen_text()),
         line: snapshot
             .cursor_row_text_without_suggestion()
             .unwrap_or_default(),
@@ -1512,7 +1506,7 @@ fn input_screen(viewport: &Mutex<TerminalViewportState>) -> crate::typed_input::
             alternate: snapshot.alternate_screen,
             row: u64::from(snapshot.scrollback_rows) + u64::from(snapshot.cursor_row),
         },
-        before_cursor: snapshot
+        last_char_before_cursor: snapshot
             .last_char_before_cursor
             .filter(|_| viewport.cursor_visible()),
         quiet: !viewport.drawn_within(crate::typed_input::QUIET_BEFORE_ENDING)
@@ -2507,10 +2501,14 @@ mod input_screen_tests {
             },
             "counted from the top of scrollback"
         );
-        assert_eq!(screen.before_cursor, Some('i'));
+        assert_eq!(screen.last_char_before_cursor, Some('i'));
         assert!(!screen.quiet, "just drawn");
         viewport.lock().unwrap().feed(b"\x1b[?25l");
-        assert_eq!(input_screen(&viewport).before_cursor, None, "hidden");
+        assert_eq!(
+            input_screen(&viewport).last_char_before_cursor,
+            None,
+            "hidden"
+        );
         viewport
             .lock()
             .unwrap()
