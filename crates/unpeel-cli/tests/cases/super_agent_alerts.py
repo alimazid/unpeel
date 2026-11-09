@@ -250,11 +250,13 @@ def body(case):
         case.check("the finished Worker is not left unread",
                    activity.get(worker, {}).get("unread") is not True, str(activity.get(worker)))
 
-        # 2. The first turn nothing started may be the task's answer.
+        # 2. The first turn nothing started may be the task's answer. Past the
+        # 30 s a paste gets to start a turn, so the task's paste is not its cause.
         def timer_fires():
             with open(os.path.join(folders["q"], "timer"), "w"):
                 pass
 
+        service.read_for(31)
         before = len(log_of("p"))
         timer_fires()
         case.check("the first turn nothing started after a task wakes the Router",
@@ -264,9 +266,8 @@ def body(case):
                    bool(service.wait_for(lambda: not mcp(router, "inbox", {})[0].get("pending"),
                                          timeout=30)), str(mcp(router, "inbox", {})[0])[:400])
 
-        # 3. The next one waits for the next wake batch. Past the 30 s a paste
-        # gets to start a turn, so the task's paste is no longer its cause.
-        service.read_for(31)
+        # 3. The next one waits for the next wake batch.
+        service.read_for(3)
         before = len(log_of("p"))
 
         def waiting_notice():
