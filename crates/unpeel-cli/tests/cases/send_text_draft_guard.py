@@ -276,6 +276,7 @@ def body(case):
         case.check("send_keys onto the draft is refused too",
                    done.returncode != 0 and "Sent 0 of 1 keys" in done.stderr
                    and "Not sent (draft)" in done.stderr, said(done))
+        # A refusal is final: the old paste retried a failed write for 20 s.
         started = time.time()
         done = report("report-onto-a-draft")
         took = time.time() - started

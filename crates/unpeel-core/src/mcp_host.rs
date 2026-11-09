@@ -3461,7 +3461,8 @@ fn tool_report(args: &Value) -> Result<String, String> {
     require_session(target_session_id, WriteAccess::Write)?;
     let report = build_session_report(args, &caller, &target)?;
     let submit = args.get("submit").and_then(Value::as_bool).unwrap_or(true);
-    // Fork-only (#66): `send_text`'s draft guard, refused at once like it.
+    // Fork-only (#66): `send_text`'s draft guard, refused at once like it;
+    // upstream retried a failed paste for 20 s.
     let sanitized = sanitize_paste_text(&report);
     let unguarded = crate::agent_send::deliver_text(target_session_id, &sanitized, submit)?;
     // Fork-only: the result says it was pasted at once.

@@ -22,8 +22,8 @@ Terminal messaging may later become channel-based — terminal↔terminal is the
 default today; see the private "sessions-mcp-channels" design record. Every
 `send_text` delivery carries `[message from id:<sender>, channel: terminal]`.
 Route inter-session text through
-`deliver_text_to_terminal`; do not bake “the other end is a PTY” into future
-channel semantics.
+`agent_send::deliver_text` (fork-only: under the draft guard, #61, #66); do
+not bake “the other end is a PTY” into future channel semantics.
 
 > **Unified surface (2026-07-18, renamed 2026-07-25):** `unpeel-host __mcp__`
 > is now the single
