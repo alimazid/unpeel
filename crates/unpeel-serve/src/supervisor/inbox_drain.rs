@@ -722,7 +722,7 @@ fn deliver(
     let submitted = match io.paste(id, &text, now) {
         Ok(GuardedPaste::Submitted) => true,
         Ok(GuardedPaste::NotSubmitted) => false,
-        Ok(GuardedPaste::NotPasted) => {
+        Ok(GuardedPaste::NotPasted(_)) => {
             release_claim(store, io, id, &batch.batch_id);
             return Outcome::Draft;
         }

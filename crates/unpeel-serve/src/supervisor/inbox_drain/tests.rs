@@ -49,7 +49,7 @@ impl HostIo for FakeIo {
                 return Err(error);
             }
             let result = world.paste_result.unwrap_or(GuardedPaste::Submitted);
-            if result != GuardedPaste::NotPasted {
+            if !matches!(result, GuardedPaste::NotPasted(_)) {
                 world.pastes.push((session_id.into(), text.into()));
             }
             Ok(result)
@@ -660,8 +660,11 @@ fn a_key_just_before_the_paste_writes_nothing_and_releases_the_batch() {
     let mut fx = fixture();
     let idle = router(Status::Idle);
     report(&fx, "result", T0 - 10_000);
-    fx.io
-        .with(|world| world.paste_result = Some(GuardedPaste::NotPasted));
+    fx.io.with(|world| {
+        world.paste_result = Some(GuardedPaste::NotPasted(
+            unpeel_core::session_input::Refusal::Typing,
+        ))
+    });
     fx.step_and_settle(&idle, T0);
     fx.step(&idle, T0 + 500);
     assert_eq!(fx.hold().as_deref(), Some("draft"));

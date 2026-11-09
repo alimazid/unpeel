@@ -5,7 +5,7 @@ use crate::runtime_observer::ActiveRuntimeObservation;
 use crate::state::{current_timestamp_ms, SessionInfo};
 use crate::terminal_viewport::{TerminalViewportSnapshot, TerminalViewportState};
 // Fork-only (#38)
-pub use crate::typed_input::{WriteOrigin, TYPED_SINCE_ERROR};
+pub use crate::typed_input::{WriteOrigin, DRAFT_ERROR, TYPED_SINCE_ERROR};
 use portable_pty::{native_pty_system, Child, CommandBuilder, MasterPty, PtySize};
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet, VecDeque};
@@ -405,6 +405,11 @@ pub struct HostedSessionManifest {
     /// Absent before anyone typed and on manifests from older hosts.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_input_at: Option<u64>,
+    /// Fork-only (#61): this session's PTY core refuses `unless_draft` writes
+    /// (`crate::agent_send`). Absent from older cores, which write them
+    /// unchecked; one that rewrites the manifest drops it.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub draft_guard: bool,
     /// Local service URLs this session's processes currently serve, in the
     /// browsable sense: printed on the session's screen with a loopback
     /// authority and an explicit port, and answering the host's HTTP probe
@@ -654,6 +659,12 @@ pub enum SessionHostCommand {
         /// predate the field ignore it and write.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         unless_typed_since: Option<u64>,
+        /// Fork-only (#61): refuse the write ([`DRAFT_ERROR`]) while the input
+        /// line holds what the user typed and has not sent, unless a select
+        /// menu is up to take it. Hosts that predate the field ignore it and
+        /// write.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        unless_draft: bool,
     },
     Resize {
         cols: u16,
@@ -837,8 +848,9 @@ pub(crate) struct HostRuntime {
     last_runtime_observation: Option<ActiveRuntimeObservation>,
     recent_write_ids: RecentWriteIds,
     hook_input: crate::hook_cancellation::InputTracker,
-    /// Fork-only (#38): when the user last typed; flushed to the manifest's
-    /// `last_input_at` by the viewport scan.
+    /// Fork-only (#38, #61): when the user last typed, flushed to the
+    /// manifest's `last_input_at` by the viewport scan, and what they have not
+    /// sent yet.
     typing: crate::typed_input::TypingClock,
 }
 
@@ -5848,6 +5860,14 @@ pub(crate) fn build_session_timer_jobs(inputs: SessionJobInputs) -> Vec<HostTime
                     .lock()
                     .unwrap_or_else(|poisoned| poisoned.into_inner())
                     .last_runtime_observation = tracker.current.clone();
+                // Fork-only (#61): another program holds the line now.
+                if next.is_some() {
+                    runtime_for_observer
+                        .lock()
+                        .unwrap_or_else(|poisoned| poisoned.into_inner())
+                        .typing
+                        .forget_draft();
+                }
                 if next.is_some() || clear_pending {
                     let updated =
                         update_manifest_session(&runtime_observer_session_id, |manifest| {
@@ -6261,6 +6281,7 @@ pub(crate) fn start_host(
             terminal_modes: None,
             screen_changed_at: None,
             last_input_at: None,
+            draft_guard: true, // Fork-only (#61)
             detected_local_urls: Vec::new(),
             heartbeat_at: current_timestamp_ms(),
             updated_at: current_timestamp_ms(),
@@ -6422,6 +6443,7 @@ pub(crate) fn start_host(
             manifest.exit_code = None;
             manifest.host_build_id = host_build_id.clone();
             manifest.host_protocol_version = Some(SESSION_HOST_PROTOCOL_VERSION);
+            manifest.draft_guard = true; // Fork-only (#61)
             manifest.runtime_launch_generation = u64::from(launches_stable_runtime);
             manifest.runtime_launch_pending = launches_resume_agent_runtime;
             manifest.runtime_launched_at = initial_runtime_launched_at;
@@ -7494,6 +7516,7 @@ exit "${UNPEEL_FAKE_PROVIDER_STATUS:-0}"
             terminal_modes: None,
             screen_changed_at: None,
             last_input_at: None,
+            draft_guard: false,
             detected_local_urls: Vec::new(),
             heartbeat_at,
             updated_at,
@@ -7617,6 +7640,7 @@ exit "${UNPEEL_FAKE_PROVIDER_STATUS:-0}"
             terminal_modes: None,
             screen_changed_at: None,
             last_input_at: None,
+            draft_guard: false,
             detected_local_urls: Vec::new(),
             heartbeat_at: 1,
             updated_at: 1,

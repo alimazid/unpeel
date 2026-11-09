@@ -11,7 +11,7 @@
 //! required beyond the hosts themselves.
 
 use crate::screen_read;
-use crate::session_host::{self, HostedSessionManifest, HostedSessionState, SessionHostCommand};
+use crate::session_host::{self, HostedSessionManifest, HostedSessionState};
 use crate::session_input::sanitize_paste_text;
 #[cfg(test)]
 use crate::session_input::{encode_bracketed_paste, looks_like_it_contains_a_path};
@@ -2214,7 +2214,10 @@ pub(crate) fn legacy_sessions_tool_definitions() -> Vec<Value> {
         approval by default — the call may block up to ~2 minutes on the dialog — and the \
         delivered text is prefixed with a provenance header, \
         '[message from id:<your session id>, channel: terminal]', so the receiving agent \
-        knows who is talking and can reply to that id.",
+        knows who is talking and can reply to that id. The call fails with 'Not sent (typing)' \
+        while the user is typing in that session and 'Not sent (draft)' while their unsent \
+        input is on its line: nothing was written, and nothing queues it, so send again once \
+        they are done. A faint proposed reply (⟪suggested: …⟫) doesn't count.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -2233,7 +2236,10 @@ pub(crate) fn legacy_sessions_tool_definitions() -> Vec<Value> {
         a menu. Supported keys: enter, tab, shift+tab, space, esc, up, down, left, right, \
         home, end, pageup, pagedown, backspace, delete, ctrl+<letter>, or any single character. \
         Same approval rule as send_text: every target asks the user first unless that \
-        caller-to-target pair was already approved or the live policy is Always allow.",
+        caller-to-target pair was already approved or the live policy is Always allow. Same \
+        refusals too ('typing', 'draft'), stopping at the key they hit; the result says how \
+        many keys went in. A select menu takes the keys, so a draft under one doesn't refuse \
+        them.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -3371,9 +3377,9 @@ fn tool_send_text(args: &Value) -> Result<String, String> {
         Some(header) => format!("{header}\n{sanitized}"),
         None => sanitized.clone(),
     };
-    deliver_text_to_terminal(session_id, &delivered, submit)?;
+    let unguarded = crate::agent_send::deliver_text(session_id, &delivered, submit)?; // Fork-only (#61)
     Ok(format!(
-        "Sent {} characters to session {}{}{}",
+        "Sent {} characters to session {}{}{}{unguarded}",
         sanitized.chars().count(),
         session_id,
         if submit { " and pressed Enter" } else { "" },
@@ -3415,18 +3421,20 @@ fn tool_send_keys(args: &Value) -> Result<String, String> {
     }
 
     require_session(session_id, WriteAccess::Write)?;
+    let guarded = crate::agent_send::Keys::start(session_id, sequences.len()); // Fork-only (#61)
     for (index, sequence) in sequences.iter().enumerate() {
         if index > 0 && delay_ms > 0 {
             thread::sleep(Duration::from_millis(delay_ms));
             // A cancelled caller stops typing between keys, never mid-sequence.
             crate::mcp_cancel::bail_if_cancelled()?;
         }
-        write_to_session(session_id, sequence)?;
+        guarded.write(index, sequence)?;
     }
     Ok(format!(
-        "Sent {} keys to session {}",
+        "Sent {} keys to session {}{}",
         sequences.len(),
-        session_id
+        session_id,
+        guarded.note()
     ))
 }
 
@@ -4097,18 +4105,9 @@ fn load_manifest(session_id: &str) -> Option<HostedSessionManifest> {
     serde_json::from_slice(&raw).ok()
 }
 
-fn write_to_session(session_id: &str, data: &str) -> Result<(), String> {
-    session_host::send_command(
-        session_id,
-        &SessionHostCommand::Write {
-            data: data.to_string(),
-            write_id: None,
-            origin: session_host::WriteOrigin::Program, // Fork-only (#38)
-            unless_typed_since: None,
-        },
-    )
-}
-
+/// Fork-only (#61): `send_text` delivers through `agent_send::deliver_text`
+/// instead, under the draft guard.
+///
 /// Single delivery choke point for typing an inter-session message into a
 /// target session's terminal (the proven bracketed-paste + settle + double
 /// Enter recipe). Terminal-to-terminal is today's only message channel; when
@@ -4511,6 +4510,7 @@ mod tests {
             terminal_modes: None,
             screen_changed_at: None,
             last_input_at: None,
+            draft_guard: false,
             detected_local_urls: Vec::new(),
             heartbeat_at: 1,
             updated_at: 1,

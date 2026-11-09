@@ -5,7 +5,9 @@
 //! Host actions such as screenshot requests. UI clients send semantic actions;
 //! they never construct terminal escape sequences themselves.
 
-use crate::session_host::{self, SessionHostCommand, WriteOrigin, TYPED_SINCE_ERROR};
+use crate::session_host::{self, SessionHostCommand, WriteOrigin};
+// Fork-only (#61)
+pub use crate::typed_input::Refusal;
 use std::thread;
 use std::time::Duration;
 
@@ -38,12 +40,13 @@ pub fn looks_like_it_contains_a_path(text: &str) -> bool {
 }
 
 /// Fork-only (#38): who a write speaks for, its socket timeout, and the
-/// guard that refuses it once the user has typed.
+/// guards that refuse it because of the user's typing.
 #[derive(Debug, Clone, Copy)]
 struct WriteTerms {
     origin: WriteOrigin,
     timeout: Option<Duration>,
     unless_typed_since: Option<u64>,
+    unless_draft: bool,
 }
 
 impl WriteTerms {
@@ -52,27 +55,42 @@ impl WriteTerms {
             origin: WriteOrigin::Program,
             timeout,
             unless_typed_since: None,
+            unless_draft: false,
+        }
+    }
+
+    /// Fork-only (#61): an agent's write, refused while the user is typing
+    /// since `since` or has a draft on the line.
+    fn guarded(since: u64) -> Self {
+        Self {
+            unless_typed_since: Some(since),
+            unless_draft: true,
+            ..Self::program(None)
         }
     }
 }
 
-/// `Ok(false)`: the session host refused the write because the user typed
-/// at or after `terms.unless_typed_since` (fork-only, #38).
-fn write_to_session(session_id: &str, data: &str, terms: WriteTerms) -> Result<bool, String> {
+/// `Ok(Some(_))`: the session host refused the write because of the user's
+/// typing (fork-only, #38, #61).
+fn write_to_session(
+    session_id: &str,
+    data: &str,
+    terms: WriteTerms,
+) -> Result<Option<Refusal>, String> {
     let command = SessionHostCommand::Write {
         data: data.to_string(),
         write_id: None,
         origin: terms.origin,
         unless_typed_since: terms.unless_typed_since,
+        unless_draft: terms.unless_draft,
     };
     let sent = match terms.timeout {
         Some(timeout) => session_host::send_command_with_timeout(session_id, &command, timeout),
         None => session_host::send_command(session_id, &command),
     };
     match sent {
-        Ok(()) => Ok(true),
-        Err(error) if error == TYPED_SINCE_ERROR => Ok(false),
-        Err(error) => Err(error),
+        Ok(()) => Ok(None),
+        Err(error) => Refusal::from_wire(&error).map(Some).ok_or(error),
     }
 }
 
@@ -105,8 +123,9 @@ pub fn deliver_sanitized_text_as_user(
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum GuardedPaste {
     Submitted,
-    /// The user typed before the paste: nothing was written.
-    NotPasted,
+    /// Refused before anything was written: the user typed, or (#61) left a
+    /// draft on the line.
+    NotPasted(Refusal),
     /// The user typed after the paste: it waits on the line, unsubmitted.
     NotSubmitted,
 }
@@ -128,6 +147,29 @@ pub fn paste_unless_typed(
     deliver_sanitized_text_with_timeout(session_id, sanitized, true, terms)
 }
 
+/// Fork-only (#61): an agent's `send_text` (`crate::agent_send`). The PTY
+/// core refuses it, with nothing written, while the user typed at or after
+/// `since` or has a draft on the line. A host that predates a guard writes
+/// anyway.
+pub fn paste_unless_user_is_typing(
+    session_id: &str,
+    sanitized: &str,
+    submit: bool,
+    since: u64,
+) -> Result<GuardedPaste, String> {
+    deliver_sanitized_text_with_timeout(session_id, sanitized, submit, WriteTerms::guarded(since))
+}
+
+/// Fork-only (#61): one key of an agent's `send_keys`, under the same guards.
+/// A menu takes the keys, so a draft under one does not refuse them.
+pub fn write_key_unless_user_is_typing(
+    session_id: &str,
+    sequence: &str,
+    since: u64,
+) -> Result<Option<Refusal>, String> {
+    write_to_session(session_id, sequence, WriteTerms::guarded(since))
+}
+
 fn deliver_sanitized_text_with_timeout(
     session_id: &str,
     sanitized: &str,
@@ -140,14 +182,16 @@ fn deliver_sanitized_text_with_timeout(
 }
 
 /// The bracketed paste, a settle, then Enter twice. Fork-only (#38):
-/// `write` answers `Ok(false)` when the session host refused it.
+/// `write` answers `Ok(Some(_))` when the session host refused it.
 fn paste_recipe(
     sanitized: &str,
     submit: bool,
-    mut write: impl FnMut(&str) -> Result<bool, String>,
+    mut write: impl FnMut(&str) -> Result<Option<Refusal>, String>,
 ) -> Result<GuardedPaste, String> {
-    if !sanitized.is_empty() && !write(&encode_bracketed_paste(sanitized))? {
-        return Ok(GuardedPaste::NotPasted);
+    if !sanitized.is_empty() {
+        if let Some(refusal) = write(&encode_bracketed_paste(sanitized))? {
+            return Ok(GuardedPaste::NotPasted(refusal));
+        }
     }
     if submit {
         let settle = if looks_like_it_contains_a_path(sanitized) {
@@ -156,8 +200,12 @@ fn paste_recipe(
             TEXT_SETTLE_DELAY_MS
         };
         thread::sleep(Duration::from_millis(settle));
-        if !write("\r")? {
-            return Ok(GuardedPaste::NotSubmitted);
+        if let Some(refusal) = write("\r")? {
+            return Ok(if sanitized.is_empty() {
+                GuardedPaste::NotPasted(refusal)
+            } else {
+                GuardedPaste::NotSubmitted
+            });
         }
         thread::sleep(Duration::from_millis(ENTER_FOLLOWUP_DELAY_MS));
         // The first Enter submitted the paste; a refused second one only
@@ -217,21 +265,40 @@ mod tests {
     /// The recipe against a session host that refuses every write after
     /// the first `allowed`.
     fn paste_with_refusals_after(allowed: usize) -> (Result<GuardedPaste, String>, Vec<String>) {
+        recipe_with_refusals_after("batch", allowed, Refusal::Typing)
+    }
+
+    fn recipe_with_refusals_after(
+        text: &str,
+        allowed: usize,
+        refusal: Refusal,
+    ) -> (Result<GuardedPaste, String>, Vec<String>) {
         let mut written = Vec::new();
-        let result = paste_recipe("batch", true, |data| {
-            let refused = written.len() >= allowed;
-            if !refused {
-                written.push(data.to_owned());
+        let result = paste_recipe(text, true, |data| {
+            if written.len() >= allowed {
+                return Ok(Some(refusal));
             }
-            Ok(!refused)
+            written.push(data.to_owned());
+            Ok(None)
         });
         (result, written)
     }
 
     #[test]
+    fn the_refusal_says_why_nothing_was_written() {
+        let (result, written) = recipe_with_refusals_after("batch", 0, Refusal::Draft);
+        assert_eq!(result, Ok(GuardedPaste::NotPasted(Refusal::Draft)));
+        assert!(written.is_empty());
+        // A bare Enter on someone's draft: nothing was pasted either.
+        let (result, written) = recipe_with_refusals_after("", 0, Refusal::Draft);
+        assert_eq!(result, Ok(GuardedPaste::NotPasted(Refusal::Draft)));
+        assert!(written.is_empty());
+    }
+
+    #[test]
     fn a_refused_write_stops_the_guarded_paste() {
         let (result, written) = paste_with_refusals_after(0);
-        assert_eq!(result, Ok(GuardedPaste::NotPasted));
+        assert_eq!(result, Ok(GuardedPaste::NotPasted(Refusal::Typing)));
         assert!(written.is_empty());
         let (result, written) = paste_with_refusals_after(1);
         assert_eq!(result, Ok(GuardedPaste::NotSubmitted));

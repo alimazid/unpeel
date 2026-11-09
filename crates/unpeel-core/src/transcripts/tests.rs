@@ -101,6 +101,7 @@ fn test_manifest(command: &str) -> HostedSessionManifest {
         terminal_modes: None,
         screen_changed_at: None,
         last_input_at: None,
+        draft_guard: false,
         detected_local_urls: Vec::new(),
         heartbeat_at: 0,
         updated_at: 0,
