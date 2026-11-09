@@ -272,6 +272,18 @@ final class RemoteHostRuntimeTests: XCTestCase {
         XCTAssertFalse(RemoteHostRuntime.snapshotContentEqual(marked, freedOnly))
     }
 
+    /// Fork-only (#63): a site starting is the only change on its row; a
+    /// snapshot judged equal never reached the project's globe.
+    func testContentEqualityNoticesLocalSiteChanges() {
+        let quiet = makeSnapshot(sessions: [makeSession(id: "server")])
+        let serving = makeSnapshot(sessions: [makeSession(
+            id: "server", detectedLocalURLs: ["http://127.0.0.1:5173/"]
+        )])
+
+        XCTAssertFalse(RemoteHostRuntime.snapshotContentEqual(quiet, serving))
+        XCTAssertTrue(RemoteHostRuntime.snapshotContentEqual(serving, serving))
+    }
+
     func testContentEqualityNoticesWorkspaceSettingsChanges() {
         let first = makeSnapshot(workspaceSettings: makeWorkspaceSettings(menuAttention: true))
         let second = makeSnapshot(workspaceSettings: makeWorkspaceSettings(menuAttention: false))
@@ -3244,7 +3256,8 @@ final class RemoteHostRuntimeTests: XCTestCase {
         latestAlertBody: String? = nil,
         latestAlertAt: Int64? = nil,
         superAgent: Bool = false,
-        superAgentRouterID: String? = nil
+        superAgentRouterID: String? = nil,
+        detectedLocalURLs: [String] = []
     ) -> RemoteSessionSummary {
         RemoteSessionSummary(
             id: id,
@@ -3264,6 +3277,7 @@ final class RemoteHostRuntimeTests: XCTestCase {
             lastOutputPreview: preview,
             latestAlertBody: latestAlertBody,
             latestAlertAtUnixMs: latestAlertAt,
+            detectedLocalURLs: detectedLocalURLs,
             superAgent: superAgent,
             superAgentRouterID: superAgentRouterID
         )

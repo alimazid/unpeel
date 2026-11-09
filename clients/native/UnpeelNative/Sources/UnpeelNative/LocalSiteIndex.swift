@@ -20,11 +20,13 @@ struct LocalSiteIndex: Equatable {
 
     static let empty = LocalSiteIndex(servers: [], parentByProjectID: [:])
 
+    /// With no server, the project chains are dropped too, so a project
+    /// edit alone never republishes an index that serves nothing.
     init(servers: [Server], parentByProjectID: [String: String]) {
         self.servers = servers
             .filter { !$0.urls.isEmpty }
             .sorted { ($0.createdAt, $0.sessionID) < ($1.createdAt, $1.sessionID) }
-        self.parentByProjectID = parentByProjectID
+        self.parentByProjectID = self.servers.isEmpty ? [:] : parentByProjectID
     }
 
     /// The Local Host's word: each running Session's host-probed URLs.

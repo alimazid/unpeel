@@ -38,6 +38,15 @@ final class LocalSiteIndexTests: XCTestCase {
         XCTAssertEqual(forward.candidates(forProjectFamilyOf: "site"), ["http://localhost:1111/", "http://localhost:2222/"])
     }
 
+    func testAnIndexThatServesNothingIsEmpty() {
+        let index = LocalSiteIndex(
+            servers: [Server(sessionID: "shell", projectID: "group", createdAt: 1, urls: [])],
+            parentByProjectID: ["group": "site"]
+        )
+        XCTAssertEqual(index, .empty)
+        XCTAssertTrue(index.isEmpty)
+    }
+
     func testAParentCycleEndsTheWalk() {
         let index = LocalSiteIndex(
             servers: [Server(sessionID: "s", projectID: "a", createdAt: 1, urls: ["http://localhost:1/"])],
