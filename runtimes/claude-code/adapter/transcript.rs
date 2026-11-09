@@ -190,11 +190,11 @@ fn context_usage(lines: &[&str]) -> Option<ContextUsage> {
                 if compacted_to.is_none()
                     && value.get("subtype").and_then(Value::as_str) == Some("compact_boundary") =>
             {
+                // What it left is unknown: so is the context.
                 compacted_to = Some(
                     value
                         .pointer("/compactMetadata/postTokens")
-                        .and_then(Value::as_u64)
-                        .unwrap_or(0),
+                        .and_then(Value::as_u64)?,
                 );
             }
             Some("assistant") if value.get("isSidechain").and_then(Value::as_bool) != Some(true) => {

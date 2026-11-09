@@ -1253,12 +1253,61 @@ fn claude_context_after_a_compaction_is_what_it_left() {
     assert_eq!(context_in(&next).map(|usage| usage.tokens), Some(30_005));
 }
 
+/// A compaction record without what it left: the context is unknown, not
+/// empty.
+#[test]
+fn claude_context_after_a_compaction_of_unknown_size_is_unknown() {
+    let boundary = serde_json::json!({
+        "type": "system",
+        "subtype": "compact_boundary",
+        "compactMetadata": { "trigger": "manual" },
+    })
+    .to_string();
+    let lines = [
+        claude_reply("claude-opus-5-5", false, 1, 6_000, 560_000),
+        boundary,
+    ];
+    assert_eq!(context_in(&lines), None);
+}
+
+/// Claude Code 2.1.312's own transcript of a turn and a `/compact` after it
+/// (paths and signatures removed).
+#[test]
+fn claude_context_reads_a_real_transcript() {
+    let raw = std::fs::read_to_string(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../runtimes/claude-code/fixtures/context-compaction.jsonl"
+    ))
+    .expect("fixture");
+    let lines: Vec<String> = raw.lines().map(str::to_owned).collect();
+    let boundary = lines
+        .iter()
+        .position(|line| line.contains("\"compact_boundary\""))
+        .expect("a compaction");
+    let haiku = Some("claude-haiku-4-5-20251001".to_owned());
+    assert_eq!(
+        context_in(&lines[..boundary]),
+        Some(ContextUsage {
+            tokens: 48_745,
+            model: haiku.clone(),
+        })
+    );
+    assert_eq!(
+        context_in(&lines),
+        Some(ContextUsage {
+            tokens: 13_307,
+            model: haiku,
+        })
+    );
+}
+
 #[test]
 fn context_percent_rounds_like_claude_codes_status_line() {
     let reading = |tokens, window| ContextReading {
         tokens,
         model: None,
         window,
+        compact_command: None,
     };
     assert_eq!(reading(151_221, Some(1_000_000)).percent(), Some(15));
     assert_eq!(reading(395_000, Some(1_000_000)).percent(), Some(40));
@@ -1285,4 +1334,6 @@ fn claude_context_windows_come_from_its_runtime_package() {
         assert_eq!(context_window(claude, model), window, "{model}");
     }
     assert_eq!(context_window(provider("codex"), "claude-opus-5-5"), None);
+    assert_eq!(compact_command(claude).as_deref(), Some("/compact"));
+    assert_eq!(compact_command(provider("codex")), None);
 }

@@ -49,8 +49,9 @@ pub struct RuntimeDescriptor {
     /// asked (`bypassesApprovals` on a preset row).
     #[serde(default)]
     pub approvals: RuntimeApprovals,
-    /// Fork-only (#64): each model's context window, for the Host's Worker
-    /// compaction. A model none of them names is never compacted.
+    /// Fork-only (#64): each model's context window and the command that
+    /// compacts, for the Host's Worker compaction. A model none of the
+    /// windows names, or a runtime with no command, is never compacted.
     #[serde(default)]
     pub context: RuntimeContext,
     /// User-facing description of what the package's installer edits, and
@@ -269,12 +270,15 @@ pub struct RuntimeApprovals {
     pub bypass_flags: Vec<String>,
 }
 
-/// Fork-only (#64): context windows by model id prefix (`[[context.windows]]`).
+/// Fork-only (#64): context windows by model id prefix, and how to compact.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct RuntimeContext {
     #[serde(default)]
     pub windows: Vec<RuntimeContextWindow>,
+    /// Typed as keys, then Enter, into an idle prompt (`/compact`).
+    #[serde(default)]
+    pub compact_command: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -1122,6 +1126,17 @@ pub fn validate_runtime_descriptors(
             if window.tokens == 0 {
                 errors.push(format!(
                     "{prefix}: context window for '{model_prefix}' must be at least 1 token"
+                ));
+            }
+        }
+        if let Some(command) = &descriptor.context.compact_command {
+            if command.is_empty()
+                || command.trim() != command
+                || command.chars().any(char::is_control)
+            {
+                errors.push(format!(
+                    "{prefix}: context.compact_command '{command}' must be non-empty, with no \
+                     surrounding space or control characters"
                 ));
             }
         }
@@ -2169,8 +2184,24 @@ attention_reliable = true
     }
 
     #[test]
+    fn a_compact_command_is_one_plain_line() {
+        let mut runtime = parsed("alpha", "com.example.alpha");
+        runtime.descriptor.context.compact_command = Some("/compact".into());
+        assert!(validate_runtime_descriptors(vec![runtime.clone()]).is_ok());
+        for command in ["", " /compact", "/compact\r"] {
+            let mut invalid = runtime.clone();
+            invalid.descriptor.context.compact_command = Some(command.into());
+            let error = validate_runtime_descriptors(vec![invalid])
+                .unwrap_err()
+                .to_string();
+            assert!(error.contains("compact_command"), "{command:?}: {error}");
+        }
+    }
+
+    #[test]
     fn a_models_context_window_is_its_longest_matching_prefix() {
         let context = RuntimeContext {
+            compact_command: None,
             windows: vec![
                 RuntimeContextWindow {
                     model_prefix: "model".into(),

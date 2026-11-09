@@ -15,8 +15,10 @@ const MILLION: u64 = 1_000_000;
 struct World {
     readings: HashMap<String, ContextReading>,
     terminal: TerminalFacts,
+    deny: bool,
     refuse: Vec<SendOutcome>,
     sends: Vec<(String, u64)>,
+    commands: Vec<String>,
     reads: usize,
 }
 
@@ -39,12 +41,16 @@ impl CompactionHost for FakeHost {
     fn terminal(&self, _session_id: &str) -> Option<TerminalFacts> {
         self.with(|world| Some(world.terminal))
     }
-    fn send(&self, session_id: &str, since: u64) -> Result<SendOutcome, String> {
+    fn writes_denied(&self) -> bool {
+        self.with(|world| world.deny)
+    }
+    fn send(&self, session_id: &str, command: &str, since: u64) -> Result<SendOutcome, String> {
         self.with(|world| {
             if !world.refuse.is_empty() {
                 return Ok(world.refuse.remove(0));
             }
             world.sends.push((session_id.to_owned(), since));
+            world.commands.push(command.to_owned());
             Ok(SendOutcome::Submitted)
         })
     }
@@ -136,6 +142,7 @@ impl Fixture {
                     tokens,
                     model: Some(model.into()),
                     window,
+                    compact_command: Some("/compact".into()),
                 },
             )
         });
@@ -147,13 +154,37 @@ impl Fixture {
     }
 
     fn step(&mut self, status: Status, now: u64) {
+        self.step_row(worker(status), now);
+    }
+
+    /// A rescan; a send it starts is waited for and applied.
+    fn step_row(&mut self, row: SessionRow, now: u64) {
         let scope = Scope {
             router: ROUTER,
             workers: &self.workers,
             percent: self.percent,
         };
+        self.compaction.step(&[row], Some(scope), &self.drain, now);
+        self.settle(now);
+    }
+
+    fn settle(&mut self, now: u64) {
+        let sending = self
+            .compaction
+            .workers
+            .get(WORKER)
+            .and_then(|worker| worker.sent.as_ref())
+            .is_some_and(|sent| !sent.typed);
+        if sending {
+            self.compaction.settle_for_test(now);
+        }
+    }
+
+    fn armed(&self) -> bool {
         self.compaction
-            .step(&[worker(status)], Some(scope), &self.drain, now);
+            .workers
+            .get(WORKER)
+            .is_none_or(|worker| worker.armed)
     }
 
     /// A Worker turn ended at `at`: its Finished edge, then the rescan.
@@ -194,6 +225,9 @@ fn a_worker_this_full_when_its_turn_ends_is_compacted_and_the_router_told() {
         [(WORKER.to_owned(), T0 - 3_000)],
         "typed under the typing guard's 3 s window"
     );
+    assert_eq!(fx.host.with(|world| world.commands.clone()), ["/compact"]);
+    assert!(fx.queued().is_empty(), "told once it starts");
+    fx.step(Status::Busy, T0 + 1_000);
     let queued = fx.queued();
     assert_eq!(queued.len(), 1, "{queued:?}");
     let notice = &queued[0];
@@ -304,18 +338,16 @@ fn an_older_pty_core_is_never_typed_into() {
 fn a_refused_send_tries_again_and_counts_only_once_it_lands() {
     let mut fx = fixture();
     fx.at(500_000);
-    fx.host.with(|world| {
-        world.refuse = vec![
-            SendOutcome::NotTyped(Refusal::Typing),
-            SendOutcome::NotTyped(Refusal::Draft),
-        ]
-    });
+    fx.host
+        .with(|world| world.refuse = vec![SendOutcome::NotTyped, SendOutcome::NotTyped]);
     fx.turn_ends(T0);
     fx.step(Status::Idle, T0 + 1_000);
+    fx.step(Status::Busy, T0 + 1_500);
     assert!(fx.queued().is_empty(), "nothing was typed");
     fx.step(Status::Idle, T0 + 2_000);
     fx.step(Status::Idle, T0 + 4_000);
     assert_eq!(fx.sends(), [(WORKER.to_owned(), T0 + 1_000)]);
+    fx.step(Status::Busy, T0 + 5_000);
     assert_eq!(fx.queued().len(), 1);
 }
 
@@ -371,8 +403,13 @@ fn a_model_with_no_known_window_is_never_compacted_and_said_once() {
     fx.turn_ends(T0);
     fx.turn_ends(T0 + 60_000);
     assert!(fx.sends().is_empty());
+    // Each model once, however the Worker switches between them.
+    fx.context(900_000, "claude-opus-4-1", None);
+    fx.turn_ends(T0 + 120_000);
+    fx.context(900_000, "claude-opus-4-5", None);
+    fx.turn_ends(T0 + 180_000);
     let queued = fx.queued();
-    assert_eq!(queued.len(), 1, "{queued:?}");
+    assert_eq!(queued.len(), 2, "{queued:?}");
     assert_eq!(queued[0].status.as_deref(), Some("not_compacted"));
     assert_eq!(queued[0].priority, Priority::RideAlong);
     assert!(
@@ -430,7 +467,7 @@ fn the_host_owns_the_turn_its_compaction_starts() {
 }
 
 #[test]
-fn a_compaction_that_never_starts_owns_nothing() {
+fn a_compaction_that_never_starts_owns_nothing_and_tells_nobody() {
     let mut fx = fixture();
     fx.at(450_000);
     fx.turn_ends(T0);
@@ -440,4 +477,72 @@ fn a_compaction_that_never_starts_owns_nothing() {
         None
     );
     assert_eq!(fx.compaction.compaction_sent_at(WORKER, T0 + 1_000), None);
+    assert!(fx.queued().is_empty(), "nothing was compacted");
+    assert!(fx.armed(), "the next full turn end compacts");
+    fx.turn_ends(T0 + 60_000);
+    assert_eq!(fx.sends().len(), 2);
+}
+
+#[test]
+fn writing_to_other_sessions_denied_is_never_typed_through() {
+    let mut fx = fixture();
+    fx.host.with(|world| world.deny = true);
+    fx.at(500_000);
+    fx.turn_ends(T0);
+    fx.host.with(|world| world.deny = false);
+    fx.step(Status::Idle, T0 + 1_000);
+    assert!(fx.sends().is_empty(), "dropped for that turn");
+}
+
+#[test]
+fn a_scheduled_run_is_never_compacted() {
+    let mut fx = fixture();
+    let run = SessionRow {
+        spawned_by: Some("schedule:sch_1".into()),
+        ..worker(Status::Idle)
+    };
+    assert!(is_run_session(&run));
+    fx.at(900_000);
+    fx.compaction.turn_finished(&run, T0);
+    fx.step_row(run.clone(), T0);
+    fx.step_row(run, T0 + 1_000);
+    assert!(fx.sends().is_empty());
+    assert_eq!(fx.host.with(|world| world.reads), 0);
+}
+
+#[test]
+fn a_runtime_with_no_compact_command_is_never_compacted() {
+    let mut fx = fixture();
+    fx.at(900_000);
+    fx.host.with(|world| {
+        if let Some(reading) = world.readings.get_mut(WORKER) {
+            reading.compact_command = None;
+        }
+    });
+    fx.turn_ends(T0);
+    fx.step(Status::Idle, T0 + 1_000);
+    assert!(fx.sends().is_empty());
+}
+
+/// The Router restarting mid-compaction (a Resume) must not hear the
+/// compaction's finish as the Worker's.
+#[test]
+fn a_compaction_keeps_its_claim_while_the_router_is_away() {
+    let mut fx = fixture();
+    fx.at(450_000);
+    fx.turn_ends(T0);
+    fx.step(Status::Busy, T0 + 1_000);
+    fx.compaction
+        .step(&[worker(Status::Busy)], None, &fx.drain, T0 + 2_000);
+    assert_eq!(
+        fx.compaction.compaction_sent_at(WORKER, T0 + 1_000),
+        Some(T0)
+    );
+    fx.step(Status::Busy, T0 + 3_000);
+    fx.compaction
+        .turn_finished(&worker(Status::Idle), T0 + 30_000);
+    assert_eq!(
+        fx.compaction.compaction_sent_at(WORKER, T0 + 1_000),
+        Some(T0)
+    );
 }

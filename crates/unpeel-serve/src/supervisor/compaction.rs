@@ -2,33 +2,36 @@
 //! `supervisor_compact_percent` full when one of its turns ends. The figure
 //! is the one Claude Code's status line shows, read from the Worker's
 //! transcript against its model's window from the runtime package; a model
-//! the package names no window for is never compacted. It types `/compact`
-//! while the prompt cache is still warm, at most [`WARM_MS`] after the turn
-//! ended, under the PTY core's typing and draft guard (ADR 0011), and only
-//! into an idle Worker with no menu on screen, no Inbox items waiting, and
-//! no Router write a moment before. A miss waits for the next turn end.
+//! the package names no window for is never compacted. It types the
+//! package's compact command while the prompt cache is still warm, at most
+//! [`WARM_MS`] after the turn ended, under the PTY core's typing and draft
+//! guard (ADR 0011), off the tick thread, and only into an idle Worker with
+//! no menu on screen, no Inbox items waiting, no Router write a moment
+//! before, and writing to other sessions not set to Deny. A miss waits for
+//! the next turn end. Scheduled Runs are never compacted.
 //!
 //! The compaction is a turn of its own (7501 working, then done), which the
 //! Worker alerts would report as a finish or a quiet end; they ask
 //! [`CompactionView`] and stay silent for it. The Router hears one
-//! ride-along notice instead.
+//! ride-along notice instead, once the compaction has started.
 
 use std::collections::{HashMap, HashSet};
+use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::Arc;
 use std::time::Duration;
 
 use unpeel_core::session_inbox::{NewItem, Store};
-use unpeel_core::session_input::Refusal;
 use unpeel_core::transcripts::ContextReading;
 
 use super::notices;
 use super::worker_alerts::{DrainView, SELF_CAUSED_MS};
+use crate::run_sessions::is_run_session;
 use crate::sessions::{SessionRow, Status};
 
 /// A turn end this old is past a 5-minute prompt cache: compacting then
 /// would re-read the whole context uncached.
 pub const WARM_MS: u64 = 5 * 60_000;
-/// A compaction goes busy within this long of `/compact`, or it never
+/// A compaction goes busy within this long of the command, or it never
 /// started.
 pub const START_MS: u64 = 30_000;
 /// The longest a compaction may run before its claim on the Worker's turn
@@ -37,11 +40,11 @@ const MAX_RUN_MS: u64 = 15 * 60_000;
 /// How long after a compaction ends its claim is kept, so the Worker
 /// alerts' quiet-end check one step later still sees it.
 const CLAIM_GRACE_MS: u64 = 10_000;
-/// A refused send tries again this often.
+/// A refused send tries again this often, while the cache is warm.
 const RETRY_MS: u64 = 2_000;
 /// A paste the drain started this recently may be about to start a turn.
 const PASTE_QUIET_MS: u64 = 5_000;
-/// Between `/compact` and Enter, so the TUI takes them as typed keys.
+/// Between the command and Enter, so the TUI takes them as typed keys.
 const KEY_SETTLE: Duration = Duration::from_millis(100);
 const WRITE_TIMEOUT: Duration = Duration::from_secs(2);
 
@@ -52,9 +55,11 @@ pub trait CompactionHost: Send + Sync {
     fn reading(&self, session_id: &str) -> Option<ContextReading>;
     /// Manifest facts the rows do not carry.
     fn terminal(&self, session_id: &str) -> Option<TerminalFacts>;
-    /// Type `/compact` and Enter, unless the user typed at or after `since`
-    /// or has a draft on the line.
-    fn send(&self, session_id: &str, since: u64) -> Result<SendOutcome, String>;
+    /// App-wide "Writing to other sessions: Deny".
+    fn writes_denied(&self) -> bool;
+    /// Type `command` and Enter, unless the user typed at or after `since`
+    /// or has a draft on the line. Runs off the tick thread.
+    fn send(&self, session_id: &str, command: &str, since: u64) -> Result<SendOutcome, String>;
     /// A notice was queued in some Inbox.
     fn announce(&self);
 }
@@ -63,9 +68,9 @@ pub trait CompactionHost: Send + Sync {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SendOutcome {
     Submitted,
-    /// Refused before anything was written.
-    NotTyped(Refusal),
-    /// `/compact` went in, then the user typed: it waits on their line and
+    /// Refused before anything was written (typing or a draft).
+    NotTyped,
+    /// The command went in, then the user typed: it waits on their line and
     /// Enter was not pressed.
     Unsubmitted,
 }
@@ -103,13 +108,14 @@ struct Worker {
     ended_at: Option<u64>,
     /// Its reading, over the threshold, once taken.
     due: Option<Due>,
-    /// Cleared by a compaction until a reading is under the threshold, so a
-    /// compaction that left the context full is not repeated every turn.
+    /// Cleared by a compaction that started, until a reading is under the
+    /// threshold, so one that left the context full is not repeated every
+    /// turn.
     armed: bool,
     sent: Option<Sent>,
     retry_at: u64,
-    /// The model last reported as having no known window.
-    told_unknown: Option<String>,
+    /// Models already reported as having no known window.
+    told_unknown: HashSet<String>,
 }
 
 impl Default for Worker {
@@ -120,23 +126,29 @@ impl Default for Worker {
             armed: true,
             sent: None,
             retry_at: 0,
-            told_unknown: None,
+            told_unknown: HashSet::new(),
         }
     }
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 struct Due {
     percent: u8,
     tokens: u64,
+    command: String,
 }
 
-/// The Host's compaction in progress: it owns the turn it starts.
-#[derive(Debug, Clone, Copy)]
+/// The Host's compaction from the send on: it owns the turn it starts.
+#[derive(Debug, Clone)]
 struct Sent {
     at: u64,
+    due: Due,
+    /// The send thread reported the command and Enter written.
+    typed: bool,
     busy_seen: bool,
     ended_at: Option<u64>,
+    /// The Router's notice is queued.
+    told: bool,
 }
 
 impl Sent {
@@ -146,8 +158,12 @@ impl Sent {
             && self.ended_at.is_none_or(|ended| started_at <= ended)
     }
 
+    fn started(&self) -> bool {
+        self.typed && (self.busy_seen || self.ended_at.is_some())
+    }
+
     fn lapsed(&self, now: u64) -> bool {
-        let never_started = !self.busy_seen && now > self.at + START_MS;
+        let never_started = !self.started() && now > self.at + START_MS;
         let ended = self
             .ended_at
             .is_some_and(|ended| now > ended + CLAIM_GRACE_MS);
@@ -159,6 +175,8 @@ pub struct Compaction {
     store: Store,
     io: Arc<dyn CompactionHost>,
     workers: HashMap<String, Worker>,
+    outcomes_tx: Outcomes,
+    outcomes_rx: Receiver<(String, Result<SendOutcome, String>)>,
 }
 
 impl Default for Compaction {
@@ -177,24 +195,27 @@ impl std::fmt::Debug for Compaction {
 
 impl CompactionView for Compaction {
     fn compaction_sent_at(&self, session_id: &str, started_at: u64) -> Option<u64> {
-        let sent = self.workers.get(session_id)?.sent?;
+        let sent = self.workers.get(session_id)?.sent.as_ref()?;
         sent.owns(started_at).then_some(sent.at)
     }
 }
 
 impl Compaction {
     pub fn new(store: Store, io: Arc<dyn CompactionHost>) -> Self {
+        let (outcomes_tx, outcomes_rx) = mpsc::channel();
         Self {
             store,
             io,
             workers: HashMap::new(),
+            outcomes_tx,
+            outcomes_rx,
         }
     }
 
-    /// A Worker's Finished edge. The first one after the Host's `/compact`
+    /// A Worker's Finished edge. The first one after the Host's command
     /// ends that compaction; any other is a turn end to decide on.
     pub fn turn_finished(&mut self, row: &SessionRow, now: u64) {
-        if !row.is_worker {
+        if !row.is_worker || is_run_session(row) {
             return;
         }
         let worker = self.workers.entry(row.id.clone()).or_default();
@@ -215,29 +236,50 @@ impl Compaction {
         drain: &dyn DrainView,
         now: u64,
     ) {
+        while let Ok((session_id, outcome)) = self.outcomes_rx.try_recv() {
+            self.apply(&session_id, outcome, now);
+        }
         let Some(scope) = scope else {
-            self.workers.clear();
+            // No Router: a compaction in flight keeps its claim until it
+            // lapses, so a Router back from a restart does not hear it as
+            // a finish.
+            self.workers.retain(|_, worker| worker.sent.is_some());
+            for row in rows {
+                if let Some(worker) = self.workers.get_mut(&row.id) {
+                    observe_sent(worker, row, now);
+                }
+            }
             return;
         };
         self.workers.retain(|id, _| scope.workers.contains(id));
         for row in rows
             .iter()
-            .filter(|row| row.running && scope.workers.contains(&row.id))
+            .filter(|row| row.running && scope.workers.contains(&row.id) && !is_run_session(row))
         {
-            let worker = self.workers.entry(row.id.clone()).or_default();
-            observe_sent(worker, row, now);
-            let Some(ended_at) = worker.ended_at else {
-                continue;
-            };
-            if scope.percent == 0 || now > ended_at + WARM_MS {
-                drop_turn(worker);
-                continue;
-            }
-            if worker.due.is_none() && !self.take_reading(scope, row, now) {
-                continue;
-            }
-            self.try_send(scope, row, drain, now);
+            self.step_worker(scope, row, drain, now);
         }
+    }
+
+    fn step_worker(&mut self, scope: Scope, row: &SessionRow, drain: &dyn DrainView, now: u64) {
+        let worker = self.workers.entry(row.id.clone()).or_default();
+        observe_sent(worker, row, now);
+        if let Some(notice) = started_notice(worker, row, scope.percent) {
+            self.enqueue(scope.router, notice, now);
+        }
+        let Some(worker) = self.workers.get_mut(&row.id) else {
+            return;
+        };
+        let Some(ended_at) = worker.ended_at else {
+            return;
+        };
+        if scope.percent == 0 || now > ended_at + WARM_MS {
+            drop_turn(worker);
+            return;
+        }
+        if worker.due.is_none() && !self.take_reading(scope, row, now) {
+            return;
+        }
+        self.try_send(row, drain, now);
     }
 
     /// The reading for a just-finished turn. `true`: it is due.
@@ -246,17 +288,17 @@ impl Compaction {
         let Some(worker) = self.workers.get_mut(&row.id) else {
             return false;
         };
+        let ended_at = worker.ended_at;
+        drop_turn(worker);
         let Some(reading) = reading else {
-            drop_turn(worker);
+            trace(&format!("no context reading for Worker {}", row.id));
             return false;
         };
         let Some(percent) = reading.percent() else {
             let model = reading
                 .model
-                .filter(|model| worker.told_unknown.as_ref() != Some(model));
-            drop_turn(worker);
+                .filter(|model| worker.told_unknown.insert(model.clone()));
             if let Some(model) = model {
-                worker.told_unknown = Some(model.clone());
                 self.enqueue(
                     scope.router,
                     notices::unknown_context_window(row, &model),
@@ -267,85 +309,111 @@ impl Compaction {
         };
         if percent < scope.percent {
             worker.armed = true;
-            drop_turn(worker);
             return false;
         }
         if !worker.armed {
-            drop_turn(worker);
             return false;
         }
+        let Some(command) = reading.compact_command else {
+            trace(&format!(
+                "not compacting Worker {}: its runtime package names no compact command",
+                row.id
+            ));
+            return false;
+        };
+        worker.ended_at = ended_at;
         worker.due = Some(Due {
             percent,
             tokens: reading.tokens,
+            command,
         });
         true
     }
 
-    fn try_send(&mut self, scope: Scope, row: &SessionRow, drain: &dyn DrainView, now: u64) {
+    fn try_send(&mut self, row: &SessionRow, drain: &dyn DrainView, now: u64) {
         let touched = self.store.router_touched_at(&row.id);
         let terminal = self.io.terminal(&row.id);
         let Some(worker) = self.workers.get_mut(&row.id) else {
             return;
         };
-        let Some(due) = worker.due else {
+        let Some(due) = worker.due.clone() else {
             return;
         };
-        match readiness(worker, row, terminal, touched, drain, now) {
-            Readiness::Wait => return,
+        let readiness = match readiness(worker, row, terminal, touched, drain, now) {
+            Readiness::Ready if self.io.writes_denied() => {
+                Readiness::Never("writing to other sessions is set to Deny")
+            }
+            readiness => readiness,
+        };
+        match readiness {
+            Readiness::Wait => {}
             Readiness::Never(why) => {
-                crate::tracelog::trace(
-                    "supervisor",
-                    &format!("not compacting Worker {}: {why}", row.id),
-                );
+                trace(&format!("not compacting Worker {}: {why}", row.id));
+                drop_turn(worker);
+            }
+            Readiness::Ready => {
+                let since = unpeel_core::agent_send::typing_window_start(now);
+                let send = (self.io.clone(), self.outcomes_tx.clone());
+                if spawn_send(send, &row.id, &due.command, since) {
+                    worker.sent = Some(Sent {
+                        at: now,
+                        due,
+                        typed: false,
+                        busy_seen: false,
+                        ended_at: None,
+                        told: false,
+                    });
+                } else {
+                    worker.retry_at = now + RETRY_MS;
+                }
+            }
+        }
+    }
+
+    fn apply(&mut self, id: &str, outcome: Result<SendOutcome, String>, now: u64) {
+        let Some(worker) = self.workers.get_mut(id) else {
+            return;
+        };
+        match outcome {
+            Ok(SendOutcome::Submitted) => {
+                if let Some(sent) = worker.sent.as_mut() {
+                    sent.typed = true;
+                }
                 drop_turn(worker);
                 return;
             }
-            Readiness::Ready => {}
-        }
-        match self
-            .io
-            .send(&row.id, unpeel_core::agent_send::typing_window_start(now))
-        {
-            Ok(SendOutcome::Submitted) => {
-                drop_turn(worker);
-                worker.armed = false;
-                worker.sent = Some(Sent {
-                    at: now,
-                    busy_seen: false,
-                    ended_at: None,
-                });
-                let notice = notices::compacted(row, due.percent, due.tokens, scope.percent, now);
-                self.enqueue(scope.router, notice, now);
-            }
-            Ok(SendOutcome::NotTyped(_)) => worker.retry_at = now + RETRY_MS,
+            Ok(SendOutcome::NotTyped) => worker.retry_at = now + RETRY_MS,
             Ok(SendOutcome::Unsubmitted) => {
-                crate::tracelog::trace(
-                    "supervisor",
-                    &format!(
-                        "Worker {}: the user typed after /compact; not submitted",
-                        row.id
-                    ),
-                );
+                trace(&format!(
+                    "Worker {id}: the user typed after the compact command; not submitted"
+                ));
                 drop_turn(worker);
             }
             Err(error) => {
-                crate::tracelog::trace(
-                    "supervisor",
-                    &format!("compacting Worker {} failed: {error}", row.id),
-                );
+                trace(&format!("compacting Worker {id} failed: {error}"));
                 drop_turn(worker);
             }
         }
+        worker.sent = None;
     }
 
     fn enqueue(&self, router: &str, notice: NewItem, now: u64) {
         match self.store.enqueue(router, notice, now) {
             Ok(_) => self.io.announce(),
-            Err(error) => crate::tracelog::trace(
-                "supervisor",
-                &format!("compaction notice for Router {router} not queued: {error}"),
-            ),
+            Err(error) => trace(&format!(
+                "compaction notice for Router {router} not queued: {error}"
+            )),
         }
+    }
+
+    /// Tests: wait for the send a step just started, then apply it.
+    #[cfg(test)]
+    fn settle_for_test(&mut self, now: u64) {
+        let (session_id, outcome) = self
+            .outcomes_rx
+            .recv_timeout(Duration::from_secs(5))
+            .expect("a send thread reports back");
+        self.apply(&session_id, outcome, now);
     }
 }
 
@@ -399,19 +467,58 @@ fn observe_sent(worker: &mut Worker, row: &SessionRow, now: u64) {
         sent.ended_at = Some(now);
     }
     if sent.lapsed(now) {
-        if !sent.busy_seen {
-            crate::tracelog::trace(
-                "supervisor",
-                &format!("Worker {}'s compaction never started", row.id),
-            );
+        if !sent.started() {
+            trace(&format!("Worker {}'s compaction never started", row.id));
         }
         worker.sent = None;
     }
 }
 
+/// The Router's notice, once the compaction has started: from then on it
+/// is not repeated until a reading is under the threshold.
+fn started_notice(worker: &mut Worker, row: &SessionRow, threshold: u8) -> Option<NewItem> {
+    let sent = worker
+        .sent
+        .as_mut()
+        .filter(|sent| sent.started() && !sent.told)?;
+    sent.told = true;
+    worker.armed = false;
+    Some(notices::compacted(
+        row,
+        sent.due.percent,
+        sent.due.tokens,
+        threshold,
+        sent.at,
+    ))
+}
+
+type Outcomes = Sender<(String, Result<SendOutcome, String>)>;
+
+/// The send, off the tick thread: two guarded writes and the pause between
+/// them. Its outcome is applied at the next step.
+fn spawn_send(
+    (io, outcomes): (Arc<dyn CompactionHost>, Outcomes),
+    id: &str,
+    command: &str,
+    since: u64,
+) -> bool {
+    let (session_id, command) = (id.to_owned(), command.to_owned());
+    std::thread::Builder::new()
+        .name("unpeel-compaction".into())
+        .spawn(move || {
+            let outcome = io.send(&session_id, &command, since);
+            let _ = outcomes.send((session_id, outcome));
+        })
+        .is_ok()
+}
+
 fn drop_turn(worker: &mut Worker) {
     worker.ended_at = None;
     worker.due = None;
+}
+
+fn trace(message: &str) {
+    crate::tracelog::trace("supervisor", message);
 }
 
 /// The real Host: transcripts, manifests, the PTY core's guarded write.
@@ -432,7 +539,11 @@ impl CompactionHost for HostCompaction {
         })
     }
 
-    fn send(&self, session_id: &str, since: u64) -> Result<SendOutcome, String> {
+    fn writes_denied(&self) -> bool {
+        unpeel_core::supervision::config_and_write_deny().1
+    }
+
+    fn send(&self, session_id: &str, command: &str, since: u64) -> Result<SendOutcome, String> {
         let write = |keys: &str| {
             unpeel_core::session_input::write_key_unless_user_is_typing_within(
                 session_id,
@@ -441,8 +552,8 @@ impl CompactionHost for HostCompaction {
                 WRITE_TIMEOUT,
             )
         };
-        if let Some(refusal) = write("/compact")? {
-            return Ok(SendOutcome::NotTyped(refusal));
+        if write(command)?.is_some() {
+            return Ok(SendOutcome::NotTyped);
         }
         std::thread::sleep(KEY_SETTLE);
         Ok(match write("\r")? {

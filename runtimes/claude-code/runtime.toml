@@ -62,6 +62,7 @@ bypass_flags = ["--dangerously-skip-permissions", "--permission-mode bypassPermi
 # wins), from Claude Code's model catalog on 2026-11-09. The Host compacts a
 # Worker by them; a model none of them names is never compacted.
 [context]
+compact_command = "/compact"
 windows = [
   { model_prefix = "claude-opus-5", tokens = 1000000 },
   { model_prefix = "claude-sonnet-5", tokens = 1000000 },

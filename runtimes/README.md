@@ -95,11 +95,13 @@ Important fields:
   the client catalog.
 - `usage.stores`: optional bounded, home-relative session-file patterns used
   only to rank an existing user's agents during first-run preset seeding.
-- `context.windows` (fork-only, #64): optional `{ model_prefix, tokens }`
-  context windows; a model id takes its longest matching prefix's. The Host
-  compacts a Super Agent Worker against them, together with the transcript
-  adapter's `context_usage` reader, and never compacts a model none of them
-  names. Not generated into the client catalog.
+- `context` (fork-only, #64): optional `windows`, `{ model_prefix, tokens }`
+  context windows (a model id takes its longest matching prefix's), and
+  `compact_command`, typed as keys and then Enter to compact an idle prompt.
+  The Host compacts a Super Agent Worker by them, together with the
+  transcript adapter's `context_usage` reader, and never compacts a model
+  none of the windows names or a runtime with no command. Not generated into
+  the client catalog.
 - `lifecycle`: source, authority, fallback, reliability claims, and the
   controller-side output semantics used to restore hook state
   (`anchor_start_event_to_output` and `attention_clears_on_output`). These

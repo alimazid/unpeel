@@ -32,30 +32,34 @@ turn would reach the Router as a Worker "finished" notice (or a
 The Host compacts a running Router's Worker when a turn of the Worker ends
 with its context at or over `supervisor_compact_percent` (default 40,
 `0` = off, nothing between 1 and 24, since the startup context comes back
-after a compaction and a low value would compact every turn).
+after a compaction and a low value would compact every turn). Scheduled
+Runs are never compacted.
 
 - **The figure** is Claude Code's own, read from the Worker's transcript:
   the last main-chain reply's input, cache writes and cache reads, or a
   later `compact_boundary`'s `postTokens`. The reader is provider code, a
   `context_usage` callback on the runtime's transcript adapter.
 - **The window** comes from the runtime package (`[context] windows`, by
-  model-id prefix, taken from Claude Code's catalog on 2026-11-09). A model
-  none of them names is never compacted, and the Router hears that once.
+  model-id prefix, taken from Claude Code's catalog on 2026-11-09), and so
+  does the command (`compact_command = "/compact"`). A model none of them
+  names is never compacted, and the Router hears that once per model.
   Guessing would be worse than doing nothing: a 200K guess for a 1M model
   fires at ~80K, close to the post-compaction baseline, and compacts every
   turn.
 - **When:** at the Worker's Finished edge, once per turn, within 5 minutes
-  of its end while the cache is warm. A turn end missed for any reason
-  waits for the next one. After a compaction it does not compact again
-  until a reading is under the threshold.
-- **How:** `/compact`, then Enter, as program writes under the PTY core's
-  typing and draft guards (ADR 0011), and only into an Idle Worker with no
-  select menu (it would take the keys), a PTY core that has the draft
-  guard, no Inbox items waiting, and no Router write or Inbox paste in the
-  last 5 s.
-- **Notices:** the Router gets one ride-along `compacted` notice. The
+  of its end while the cache is warm. A write the core refuses (the user
+  typing, a draft) is tried again every 2 s inside that window; a turn end
+  missed for any reason waits for the next one. After a compaction starts
+  it does not compact again until a reading is under the threshold.
+- **How:** the command, then Enter, as program writes under the PTY core's
+  typing and draft guards (ADR 0011), off the tick thread, and only into an
+  Idle Worker with no select menu (it would take the keys), a PTY core that
+  has the draft guard, no Inbox items waiting, no Router write or Inbox
+  paste in the last 5 s, and "Writing to other sessions" not set to Deny.
+- **Notices:** the Router gets one ride-along `compacted` notice once the
+  compaction goes busy; one that never starts tells nobody. The
   compaction's own turn raises nothing for the Router or the user, unless
-  someone wrote to the Worker after the `/compact`, when that turn may also
+  someone wrote to the Worker after the command, when that turn may also
   answer them.
 
 ## Considered Options
@@ -87,4 +91,7 @@ compacted, and until then the Router is told. A Worker whose transcript the
 Host cannot find (no hooks reporting its path, and a cwd Claude Code
 spells differently) is never compacted. When the Router writes to a Worker
 during its compaction, the compaction's finish can reach the Router as a
-"finished" notice carrying the previous reply.
+"finished" notice carrying the previous reply. When the user types between
+the command and Enter, the command stays on their input line unsubmitted.
+A compaction that finishes while no Router runs reaches the user as any
+Worker's finish does.
