@@ -65,9 +65,17 @@ final class PluginListDragController: ObservableObject {
         monitor = nil
         timer?.invalidate(); timer = nil
         settleWork?.cancel(); settleWork = nil
-        card?.orderOut(nil); card = nil; cardState = nil
+        Self.closeCardWindow(card); card = nil; cardState = nil // Fork-only (#56)
         press = nil; draggedID = nil; settling = false
         container = nil; preview = nil; commit = nil
+    }
+    /// Fork-only (#56): detaches the card, then hides it, so it can't stay attached
+    /// to the window. macOS 26's `orderOut` detaches a child by itself; older
+    /// systems weren't measured.
+    private static func closeCardWindow(_ card: NSWindow?) {
+        guard let card else { return }
+        card.parent?.removeChildWindow(card)
+        card.orderOut(nil)
     }
     func offset(for id: String) -> CGFloat {
         guard draggedID != nil, let index = frozenIDs.firstIndex(of: id) else { return 0 }
@@ -181,7 +189,10 @@ final class PluginListDragController: ObservableObject {
         floating.contentView = host
         card = floating; cardState = state
         draggedID = press.id
-        floating.order(.above, relativeTo: window.windowNumber)
+        // Fork-only (#56): a child, because the app window comes to the front at
+        // mouse-up, even with the press and release swallowed, and a sibling
+        // ordered above it spends the flight home hidden behind it.
+        window.addChildWindow(floating, ordered: .above)
         withAnimation(SidebarMotion.reduceMotion ? nil : SidebarSessionDragController.liftAnimation) {
             state.lifted = true
         }
@@ -245,7 +256,7 @@ final class PluginListDragController: ObservableObject {
             self.card = nil; self.cardState = nil; self.settleWork = nil
             // Keep the landed image covering the slot until SwiftUI has
             // applied the atomic order/offset swap on the next run-loop turn.
-            DispatchQueue.main.async { landedCard?.orderOut(nil) }
+            DispatchQueue.main.async { Self.closeCardWindow(landedCard) } // Fork-only (#56)
         }
         settleWork = work
         DispatchQueue.main.asyncAfter(deadline: .now() + (SidebarMotion.reduceMotion ? 0 : SidebarSessionDragController.settleDelay), execute: work)
