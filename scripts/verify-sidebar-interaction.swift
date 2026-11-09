@@ -27,12 +27,12 @@ if command == "locked" {
 }
 
 /// What `--only` takes. A name missing here is refused, so a new scenario adds
-/// its name; the scrolled ones, long-list-drop, cross-project-insert,
+/// its name; the scrolled ones, long-list-drop, far-select, cross-project-insert,
 /// session-above-folder and folder-persisted run only when named.
 let knownScenarios: Set<String> = [
     "toggle-project", "toggle", "group-reorder", "list-reorder", "group-drop", "out-and-back",
     "folder-reorder", "project-reorder",
-    "scrolled-list-reorder", "scrolled-group-drop", "long-list-drop", "scrolled-back-reorder",
+    "scrolled-list-reorder", "scrolled-group-drop", "long-list-drop", "scrolled-back-reorder", "far-select",
     "cross-project-insert", "session-above-folder", "folder-persisted",
 ]
 let only = option("--only").map { Set($0.split(separator: ",").map(String.init)) }
@@ -690,6 +690,82 @@ func runScrolledReorder(_ name: String, session: String, how: String, count: Int
     }
 }
 
+/// ⌃digit, delivered to the app alone: it never reaches the HID state that
+/// `waitForQuiet` watches.
+func pressControl(keyCode: CGKeyCode) {
+    for isDown in [true, false] {
+        guard let event = CGEvent(keyboardEventSource: nil, virtualKey: keyCode, keyDown: isDown) else { return }
+        event.flags = .maskControl
+        event.postToPid(pid)
+    }
+}
+
+/// Selecting a far row from the keyboard (#46): ⌃2 goes to Small at the bottom
+/// of the list, and ⌃1 comes back to Big's most recently used row. That row has
+/// room above and below it, so it lands centered. A minimal scroll stops it at
+/// the list's top edge, and no scroll leaves it off screen.
+func runFarSelect(count: Int) {
+    let scenario = Scenario("far-select")
+    scenarios.append(scenario)
+    let smallRow = "~/w/Big/small-3"
+    let digit1: CGKeyCode = 18
+    let digit2: CGKeyCode = 19
+    // A press counts as keyboard input for `userInterfered` this long.
+    let keyInputHold: TimeInterval = 2.1
+
+    /// Presses the key with `label` off screen, and returns its row once the
+    /// list holds still.
+    func select(_ label: String, keyCode: CGKeyCode, attempt: Int) -> (row: Row, area: CGRect)? {
+        nudge()
+        guard !labels(readRows()).contains(label) else {
+            scenario.fail("select \(attempt): \(summary([label])) is already on screen, so this proves nothing")
+            return nil
+        }
+        guard let area = mainWindow().flatMap({ firstScrollArea(in: $0) }).flatMap({ frame(of: $0) }),
+              ready(for: CGPoint(x: area.midX, y: area.midY)) else {
+            scenario.fail("select \(attempt): the window isn't in front")
+            return nil
+        }
+        pressControl(keyCode: keyCode)
+        Thread.sleep(forTimeInterval: 0.4)
+        nudge()
+        waitForStillRows()
+        let rows = readRows()
+        guard let row = rows.first(where: { $0.label == label }) else {
+            scenario.fail("select \(attempt): \(summary([label])) never came on screen: \(layout(rows))")
+            return nil
+        }
+        return (row, area)
+    }
+
+    scrollToTop()
+    nudge()
+    // Far enough down the list to center, and the farthest such row from Small.
+    let onScreen = rowsOfBig()
+    guard onScreen.count > 2, let row = readRows().first(where: { $0.label == onScreen[2] }),
+          ready(for: press(row.frame)) else {
+        scenario.fail("no row of Big to select at the top of the list: \(layout(readRows()))")
+        return
+    }
+    let bigRow = row.label
+    log("select \(summary([smallRow])) and \(summary([bigRow])) off screen with ⌃2 and ⌃1 x\(count)")
+    click(press(row.frame))
+    Thread.sleep(forTimeInterval: 0.5)
+
+    for attempt in 1 ... count {
+        guard select(smallRow, keyCode: digit2, attempt: attempt) != nil else { continue }
+        Thread.sleep(forTimeInterval: keyInputHold)
+        guard let selected = select(bigRow, keyCode: digit1, attempt: attempt) else { continue }
+        let offset = selected.row.frame.midY - selected.area.midY
+        if abs(offset) <= 10 {
+            scenario.pass()
+        } else {
+            scenario.fail("select \(attempt): \(summary([bigRow])) landed \(Int(offset)) pt from the list's center")
+        }
+        Thread.sleep(forTimeInterval: keyInputHold)
+    }
+}
+
 /// Filing a Session from a list that overflows the window, with both rows on
 /// screen and no auto-scroll: the rows below the fold are unmounted.
 func runLongListDrop(count: Int) {
@@ -1199,6 +1275,7 @@ if only?.contains("scrolled-back-reorder") == true {
         scrollToTop()
     }
 }
+if only?.contains("far-select") == true { runFarSelect(count: min(dragCount, 10)) }
 if wanted("list-reorder") { runListReorder(count: dragCount) }
 if wanted("group-drop") { runGroupDrop(count: dragCount) }
 if wanted("out-and-back") { runDragOutAndBack(count: dragCount) }

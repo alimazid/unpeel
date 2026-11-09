@@ -383,6 +383,12 @@ final class SidebarSessionDragController: ObservableObject {
         rows[id]?.frame
     }
 
+    /// Fork-only (#46): whether a row or pane is lifted.
+    var isDragging: Bool {
+        if case .dragging = phase { return true }
+        return false
+    }
+
     /// Scoped to the registering reporter: a moved row's OLD view tears down
     /// after the new one registered the same id, and must not delete it.
     func removeRowFrame(id: String, token: UUID) {

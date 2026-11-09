@@ -11,7 +11,7 @@
 # The default tree fits the window. To drive a list that scrolls, use a longer
 # one in a shorter window, and name its scenarios (they don't run by default):
 #
-#   --big-rows 30 --window-height 760 --only scrolled-list-reorder,scrolled-group-drop,long-list-drop,scrolled-back-reorder
+#   --big-rows 30 --window-height 760 --only scrolled-list-reorder,scrolled-group-drop,long-list-drop,scrolled-back-reorder,far-select
 #
 # Two more run only when named, on a list with no folder ranks yet:
 # --only cross-project-insert,session-above-folder. After folder-reorder the script

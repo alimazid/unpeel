@@ -590,10 +590,6 @@ struct SidebarView: View {
     @State private var scheduledSection = ScheduledSectionModel()
     private let sectionLayout = SidebarSectionLayoutStore.shared
 
-    /// Absolute-top scroll anchor for the project tree (a 1pt marker pinned
-    /// to the padded content's top edge, so `anchor: .top` means offset 0).
-    private static let treeTopScrollID = "unpeel.sidebar.tree-top"
-
     var body: some View {
         VStack(spacing: 0) {
             // The list area slides between the project tree and the settings
@@ -727,7 +723,11 @@ struct SidebarView: View {
     /// now scoped to this section instead of the whole sidebar.
     private var projectsSectionContent: some View {
         SidebarListPage(source: .live, store: store) {
-            projectTreePanel
+            SidebarProjectTreePanel(
+                store: store,
+                dragState: dragState,
+                sessionDragController: sessionDragController
+            )
         }
         .modifier(SidebarWorkspaceCarousel(
             pager: workspacePager,
@@ -833,8 +833,21 @@ struct SidebarView: View {
             ),
         ]
     }
+}
 
-    private var projectTreePanel: some View {
+/// The PROJECTS scroll view and everything that scrolls it. Fork-only (#46):
+/// its own view, so a test can host the list the app shows.
+struct SidebarProjectTreePanel: View {
+    @ObservedObject var store: UnpeelStore
+    /// Plain references, never observed (see `SidebarView`).
+    let dragState: SidebarDragState
+    let sessionDragController: SidebarSessionDragController
+
+    /// Absolute-top scroll anchor for the project tree (a 1pt marker pinned
+    /// to the padded content's top edge, so `anchor: .top` means offset 0).
+    private static let treeTopScrollID = "unpeel.sidebar.tree-top"
+
+    var body: some View {
         ScrollViewReader { proxy in
             ScrollView {
                 // Fork-only (#45): one flat lazy list of rows (ADR 0009). No
@@ -938,6 +951,7 @@ struct SidebarView: View {
                 SidebarSelectionScrollObserver(
                     selection: store.sessionSelection,
                     scope: store.selectedHostScope,
+                    store: store, // Fork-only (#46)
                     proxy: proxy,
                     treeTopScrollID: Self.treeTopScrollID,
                     sessionDragController: sessionDragController
@@ -970,7 +984,12 @@ struct SidebarView: View {
     ) {
         DispatchQueue.main.async {
             withAnimation(.easeOut(duration: 0.22)) {
-                proxy.scrollTo(SessionScrollTarget.id(sessionID), anchor: anchor)
+                // Fork-only (#46): reaches an unmounted row too.
+                proxy.scrollToSessionRow(
+                    sessionID,
+                    mountedAnchor: anchor,
+                    controller: sessionDragController
+                )
             }
         }
     }
@@ -1017,6 +1036,8 @@ private struct SidebarScrollCue: Equatable {
 private struct SidebarSelectionScrollObserver: View {
     @ObservedObject var selection: SessionSelectionState
     let scope: SelectedHostScope
+    /// Fork-only (#46): a plain reference, never observed.
+    let store: UnpeelStore
     let proxy: ScrollViewProxy
     let treeTopScrollID: String
     let sessionDragController: SidebarSessionDragController
@@ -1040,6 +1061,8 @@ private struct SidebarSelectionScrollObserver: View {
                         proxy.scrollTo(treeTopScrollID, anchor: .top)
                     }
                 } else if let id = newCue.selection,
+                          // Fork-only (#46): one scroll per selection.
+                          !store.takeSidebarSessionRevealPending(for: id),
                           sessionDragController.sessionRowNeedsReveal(
                               id,
                               // Fork-only: sidebar sections — rows are only
@@ -1048,7 +1071,8 @@ private struct SidebarSelectionScrollObserver: View {
                               edgeMargin: SessionScrollTarget.margin
                           ) {
                     withAnimation(.easeOut(duration: 0.15)) {
-                        proxy.scrollTo(SessionScrollTarget.id(id))
+                        // Fork-only (#46): reaches an unmounted row too.
+                        proxy.scrollToSessionRow(id, controller: sessionDragController)
                     }
                 }
             }
@@ -1062,6 +1086,29 @@ private struct SidebarSelectionScrollObserver: View {
 enum SessionScrollTarget {
     static let margin: CGFloat = 48
     static func id(_ sessionID: String) -> String { "scroll-target:\(sessionID)" }
+}
+
+extension ScrollViewProxy {
+    /// Fork-only (#46): brings a Session's PROJECTS row into view. A mounted
+    /// row (it has a registered frame) scrolls to its margin target. An
+    /// unmounted row has no margin target yet, because that id lives inside
+    /// the row. The lazy list knows every row's own id, so it scrolls there,
+    /// centered. A drag owns the list's scroll, so nothing moves during one:
+    /// the selection a lift restores stays off screen rather than pull the
+    /// list from under the card.
+    @MainActor
+    func scrollToSessionRow(
+        _ sessionID: String,
+        mountedAnchor: UnitPoint? = nil,
+        controller: SidebarSessionDragController
+    ) {
+        guard !controller.isDragging else { return }
+        if controller.registeredRowFrame(id: sessionID) == nil {
+            scrollTo(SidebarTreeRow.sessionRowID(sessionID), anchor: .center)
+        } else {
+            scrollTo(SessionScrollTarget.id(sessionID), anchor: mountedAnchor)
+        }
+    }
 }
 
 /// Vertical fade mask over the sidebar lists. The top stays faintly visible so
