@@ -3438,6 +3438,9 @@ final class RemoteHostRuntime: ObservableObject {
             // Fork-only: the Super Agent badge and Worker nesting.
             && lhs.superAgent == rhs.superAgent
             && lhs.superAgentRouterID == rhs.superAgentRouterID
+            // Fork-only (#63): a site starting or stopping changes nothing
+            // else on its row, and the Local globe reads it.
+            && lhs.detectedLocalURLs == rhs.detectedLocalURLs
             // Alert-only polling changes must reach the desktop activity
             // dropdown even when their timestamps share one minute bucket.
             && lhs.latestAlertBody == rhs.latestAlertBody

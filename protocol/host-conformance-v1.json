@@ -1466,6 +1466,11 @@
       "field": "sessions[].keptOutput",
       "required": false,
       "note": "Fork-only: Scheduled Tasks (ADR 0006). true on a stopped Run Session's row (`scheduleID` set, `status` exited) whose output.bin still holds bytes past its retention floor; omitted otherwise. A Controller shows that output, read-only, through the existing session.output.read route (a GET /mobile/output tail read without an offset) instead of its stopped placeholder; absent (an older Host, or nothing kept) shows the placeholder."
+    },
+    {
+      "field": "sessions[].detectedLocalURLs",
+      "required": false,
+      "note": "Fork-only (#63). On a running Session's row: the loopback URLs it serves as browsable pages, the Host's live-probed list (a dead server drops out). Only a Controller on the Host's own machine can open them; others ignore the field. Omitted when empty and on stopped rows; absent (an older Host) reads as none."
     }
   ],
   "scheduleWriteRefusals": {

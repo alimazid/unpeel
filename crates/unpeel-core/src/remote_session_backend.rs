@@ -387,6 +387,17 @@ pub struct RemoteSessionSummary {
     /// round-trip here or the native bridge strips it from the Local snapshot.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub kept_output: bool,
+    /// Fork-only (#63): loopback URLs a running Session serves as browsable
+    /// pages (the manifest's host-probed `detected_local_urls`). Only a
+    /// Controller on the Host's own machine can open them. Additive; omitted
+    /// when empty. Must round-trip here or the native bridge strips it from
+    /// the Local snapshot.
+    #[serde(
+        default,
+        rename = "detectedLocalURLs",
+        skip_serializing_if = "Vec::is_empty"
+    )]
+    pub detected_local_urls: Vec<String>,
     /// Fork-only: this Session is the workspace's Super Agent (Router).
     /// Additive; older Hosts omit it. Must round-trip, as `cwd`.
     #[serde(default)]
@@ -4778,6 +4789,33 @@ mod tests {
         assert!(serde_json::to_value(&bare)
             .unwrap()
             .get("keptOutput")
+            .is_none());
+    }
+
+    /// Fork-only (#63): the native bridge strips what this type does not
+    /// carry, and the Mac app's Local globe reads this field.
+    #[test]
+    fn session_summary_round_trips_detected_local_urls() {
+        let session: RemoteSessionSummary = serde_json::from_value(json!({
+            "id": "s1", "projectID": "p1", "title": "t", "command": "zsh",
+            "createdAtUnixMs": 1, "status": "running", "activity": "idle",
+            "detectedLocalURLs": ["http://127.0.0.1:5173/"]
+        }))
+        .unwrap();
+        assert_eq!(session.detected_local_urls, ["http://127.0.0.1:5173/"]);
+        assert_eq!(
+            serde_json::to_value(&session).unwrap()["detectedLocalURLs"],
+            json!(["http://127.0.0.1:5173/"])
+        );
+        let bare: RemoteSessionSummary = serde_json::from_value(json!({
+            "id": "s1", "projectID": "p1", "title": "t", "command": "zsh",
+            "createdAtUnixMs": 1, "status": "running", "activity": "idle"
+        }))
+        .unwrap();
+        assert!(bare.detected_local_urls.is_empty());
+        assert!(serde_json::to_value(&bare)
+            .unwrap()
+            .get("detectedLocalURLs")
             .is_none());
     }
 
