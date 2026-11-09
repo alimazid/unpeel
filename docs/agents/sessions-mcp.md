@@ -295,7 +295,10 @@ Registration per provider (all through the explicitly installed integration,
   execs the current `unpeel-host`; inside a hosted shell it prefers the
   exported `UNPEEL_HOST_BIN`.
 - Launchers that strip their MCP children's environment (codex, cursor-agent,
-  muse) get identity from `self_session_id`'s process-ancestry fallback; Kiro
+  muse) get identity from `self_session_id`'s process-ancestry fallback (for
+  Codex only under `--no-daemon`: its shared daemon starts MCP servers
+  outside the Session, where the gate serves no tools; see the Codex notes
+  in `providers.md`); Kiro
   v3 passes only a declared env block, so its entry forwards the generic
   `UNPEEL_*` variables; fx and Claude inherit the hosted environment.
 - Per-Session grants never appear in any config file: the gate reads

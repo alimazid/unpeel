@@ -53,4 +53,14 @@ mod tests {
             "codex resume 'new' --full-auto"
         );
     }
+
+    #[test]
+    fn resume_keeps_the_no_daemon_flag() {
+        let preset = "codex --no-daemon --dangerously-bypass-approvals-and-sandbox";
+        assert_eq!(
+            resumed(preset, Some("t1")),
+            "codex resume 't1' --no-daemon --dangerously-bypass-approvals-and-sandbox"
+        );
+        assert_eq!(fresh(&resumed(preset, Some("t1"))), preset);
+    }
 }
