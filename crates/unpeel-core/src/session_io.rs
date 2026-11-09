@@ -1496,12 +1496,27 @@ enum Applied {
 /// is the write paths' own, runtime then viewport.
 fn input_screen(viewport: &Mutex<TerminalViewportState>) -> crate::typed_input::InputScreen {
     let mut viewport = viewport.lock().unwrap();
+    let snapshot = viewport.snapshot(0, None);
+    // The visible rows, as `current_screen_text` renders them a second time.
+    let screen_text: String = snapshot
+        .viewport_rows
+        .iter()
+        .map(|row| format!("{}\n", row.text.trim_end()))
+        .collect();
     crate::typed_input::InputScreen {
-        menu: viewport_has_menu_prompt(&viewport.current_screen_text()),
-        line: viewport
-            .snapshot(0, None)
+        menu: viewport_has_menu_prompt(&screen_text),
+        line: snapshot
             .cursor_row_text_without_suggestion()
             .unwrap_or_default(),
+        cursor_at: crate::typed_input::CursorAt {
+            alternate: snapshot.alternate_screen,
+            row: u64::from(snapshot.scrollback_rows) + u64::from(snapshot.cursor_row),
+        },
+        before_cursor: snapshot
+            .last_char_before_cursor
+            .filter(|_| viewport.cursor_visible()),
+        quiet: !viewport.drawn_within(crate::typed_input::QUIET_BEFORE_ENDING)
+            && !viewport.synchronized_output_active(),
     }
 }
 
@@ -2468,4 +2483,91 @@ struct ProgramStatusTracker {
     /// A coalesced change is waiting for the next idle tick.
     dirty: bool,
     last_write: Option<Instant>,
+}
+
+#[cfg(test)]
+mod input_screen_tests {
+    use super::*;
+
+    #[test]
+    fn the_draft_guard_reads_the_cursor_and_whether_the_screen_is_quiet() {
+        let viewport = Mutex::new(TerminalViewportState::new(40, 4));
+        viewport
+            .lock()
+            .unwrap()
+            .feed(b"one\r\ntwo\r\nthree\r\nfour\r\n> hi");
+        let screen = input_screen(&viewport);
+        assert!(!screen.menu);
+        assert_eq!(screen.line, "> hi");
+        assert_eq!(
+            screen.cursor_at,
+            crate::typed_input::CursorAt {
+                alternate: false,
+                row: 4
+            },
+            "counted from the top of scrollback"
+        );
+        assert_eq!(screen.before_cursor, Some('i'));
+        assert!(!screen.quiet, "just drawn");
+        viewport.lock().unwrap().feed(b"\x1b[?25l");
+        assert_eq!(input_screen(&viewport).before_cursor, None, "hidden");
+        viewport
+            .lock()
+            .unwrap()
+            .feed("\x1b[?25h\r\n  1. Yes\r\n↑/↓ to navigate · Enter to select".as_bytes());
+        assert!(input_screen(&viewport).menu);
+    }
+
+    /// What the draft guard costs a key on the reactor thread (the attach
+    /// stream's writes are noted there): one screen read at a draft's first
+    /// key, at Enter and at Backspace, none at a text key. Ignored in the
+    /// normal suite; run it in release:
+    ///
+    ///   cargo test --release -p unpeel-core --lib input_screen_cost -- --ignored --nocapture
+    #[test]
+    #[ignore]
+    fn input_screen_cost() {
+        for (cols, rows) in [(80u16, 24u16), (200, 60)] {
+            let viewport = Mutex::new(TerminalViewportState::new(cols, rows));
+            let row = |i: usize| {
+                format!(
+                    "\x1b[38;2;153;153;153m{i:05}\x1b[39m \x1b[1m{}\x1b[22m \u{23fa} {}\r\n",
+                    "word ".repeat(usize::from(cols) / 10),
+                    "x".repeat(usize::from(cols) / 4)
+                )
+            };
+            let filled: String = (0..2_000).map(row).collect();
+            viewport.lock().unwrap().feed(filled.as_bytes());
+            viewport
+                .lock()
+                .unwrap()
+                .feed("\u{276f}\u{a0}fix the bug".as_bytes());
+            let runs = 2_000u32;
+            let started = std::time::Instant::now();
+            for _ in 0..runs {
+                std::hint::black_box(input_screen(&viewport));
+            }
+            let read = started.elapsed() / runs;
+            let started = std::time::Instant::now();
+            for _ in 0..runs {
+                let mut state = viewport.lock().unwrap();
+                std::hint::black_box(viewport_has_menu_prompt(&state.current_screen_text()));
+                std::hint::black_box(state.snapshot(0, None).cursor_row_text_without_suggestion());
+            }
+            let before = started.elapsed() / runs;
+            let mut clock = crate::typed_input::TypingClock::default();
+            let user = crate::session_host::WriteOrigin::User;
+            clock.note(user, b"f", 0, || input_screen(&viewport));
+            let keys = 100_000u32;
+            let started = std::time::Instant::now();
+            for _ in 0..keys {
+                clock.note(user, b"a", 0, || unreachable!("a text key reads no screen"));
+            }
+            let text_key = started.elapsed() / keys;
+            println!(
+                "{cols}x{rows}: one read {read:?} (the #61 read: {before:?}); \
+a text key on a draft {text_key:?}"
+            );
+        }
+    }
 }

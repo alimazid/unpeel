@@ -5,7 +5,9 @@
 //! records the time of every write that comes from the user and can change
 //! an input line, and the session manifest carries it as `last_input_at`.
 //! For the draft it also keeps the line as it was before the first key the
-//! user has not sent, since only the core sees that key arrive.
+//! user has not sent, since only the core sees that key arrive, and follows
+//! what their text and Backspace leave there (#65): a draft whose keys were
+//! erased, or taken by a program that moved on, is no draft.
 
 use serde::{Deserialize, Serialize};
 
@@ -65,6 +67,20 @@ impl Refusal {
     }
 }
 
+/// How long the program must have drawn nothing before the draft guard ends
+/// a draft on what the screen shows (#65). A redraw can be caught between
+/// its writes, with the input line erased or the cursor where output is
+/// being drawn.
+pub(crate) const QUIET_BEFORE_ENDING: std::time::Duration = std::time::Duration::from_millis(500);
+
+/// Where the cursor sits: which screen, and its row counted from the top of
+/// scrollback, so a row keeps its number while the screen scrolls.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct CursorAt {
+    pub(crate) alternate: bool,
+    pub(crate) row: u64,
+}
+
 /// What the draft guard reads off the screen.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct InputScreen {
@@ -73,6 +89,77 @@ pub(crate) struct InputScreen {
     /// The cursor's row without suggested input: a proposed reply comes and
     /// goes on its own and is never the user's.
     pub(crate) line: String,
+    pub(crate) cursor_at: CursorAt,
+    /// The last character drawn before the cursor, blanks skipped. `None`
+    /// while the cursor is hidden: the program has not put it where it
+    /// means.
+    pub(crate) before_cursor: Option<char>,
+    /// Nothing drawn for [`QUIET_BEFORE_ENDING`] and no synchronized update
+    /// open: the screen is not caught mid-redraw.
+    pub(crate) quiet: bool,
+}
+
+/// What the user typed and has not sent.
+#[derive(Debug, Clone)]
+struct Draft {
+    /// The line before its first key.
+    line_before: String,
+    /// Where the cursor was at that key.
+    started_at: CursorAt,
+    /// What its keys left on the line while only text and Backspace typed
+    /// it (see [`typed_after`]). `None` once the count could not follow a
+    /// key: then only finding the line as it was ends the draft. Text a menu
+    /// took is in it too, since text keys read no screen; Backspace does,
+    /// so a menu's never counts. What the line shows of theirs is then always
+    /// among these characters.
+    typed: Option<String>,
+    /// A quiet screen last showed a program took its keys. That holds while
+    /// the screen is busy, so a send's own paste echoing does not make the
+    /// draft come back before its Enter; any key of theirs undoes it.
+    taken: bool,
+}
+
+impl Draft {
+    /// The draft `bytes` start on `screen`, unless they erase themselves.
+    fn start(screen: InputScreen, bytes: &[u8]) -> Option<Self> {
+        let typed = typed_after(String::new(), bytes);
+        (typed.as_deref() != Some("")).then_some(Self {
+            line_before: screen.line,
+            started_at: screen.cursor_at,
+            typed,
+            taken: false,
+        })
+    }
+
+    /// The draft after `bytes`; `None` once they erased every key of it.
+    fn typed_on(self, bytes: &[u8]) -> Option<Self> {
+        let typed = self.typed.and_then(|typed| typed_after(typed, bytes));
+        (typed.as_deref() != Some("")).then_some(Self {
+            typed,
+            taken: false,
+            ..self
+        })
+    }
+
+    /// Whether a program took the keys and moved on, read off a quiet
+    /// screen: the cursor has left the row they were typed on, and what it
+    /// follows is none of the characters typed. Either alone is a draft: one
+    /// that wraps or whose input box moves, or a program that redraws its
+    /// line in place (a changed prompt, masked echo). A hidden cursor or only
+    /// blanks typed tell nothing.
+    fn taken_by_program(&self, screen: &InputScreen) -> bool {
+        let Some(typed) = self
+            .typed
+            .as_deref()
+            .filter(|typed| !typed.trim().is_empty())
+        else {
+            return false;
+        };
+        screen.cursor_at != self.started_at
+            && screen
+                .before_cursor
+                .is_some_and(|shown| !typed.contains(shown))
+    }
 }
 
 /// When the user last typed into one session and what that left on the line,
@@ -80,14 +167,14 @@ pub(crate) struct InputScreen {
 #[derive(Debug, Default, Clone)]
 pub(crate) struct TypingClock {
     typed_at: Option<u64>,
-    /// The line before the first key the user has not sent. `None`: nothing
-    /// of theirs is waiting.
-    line_before_typing: Option<String>,
+    /// `None`: nothing of theirs is waiting.
+    draft: Option<Draft>,
 }
 
 impl TypingClock {
     /// One write about to reach the PTY at `now`, before it can echo. The
-    /// screen is read only when the key can start or end a draft.
+    /// screen is read only when the key can start or end a draft: the first
+    /// key, Enter, and a Backspace the count follows.
     pub(crate) fn note(
         &mut self,
         origin: WriteOrigin,
@@ -100,15 +187,27 @@ impl TypingClock {
         }
         self.typed_at = Some(now);
         let enter = ends_in_enter(bytes);
-        // A key on a draft already started, or Enter with none, changes
-        // nothing.
-        if self.line_before_typing.is_some() != enter {
-            return;
+        let erases = bytes.iter().any(|byte| matches!(byte, 0x7f | 0x08));
+        let counted = self.draft.as_ref().map(|draft| draft.typed.is_some());
+        match (counted, enter) {
+            // Enter with no draft, or a key the count no longer follows,
+            // changes nothing.
+            (None, true) | (Some(false), false) => return,
+            (Some(true), false) if !erases => {
+                self.draft = self.draft.take().and_then(|draft| draft.typed_on(bytes));
+                return;
+            }
+            _ => {}
         }
         let screen = screen();
-        if !screen.menu {
-            self.line_before_typing = (!enter).then_some(screen.line);
+        if screen.menu {
+            return;
         }
+        self.draft = match self.draft.take() {
+            _ if enter => None,
+            None => Draft::start(screen, bytes),
+            Some(draft) => draft.typed_on(bytes),
+        };
     }
 
     pub(crate) fn typed_at(&self) -> Option<u64> {
@@ -121,28 +220,62 @@ impl TypingClock {
     }
 
     /// Whether the line holds input the user has not sent. A menu over it
-    /// takes the keys, so it does not count. Finding the line as it was ends
-    /// the draft, so a program's later text there is not taken for theirs.
+    /// takes the keys, so it does not count. Only a quiet screen can end a
+    /// draft: finding the line as it was ends it, so a program's later text
+    /// there is not taken for theirs, and so does finding a program took its
+    /// keys, until they type again.
     pub(crate) fn has_draft(&mut self, screen: impl FnOnce() -> InputScreen) -> bool {
-        let Some(before) = self.line_before_typing.as_ref() else {
+        let Some(draft) = self.draft.as_mut() else {
             return false;
         };
         let screen = screen();
         if screen.menu {
             return false;
         }
-        if screen.line == *before {
-            self.line_before_typing = None;
-            return false;
+        if screen.quiet {
+            if screen.line == draft.line_before {
+                self.draft = None;
+                return false;
+            }
+            draft.taken = draft.taken_by_program(&screen);
         }
-        true
+        !draft.taken
     }
 
     /// The program that held the input line changed, and what was on it went
     /// with that program.
     pub(crate) fn forget_draft(&mut self) {
-        self.line_before_typing = None;
+        self.draft = None;
     }
+}
+
+/// The text the user's keys leave on the line after `text`: text adds to
+/// it, Backspace takes its last character off (where several draw as one,
+/// the rest stay, which can only make a draft end later). `None` for a key
+/// the count cannot follow: any other key (arrows, Tab, Escape, control
+/// keys, a paste, which an input box may show as a placeholder), and
+/// Backspace with nothing of theirs left, which erases what was there before.
+fn typed_after(mut text: String, bytes: &[u8]) -> Option<String> {
+    let mut rest = bytes;
+    while let Some((&first, after)) = rest.split_first() {
+        rest = match first {
+            0x7f | 0x08 => {
+                text.pop()?;
+                after
+            }
+            0x1b => after.get(report_len(after)?..)?,
+            0x00..=0x1f => return None,
+            _ => {
+                let end = rest
+                    .iter()
+                    .position(|byte| *byte < 0x20 || *byte == 0x7f)
+                    .unwrap_or(rest.len());
+                text.push_str(std::str::from_utf8(&rest[..end]).ok()?);
+                &rest[end..]
+            }
+        };
+    }
+    Some(text)
 }
 
 /// Whether the user's write ends by pressing plain Enter, which sends the
@@ -342,16 +475,28 @@ mod tests {
     }
 
     fn prompt(line: &str) -> InputScreen {
+        on_row(0, line)
+    }
+
+    /// `line` on `row` of a quiet screen, the cursor after its last
+    /// character.
+    fn on_row(row: u64, line: &str) -> InputScreen {
         InputScreen {
             menu: false,
             line: line.to_owned(),
+            cursor_at: CursorAt {
+                alternate: false,
+                row,
+            },
+            before_cursor: line.trim_end().chars().last(),
+            quiet: true,
         }
     }
 
     fn menu() -> InputScreen {
         InputScreen {
             menu: true,
-            line: "  1. Yes".to_owned(),
+            ..prompt("  1. Yes")
         }
     }
 
@@ -371,7 +516,7 @@ mod tests {
         clock.note(WriteOrigin::User, b"i", 2, unread);
         assert!(clock.has_draft(|| prompt("> hi")));
         assert!(clock.has_draft(|| prompt("> hi")), "asking changes nothing");
-        assert!(!clock.has_draft(|| prompt("> ")), "erased");
+        assert!(!clock.has_draft(|| prompt("> ")), "back as it was");
         // Program text on the line after that is not theirs (a multi-key
         // send_keys, a paste left unsubmitted).
         assert!(!clock.has_draft(|| prompt("> /com")));
@@ -415,6 +560,10 @@ mod tests {
             clock.has_draft(|| prompt("> hi")),
             "the draft is still there"
         );
+        assert!(
+            clock.has_draft(|| on_row(6, "> hi")),
+            "and still there in a box drawn lower"
+        );
     }
 
     #[test]
@@ -424,6 +573,226 @@ mod tests {
         clock.forget_draft();
         assert!(!clock.has_draft(|| prompt("$ ")));
         assert_eq!(clock.typed_at(), Some(1), "they still typed");
+    }
+
+    #[test]
+    fn erasing_every_key_ends_the_draft_though_the_kept_line_was_stale() {
+        // #65: the key after Enter reached the core before the program
+        // redrew the line, so the line kept is the one just sent.
+        let mut clock = TypingClock::default();
+        typed(&mut clock, b"hi", prompt("> "));
+        typed(&mut clock, b"\r", prompt("> hi"));
+        typed(&mut clock, b"x", prompt("> hi"));
+        assert!(clock.has_draft(|| prompt("> x")), "the key is theirs");
+        typed(&mut clock, b"\x7f", prompt("> x"));
+        assert!(!clock.has_draft(|| prompt("> ")));
+        typed(&mut clock, b"y", prompt("> "));
+        assert!(clock.has_draft(|| prompt("> y")));
+        assert!(
+            !clock.has_draft(|| prompt("> ")),
+            "the next line kept is fresh"
+        );
+    }
+
+    #[test]
+    fn text_and_backspace_are_counted_and_a_report_beside_them_is_skipped() {
+        let mut clock = TypingClock::default();
+        typed(&mut clock, b"\x1b[Iab", prompt("> "));
+        typed(&mut clock, b"\x7f", prompt("> ab"));
+        assert!(clock.has_draft(|| on_row(3, "> a")), "one left");
+        typed(&mut clock, b"\x08", prompt("> a"));
+        assert!(!clock.has_draft(|| on_row(3, "> x")));
+        typed(&mut clock, b"a\x7f", prompt("> "));
+        assert!(
+            !clock.has_draft(|| on_row(3, "> x")),
+            "erased in the same write"
+        );
+    }
+
+    #[test]
+    fn a_key_the_count_cannot_follow_leaves_the_kept_line_to_end_the_draft() {
+        let keys: [&[u8]; 7] = [
+            b"\x1b[D",
+            b"\t",
+            b"\x15",
+            b"\x1b",
+            b"\x1b\r",
+            b"\x1b[200~pasted\x1b[201~",
+            b"\x7f\x7f\x7f",
+        ];
+        for key in keys {
+            let mut clock = TypingClock::default();
+            typed(&mut clock, b"ab", prompt("> "));
+            typed(&mut clock, key, prompt("> ab"));
+            typed(&mut clock, b"\x7f\x7f", prompt("> ab"));
+            let key = String::from_utf8_lossy(key);
+            assert!(clock.has_draft(|| on_row(4, "$")), "{key:?}");
+            assert!(!clock.has_draft(|| prompt("> ")), "{key:?}");
+        }
+        // Backspace first erases what was on the line before.
+        let mut clock = TypingClock::default();
+        typed(&mut clock, b"\x7f", prompt("> /com"));
+        assert!(clock.has_draft(|| on_row(4, "> /co")));
+    }
+
+    #[test]
+    fn a_backspace_at_a_menu_over_a_draft_is_not_counted() {
+        let mut clock = TypingClock::default();
+        typed(&mut clock, b"h", prompt("> "));
+        typed(&mut clock, b"\x7f", menu());
+        assert!(!clock.has_draft(menu));
+        assert!(clock.has_draft(|| on_row(4, "> h")), "the menu took it");
+    }
+
+    #[test]
+    fn text_a_menu_took_is_counted_but_hides_no_draft() {
+        // Text keys read no screen, so `2` at a menu counts as typed.
+        let mut clock = TypingClock::default();
+        typed(&mut clock, b"hi", prompt("> "));
+        clock.note(WriteOrigin::User, b"2", 2, unread);
+        assert!(clock.has_draft(|| on_row(5, "> hi")), "the box moved down");
+        typed(&mut clock, b"\x7f", on_row(5, "> hi"));
+        assert!(clock.has_draft(|| on_row(5, "> h")));
+        typed(&mut clock, b"\x7f", on_row(5, "> h"));
+        assert!(!clock.has_draft(|| on_row(5, ">")), "erased");
+    }
+
+    #[test]
+    fn backspace_over_a_character_drawn_from_several_ends_the_draft_late() {
+        let mut clock = TypingClock::default();
+        typed(&mut clock, "s\u{ed}".as_bytes(), prompt("> "));
+        typed(&mut clock, b"\x7f\x7f", prompt("> s\u{ed}"));
+        assert!(!clock.has_draft(|| on_row(2, "> x")), "accented, erased");
+        // A thumbs-up with a skin tone is two characters and one Backspace.
+        typed(&mut clock, "a\u{1f44d}\u{1f3fd}".as_bytes(), prompt("> "));
+        typed(&mut clock, b"\x7f", prompt("> a\u{1f44d}\u{1f3fd}"));
+        assert!(clock.has_draft(|| on_row(2, "> a")));
+        typed(&mut clock, b"\x7f", prompt("> a"));
+        assert!(clock.has_draft(|| on_row(0, "> x")), "one stays counted");
+        assert!(!clock.has_draft(|| prompt("> ")), "back as it was");
+    }
+
+    #[test]
+    fn a_key_a_program_took_is_no_draft_once_it_moved_on() {
+        // #65: a one-key prompt acts on `y` without Enter, says so, and the
+        // shell prompts two rows down.
+        let mut clock = TypingClock::default();
+        typed(&mut clock, b"y", on_row(3, "Delete it? [y/n]"));
+        assert!(!clock.has_draft(|| on_row(5, "$")));
+        assert_eq!(clock.typed_at(), Some(1), "they still typed");
+        // What they type at the new prompt is a draft until erased.
+        typed(&mut clock, b"ls", on_row(5, "$"));
+        assert!(clock.has_draft(|| on_row(5, "$ ls")));
+        typed(&mut clock, b"\x7f\x7f", on_row(5, "$ ls"));
+        assert!(!clock.has_draft(|| on_row(5, "$")));
+    }
+
+    #[test]
+    fn a_send_after_a_program_took_the_key_is_not_refused_while_it_echoes() {
+        let mut clock = TypingClock::default();
+        typed(&mut clock, b"y", on_row(3, "Delete it? [y/n]"));
+        assert!(!clock.has_draft(|| on_row(5, "$")));
+        let pasted = InputScreen {
+            quiet: false,
+            ..on_row(5, "$ echo sent")
+        };
+        assert!(!clock.has_draft(|| pasted.clone()), "the paste's Enter");
+        clock.note(WriteOrigin::User, b"x", 2, unread);
+        assert!(clock.has_draft(|| pasted), "a key of theirs since");
+    }
+
+    #[test]
+    fn a_draft_that_wraps_onto_more_rows_stays() {
+        let mut clock = TypingClock::default();
+        let text = format!("{} the end ", "x".repeat(70));
+        typed(&mut clock, text.as_bytes(), on_row(9, "> "));
+        assert!(clock.has_draft(|| on_row(10, "x the end")));
+        assert!(
+            clock.has_draft(|| on_row(10, "    the end")),
+            "an input box that indents the rows it continues on"
+        );
+        let caret_starts_the_row = InputScreen {
+            before_cursor: None,
+            ..on_row(11, "")
+        };
+        assert!(clock.has_draft(|| caret_starts_the_row));
+    }
+
+    #[test]
+    fn a_draft_stays_while_output_moves_its_input_box() {
+        let mut clock = TypingClock::default();
+        typed(&mut clock, b"fix it", on_row(20, "\u{276f}\u{a0}"));
+        assert!(clock.has_draft(|| on_row(26, "\u{276f}\u{a0}fix it")));
+        // A redraw caught between its writes: the cursor sits where output is
+        // being drawn, or is hidden until the frame is done.
+        let mid_redraw = InputScreen {
+            quiet: false,
+            ..on_row(24, "\u{23fa} Done")
+        };
+        assert!(clock.has_draft(|| mid_redraw));
+        let hidden = InputScreen {
+            before_cursor: None,
+            ..on_row(24, "\u{23fa} Done")
+        };
+        assert!(clock.has_draft(|| hidden));
+        let erased_before_drawn = InputScreen {
+            quiet: false,
+            ..on_row(27, "\u{276f}")
+        };
+        assert!(clock.has_draft(|| erased_before_drawn));
+        assert!(clock.has_draft(|| on_row(27, "\u{276f}\u{a0}fix it")));
+    }
+
+    #[test]
+    fn a_draft_stays_under_masked_echo() {
+        let mut clock = TypingClock::default();
+        typed(&mut clock, b"hunter2", on_row(2, "Password:"));
+        assert!(clock.has_draft(|| on_row(2, "Password: *******")));
+    }
+
+    #[test]
+    fn a_draft_stays_when_the_program_redraws_its_prompt_in_place() {
+        // Claude Code takes a leading `!` into bash mode and redraws the
+        // prompt; a program may draw its own glyph there.
+        let mut clock = TypingClock::default();
+        typed(&mut clock, b"!", on_row(7, "\u{276f}\u{a0}"));
+        assert!(clock.has_draft(|| on_row(7, "!")));
+        assert!(clock.has_draft(|| on_row(7, "$")));
+        typed(&mut clock, b"ls", on_row(7, "!"));
+        assert!(clock.has_draft(|| on_row(7, "! ls")));
+    }
+
+    #[test]
+    fn a_draft_stays_on_another_screen_until_it_is_quiet_there() {
+        let mut clock = TypingClock::default();
+        typed(&mut clock, b"q", on_row(23, ":"));
+        let alternate = |quiet| InputScreen {
+            cursor_at: CursorAt {
+                alternate: true,
+                row: 23,
+            },
+            quiet,
+            ..on_row(23, "$")
+        };
+        assert!(clock.has_draft(|| alternate(false)), "still drawing");
+        assert!(!clock.has_draft(|| alternate(true)), "the pager quit");
+    }
+
+    #[test]
+    fn the_line_as_it_was_ends_a_draft_only_on_a_quiet_screen() {
+        let mut clock = TypingClock::default();
+        typed(&mut clock, b"hi", prompt("> "));
+        typed(&mut clock, b"\x1b[D", prompt("> hi"));
+        let mid_redraw = InputScreen {
+            quiet: false,
+            ..prompt("> ")
+        };
+        assert!(
+            clock.has_draft(|| mid_redraw),
+            "erased before it is drawn again"
+        );
+        assert!(clock.has_draft(|| prompt("> hi")));
+        assert!(!clock.has_draft(|| prompt("> ")));
     }
 
     #[test]
