@@ -52,7 +52,24 @@ final class LocalSiteIndexTests: XCTestCase {
             servers: [Server(sessionID: "s", projectID: "a", createdAt: 1, urls: ["http://localhost:1/"])],
             parentByProjectID: ["a": "b", "b": "a"]
         )
-        _ = index.candidates(forProjectFamilyOf: "a")
+        XCTAssertEqual(index.candidates(forProjectFamilyOf: "a"), ["http://localhost:1/"])
+    }
+
+    func testTheDiskScanPlacesEachSiteByItsSessionsProject() {
+        let session = SessionEntry(
+            id: "server", projectID: "group", label: "dev", command: "npm run dev",
+            createdAt: 4, status: .idle
+        )
+        let index = LocalSiteIndex.fromScan(
+            urlsBySession: ["server": ["http://localhost:5173/"], "gone": ["http://localhost:9/"]],
+            sessions: ["server": session],
+            projects: ["site": Self.diskProject("site", parent: nil), "group": Self.diskProject("group", parent: "site")]
+        )
+
+        XCTAssertEqual(index.servers, [
+            Server(sessionID: "server", projectID: "group", createdAt: 4, urls: ["http://localhost:5173/"]),
+        ])
+        XCTAssertEqual(index.candidates(forProjectFamilyOf: "site"), ["http://localhost:5173/"])
     }
 
     func testAHostSnapshotIndexesOnlyTheSessionsThatServeASite() {
@@ -94,6 +111,13 @@ final class LocalSiteIndexTests: XCTestCase {
             Self.session("server", project: "site", createdAt: 2, urls: []),
         ]))
         XCTAssertEqual(store.knownLocalSiteURLs(forProjectFamilyOf: "site"), [])
+    }
+
+    private static func diskProject(_ id: String, parent: String?) -> Project {
+        Project(
+            id: id, name: id, path: "/fixture/\(id)", parentProjectID: parent, sortOrder: 0,
+            isFolder: nil, worktreeBranch: nil, workspacesEnabled: nil, mcpBlocked: nil
+        )
     }
 
     private static func snapshot(sessions: [RemoteSessionSummary]) -> RemoteBootstrapSnapshot {

@@ -41,9 +41,27 @@ struct LocalSiteIndex: Equatable {
                     createdAt: $0.createdAtUnixMs, urls: $0.detectedLocalURLs
                 )
             },
-            parentByProjectID: projects.reduce(into: [:]) { parents, project in
-                parents[project.id] = project.parentProjectID
-            }
+            parentByProjectID: Dictionary(
+                projects.compactMap { project in project.parentProjectID.map { (project.id, $0) } },
+                uniquingKeysWith: { _, last in last }
+            )
+        )
+    }
+
+    /// The disk scan's word, before the Local Host answers: the URLs each
+    /// live Session's manifest lists, placed by the scan's own maps.
+    static func fromScan(
+        urlsBySession: [String: [String]],
+        sessions: [String: SessionEntry],
+        projects: [String: Project]
+    ) -> LocalSiteIndex {
+        LocalSiteIndex(
+            servers: urlsBySession.compactMap { sessionID, urls in
+                sessions[sessionID].map {
+                    Server(sessionID: sessionID, projectID: $0.projectID, createdAt: $0.createdAt, urls: urls)
+                }
+            },
+            parentByProjectID: projects.compactMapValues(\.parentProjectID)
         )
     }
 

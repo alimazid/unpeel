@@ -390,15 +390,6 @@ phone's sidebar and bell) but keep it openable by id, which is how the
 SCHEDULED section reaches older Runs. Run Sessions take no slot in either
 builder's stopped window; Run retention bounds them per task.
 
-A running Session that serves a local site also carries `detectedLocalURLs`
-(fork-only, #63) from both builders: the manifest's host-probed
-`detected_local_urls`, omitted when empty and on stopped rows. The Mac app's
-Local scope reads it into `LocalSiteIndex` on every snapshot, since its disk
-scan stops once the Host answers. That index feeds the project row's globe
-and the title strip's site chip, so a site that starts after launch shows up
-too. Only a Controller on the Host's own machine can open these URLs, so
-other Controllers ignore the field.
-
 When a Run's Session comes up, the worker stops the Sessions of the task's
 Superseded Runs (its earlier Run Sessions that are idle and not pinned)
 through the pid-verified stop path (`run_sessions::stop_superseded`): the
@@ -407,6 +398,17 @@ its instructions are being typed, the worker sweeps even a workspace with no
 task left (`Scheduler::needs_sweep`), so that outcome is handled on the next
 rescan, never when some later task is created. Deleting a task stops none of
 its Run Sessions by itself.
+
+### Local sites on session rows (fork-only)
+
+A running Session that serves a local site carries `detectedLocalURLs`
+(#63) from both row builders: the manifest's host-probed
+`detected_local_urls`, omitted when empty and on stopped rows. The Mac app's
+Local scope reads it into `LocalSiteIndex` on every snapshot, since its disk
+scan stops once the Host answers. That index feeds the project row's globe
+and the title strip's site chip, so a site that starts after launch shows up
+too. Only a Controller on the Host's own machine can open these URLs, so
+other Controllers ignore the field.
 
 ### Browser engine install (`serve.json.browserEngine`)
 

@@ -5870,15 +5870,8 @@ final class UnpeelStore: ObservableObject {
         lastScanTauriPins = stateFile?.pinnedSessions ?? [:]
         hasCompletedScan = true
         _ = rebuildTree(projects: projects, sessions: sessions)
-        publishLocalSites(LocalSiteIndex(
-            servers: scannedLocalURLs.compactMap { sessionID, urls in
-                sessionsByID[sessionID].map {
-                    LocalSiteIndex.Server(
-                        sessionID: sessionID, projectID: $0.projectID, createdAt: $0.createdAt, urls: urls
-                    )
-                }
-            },
-            parentByProjectID: projectsByID.compactMapValues(\.parentProjectID)
+        publishLocalSites(.fromScan(
+            urlsBySession: scannedLocalURLs, sessions: sessionsByID, projects: projectsByID
         ))
 
         // Hook/unread bookkeeping for sessions that vanished, then settle
