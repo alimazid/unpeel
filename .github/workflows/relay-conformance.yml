@@ -23,6 +23,8 @@ permissions:
 
 jobs:
   swift-rust-relay:
+    # Forks run this only on manual dispatch: macOS runners often go unacquired there.
+    if: github.repository == 'unpeel-com/unpeel' || github.event_name == 'workflow_dispatch'
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@v4
