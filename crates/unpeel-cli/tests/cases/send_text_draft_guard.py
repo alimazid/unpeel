@@ -8,7 +8,13 @@ nothing is written then. An empty box takes the send, a faint proposed reply
 Driven through `unpeel mcp`, `unpeel send` and `unpeel keys`, the dispatcher
 an agent's MCP server uses, against a session hosted by the real PTY core;
 the user types on the attach stream (a terminal) and the control socket's
-`Write` (the Mac app's controller writes).
+`Write` (the Mac app's controller writes). Since #65 a draft also ends when
+the user erases every key of it, or when a program took the key and moved
+on, even if the line kept for it was read before a redraw; a draft that
+wraps, continues on a row of its own, or has output streaming above it
+still refuses. Since #66 `sessions report` with no Host worker running (it
+pastes at once, `delivery: immediate_legacy`) takes the same guard: an empty
+box takes it, typing or a draft refuses it at once with nothing written.
 """
 
 import json
@@ -31,16 +37,33 @@ GHOST = "leave the epic assigned to me"
 
 def write_fixture(path, log, submitted):
     """An input box: `> ` and what was typed, backspace erases, Enter submits
-    the line (logged), a bracketed paste joins it. Ctrl+] paints a faint
-    suggestion at the cursor while the line is empty; Ctrl+N opens a select
-    menu under it, which takes keys until Enter."""
+    the line (logged), a bracketed paste joins it, Alt+Enter starts a row in
+    it. Ctrl+] paints a faint suggestion at the cursor while the line is
+    empty; Ctrl+N opens a select menu under it, which takes keys until Enter.
+    For #65: Ctrl+O makes the next submitting Enter wait 1.5 s before the
+    line is redrawn; Ctrl+Y asks a one-key question below the line, which
+    takes the next key without Enter and prompts again; Ctrl+B draws the line
+    as a TUI does (rows of 40, continued indented) or as typed; Ctrl+P
+    streams output above the line, each output row in two writes."""
     with open(path, "w") as handle:
         handle.write(f"#!{sys.executable}\n" + f'''
-import os, tty
+import os, time, tty
 tty.setraw(0)
 line, ghost, menu = "", False, False
+slow_enter, one_key, box, rows_drawn = False, False, False, 0
+def rows_of(text):
+    rows = []
+    for part in text.split("\\n"):
+        width = 40 if box else max(len(part), 1)
+        rows.extend(part[i:i + width] for i in range(0, max(len(part), 1), width))
+    return rows
+def back_to_line():
+    return "\\x1b[%dF" % rows_drawn if rows_drawn else "\\r"
 def draw():
-    out = "\\r\\x1b[2K> " + line
+    global rows_drawn
+    rows = rows_of("> " + line)
+    out = back_to_line() + "\\x1b[J" + "\\r\\n  ".join(rows)
+    rows_drawn = len(rows) - 1
     if ghost and not line:
         out += "\\x1b[2m{GHOST}\\x1b[22m\\r\\x1b[2C"
     os.write(1, out.encode())
@@ -60,18 +83,47 @@ while True:
             log({submitted!r}, b"CHOSE\\n")
             os.write(1, b"\\x1b7\\r\\n\\x1b[J\\x1b8")
         continue
-    if data == b"\\x1d":
+    if one_key:
+        one_key, rows_drawn = False, 0
+        log({submitted!r}, b"TOOK " + data + b"\\n")
+        os.write(1, data + b"\\r\\ndeleted\\r\\n")
+    elif data == b"\\x1d":
         ghost = True
     elif data == b"\\x0e":
         menu = True
         os.write(1, "\\x1b7\\r\\n  1. Yes\\r\\n  2. No\\r\\n\\u2191/\\u2193 to navigate \\u00b7 Enter to select\\x1b8".encode())
         continue
+    elif data == b"\\x0f":
+        slow_enter = True
+        continue
+    elif data == b"\\x19":
+        one_key = True
+        os.write(1, b"\\r\\nDelete it? [y/n] ")
+        continue
+    elif data == b"\\x02":
+        box = not box
+    elif data == b"\\x10":
+        for i in range(30):
+            os.write(1, (back_to_line() + "\\x1b[Joutput " + str(i)).encode())
+            time.sleep(0.02)
+            os.write(1, b"\\r\\n")
+            rows_drawn = 0
+            draw()
+            time.sleep(0.08)
+        log({submitted!r}, b"STREAMED\\n")
+        continue
     elif data.startswith(b"\\x1b[200~"):
         line += data[6:].split(b"\\x1b[201~")[0].decode("utf-8", "replace").replace("\\n", " ")
+    elif data == b"\\x1b\\r":
+        line += "\\n"
     elif data == b"\\r":
         if line:
-            log({submitted!r}, ("SUBMITTED " + line + "\\n").encode())
+            log({submitted!r}, ("SUBMITTED " + line.replace("\\n", "|") + "\\n").encode())
+            if slow_enter:
+                slow_enter = False
+                time.sleep(1.5)
             os.write(1, b"\\r\\n")
+            rows_drawn = 0
         line = ""
     elif data.strip(b"\\x7f") == b"":
         line = line[:len(line) - len(data)]
@@ -121,6 +173,10 @@ def body(case):
 
     def cli_send(text):
         return as_caller("send", agent, text, "--enter")
+
+    def report(summary):
+        return as_caller("mcp", "sessions", "report", f"session_id={agent}",
+                         f"summary={summary}")
 
     def cli_keys(*keys):
         return as_caller("keys", agent, *keys)
@@ -182,6 +238,11 @@ def body(case):
         case.check("`unpeel send` to an empty box is delivered",
                    done.returncode == 0
                    and until(lambda: "cli-into-an-empty-box" in read(submitted)), said(done))
+        done = report("report-into-an-empty-box")
+        case.check("a report to an empty box with no Host worker is pasted at once",
+                   done.returncode == 0 and '"immediate_legacy"' in done.stdout
+                   and "unguarded" not in done.stdout
+                   and until(lambda: "report-into-an-empty-box" in read(submitted)), said(done))
 
         # 2. The user is typing: refused, nothing written.
         # Whole ms, as the PTY core stamps it.
@@ -192,6 +253,9 @@ def body(case):
                    done.returncode != 0 and "Not sent (typing)" in done.stderr, said(done))
         done = send_text("mcp-while-typing")
         case.check("send_text while the user types is refused as typing",
+                   done.returncode != 0 and "Not sent (typing)" in done.stderr, said(done))
+        done = report("report-while-typing")
+        case.check("a report while the user types is refused as typing",
                    done.returncode != 0 and "Not sent (typing)" in done.stderr, said(done))
         case.check("nothing of it was written", "while-typing" not in read(log), read(log)[-200:])
         case.check("the typing is stamped as current",
@@ -212,6 +276,13 @@ def body(case):
         case.check("send_keys onto the draft is refused too",
                    done.returncode != 0 and "Sent 0 of 1 keys" in done.stderr
                    and "Not sent (draft)" in done.stderr, said(done))
+        # A refusal is final: the old paste retried a failed write for 20 s.
+        started = time.time()
+        done = report("report-onto-a-draft")
+        took = time.time() - started
+        case.check("a report onto the draft is refused at once, not retried",
+                   done.returncode != 0 and "Not sent (draft)" in done.stderr and took < 5,
+                   f"{took:.1f}s " + said(done))
         case.check("none was written",
                    "onto-a-draft" not in read(log) and not read(log).endswith("x"), read(log)[-200:])
         case.check("the draft is untouched", "> abc" in screen(), screen()[-300:])
@@ -249,6 +320,96 @@ def body(case):
         case.check("`unpeel send` over a suggested reply is delivered",
                    done.returncode == 0 and until(lambda: "over-a-suggestion" in read(submitted)),
                    said(done))
+
+        def refused_as_draft(done):
+            return done.returncode != 0 and "Not sent (draft)" in done.stderr
+
+        def delivered(done, text):
+            return done.returncode == 0 and until(lambda: text in read(submitted))
+
+        def submit_the_line(text):
+            typed_on_attach(b"\r")
+            return until(lambda: f"SUBMITTED {text}\n" in read(submitted))
+
+        # 7. A key typed right after Enter, before the line is redrawn (#65):
+        # the core keeps the line just sent as the one before the key. The
+        # key is a draft; once erased, a send lands without another Enter.
+        program("\x0f")
+        typed_on_attach(b"sent-before-the-race")
+        typed_on_attach(b"\r")
+        typed_on_attach(b"x")
+        case.check("the line is redrawn late with the raced key on it",
+                   until(lambda: "SUBMITTED sent-before-the-race" in read(submitted))
+                   and until(lambda: "> x" in screen(), timeout=5), screen()[-300:])
+        time.sleep(QUIET)
+        done = send_text("onto-the-raced-key")
+        case.check("the raced key is a draft", refused_as_draft(done), said(done))
+        typed_on_attach(b"\x7f")
+        time.sleep(QUIET)
+        done = send_text("after-erasing-the-raced-key")
+        case.check("a send after the raced key is erased is delivered",
+                   delivered(done, "after-erasing-the-raced-key"), said(done))
+
+        # 8. A one-key prompt takes `y` without Enter, says so and prompts
+        # again two rows down (#65): nothing of the user's is on the line.
+        program("\x19")
+        until(lambda: "Delete it? [y/n]" in screen(), timeout=5)
+        typed_on_attach(b"y")
+        case.check("the program took the key", until(lambda: "TOOK y" in read(submitted)),
+                   read(submitted)[-200:])
+        time.sleep(QUIET)
+        done = send_text("after-the-one-key-prompt")
+        case.check("a send after a one-key prompt took the key is delivered",
+                   delivered(done, "after-the-one-key-prompt"), said(done))
+
+        # 9. Drafts that leave the row they started on stay drafts: one the
+        # terminal wraps, one on a row of its own (Alt+Enter), one a TUI
+        # wraps into indented rows.
+        long = "w" * 150 + "-wrapped"
+        typed_on_attach(long.encode())
+        time.sleep(QUIET)
+        done = send_text("onto-a-wrapped-draft")
+        case.check("a send onto a draft the terminal wraps is refused",
+                   refused_as_draft(done), said(done))
+        case.check("the wrapped draft is submitted", submit_the_line(long), read(submitted)[-300:])
+        typed_on_attach(b"first row")
+        typed_on_attach(b"\x1b\r")
+        typed_on_attach(b"second row")
+        time.sleep(QUIET)
+        done = send_text("onto-a-second-row")
+        case.check("a send onto a draft's second row is refused",
+                   refused_as_draft(done), said(done))
+        case.check("the two-row draft is submitted", submit_the_line("first row|second row"),
+                   read(submitted)[-300:])
+        program("\x02")
+        boxed = "b" * 90 + "-boxed"
+        typed_on_attach(boxed.encode())
+        time.sleep(QUIET)
+        done = send_text("onto-a-boxed-draft")
+        case.check("a send onto a draft a TUI wraps is refused",
+                   refused_as_draft(done), said(done))
+        case.check("the boxed draft is submitted", submit_the_line(boxed), read(submitted)[-300:])
+        program("\x02")
+
+        # 10. Output streaming above a draft moves its line down a row at a
+        # time, each output row drawn in two writes: no send lands meanwhile.
+        typed_on_attach(b"streamed-over")
+        time.sleep(QUIET)
+        program("\x10")
+        sends = []
+        while "STREAMED" not in read(submitted) and len(sends) < 40:
+            sends.append(send_text("while-output-streams"))
+        sends.append(send_text("after-output-streamed"))
+        case.check("every send while output streams above a draft is refused",
+                   len(sends) > 3 and all(refused_as_draft(done) for done in sends),
+                   f"{len(sends)} sends: " + "; ".join(said(done) for done in sends
+                                                      if not refused_as_draft(done))[:400])
+        case.check("none of them was written",
+                   not any(text in read(log) for text in ("while-output-streams",
+                                                          "after-output-streamed")),
+                   read(log)[-200:])
+        case.check("the streamed-over draft is submitted", submit_the_line("streamed-over"),
+                   read(submitted)[-300:])
     finally:
         for session_id in (agent, caller):
             if session_id:

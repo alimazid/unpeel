@@ -1,5 +1,6 @@
-//! Fork-only (#61, ADR 0011): an agent's `send_text` and `send_keys` never
-//! land on what the user is typing. Every write asks the target's PTY core,
+//! Fork-only (#61, ADR 0011): an agent's `send_text` and `send_keys`, and
+//! (#66) a `report` pasted at once for want of a Host worker, never land on
+//! what the user is typing. Every write asks the target's PTY core,
 //! which sees each key at once and keeps the line from before the user's
 //! first unsent key, to refuse it while the user typed in the last
 //! [`TYPING_QUIET_MS`] or left a draft. The core decides under its own lock,
@@ -60,8 +61,8 @@ fn core_has_draft_guard(session_id: &str) -> bool {
     crate::session_host::load_manifest(session_id).is_some_and(|manifest| manifest.draft_guard)
 }
 
-/// `send_text`'s delivery of already-sanitized text. `Ok` carries the note
-/// for the caller's result.
+/// `send_text`'s and (#66) a Host-less `report`'s delivery of already-
+/// sanitized text. `Ok` carries the note for the caller's result.
 pub fn deliver_text(session_id: &str, text: &str, submit: bool) -> Result<&'static str, String> {
     let since = typing_window_start(crate::state::current_timestamp_ms());
     match session_input::paste_unless_user_is_typing(session_id, text, submit, since)? {

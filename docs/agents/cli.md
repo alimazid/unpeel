@@ -313,8 +313,9 @@ can never write into itself. Inside a Session `keys` takes key names one per
 word (`down enter`, `ctrl+c`); outside it keeps its raw escape sequence.
 Inside a Session they also carry the draft guard (fork-only, #61): exit 1
 with `Not sent (typing)` or `Not sent (draft)` while the user is typing in
-the target or has unsent input there. PTY proof: `cli_write_policy`,
-`send_text_draft_guard`.
+the target or has unsent input there. So does `unpeel report` while no Host
+worker runs, when it types the report at once (#66). PTY proof:
+`cli_write_policy`, `send_text_draft_guard`.
 
 ### Agent integrations (`unpeel integrations`)
 

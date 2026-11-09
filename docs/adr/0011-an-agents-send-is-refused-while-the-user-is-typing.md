@@ -29,12 +29,42 @@ look and the write:
   program leaves there later is never taken for the user's. A select menu
   takes the keys, so it neither starts nor refuses a draft, and the one
   under it survives. A new program in the foreground drops the draft.
+- **What the keys left (#65).** While only text and Backspace typed the
+  draft, the core also keeps that text: text adds to it, Backspace takes
+  off its last character. Any other key (arrows, Tab, Escape, control
+  keys, a paste, a Backspace into what was there before) and a mouse click,
+  which can move the cursor inside the draft, leave only the kept line to
+  end it. Erasing every key ends the draft, so a line kept
+  from before a redraw no longer matters. A program took the keys and
+  moved on when the cursor has left the row they were typed on, **and**
+  what it follows is none of the characters typed and no mask (`*`, `•`,
+  `●`, `·`, `▪`, `■`), **and** the row above shows none of them; short of all three
+  it is still a draft (one that wraps, onto a new row or past a box
+  border; one whose input box moves; a prompt redrawn in place; masked
+  echo). The screen counts only when quiet: nothing drawn
+  for 500 ms, no synchronized update open, and for the cursor, shown.
+  A program's take holds while the screen is busy, so the send's own
+  paste echoing does not refuse its Enter, and any key of the user's undoes
+  it. The screen is read at a draft's first key, at Enter and at a write
+  with Backspace, never at a text key, which keeps a text key's cost what
+  it was (12 ns; one read is ~140 µs at 80×24, ~600 µs at 200×60). So a
+  text key a menu took is counted too; what the line shows of the user's is
+  still among the counted characters, because a Backspace at a menu reads
+  the screen and is not counted. Where the core cannot tell, the draft
+  stays: the rule is built to end late rather than early, and the few
+  early ends it cannot see are listed below.
 
 The send is **refused, not held**. The result starts with a stable phrase:
 `Not sent (typing)` or `Not sent (draft)` (nothing written, with what to do
 next), or `Not submitted (typing)` when a key lands after the paste, which
 then waits on the line unsubmitted. `send_keys` stops at the refused key and
 says how many went in.
+
+A `report` with no Host worker running, which types the report at once
+instead of queuing it in the Inbox, is a send too (#66): the same guard and
+the same results. It used to retry a failed paste for up to 20 s; it now
+fails at once like `send_text`, since a draft seldom clears that fast and a
+paste left unsubmitted would be typed a second time.
 
 ## Considered Options
 
@@ -59,11 +89,21 @@ before until it is resumed, and the result then ends `(unguarded: …)` so
 the caller knows to read the screen first.
 
 A false draft is possible and lasts until the line returns or the user
-presses Enter: a key that a program takes without Enter (a one-key `y/n`
-prompt), or a key typed right after Enter, before the program has redrawn
-the line, so the kept line is the old one. The refusal says to ask the user
-to press Enter when the line shows nothing of theirs. Menu-like text
-anywhere on screen reads as a menu, so a draft under it does not refuse.
+presses Enter: a one-key prompt that a program redraws in place (the cursor
+never leaves the row), a key the count cannot follow (Ctrl+U, Ctrl+W or
+Alt+Backspace erasing a draft whose kept line came from before a redraw;
+an arrow or a paste on one a program then took), a draft on a screen that
+never goes quiet (a spinner, a clock), and a program whose cursor stays
+hidden. The refusal says to ask the user to press Enter when the line shows
+nothing of theirs. A draft can end early only where the core cannot see:
+a raw-mode program that ignores Backspace, a text key a menu took inflating
+the count so a later Backspace into what a program left there reaches
+zero, a picker the menu detector misses taking a Backspace, a masked
+secret drawn with a glyph not on the list, an Enter that does not send (a
+completion accepted, a backslash continuation) until the next key, and a
+draft hidden for 500 ms behind something that is no menu, with the cursor
+shown elsewhere, that comes back while the screen is still busy. Menu-like text anywhere on screen reads as a menu, so a draft under
+it does not refuse (#72).
 
-The Inbox keeps ADR 0008's guard; `report` without a Host worker still
-pastes unguarded.
+The Inbox keeps ADR 0008's guard; `report` without a Host worker takes this
+one (#66).

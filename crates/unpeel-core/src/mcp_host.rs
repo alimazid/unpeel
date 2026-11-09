@@ -125,8 +125,6 @@ const SERVER_NAME: &str = "unpeel";
 const KEY_DELAY_DEFAULT_MS: u64 = 60;
 const KEY_DELAY_MAX_MS: u64 = 1_000;
 const MAX_KEYS_PER_CALL: usize = 40;
-const START_MESSAGE_TIMEOUT_MS: u64 = 20_000;
-const START_MESSAGE_POLL_MS: u64 = 100;
 const READ_OUTPUT_DEFAULT_TAIL_BYTES: usize = 16 * 1024;
 const READ_OUTPUT_MAX_TAIL_BYTES: usize = 256 * 1024;
 const READ_SCREEN_MAX_ROWS: u16 = 500;
@@ -2274,7 +2272,10 @@ pub(crate) fn legacy_sessions_tool_definitions() -> Vec<Value> {
             "description": "Send a structured update or final result to another session. \
         The ordinary write policy applies, regardless of sidebar group, except that while a \
         Host runs a report to the Super Agent from its Worker or a Scheduled Task's Run needs no \
-        approval.",
+        approval. With no Host running the report is typed at once, and it fails like \
+        send_text with 'Not sent (typing)' or 'Not sent (draft)' while the user is typing there \
+        or has unsent input on its line: nothing was written, so report again once they are \
+        done.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -3202,18 +3203,6 @@ fn compact_tail_lines(text: &str, max_lines: usize) -> Vec<String> {
     lines[start..].to_vec()
 }
 
-/// Render a viewport snapshot to plain screen text (right-trimmed rows,
-/// newline-joined) for wait_for_text; the reads use `screen_read`, which
-/// also marks suggested input.
-fn snapshot_screen_text(snapshot: &crate::terminal_viewport::TerminalViewportSnapshot) -> String {
-    let mut body = String::new();
-    for row in &snapshot.viewport_rows {
-        body.push_str(row.text.trim_end());
-        body.push('\n');
-    }
-    body
-}
-
 /// First line of `screen` containing `needle` under the given case rule.
 /// `needle` must already be lowercased when `case_sensitive` is false.
 fn find_matching_line<'a>(screen: &'a str, needle: &str, case_sensitive: bool) -> Option<&'a str> {
@@ -3254,7 +3243,7 @@ fn tool_wait_for_text(args: &Value) -> Result<String, String> {
         crate::mcp_cancel::bail_if_cancelled()?;
         match session_host::request_current_viewport_snapshot(session_id, 0, None) {
             Ok(snapshot) => {
-                let screen = snapshot_screen_text(&snapshot);
+                let screen = snapshot.screen_text();
                 if let Some(line) = find_matching_line(&screen, &needle_cmp, case_sensitive) {
                     return Ok(format!(
                         "Found {needle:?} after {}ms on session {session_id}:\n{}",
@@ -3472,11 +3461,14 @@ fn tool_report(args: &Value) -> Result<String, String> {
     require_session(target_session_id, WriteAccess::Write)?;
     let report = build_session_report(args, &caller, &target)?;
     let submit = args.get("submit").and_then(Value::as_bool).unwrap_or(true);
-    send_initial_text_to_session(target_session_id, &report, submit)?;
+    // Fork-only (#66): `send_text`'s draft guard, refused at once like it;
+    // upstream retried a failed paste for 20 s.
+    let sanitized = sanitize_paste_text(&report);
+    let unguarded = crate::agent_send::deliver_text(target_session_id, &sanitized, submit)?;
     // Fork-only: the result says it was pasted at once.
     Ok(crate::supervision_mcp::immediate_report_result(format!(
-        "Reported {} characters to session {}{}",
-        sanitize_paste_text(&report).chars().count(),
+        "Reported {} characters to session {}{}{unguarded}",
+        sanitized.chars().count(),
         target_session_id,
         if submit { " and pressed Enter" } else { "" }
     )))
@@ -4103,44 +4095,6 @@ fn load_manifest(session_id: &str) -> Option<HostedSessionManifest> {
     }
     let raw = std::fs::read(session_host::manifest_path(session_id)).ok()?;
     serde_json::from_slice(&raw).ok()
-}
-
-/// Fork-only (#61): `send_text` delivers through `agent_send::deliver_text`
-/// instead, under the draft guard.
-///
-/// Single delivery choke point for typing an inter-session message into a
-/// target session's terminal (the proven bracketed-paste + settle + double
-/// Enter recipe). Terminal-to-terminal is today's only message channel; when
-/// other channels exist (Slack↔terminal — see
-/// the private "sessions-mcp-channels" design record), routing on the message's channel
-/// happens above this function, and the sender/channel envelope is prepended
-/// to `sanitized` before it reaches the paste. Callers pass already-sanitized
-/// text (`sanitize_paste_text`) and must have passed the write gate.
-fn deliver_text_to_terminal(session_id: &str, sanitized: &str, submit: bool) -> Result<(), String> {
-    crate::session_input::deliver_sanitized_text(session_id, sanitized, submit)
-}
-
-fn send_initial_text_to_session(session_id: &str, text: &str, submit: bool) -> Result<(), String> {
-    let sanitized = sanitize_paste_text(text);
-    if sanitized.is_empty() && !submit {
-        return Err("initial prompt is empty after removing control characters".into());
-    }
-
-    let started = Instant::now();
-    loop {
-        match require_session(session_id, WriteAccess::Write)
-            .and_then(|_| deliver_text_to_terminal(session_id, &sanitized, submit))
-        {
-            Ok(()) => return Ok(()),
-            Err(error) => {
-                if started.elapsed().as_millis() as u64 >= START_MESSAGE_TIMEOUT_MS {
-                    return Err(error);
-                }
-                thread::sleep(Duration::from_millis(START_MESSAGE_POLL_MS));
-                crate::mcp_cancel::bail_if_cancelled()?;
-            }
-        }
-    }
 }
 
 /// Fork-only (#71): the Session this process speaks for: the exported

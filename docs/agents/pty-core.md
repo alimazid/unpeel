@@ -155,8 +155,16 @@ before the key reaches the PTY; plain Enter clears it, and so does a new
 runtime observation. A select menu on screen neither starts a draft nor
 refuses a write. A `Write` with `unless_draft` is refused with the error
 `draft` while the line differs from the kept one; finding it equal ends the
-draft. The lock order is runtime, then viewport, as on the other write
-paths. The core marks the manifest `draft_guard: true` at launch, so an
+draft. Fork-only (#65): while only text and Backspace typed the draft,
+`typing` also keeps that text; erasing all of it ends the draft, and so
+does a program taking the keys (the cursor left their row and follows none
+of their characters and no mask, and the row above shows none of them).
+Only a quiet screen ends one: nothing fed for 500 ms
+(`TerminalViewportState::drawn_within`), no synchronized update, and the
+cursor shown. The screen is read at a draft's first key, at Enter and at a
+write with Backspace, never at a text key (`input_screen_cost`, ignored,
+measures it). The lock order is runtime, then viewport, as on the other
+write paths. The core marks the manifest `draft_guard: true` at launch, so an
 agent's send can say when its target's core predates the guard
 (`crate::agent_send`).
 
