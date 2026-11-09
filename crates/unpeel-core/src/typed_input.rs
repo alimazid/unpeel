@@ -74,7 +74,9 @@ impl Refusal {
 pub(crate) const QUIET_BEFORE_ENDING: std::time::Duration = std::time::Duration::from_millis(500);
 
 /// What a program draws for each key of a secret it masks.
-const MASKS: [char; 4] = ['*', '\u{2022}', '\u{25cf}', '\u{00b7}'];
+const MASKS: [char; 6] = [
+    '*', '\u{2022}', '\u{25cf}', '\u{00b7}', '\u{25aa}', '\u{25a0}',
+];
 
 /// Where the cursor sits: which screen, and its row counted from the top of
 /// scrollback, so a row keeps its number while the screen scrolls.
@@ -113,10 +115,10 @@ struct Draft {
     started_at: CursorAt,
     /// What its keys left on the line while only text and Backspace typed
     /// it (see [`typed_after`]). `None` once the count could not follow a
-    /// key: then only finding the line as it was ends the draft. Text a menu
-    /// took is in it too, since text keys read no screen; Backspace does,
-    /// so a menu's never counts. What the line shows of theirs is then always
-    /// among these characters.
+    /// key or a click moved the cursor in it: then only finding the line as
+    /// it was ends the draft. Text a menu took is in it too, since text keys
+    /// read no screen; Backspace does, so a menu's never counts. What the
+    /// line shows of theirs is then always among these characters.
     typed: Option<String>,
     /// A quiet screen last showed a program took its keys. That holds while
     /// the screen is busy, so a send's own paste echoing does not make the
@@ -144,6 +146,14 @@ impl Draft {
             taken: false,
             ..self
         })
+    }
+
+    /// The draft once the count cannot follow it any more.
+    fn uncounted(self) -> Self {
+        Self {
+            typed: None,
+            ..self
+        }
     }
 
     /// Whether a program took the keys and moved on, read off a quiet
@@ -194,7 +204,13 @@ impl TypingClock {
         now: u64,
         screen: impl FnOnce() -> InputScreen,
     ) {
-        if !origin.is_user() || !is_typing(bytes) {
+        if !origin.is_user() {
+            return;
+        }
+        if has_mouse_click(bytes) {
+            self.draft = self.draft.take().map(Draft::uncounted);
+        }
+        if !is_typing(bytes) {
             return;
         }
         self.typed_at = Some(now);
@@ -322,6 +338,37 @@ pub(crate) fn is_typing(bytes: &[u8]) -> bool {
         }
     }
     false
+}
+
+/// The bits of a mouse report's button code that mark a pointer move and a
+/// wheel turn.
+const MOUSE_MOTION: u8 = 32;
+const MOUSE_WHEEL: u8 = 64;
+
+/// Whether `bytes` hold a mouse click, X10 or SGR, which can put the cursor
+/// anywhere in a draft. A pointer move or the wheel cannot. Its release
+/// counts too: it only ever follows a press.
+fn has_mouse_click(bytes: &[u8]) -> bool {
+    bytes
+        .windows(2)
+        .enumerate()
+        .filter(|(_, head)| *head == b"\x1b[")
+        .filter_map(|(start, _)| mouse_button(&bytes[start + 2..]))
+        .any(|code| code & (MOUSE_MOTION | MOUSE_WHEEL) == 0)
+}
+
+/// The button code of the mouse report `body`, after its CSI, starts with;
+/// `None` when it is no mouse report.
+fn mouse_button(body: &[u8]) -> Option<u8> {
+    match body.split_first()? {
+        (b'M', after) => after.first().map(|code| code.wrapping_sub(32)),
+        (b'<', after) => {
+            let end = after.iter().position(|byte| matches!(byte, b'M' | b'm'))?;
+            let (code, _) = std::str::from_utf8(&after[..end]).ok()?.split_once(';')?;
+            code.parse().ok()
+        }
+        _ => None,
+    }
 }
 
 /// The length, after its ESC, of the terminal report at the start of

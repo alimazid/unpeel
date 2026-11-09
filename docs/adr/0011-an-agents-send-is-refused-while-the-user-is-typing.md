@@ -32,12 +32,13 @@ look and the write:
 - **What the keys left (#65).** While only text and Backspace typed the
   draft, the core also keeps that text: text adds to it, Backspace takes
   off its last character. Any other key (arrows, Tab, Escape, control
-  keys, a paste, a Backspace into what was there before) leaves only the
-  kept line to end it. Erasing every key ends the draft, so a line kept
+  keys, a paste, a Backspace into what was there before) and a mouse click,
+  which can move the cursor inside the draft, leave only the kept line to
+  end it. Erasing every key ends the draft, so a line kept
   from before a redraw no longer matters. A program took the keys and
   moved on when the cursor has left the row they were typed on, **and**
   what it follows is none of the characters typed and no mask (`*`, `•`,
-  `●`, `·`), **and** the row above shows none of them; short of all three
+  `●`, `·`, `▪`, `■`), **and** the row above shows none of them; short of all three
   it is still a draft (one that wraps, onto a new row or past a box
   border; one whose input box moves; a prompt redrawn in place; masked
   echo). The screen counts only when quiet: nothing drawn
@@ -91,9 +92,11 @@ hidden. The refusal says to ask the user to press Enter when the line shows
 nothing of theirs. A draft can end early only where the core cannot see:
 a raw-mode program that ignores Backspace, a text key a menu took inflating
 the count so a later Backspace into what a program left there reaches
-zero, and a draft hidden for 500 ms behind something that is no menu,
-with the cursor shown elsewhere, that comes back while the screen is still
-busy. Menu-like text anywhere on screen reads as a menu, so a draft under
+zero, a picker the menu detector misses taking a Backspace, a masked
+secret drawn with a glyph not on the list, an Enter that does not send (a
+completion accepted, a backslash continuation) until the next key, and a
+draft hidden for 500 ms behind something that is no menu, with the cursor
+shown elsewhere, that comes back while the screen is still busy. Menu-like text anywhere on screen reads as a menu, so a draft under
 it does not refuse (#72).
 
 The Inbox keeps ADR 0008's guard; `report` without a Host worker still

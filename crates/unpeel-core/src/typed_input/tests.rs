@@ -397,6 +397,37 @@ fn a_masked_draft_stays_when_its_input_box_moves() {
     typed(&mut clock, b"hunter2", on_row(2, "Password:"));
     assert!(clock.has_draft(|| below(3, "ok.", "Password: *******")));
     assert!(clock.has_draft(|| below(3, "ok.", "Password: \u{2022}\u{2022}")));
+    assert!(clock.has_draft(|| below(3, "ok.", "Password: \u{25aa}\u{25aa}")));
+    assert!(clock.has_draft(|| below(3, "ok.", "Password: \u{25a0}\u{25a0}")));
+}
+
+#[test]
+fn a_click_inside_a_draft_stops_the_count() {
+    // The cursor can land anywhere in it, so what the cursor follows says
+    // nothing of the keys any more: the draft waits for its line to return.
+    let mut clock = TypingClock::default();
+    typed(&mut clock, b"ab", on_row(2, "\u{2502} \u{276f}"));
+    clock.note(WriteOrigin::User, b"\x1b[<0;5;3M\x1b[<0;5;3m", 2, unread);
+    assert_eq!(clock.typed_at(), Some(1), "a click is no typing");
+    clock.note(WriteOrigin::User, b"\x7f", 3, unread);
+    let at_its_start = InputScreen {
+        last_char_before_cursor: Some('\u{276f}'),
+        ..below(4, "\u{2500}\u{2500}", "\u{2502} \u{276f} ab")
+    };
+    assert!(clock.has_draft(|| at_its_start));
+    let mut x10 = TypingClock::default();
+    typed(&mut x10, b"y", on_row(3, "Delete it? [y/n]"));
+    x10.note(WriteOrigin::User, b"\x1b[M !!", 2, unread);
+    assert!(x10.has_draft(|| below(5, "deleted", "$")));
+}
+
+#[test]
+fn the_pointer_or_the_wheel_moving_keeps_the_count() {
+    let mut clock = TypingClock::default();
+    typed(&mut clock, b"y", on_row(3, "Delete it? [y/n]"));
+    clock.note(WriteOrigin::User, b"\x1b[<35;5;3M\x1b[<64;5;3M", 2, unread);
+    clock.note(WriteOrigin::User, b"\x1b[M`!!\x1b[MC!!", 3, unread);
+    assert!(!clock.has_draft(|| below(5, "deleted", "$")));
 }
 
 #[test]
