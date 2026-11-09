@@ -9,11 +9,11 @@
 mod schema;
 
 pub use schema::{
-    RuntimeCapability, RuntimeCatalogError, RuntimeDescriptor, RuntimeDetection, RuntimeDisplay,
-    RuntimeInstall, RuntimeIntegrationInfo, RuntimeKind, RuntimeLifecycle,
-    RuntimeLifecycleAuthority, RuntimeLifecycleFallback, RuntimeLifecycleSource, RuntimePlatform,
-    RuntimeScreenRules, RuntimeScriptPathSignature, RuntimeSuggestedPreset, RuntimeUpdates,
-    RUNTIME_DESCRIPTOR_SCHEMA_VERSION,
+    RuntimeCapability, RuntimeCatalogError, RuntimeContext, RuntimeContextWindow,
+    RuntimeDescriptor, RuntimeDetection, RuntimeDisplay, RuntimeInstall, RuntimeIntegrationInfo,
+    RuntimeKind, RuntimeLifecycle, RuntimeLifecycleAuthority, RuntimeLifecycleFallback,
+    RuntimeLifecycleSource, RuntimePlatform, RuntimeScreenRules, RuntimeScriptPathSignature,
+    RuntimeSuggestedPreset, RuntimeUpdates, RUNTIME_DESCRIPTOR_SCHEMA_VERSION,
 };
 
 use std::path::Path;
@@ -176,6 +176,19 @@ impl RuntimeCatalog {
     ) -> Option<&RuntimeDescriptor> {
         self.by_script_path_components(path_components)
             .filter(|runtime| runtime.supports_current_platform())
+    }
+}
+
+/// Fork-only (#64). Here, not in the schema file, which the build script
+/// compiles too.
+impl RuntimeContext {
+    /// The window of `model`: its longest matching prefix's.
+    pub fn window_for(&self, model: &str) -> Option<u64> {
+        self.windows
+            .iter()
+            .filter(|window| model.starts_with(&window.model_prefix))
+            .max_by_key(|window| window.model_prefix.len())
+            .map(|window| window.tokens)
     }
 }
 

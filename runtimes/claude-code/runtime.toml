@@ -58,6 +58,22 @@ idle_prompt = ["❯"]
 [approvals]
 bypass_flags = ["--dangerously-skip-permissions", "--permission-mode bypassPermissions", "--permission-mode=bypassPermissions"]
 
+# Fork-only (#64): context windows by model id prefix (the longest match
+# wins), from Claude Code's model catalog on 2026-11-09. The Host compacts a
+# Worker by them; a model none of them names is never compacted.
+[context]
+windows = [
+  { model_prefix = "claude-opus-5", tokens = 1000000 },
+  { model_prefix = "claude-sonnet-5", tokens = 1000000 },
+  { model_prefix = "claude-haiku-5", tokens = 1000000 },
+  { model_prefix = "claude-fable-5", tokens = 1000000 },
+  { model_prefix = "claude-opus-4-6", tokens = 1000000 },
+  { model_prefix = "claude-opus-4-7", tokens = 1000000 },
+  { model_prefix = "claude-opus-4-8", tokens = 1000000 },
+  { model_prefix = "claude-sonnet-4-6", tokens = 1000000 },
+  { model_prefix = "claude-haiku-4-5", tokens = 200000 },
+]
+
 [integration]
 summary = "Registers Unpeel's lifecycle hooks in ~/.claude/settings.json and the unpeel MCP server in ~/.claude.json (user scope)."
 manual_command = "claude mcp add --scope user unpeel {shim}"

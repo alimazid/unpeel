@@ -12,6 +12,7 @@ pub(super) const ADAPTER: TranscriptAdapter = TranscriptAdapter {
     find_best,
     title_candidate: Some(session_title_candidate),
     model_from_value: None,
+    context_usage: None,
 };
 
 fn resume_id_from_command(command: &str) -> Option<String> {

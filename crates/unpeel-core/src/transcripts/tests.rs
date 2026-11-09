@@ -1171,3 +1171,118 @@ fn transcript_title_candidate_ignores_truncated_tail_line() {
         Some("profile the slow query".to_string())
     );
 }
+
+/// Fork-only (#64): a Claude line with this usage, as Claude Code writes it.
+fn claude_reply(model: &str, sidechain: bool, input: u64, created: u64, read: u64) -> String {
+    serde_json::json!({
+        "type": "assistant",
+        "isSidechain": sidechain,
+        "message": {
+            "model": model,
+            "role": "assistant",
+            "content": [{ "type": "text", "text": "done" }],
+            "usage": {
+                "input_tokens": input,
+                "cache_creation_input_tokens": created,
+                "cache_read_input_tokens": read,
+                "output_tokens": 1576,
+            },
+        },
+    })
+    .to_string()
+}
+
+fn claude_compact_boundary(post_tokens: u64) -> String {
+    serde_json::json!({
+        "type": "system",
+        "subtype": "compact_boundary",
+        "content": "Conversation compacted",
+        "compactMetadata": { "trigger": "manual", "preTokens": 566_116, "postTokens": post_tokens },
+    })
+    .to_string()
+}
+
+fn context_in(lines: &[String]) -> Option<ContextUsage> {
+    let lines: Vec<&str> = lines.iter().map(String::as_str).collect();
+    context_usage_in_lines(provider("claude"), &lines)
+}
+
+/// Claude Code's own figure: the latest main-chain request's input, cache
+/// writes and cache reads. Its output, subagents' requests and synthetic
+/// replies are not context.
+#[test]
+fn claude_context_is_the_latest_main_chain_requests_input() {
+    let user = r#"{"type":"user","message":{"role":"user","content":"go"}}"#.to_owned();
+    let lines = [
+        claude_reply("claude-opus-5-5", false, 3, 1_000, 90_000),
+        user.clone(),
+        claude_reply("claude-opus-5-5", false, 2, 2_393, 148_826),
+        claude_reply("claude-sonnet-5-5", true, 9, 9_000, 400_000),
+        claude_reply("<synthetic>", false, 0, 0, 0),
+        r#"{"type":"system","subtype":"stop_hook_summary"}"#.to_owned(),
+        "not json".to_owned(),
+    ];
+    assert_eq!(
+        context_in(&lines),
+        Some(ContextUsage {
+            tokens: 151_221,
+            model: Some("claude-opus-5-5".into()),
+        })
+    );
+    assert_eq!(context_in(&[user]), None, "no reply yet");
+}
+
+/// A compaction leaves its `postTokens` until the next reply; the model is
+/// still the last reply's.
+#[test]
+fn claude_context_after_a_compaction_is_what_it_left() {
+    let before = claude_reply("claude-opus-5-5", false, 1, 6_000, 560_000);
+    let compacted = [before.clone(), claude_compact_boundary(23_026)];
+    assert_eq!(
+        context_in(&compacted),
+        Some(ContextUsage {
+            tokens: 23_026,
+            model: Some("claude-opus-5-5".into()),
+        })
+    );
+    let next = [
+        before,
+        claude_compact_boundary(23_026),
+        claude_reply("claude-opus-5-5", false, 5, 4_000, 26_000),
+    ];
+    assert_eq!(context_in(&next).map(|usage| usage.tokens), Some(30_005));
+}
+
+#[test]
+fn context_percent_rounds_like_claude_codes_status_line() {
+    let reading = |tokens, window| ContextReading {
+        tokens,
+        model: None,
+        window,
+    };
+    assert_eq!(reading(151_221, Some(1_000_000)).percent(), Some(15));
+    assert_eq!(reading(395_000, Some(1_000_000)).percent(), Some(40));
+    assert_eq!(reading(394_999, Some(1_000_000)).percent(), Some(39));
+    assert_eq!(reading(250_000, Some(200_000)).percent(), Some(100));
+    assert_eq!(reading(1, None).percent(), None, "unknown window");
+}
+
+#[test]
+fn claude_context_windows_come_from_its_runtime_package() {
+    let claude = provider("claude");
+    for (model, window) in [
+        ("claude-opus-5-5", Some(1_000_000)),
+        ("claude-opus-5-5[1m]", Some(1_000_000)),
+        ("claude-sonnet-5-5", Some(1_000_000)),
+        ("claude-fable-5-1", Some(1_000_000)),
+        ("claude-haiku-5-5", Some(1_000_000)),
+        ("claude-opus-4-8", Some(1_000_000)),
+        ("claude-sonnet-4-6", Some(1_000_000)),
+        ("claude-haiku-4-5-20251001", Some(200_000)),
+        ("claude-opus-4-5", None),
+        ("gpt-5", None),
+    ] {
+        assert_eq!(context_window(claude, model), window, "{model}");
+    }
+    assert_eq!(context_window(provider("codex"), "claude-opus-5-5"), None);
+}

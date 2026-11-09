@@ -12,6 +12,7 @@ pub(super) const ADAPTER: TranscriptAdapter = TranscriptAdapter {
     find_best,
     title_candidate: None,
     model_from_value: None,
+    context_usage: None,
 };
 
 /// Codewhale appends this block to every user message for the model; it is

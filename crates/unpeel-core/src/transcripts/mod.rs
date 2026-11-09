@@ -15,6 +15,8 @@ const PROVIDER_TRANSCRIPT_SEARCH_LIMIT: usize = 1_200;
 
 type CollectDocument = fn(&Value, bool) -> Vec<TranscriptEntry>;
 type CollectLine = fn(&Value, bool, &mut TranscriptParseState);
+/// Fork-only (#64): JSONL lines, oldest first.
+type ReadContext = fn(&[&str]) -> Option<ContextUsage>;
 
 /// Provider-owned transcript behavior compiled from one runtime package.
 ///
@@ -33,6 +35,9 @@ pub struct TranscriptAdapter {
     find_best: fn(&HostedSessionManifest) -> Option<PathBuf>,
     title_candidate: Option<fn(&str) -> Option<String>>,
     model_from_value: Option<fn(&Value) -> Option<String>>,
+    /// Fork-only (#64): how full the context is, for the Host's Worker
+    /// compaction.
+    context_usage: Option<ReadContext>,
 }
 
 #[derive(Clone, Copy)]
@@ -215,6 +220,73 @@ pub struct JsonlWindowRead {
     pub next_offset: u64,
     pub truncated: bool,
     pub lines: Vec<(u64, String)>,
+}
+
+/// Fork-only (#64): how full an agent's context is, by its transcript.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ContextUsage {
+    /// What the latest request sent (for Claude: input, cache writes and
+    /// cache reads), or what a compaction since then left.
+    pub tokens: u64,
+    /// The latest reply's model.
+    pub model: Option<String>,
+}
+
+/// Fork-only (#64): a Session's context against its model's window.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ContextReading {
+    pub tokens: u64,
+    pub model: Option<String>,
+    /// `None` when the runtime package names no window for the model.
+    pub window: Option<u64>,
+}
+
+impl ContextReading {
+    /// Percent of the window, rounded as Claude Code's status line rounds
+    /// it; `None` without a window.
+    pub fn percent(&self) -> Option<u8> {
+        let window = u128::from(self.window.filter(|window| *window > 0)?);
+        let percent = (u128::from(self.tokens) * 100 + window / 2) / window;
+        Some(u8::try_from(percent.min(100)).unwrap_or(100))
+    }
+}
+
+/// Fork-only (#64): the provider's context reader over JSONL `lines`,
+/// oldest first; `None` for a provider without one.
+pub fn context_usage_in_lines(
+    provider: TranscriptProvider,
+    lines: &[&str],
+) -> Option<ContextUsage> {
+    (provider.adapter().context_usage?)(lines)
+}
+
+/// Fork-only (#64): `model`'s context window, from the provider's runtime
+/// package.
+pub fn context_window(provider: TranscriptProvider, model: &str) -> Option<u64> {
+    crate::runtime_catalog::builtin_runtime_catalog()
+        .by_legacy_slug(provider.as_str())?
+        .context
+        .window_for(model)
+}
+
+/// Fork-only (#64): how full the Session's context is, from the tail of its
+/// transcript. `None` without a transcript, a reader, or a reply yet.
+pub fn read_context(manifest: &HostedSessionManifest) -> Option<ContextReading> {
+    let transcript = resolve_provider_transcript(manifest).ok()?;
+    transcript.provider.adapter().context_usage?;
+    let read =
+        read_jsonl_lines_before(&transcript.path, None, DEFAULT_TRANSCRIPT_TAIL_BYTES).ok()?;
+    let lines: Vec<&str> = read.lines.iter().map(|(_, line)| line.as_str()).collect();
+    let usage = context_usage_in_lines(transcript.provider, &lines)?;
+    let window = usage
+        .model
+        .as_deref()
+        .and_then(|model| context_window(transcript.provider, model));
+    Some(ContextReading {
+        tokens: usage.tokens,
+        model: usage.model,
+        window,
+    })
 }
 
 pub fn provider_label_for_command(command: &str) -> String {

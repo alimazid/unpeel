@@ -12,6 +12,7 @@ use unpeel_core::activity_log::ActivityLogKind;
 
 use crate::sessions::{SessionRow, SidebarModel};
 
+mod compaction;
 mod inbox_drain;
 mod inbox_rules;
 mod notices;
@@ -27,6 +28,8 @@ pub struct Supervisor {
     inbox: inbox_drain::Drain,
     /// Worker edges and the watchdog, for the Router (`worker_alerts.rs`).
     workers: worker_alerts::WorkerAlerts,
+    /// Compacts Workers whose context is full (`compaction.rs`, #64).
+    compaction: compaction::Compaction,
 }
 
 impl Supervisor {
@@ -48,18 +51,32 @@ impl Supervisor {
         body: Option<&str>,
         now_ms: u64,
     ) -> EdgeRoute {
-        let diverted = self.workers.divert(row, kind, body, now_ms, &self.inbox);
+        let diverted = self
+            .workers
+            .divert(row, kind, body, now_ms, &self.inbox, &self.compaction);
+        if kind == ActivityLogKind::Finished {
+            self.compaction.turn_finished(row, now_ms);
+        }
         edge_route(diverted, row)
     }
 
     /// Once per rescan, after the keep-limit sweep: Worker notices and the
-    /// watchdog, then the Inbox drain. Returns notifications for the user
-    /// (an unanswered Worker prompt, a draft holding queued items).
+    /// watchdog, then the Inbox drain, then compaction. Returns
+    /// notifications for the user (an unanswered Worker prompt, a draft
+    /// holding queued items).
     pub fn step(&mut self, model: &SidebarModel, now_ms: u64) -> Vec<Notice> {
         // Removed Workers' merged, clean worktrees (throttled, off-thread).
         unpeel_core::supervision_worktrees::sweep_in_background(now_ms);
-        let mut notices = self.workers.step(&model.rows, now_ms, &self.inbox);
+        let mut notices = self
+            .workers
+            .step(&model.rows, now_ms, &self.inbox, &self.compaction);
         notices.extend(self.inbox.step(&model.rows, now_ms));
+        self.compaction.step(
+            &model.rows,
+            self.workers.compaction_scope(),
+            &self.inbox,
+            now_ms,
+        );
         notices
     }
 

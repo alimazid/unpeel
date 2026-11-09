@@ -15,6 +15,8 @@ pub const FINISHED_STATUS: &str = "finished";
 pub const NEEDS_INPUT_STATUS: &str = "needs_input";
 pub const EXITED_STATUS: &str = "exited";
 pub const STARTED_STATUS: &str = "started";
+pub const COMPACTED_STATUS: &str = "compacted";
+pub const NOT_COMPACTED_STATUS: &str = "not_compacted";
 
 /// Who a Worker's turn answers to, as far as the Host can tell.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -130,6 +132,41 @@ pub fn exited(row: &SessionRow, code: Option<i32>, before: Option<Status>, at: u
     NewItem {
         dedupe_key,
         ..lifecycle(row, EXITED_STATUS, Priority::RideAlong, summary, None)
+    }
+}
+
+/// The Host compacted a Worker (#64): it rides along, since the Router
+/// need not act on it.
+pub fn compacted(row: &SessionRow, percent: u8, tokens: u64, threshold: u8, at: u64) -> NewItem {
+    let summary = format!(
+        "{} was at {percent}% of its context ({}K tokens) when its turn ended, so the Host \
+         compacted it (supervisor_compact_percent is {threshold}).",
+        name(row),
+        tokens.saturating_add(500) / 1_000
+    );
+    NewItem {
+        dedupe_key: Some(format!("compact:{}:{at}", row.id)),
+        ..lifecycle(row, COMPACTED_STATUS, Priority::RideAlong, summary, None)
+    }
+}
+
+/// A Worker's model has no context window in its runtime package, so the
+/// Host never compacts it. Once per Worker and model.
+pub fn unknown_context_window(row: &SessionRow, model: &str) -> NewItem {
+    let summary = format!(
+        "{} runs {model}, which has no context window in Unpeel's runtime package, so the \
+         Host will not compact it.",
+        name(row)
+    );
+    NewItem {
+        dedupe_key: Some(format!("compact-unknown:{}:{model}", row.id)),
+        ..lifecycle(
+            row,
+            NOT_COMPACTED_STATUS,
+            Priority::RideAlong,
+            summary,
+            None,
+        )
     }
 }
 
