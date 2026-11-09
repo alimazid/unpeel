@@ -1176,6 +1176,12 @@ enum SidebarListContentBuilder {
         return false
     }
 
+    // Fork-only (#49)
+    private static func isLocalMachine(_ row: WorkspaceListRowModel) -> Bool {
+        if case .local = row.kind { return true }
+        return false
+    }
+
     // MARK: Shared row assembly
 
     /// Every node in the trees, parents before children.
@@ -1252,9 +1258,8 @@ enum SidebarListContentBuilder {
         row: WorkspaceListRowModel,
         store: UnpeelStore,
         /// The current instance's own Local scope rendered from its worker
-        /// snapshot: expansion lives under the base key, the selection is
-        /// the one the live tree restores on return, and Controller-local
-        /// folder tints apply (they are this Mac's own overlay).
+        /// snapshot: expansion lives under the base key, and the selection is
+        /// the one the live tree restores on return.
         isLocalScope: Bool = false
     ) -> SidebarListContent {
         var projects: [Project] = []
@@ -1493,9 +1498,12 @@ enum SidebarListContentBuilder {
             ),
             // Remote scope never shows Controller-local folder tints; none
             // keeps parity with the real remote sidebar.
-            folderColors: isLocalScope
+            // Fork-only (#49): a local workspace's live page shows the tints
+            // its Host publishes, so its page must too.
+            folderColors: isLocalMachine(row)
                 ? nodes.reduce(into: [:]) { colors, node in
-                    colors[node.id] = store.projectFolderColor(for: node.id)
+                    colors[node.id] = projectSummaries[node.id]?.colorID
+                        .flatMap(ProjectFolderColor.init(rawValue:))
                 }
                 : [:]
         )
