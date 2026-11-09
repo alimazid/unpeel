@@ -18,6 +18,44 @@ struct MenuPromptApprovalTests {
         Esc to cancel · Tab to amend
         """
 
+    // Same picker as runtimes/codex/fixtures/update-menu.txt (#55).
+    private static let codexUpdate = """
+
+          Update available · 0.166.0 → 0.167.0
+          Release notes: https://github.com/openai/codex/releases/latest
+
+        › 1. Update now (runs `npm install -g @openai/codex`)
+          2. Skip
+          3. Skip until next version
+
+          enter continue · esc skip
+        """
+
+    @Test(arguments: ["enter continue · esc skip", "enter\n  continue · esc skip",
+                      "enter to confirm or esc to go back", "Press Enter to continue"])
+    func pickerWithOnlyAnEnterHint(footer: String) {
+        let text = Self.codexUpdate.replacingOccurrences(of: "enter continue · esc skip", with: footer)
+        #expect(RemoteGhosttyRenderer.viewportHasMenuPrompt(text))
+        let moved = text.replacingOccurrences(of: "› 1.", with: "  1.")
+            .replacingOccurrences(of: "  2. Skip\n", with: "› 2. Skip\n")
+        #expect(RemoteGhosttyRenderer.viewportHasMenuPrompt(moved))
+    }
+
+    @Test
+    func enterHintRequiresNearbySelectedChoices() {
+        #expect(!RemoteGhosttyRenderer.viewportHasMenuPrompt("Press Enter to continue."))
+        #expect(!RemoteGhosttyRenderer.viewportHasMenuPrompt(
+            Self.codexUpdate.replacingOccurrences(of: "›", with: " ")
+        ))
+        #expect(!RemoteGhosttyRenderer.viewportHasMenuPrompt(
+            Self.codexUpdate.replacingOccurrences(of: "  enter continue", with:
+                String(repeating: "output\n", count: 13) + "  enter continue")
+        ))
+        #expect(!RemoteGhosttyRenderer.viewportHasMenuPrompt(
+            "› 1. fix the login form\n  2. run the tests\n\n  ? for shortcuts"
+        ))
+    }
+
     @Test(arguments: ["Tab to amend", "Tab to\n amend"])
     func approvalWithoutNavigationOrConfirmHint(footer: String) {
         let text = Self.approval.replacingOccurrences(of: "Tab to amend", with: footer)

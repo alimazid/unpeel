@@ -42,6 +42,19 @@ const CANCEL_MARKERS: &[&str] = &["esc to cancel", "escape to cancel"];
 /// This pair only qualifies beside a visibly selected numbered choice list.
 const AMEND_MARKERS: &[&str] = &["tab to amend"];
 
+/// Enter-key hints that qualify only beside a visibly selected numbered
+/// choice list. Codex's startup pickers (update, working directory) print
+/// "enter continue · esc skip" under their options: no navigation hint, and
+/// no "to confirm". Enter there takes the highlighted option, which for the
+/// update picker runs a global install.
+const ENTER_MARKERS: &[&str] = &[
+    "enter to",
+    "return to",
+    "enter continue",
+    "enter confirm",
+    "enter select",
+];
+
 /// Phrases that mark a hint row as a passive status footer rather than an
 /// answerable menu. Claude Code's subagent list pins
 /// "↑/↓ to select · Enter to view" to the bottom for the whole run — it has
@@ -75,7 +88,8 @@ const INTERACTIVE_QUALIFIERS: &[&str] = &[
 /// an unrelated select phrase elsewhere on screen is not a menu. Two footer
 /// shapes qualify: a nav hint plus a select hint (Claude-style), or a confirm
 /// key named next to a cancel key (Codex-style, which prints no nav hint).
-/// Cancel + amend also qualifies beside a selected numbered choice list.
+/// Cancel + amend, or an Enter hint alone, also qualifies beside a selected
+/// numbered choice list.
 pub fn viewport_has_menu_prompt(screen_text: &str) -> bool {
     let lines: Vec<String> = screen_text
         .lines()
@@ -97,6 +111,7 @@ pub fn viewport_has_menu_prompt(screen_text: &str) -> bool {
         let has_confirm = CONFIRM_MARKERS.iter().any(|marker| window.contains(marker));
         let has_cancel = CANCEL_MARKERS.iter().any(|marker| window.contains(marker));
         let has_amend = AMEND_MARKERS.iter().any(|marker| window.contains(marker));
+        let has_enter = ENTER_MARKERS.iter().any(|marker| window.contains(marker));
         let passive_action = PASSIVE_MARKERS.iter().any(|marker| window.contains(marker));
         let passive_selector_prefix = PASSIVE_SELECTOR_PREFIXES
             .iter()
@@ -105,8 +120,9 @@ pub fn viewport_has_menu_prompt(screen_text: &str) -> bool {
             .iter()
             .any(|marker| window.contains(marker));
         let passive = passive_action || (passive_selector_prefix && !interactive_qualifier);
-        let approval = has_cancel && has_amend && has_selected_choices(&lines, index);
-        if ((has_nav && has_select) || (has_confirm && has_cancel) || approval) && !passive {
+        let picker =
+            ((has_cancel && has_amend) || has_enter) && has_selected_choices(&lines, index);
+        if ((has_nav && has_select) || (has_confirm && has_cancel) || picker) && !passive {
             return true;
         }
     }
@@ -151,6 +167,58 @@ mod tests {
         env!("CARGO_MANIFEST_DIR"),
         "/../../runtimes/claude-code/fixtures/approval-menu.txt"
     ));
+
+    /// Codex 0.167's update picker at 80 columns, as its upstream snapshot
+    /// draws it (`codex_tui__update_prompt__tests__update_prompt_modal`).
+    const CODEX_UPDATE: &str = include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../runtimes/codex/fixtures/update-menu.txt"
+    ));
+
+    #[test]
+    fn detects_codex_update_menu_by_its_enter_hint_beside_selected_choices() {
+        assert!(viewport_has_menu_prompt(CODEX_UPDATE));
+        assert!(viewport_has_menu_prompt(&CODEX_UPDATE.replace(
+            "enter continue · esc skip",
+            "enter\n  continue · esc skip"
+        )));
+        assert!(viewport_has_menu_prompt(
+            &CODEX_UPDATE
+                .replace("› 1.", "  1.")
+                .replace("  2. Skip\n", "› 2. Skip\n")
+        ));
+        // The other Codex picker footers name Enter the same ways.
+        for footer in [
+            "enter to confirm or esc to go back",
+            "Press Enter to continue",
+        ] {
+            assert!(viewport_has_menu_prompt(
+                &CODEX_UPDATE.replace("enter continue · esc skip", footer)
+            ));
+        }
+    }
+
+    #[test]
+    fn an_enter_hint_requires_nearby_selected_choices() {
+        assert!(!viewport_has_menu_prompt("Press Enter to continue."));
+        assert!(!viewport_has_menu_prompt("  enter continue · esc skip"));
+        assert!(!viewport_has_menu_prompt(&CODEX_UPDATE.replace('›', " ")));
+        assert!(!viewport_has_menu_prompt(
+            &CODEX_UPDATE.replace("  2.", "  x.").replace("  3.", "  x.")
+        ));
+        assert!(!viewport_has_menu_prompt(&CODEX_UPDATE.replace(
+            "  enter continue",
+            &format!("{}  enter continue", "output\n".repeat(13))
+        )));
+    }
+
+    #[test]
+    fn a_numbered_draft_at_an_idle_composer_is_not_a_menu() {
+        // A user's numbered list in Codex's composer starts with the same
+        // `›`, but its footer names no Enter action.
+        let screen = "› 1. fix the login form\n  2. run the tests\n\n  ? for shortcuts";
+        assert!(!viewport_has_menu_prompt(screen));
+    }
 
     #[test]
     fn detects_approval_with_only_cancel_and_amend_keys() {

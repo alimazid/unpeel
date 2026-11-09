@@ -15,6 +15,9 @@
 //! text typed in that moment is lost. So a screen verdict counts only once it
 //! has held for [`SCREEN_SETTLE`]; a program or hook report wins at once.
 //!
+//! None of them counts while the PTY core sees a select menu on screen
+//! (`manifest.menu_prompt_active`): the text's Enter would answer the menu.
+//!
 //! Every input is a file the PTY core or the hook script writes itself, so
 //! the answer does not depend on which process owns Controllers or
 //! notifications, and any thread can ask. A Running Session with none of these
@@ -101,7 +104,9 @@ pub fn readiness_signal(
     manifest: &HostedSessionManifest,
     hook_seed: Option<&HookSeed>,
 ) -> Option<ReadinessSignal> {
-    if manifest.state != HostedSessionState::Running {
+    // A select menu on screen takes the next Enter, whoever says idle: a
+    // startup picker (Codex's update menu) would run its highlighted option.
+    if manifest.state != HostedSessionState::Running || manifest.menu_prompt_active {
         return None;
     }
     let launched_at = launched_at_ms(manifest);

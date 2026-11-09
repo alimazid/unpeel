@@ -3553,6 +3553,12 @@ final class RemoteGhosttyRenderer: ObservableObject {
     /// Cancel-key phrases paired with `menuConfirmMarkers`.
     private static let menuCancelMarkers = ["esc to cancel", "escape to cancel"]
     private static let menuAmendMarkers = ["tab to amend"]
+    /// Enter-key hints that qualify only beside selected numbered choices:
+    /// Codex's startup pickers print "enter continue · esc skip". Twin of
+    /// `ENTER_MARKERS` in `menu_prompt.rs`.
+    private static let menuEnterMarkers = [
+        "enter to", "return to", "enter continue", "enter confirm", "enter select",
+    ]
     /// Phrases marking a hint row as a passive status footer, not an
     /// answerable menu — Claude Code's subagent list pins
     /// "↑/↓ to select · Enter to view" for the whole run.
@@ -3607,7 +3613,8 @@ final class RemoteGhosttyRenderer: ObservableObject {
     /// excluding passive status footers whose Enter action is "view". The
     /// footer shapes qualify: a nav hint plus a select hint (Claude-style),
     /// or a confirm key named next to a cancel key (Codex-style, which
-    /// prints no nav hint), or cancel/amend beside selected numbered choices.
+    /// prints no nav hint), or cancel/amend or an Enter hint beside selected
+    /// numbered choices.
     /// Marker matching is the twin of Rust
     /// `viewport_has_menu_prompt`; the visible-choice guard is intentionally
     /// phone-only so controls fail closed.
@@ -3634,6 +3641,7 @@ final class RemoteGhosttyRenderer: ObservableObject {
             let hasConfirm = menuConfirmMarkers.contains { window.contains($0) }
             let hasCancel = menuCancelMarkers.contains { window.contains($0) }
             let hasAmend = menuAmendMarkers.contains { window.contains($0) }
+            let hasEnter = menuEnterMarkers.contains { window.contains($0) }
             let passiveAction = menuPassiveMarkers.contains { window.contains($0) }
             let passiveSelectorPrefix = menuPassiveSelectorPrefixes.contains {
                 window.contains($0)
@@ -3642,15 +3650,17 @@ final class RemoteGhosttyRenderer: ObservableObject {
                 window.contains($0)
             }
             let passive = passiveAction || (passiveSelectorPrefix && !interactiveQualifier)
-            let approval = hasCancel && hasAmend && hasSelectedChoices(lines, before: index)
-            if ((hasNav && hasSelect) || (hasConfirm && hasCancel) || approval) && !passive {
+            let picker = ((hasCancel && hasAmend) || hasEnter)
+                && hasSelectedChoices(lines, before: index)
+            if ((hasNav && hasSelect) || (hasConfirm && hasCancel) || picker) && !passive {
                 return true
             }
         }
         return false
     }
 
-    /// Twin of Rust's selected-choice guard for cancel/amend approval menus.
+    /// Twin of Rust's selected-choice guard for cancel/amend and Enter-hint
+    /// pickers.
     /// A distant transcript list or an ordinary interrupt footer is not enough.
     private static func hasSelectedChoices(_ lines: [String], before footer: Int) -> Bool {
         var previous: Int?

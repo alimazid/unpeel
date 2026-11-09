@@ -208,10 +208,13 @@ Agent-drawn select menus (attention, host-side):
   footer is only partially painted; neither detector may turn that status row
   into attention. Keep the Rust and Swift regression cases aligned.
 - Approval menus may show only `Esc to cancel · Tab to amend`, without an
-  arrow-key or Enter hint. That footer qualifies when a nearby numbered
-  choice list has a selected row; the footer alone and transcript lists
-  elsewhere do not. The Claude fixture lives in
-  `runtimes/claude-code/fixtures/approval-menu.txt`.
+  arrow-key or Enter hint, and pickers may name only Enter: Codex's startup
+  pickers print `enter continue · esc skip` (its update picker's Enter runs
+  `npm install -g`). Either footer qualifies when a nearby numbered choice
+  list has a selected row; the footer alone and transcript lists elsewhere
+  do not. The fixtures live in
+  `runtimes/claude-code/fixtures/approval-menu.txt` and
+  `runtimes/codex/fixtures/update-menu.txt`.
 - A `PermissionRequest` latch survives menu redraws. Before allowing changed
   output to clear hook-owned Attention, the workspace worker checks the live
   parsed viewport with the current detector. This read happens only on changed
