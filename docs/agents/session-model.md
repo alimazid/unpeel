@@ -172,8 +172,10 @@ termination output is drained first. Never signal an unverified process group.
   launch — a program status idle record, a hook seed reporting idle, or the
   runtime's `[screen]` idle prompt (`agent_readiness`, read from the
   manifest and Session dir, so it holds whoever owns notifications). A
-  Running Session with no activity is never ready. After 120 s nothing is
-  typed. An `agentReady` wait's outcome lands in
+  Running Session with no activity is never ready, and neither is one
+  showing a select menu (`menu_prompt_active`), whichever tier says idle:
+  the text's Enter would answer it, as on Codex's update picker (#55).
+  After 120 s nothing is typed. An `agentReady` wait's outcome lands in
   `<session dir>/initial-text.json` (`state`: `waiting`, `delivered` with
   its `signal`, `readiness_timeout`, `exited`, `host_not_ready`,
   `delivery_failed`); `attached` records nothing, as before the field.

@@ -84,6 +84,36 @@ fn the_declared_idle_prompt_on_screen_is_ready() {
 }
 
 #[test]
+fn a_menu_on_screen_is_not_ready_whoever_says_idle() {
+    // Codex's update picker starts its selected row with the `›` its screen
+    // rules read as the idle prompt, and Enter there runs a global install
+    // (#55). Text typed then would answer the menu, whichever tier spoke.
+    let codex = json!({ "currentObservation": { "id": "codex", "pid": 43 } });
+    let hook = seed("Stop", Some(1), LAUNCHED_AT + 10);
+    let tiers = [
+        (json!({ "runtime": codex, "screen_activity": "idle" }), None),
+        (
+            json!({ "program_status": program("idle", LAUNCHED_AT + 900) }),
+            None,
+        ),
+        (json!({ "runtime_launch_generation": 1 }), Some(&hook)),
+    ];
+    for (evidence, seed) in tiers {
+        assert!(
+            readiness_signal(&manifest(evidence.clone()), seed).is_some(),
+            "{evidence}"
+        );
+        let mut menu = evidence;
+        menu["menu_prompt_active"] = true.into();
+        assert_eq!(
+            readiness_signal(&manifest(menu.clone()), seed),
+            None,
+            "{menu}"
+        );
+    }
+}
+
+#[test]
 fn a_screen_verdict_needs_a_runtime_that_declares_screen_rules() {
     let unobserved = manifest(json!({ "screen_activity": "idle" }));
     assert_eq!(readiness_signal(&unobserved, None), None);
