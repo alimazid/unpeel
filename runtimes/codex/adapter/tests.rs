@@ -274,3 +274,47 @@ fn codex_hooks_prune_only_stale_unpeel_entries() {
 
     let _ = fs::remove_dir_all(root);
 }
+
+// Codex's shared app-server daemon starts MCP servers with the environment it
+// started with, which can name a Session that is gone or a different one (#54).
+// Forwarding that variable would hand the gate a stale identity, so the
+// registration carries none and the gate falls back to process ancestry.
+#[test]
+fn codex_mcp_registration_forwards_no_unpeel_environment() {
+    let shim = PathBuf::from("/tmp/unpeel home/bin/unpeel-mcp");
+    let notify = PathBuf::from("/tmp/unpeel home/hooks/codex-notify-hook.sh");
+    let updated = super::setup::reconcile_codex_config_toml("", &notify, &shim)
+        .expect("reconcile Codex config.toml");
+    let root = updated
+        .parse::<toml::Value>()
+        .expect("parse reconciled config");
+    let server = root
+        .get("mcp_servers")
+        .and_then(|servers| servers.get("unpeel"))
+        .and_then(toml::Value::as_table)
+        .expect("[mcp_servers.unpeel]");
+    let mut keys = server.keys().map(String::as_str).collect::<Vec<_>>();
+    keys.sort_unstable();
+    assert_eq!(keys, ["args", "command"], "{updated}");
+    assert_eq!(
+        server.get("command").and_then(toml::Value::as_str),
+        Some(shim.to_string_lossy().as_ref())
+    );
+    assert!(!updated.contains("UNPEEL_"), "{updated}");
+}
+
+// An interactive Codex attaches to its shared daemon unless `--no-daemon`
+// (0.156+) is on the command line; only the embedded server keeps MCP
+// servers and hooks inside the Session (#54).
+#[test]
+fn codex_suggested_presets_run_without_the_shared_daemon() {
+    let codex = crate::runtime_catalog::builtin_runtime_catalog()
+        .by_slug("codex")
+        .expect("codex descriptor");
+    assert!(!codex.suggested_presets.is_empty());
+    for preset in &codex.suggested_presets {
+        let words = preset.command.split_whitespace().collect::<Vec<_>>();
+        assert_eq!(words.first(), Some(&"codex"), "{}", preset.command);
+        assert!(words.contains(&"--no-daemon"), "{}", preset.command);
+    }
+}

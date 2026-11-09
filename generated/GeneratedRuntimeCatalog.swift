@@ -187,8 +187,8 @@ public enum UnpeelRuntimeCatalog {
             suggestedPresets: [
                 UnpeelRuntimeSuggestedPreset(
                     id: "codex",
-                    label: "codex --dangerously-bypass-approvals-and-sandbox",
-                    command: "codex --dangerously-bypass-approvals-and-sandbox",
+                    label: "codex --no-daemon --dangerously-bypass-approvals-and-sandbox",
+                    command: "codex --no-daemon --dangerously-bypass-approvals-and-sandbox",
                     quickLaunch: true
                 ),
             ]

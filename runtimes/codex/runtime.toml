@@ -61,8 +61,13 @@ legacy_evidence = ["hooks/codex-notify-hook.sh"]
 root = ".codex/sessions"
 extensions = ["jsonl"]
 
+# `--no-daemon` (Codex 0.156+) keeps Codex's app-server inside the Session.
+# Without it, Codex attaches to its shared background daemon (and from 0.157
+# starts one), which starts MCP servers and runs hooks outside the Session,
+# so the Unpeel tools and hooks can't tell which Session they belong to
+# (docs/agents/providers.md).
 [[suggested_presets]]
 id = "codex"
-label = "codex --dangerously-bypass-approvals-and-sandbox"
-command = "codex --dangerously-bypass-approvals-and-sandbox"
+label = "codex --no-daemon --dangerously-bypass-approvals-and-sandbox"
+command = "codex --no-daemon --dangerously-bypass-approvals-and-sandbox"
 quick_launch = true
