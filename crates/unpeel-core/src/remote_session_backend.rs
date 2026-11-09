@@ -211,6 +211,11 @@ pub struct RemoteProjectSummary {
     /// compatibility; absent means the manual/custom order.
     #[serde(default)]
     pub date_sorted: Option<bool>,
+    /// Fork-only (#50): mixed sidebar ranks, Session ids interleaved with
+    /// child group and worktree ids. The Host sends it only when the list
+    /// ranks a child; absent means folders stay above Sessions.
+    #[serde(default)]
+    pub session_order: Option<Vec<String>>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -4941,6 +4946,43 @@ mod tests {
             .bootstrap()
             .expect("bootstrap decodes");
         assert_eq!(snapshot.snapshot.projects[0].date_sorted, Some(true));
+    }
+
+    // Fork-only (#50): the Mac app reads the bootstrap through this typed
+    // snapshot, so a field it doesn't name never reaches the sidebar.
+    #[test]
+    fn bootstrap_preserves_a_mixed_session_order_for_the_bridge() {
+        let connection = ScriptedConnection::new();
+        let generation = connection.generation(1);
+        let mut body = bootstrap_json(
+            Some("host-1"),
+            HOST_PROTOCOL_MAJOR,
+            Some(&[BOOTSTRAP_CAPABILITY]),
+        );
+        body["projects"] = json!([{
+            "id": "p1",
+            "name": "Research",
+            "path": "/host/research",
+            "mcpBlocked": false,
+            "sessionOrder": ["s1", "folder", "s2"]
+        }, {
+            "id": "folder",
+            "name": "Folder",
+            "path": "/host/research",
+            "parentProjectID": "p1",
+            "mcpBlocked": false
+        }]);
+        add_bootstrap(&connection, generation, body);
+
+        let snapshot = RemoteSessionBackend::new(connection)
+            .bootstrap()
+            .expect("bootstrap decodes");
+        let encoded = serde_json::to_value(&snapshot.snapshot).expect("snapshot encodes");
+        assert_eq!(
+            encoded["projects"][0]["sessionOrder"],
+            json!(["s1", "folder", "s2"])
+        );
+        assert!(encoded["projects"][1]["sessionOrder"].is_null());
     }
 
     #[test]
