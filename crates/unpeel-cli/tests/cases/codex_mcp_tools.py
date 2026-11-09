@@ -1,8 +1,8 @@
 """A Codex Session gets the Unpeel tools only through its supported launch (#54).
 
-Codex 0.156+ attaches every interactive launch to a shared background
-app-server daemon unless `--no-daemon` is on the command line, and that
-daemon starts MCP servers outside any Session. A fake Codex runs the
+An interactive Codex attaches to a shared background app-server daemon
+unless `--no-daemon` (0.156+) is on the command line, and that daemon
+starts MCP servers outside any Session. A fake Codex runs the
 `[mcp_servers.unpeel]` command the installed integration registered, the
 way the real one does (codex-rs/rmcp-client: environment cut down to
 DEFAULT_ENV_VARS, newline-delimited JSON-RPC on stdio):
@@ -52,8 +52,8 @@ def start_embedded(argv, env):
     return child.pid, child.stdin.fileno(), child.stdout.fileno()
 
 def start_detached(argv, env):
-    # Double fork into a new session: the server's parent becomes launchd,
-    # as for a server the shared daemon starts.
+    # Double fork into a new session: the server's parent becomes launchd
+    # (or a subreaper), as for a server the shared daemon starts.
     to_server, from_server, report = os.pipe(), os.pipe(), os.pipe()
     middle = os.fork()
     if middle == 0:
@@ -216,7 +216,7 @@ def body(case):
                           run_cli(home, ["screen", session_id], env=environment).stdout):
             return
         case.check("the daemon-style server runs outside the Session",
-                   daemon.get("server_parent") == 1, str(daemon))
+                   daemon.get("server_parent") not in (None, daemon.get("self_pid")), str(daemon))
         case.check("outside the Session the gate lists no tools",
                    daemon.get("tools") == [], str(daemon.get("tools")))
         current = daemon.get("current", {})

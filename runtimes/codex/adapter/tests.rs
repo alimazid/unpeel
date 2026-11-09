@@ -303,8 +303,8 @@ fn codex_mcp_registration_forwards_no_unpeel_environment() {
     assert!(!updated.contains("UNPEEL_"), "{updated}");
 }
 
-// Codex 0.156+ attaches every interactive launch to its shared daemon unless
-// `--no-daemon` is on the command line; only the embedded server keeps MCP
+// An interactive Codex attaches to its shared daemon unless `--no-daemon`
+// (0.156+) is on the command line; only the embedded server keeps MCP
 // servers and hooks inside the Session (#54).
 #[test]
 fn codex_suggested_presets_run_without_the_shared_daemon() {
