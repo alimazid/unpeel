@@ -154,7 +154,7 @@ pub(super) fn delivery(wake_pending: bool, hold: Option<&Hold>) -> String {
 /// the target's Inbox, and the supervisor pastes it when the target is
 /// idle. A Worker's report to its own Router skips the gate (§18.1.7): the
 /// app-wide Deny still holds when the supervisor drains it. `None` without
-/// a Host: upstream pastes at once.
+/// a Host: upstream's paste at once, under `send_text`'s draft guard (#66).
 pub(super) fn route_report(
     args: &Value,
     caller: &HostedSessionManifest,
@@ -308,7 +308,8 @@ fn announced(result: &Value, what: &str) -> Result<String, String> {
     serde_json::to_string_pretty(result).map_err(|e| format!("Failed to encode {what}: {e}"))
 }
 
-/// Upstream's immediate paste result, for when no Host worker runs.
+/// Upstream's immediate paste result (guarded since #66), for when no Host
+/// worker runs.
 pub(super) fn immediate_report_result(message: String) -> String {
     let result = json!({
         "queued": false,

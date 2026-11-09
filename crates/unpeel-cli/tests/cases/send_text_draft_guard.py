@@ -12,7 +12,9 @@ the user types on the attach stream (a terminal) and the control socket's
 the user erases every key of it, or when a program took the key and moved
 on, even if the line kept for it was read before a redraw; a draft that
 wraps, continues on a row of its own, or has output streaming above it
-still refuses.
+still refuses. Since #66 `sessions report` with no Host worker running (it
+pastes at once, `delivery: immediate_legacy`) takes the same guard: an empty
+box takes it, typing or a draft refuses it at once with nothing written.
 """
 
 import json
@@ -172,6 +174,10 @@ def body(case):
     def cli_send(text):
         return as_caller("send", agent, text, "--enter")
 
+    def report(summary):
+        return as_caller("mcp", "sessions", "report", f"session_id={agent}",
+                         f"summary={summary}")
+
     def cli_keys(*keys):
         return as_caller("keys", agent, *keys)
 
@@ -232,6 +238,11 @@ def body(case):
         case.check("`unpeel send` to an empty box is delivered",
                    done.returncode == 0
                    and until(lambda: "cli-into-an-empty-box" in read(submitted)), said(done))
+        done = report("report-into-an-empty-box")
+        case.check("a report to an empty box with no Host worker is pasted at once",
+                   done.returncode == 0 and '"immediate_legacy"' in done.stdout
+                   and "unguarded" not in done.stdout
+                   and until(lambda: "report-into-an-empty-box" in read(submitted)), said(done))
 
         # 2. The user is typing: refused, nothing written.
         # Whole ms, as the PTY core stamps it.
@@ -242,6 +253,9 @@ def body(case):
                    done.returncode != 0 and "Not sent (typing)" in done.stderr, said(done))
         done = send_text("mcp-while-typing")
         case.check("send_text while the user types is refused as typing",
+                   done.returncode != 0 and "Not sent (typing)" in done.stderr, said(done))
+        done = report("report-while-typing")
+        case.check("a report while the user types is refused as typing",
                    done.returncode != 0 and "Not sent (typing)" in done.stderr, said(done))
         case.check("nothing of it was written", "while-typing" not in read(log), read(log)[-200:])
         case.check("the typing is stamped as current",
@@ -262,6 +276,13 @@ def body(case):
         case.check("send_keys onto the draft is refused too",
                    done.returncode != 0 and "Sent 0 of 1 keys" in done.stderr
                    and "Not sent (draft)" in done.stderr, said(done))
+        # A refusal is final: the old paste retried a failed write for 20 s.
+        started = time.time()
+        done = report("report-onto-a-draft")
+        took = time.time() - started
+        case.check("a report onto the draft is refused at once, not retried",
+                   done.returncode != 0 and "Not sent (draft)" in done.stderr and took < 5,
+                   f"{took:.1f}s " + said(done))
         case.check("none was written",
                    "onto-a-draft" not in read(log) and not read(log).endswith("x"), read(log)[-200:])
         case.check("the draft is untouched", "> abc" in screen(), screen()[-300:])

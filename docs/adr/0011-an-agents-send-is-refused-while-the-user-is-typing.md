@@ -60,6 +60,12 @@ next), or `Not submitted (typing)` when a key lands after the paste, which
 then waits on the line unsubmitted. `send_keys` stops at the refused key and
 says how many went in.
 
+A `report` with no Host worker running, which types the report at once
+instead of queuing it in the Inbox, is a send too (#66): the same guard and
+the same results. It used to retry a failed paste for up to 20 s; it now
+fails at once like `send_text`, since a draft seldom clears that fast and a
+paste left unsubmitted would be typed a second time.
+
 ## Considered Options
 
 - **Hold the send and deliver it when the box is clear.** Rejected: the
@@ -99,5 +105,5 @@ draft hidden for 500 ms behind something that is no menu, with the cursor
 shown elsewhere, that comes back while the screen is still busy. Menu-like text anywhere on screen reads as a menu, so a draft under
 it does not refuse (#72).
 
-The Inbox keeps ADR 0008's guard; `report` without a Host worker still
-pastes unguarded.
+The Inbox keeps ADR 0008's guard; `report` without a Host worker takes this
+one (#66).
