@@ -88,19 +88,17 @@ struct SidebarGroupWashSliceView: View {
 }
 
 extension View {
-    /// Draws a row's group wash slices behind it, the outermost group
-    /// furthest back, so nested groups' washes stack.
-    func sidebarGroupWash(
+    /// Draws a row's group wash behind it, the outermost group furthest back,
+    /// so nested groups' washes stack. Both carousel pages stack it here; each
+    /// supplies the slice, with the level in the row's `folderChain`.
+    func sidebarGroupWash<Slice: View>(
         _ slices: [SidebarWashSlice],
-        isHighlighted: @escaping (String) -> Bool
+        @ViewBuilder slice: @escaping (_ level: Int, _ slice: SidebarWashSlice) -> Slice
     ) -> some View {
         background {
             ZStack {
-                ForEach(slices, id: \.folderID) { slice in
-                    SidebarGroupWashSliceView(
-                        slice: slice,
-                        isHighlighted: isHighlighted(slice.folderID)
-                    )
+                ForEach(Array(slices.enumerated()), id: \.element.folderID) { level, item in
+                    slice(level, item)
                 }
             }
         }
@@ -157,58 +155,69 @@ struct SidebarPooledRowInputs: Equatable {
     let folderColors: [String: ProjectFolderColor]
 }
 
-/// The pooled page's read-only row container, one composition per row
-/// kind: the REAL row component with inert inputs, its group wash slices
-/// and the 1 pt gap above a project. No callbacks, no drag, and the
-/// carousel never hit-tests the page.
+/// A pooled page's row: the REAL row component with inert inputs, in the row
+/// container both pages share, with no interaction layer. No callbacks, no
+/// drag, and the carousel never hit-tests the page.
 struct SidebarPooledTreeRow: View {
     let row: SidebarTreeRow
     let inputs: SidebarPooledRowInputs
 
     var body: some View {
-        rowView
-            .sidebarGroupWash(row.washSlices) { inputs.highlightedFolderIDs.contains($0) }
-            // Outside the wash, as the live tree's 1 pt stack spacing is.
-            .padding(.top, row.hasBlockGapAbove ? SidebarListPageMetrics.blockSpacing : 0)
-    }
-
-    @ViewBuilder
-    private var rowView: some View {
         switch row.content {
-        case .projectHeader(let node, let isExpanded),
-             .folderHeader(let node, let isExpanded):
-            folderHeader(node, isExpanded: isExpanded)
+        case .projectHeader(let node, let isExpanded):
+            SidebarProjectHeaderRow(
+                row: row,
+                rowView: folderHeader(node, isExpanded: isExpanded),
+                highlightedFolderIDs: inputs.highlightedFolderIDs
+            )
+        case .folderHeader(let node, let isExpanded):
+            SidebarFolderHeaderRow(
+                row: row,
+                node: node,
+                rowView: folderHeader(node, isExpanded: isExpanded),
+                highlightedFolderIDs: inputs.highlightedFolderIDs
+            )
         case .session(let entry):
-            SessionRowView(
-                session: entry,
-                depth: row.depth,
-                indentBase: 9,
-                isSelected: entry.id == inputs.selectedSessionID,
-                isUnread: inputs.unreadSessionIDs.contains(entry.id),
-                isPinned: row.isPinned,
-                canPin: false,
-                canClearAttention: false,
-                paneItems: inputs.paneItemsByRepresentative[entry.id] ?? [],
-                ageTimestampMs: inputs.dateSortedProjectIDs.contains(entry.projectID)
-                    ? max(entry.createdAt, entry.lifecycleAtMs ?? 0)
-                    : nil,
-                onSelect: {}
-            ).equatable()
+            SidebarSessionRow(
+                row: row,
+                sessionID: entry.id,
+                rowView: SessionRowView(
+                    session: entry,
+                    depth: row.depth,
+                    indentBase: 9,
+                    isSelected: entry.id == inputs.selectedSessionID,
+                    isUnread: inputs.unreadSessionIDs.contains(entry.id),
+                    isPinned: row.isPinned,
+                    canPin: false,
+                    canClearAttention: false,
+                    paneItems: inputs.paneItemsByRepresentative[entry.id] ?? [],
+                    ageTimestampMs: inputs.dateSortedProjectIDs.contains(entry.projectID)
+                        ? max(entry.createdAt, entry.lifecycleAtMs ?? 0)
+                        : nil,
+                    onSelect: {}
+                ),
+                highlightedFolderIDs: inputs.highlightedFolderIDs
+            )
         case .emptyPlaceholder(let owner):
-            // The REAL component with inert inputs, so the label's
-            // Menu-chrome metrics are identical to the live sidebar and the
-            // snap cannot restyle it.
-            EmptySessionsPlaceholderRow(
-                label: EmptySessionsPlaceholderRow.label(for: owner),
-                depth: row.depth,
-                menuPresets: [],
-                onLaunch: { _ in },
-                showsManagePresets: false
+            SidebarPlaceholderRow(
+                row: row,
+                ownerID: owner.id,
+                // The REAL component with inert inputs, so the label's
+                // Menu-chrome metrics are identical to the live sidebar and the
+                // snap cannot restyle it.
+                rowView: EmptySessionsPlaceholderRow(
+                    label: EmptySessionsPlaceholderRow.label(for: owner),
+                    depth: row.depth,
+                    menuPresets: [],
+                    onLaunch: { _ in },
+                    showsManagePresets: false
+                ),
+                highlightedFolderIDs: inputs.highlightedFolderIDs
             )
         }
     }
 
-    private func folderHeader(_ node: ProjectNode, isExpanded: Bool) -> some View {
+    private func folderHeader(_ node: ProjectNode, isExpanded: Bool) -> ProjectRowView {
         let rollup = SidebarFolderRollup(
             node: node,
             isExpanded: isExpanded,
@@ -227,6 +236,6 @@ struct SidebarPooledTreeRow: View {
             onToggle: {},
             onLaunchPreset: { _ in },
             isPinned: node.project.acceptsSessionDrop && node.project.pinnedAt != nil
-        ).equatable()
+        )
     }
 }

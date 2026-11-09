@@ -196,7 +196,17 @@ struct SidebarTreeRowDragEffects: ViewModifier {
                 }
             }
             .offset(y: ride.offset)
-            .background { washSlices(ride: ride) }
+            .sidebarGroupWash(row.washSlices) { level, slice in
+                ZStack {
+                    SidebarGroupWashSliceView(
+                        slice: slice,
+                        isHighlighted: isDropTarget(slice.folderID),
+                        style: .dropTarget
+                    )
+                    SidebarLiveWashSlice(state: washStates.state(for: slice.folderID), slice: slice)
+                }
+                .offset(y: level >= ride.fromLevel ? ride.offset : 0)
+            }
             .animation(dragState.sessionDrag == nil ? nil : Self.slot, value: ride.offset)
             // Match Session dragging: the detached card owns the visible
             // header, while its original row becomes a true empty slot.
@@ -235,22 +245,6 @@ struct SidebarTreeRowDragEffects: ViewModifier {
             if shift != 0 { return ReorderRide(offset: shift, fromLevel: level) }
         }
         return still
-    }
-
-    private func washSlices(ride: ReorderRide) -> some View {
-        ZStack {
-            ForEach(Array(row.washSlices.enumerated()), id: \.element.folderID) { level, slice in
-                ZStack {
-                    SidebarGroupWashSliceView(
-                        slice: slice,
-                        isHighlighted: isDropTarget(slice.folderID),
-                        style: .dropTarget
-                    )
-                    SidebarLiveWashSlice(state: washStates.state(for: slice.folderID), slice: slice)
-                }
-                .offset(y: level >= ride.fromLevel ? ride.offset : 0)
-            }
-        }
     }
 
     private func isDropTarget(_ projectID: String) -> Bool {
