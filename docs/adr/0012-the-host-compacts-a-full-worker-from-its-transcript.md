@@ -48,8 +48,10 @@ Runs are never compacted.
   turn.
 - **When:** at the Worker's Finished edge, once per turn, within 5 minutes
   of its end while the cache is warm. A write the core refuses (the user
-  typing, a draft) is tried again every 2 s inside that window; a turn end
-  missed for any reason waits for the next one. After a compaction starts
+  typing, a draft) is tried again every 2 s inside that window, re-checking
+  every precondition each step; the first that fails, or a Router write,
+  Inbox paste or program turn since the turn ended, gives the turn up. A
+  turn end missed for any reason waits for the next one. After a compaction starts
   it does not compact again until a reading is under the threshold.
 - **How:** the command, then Enter, as program writes under the PTY core's
   typing and draft guards (ADR 0011), off the tick thread, and only into an

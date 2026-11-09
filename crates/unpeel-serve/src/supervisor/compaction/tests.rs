@@ -3,6 +3,8 @@ use std::sync::{Arc, Mutex};
 
 use unpeel_core::session_inbox::{InboxItem, Priority, Store};
 
+use unpeel_core::program_status::{ProgramState, ProgramStatusSummary};
+
 use super::*;
 use crate::sessions::{SessionRow, Status, StatusSource};
 
@@ -342,13 +344,93 @@ fn a_refused_send_tries_again_and_counts_only_once_it_lands() {
         .with(|world| world.refuse = vec![SendOutcome::NotTyped, SendOutcome::NotTyped]);
     fx.turn_ends(T0);
     fx.step(Status::Idle, T0 + 1_000);
-    fx.step(Status::Busy, T0 + 1_500);
     assert!(fx.queued().is_empty(), "nothing was typed");
     fx.step(Status::Idle, T0 + 2_000);
     fx.step(Status::Idle, T0 + 4_000);
     assert_eq!(fx.sends(), [(WORKER.to_owned(), T0 + 1_000)]);
     fx.step(Status::Busy, T0 + 5_000);
     assert_eq!(fx.queued().len(), 1);
+}
+
+/// A retry re-checks every precondition, and the first one that fails, or
+/// anything since the turn ended, gives that turn up for good.
+#[test]
+fn a_prompt_submitted_between_two_retries_means_no_compact() {
+    let program = |last_non_idle_at| SessionRow {
+        program_status: Some(ProgramStatusSummary {
+            state: ProgramState::Idle,
+            kind: None,
+            progress: None,
+            app: None,
+            title: None,
+            msg: None,
+            id: None,
+            changed_at: 0,
+            last_non_idle_at,
+            last_finished_at: None,
+            finished_edges: 0,
+        }),
+        ..worker(Status::Idle)
+    };
+    let refused_once = || {
+        let mut fx = fixture();
+        fx.at(500_000);
+        fx.host
+            .with(|world| world.refuse = vec![SendOutcome::NotTyped]);
+        fx.step_row(program(Some(T0 - 60_000)), T0 - 1_000);
+        fx.compaction.turn_finished(&worker(Status::Idle), T0);
+        fx.step_row(program(Some(T0 - 60_000)), T0);
+        assert!(fx.host.with(|world| world.refuse.is_empty()), "refused");
+        fx
+    };
+    let later = |fx: &mut Fixture| {
+        for at in [T0 + 2_000, T0 + 4_000, T0 + 10_000, T0 + 60_000] {
+            fx.step_row(program(Some(T0 - 60_000)), at);
+        }
+    };
+
+    // The Router's prompt: under the 5 s quiet a first try would wait out.
+    let mut fx = refused_once();
+    fx.store.touch_router(WORKER, T0 + 1_000).unwrap();
+    later(&mut fx);
+    assert!(fx.sends().is_empty(), "the Router's prompt");
+
+    // A turn that came and went between two rescans.
+    let mut fx = refused_once();
+    fx.step_row(program(Some(T0 + 1_500)), T0 + 2_000);
+    later(&mut fx);
+    assert!(fx.sends().is_empty(), "a program turn since");
+
+    // A turn seen running, before the retry was due.
+    let mut fx = refused_once();
+    fx.step(Status::Busy, T0 + 1_000);
+    later(&mut fx);
+    assert!(fx.sends().is_empty(), "a new turn");
+
+    // A drain paste, or a menu on screen when the retry comes.
+    let mut fx = refused_once();
+    fx.drain.pastes.push((WORKER.into(), T0 + 1_000));
+    later(&mut fx);
+    assert!(fx.sends().is_empty(), "a paste");
+    let mut fx = refused_once();
+    fx.host.with(|world| world.terminal.menu_prompt = true);
+    fx.step_row(program(Some(T0 - 60_000)), T0 + 2_000);
+    fx.host.with(|world| world.terminal.menu_prompt = false);
+    later(&mut fx);
+    assert!(fx.sends().is_empty(), "a menu");
+
+    // Deny when the retry comes.
+    let mut fx = refused_once();
+    fx.host.with(|world| world.deny = true);
+    fx.step_row(program(Some(T0 - 60_000)), T0 + 2_000);
+    fx.host.with(|world| world.deny = false);
+    later(&mut fx);
+    assert!(fx.sends().is_empty(), "Deny");
+
+    // Nothing changed: the retry lands.
+    let mut fx = refused_once();
+    later(&mut fx);
+    assert_eq!(fx.sends(), [(WORKER.to_owned(), T0 - 1_000)]);
 }
 
 #[test]

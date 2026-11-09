@@ -114,6 +114,9 @@ struct Worker {
     armed: bool,
     sent: Option<Sent>,
     retry_at: u64,
+    /// The core refused this turn's send: the next try re-checks everything
+    /// and gives the turn up on the first precondition that fails.
+    retrying: bool,
     /// Models already reported as having no known window.
     told_unknown: HashSet<String>,
 }
@@ -126,6 +129,7 @@ impl Default for Worker {
             armed: true,
             sent: None,
             retry_at: 0,
+            retrying: false,
             told_unknown: HashSet::new(),
         }
     }
@@ -222,8 +226,8 @@ impl Compaction {
         match worker.sent.as_mut() {
             Some(sent) if sent.ended_at.is_none() => sent.ended_at = Some(now),
             _ => {
+                drop_turn(worker);
                 worker.ended_at = Some(now);
-                worker.due = None;
             }
         }
     }
@@ -340,6 +344,8 @@ impl Compaction {
             return;
         };
         let readiness = match readiness(worker, row, terminal, touched, drain, now) {
+            // A retry's timer; every step until then still checks the rest.
+            Readiness::Ready if now < worker.retry_at => Readiness::Wait,
             Readiness::Ready if self.io.writes_denied() => {
                 Readiness::Never("writing to other sessions is set to Deny")
             }
@@ -364,6 +370,7 @@ impl Compaction {
                         told: false,
                     });
                 } else {
+                    worker.retrying = true;
                     worker.retry_at = now + RETRY_MS;
                 }
             }
@@ -382,7 +389,10 @@ impl Compaction {
                 drop_turn(worker);
                 return;
             }
-            Ok(SendOutcome::NotTyped) => worker.retry_at = now + RETRY_MS,
+            Ok(SendOutcome::NotTyped) => {
+                worker.retrying = true;
+                worker.retry_at = now + RETRY_MS;
+            }
             Ok(SendOutcome::Unsubmitted) => {
                 trace(&format!(
                     "Worker {id}: the user typed after the compact command; not submitted"
@@ -419,7 +429,7 @@ impl Compaction {
 
 enum Readiness {
     Ready,
-    /// Not now; the next step looks again.
+    /// Not now; the next step looks again (never on a retry).
     Wait,
     /// Not for this turn.
     Never(&'static str),
@@ -439,19 +449,43 @@ fn readiness(
     if !terminal.draft_guard {
         return Readiness::Never("its PTY core predates the draft guard");
     }
+    if worker.retrying && changed_since_turn_end(worker, row, touched, drain, now) {
+        return Readiness::Never("a retry found it changed since its turn ended");
+    }
     let router_wrote = touched.is_some_and(|at| at + SELF_CAUSED_MS >= now);
     let paste_landing = drain.pasted_between(&row.id, now.saturating_sub(PASTE_QUIET_MS), now);
-    if row.status != Status::Idle
+    let waiting = row.status != Status::Idle
         || terminal.menu_prompt
         || worker.sent.is_some()
-        || now < worker.retry_at
         || router_wrote
         || paste_landing
-        || drain.has_pending(&row.id)
-    {
-        return Readiness::Wait;
+        || drain.has_pending(&row.id);
+    match (waiting, worker.retrying) {
+        (false, _) => Readiness::Ready,
+        (true, false) => Readiness::Wait,
+        (true, true) => Readiness::Never("a retry found it no longer ready"),
     }
-    Readiness::Ready
+}
+
+/// Since the turn ended: a Router write, a drain paste, or a program
+/// report of another turn (one that came and went between two rescans).
+fn changed_since_turn_end(
+    worker: &Worker,
+    row: &SessionRow,
+    touched: Option<u64>,
+    drain: &dyn DrainView,
+    now: u64,
+) -> bool {
+    let Some(ended_at) = worker.ended_at else {
+        return true;
+    };
+    let program_active = row
+        .program_status
+        .as_ref()
+        .and_then(|program| program.last_non_idle_at);
+    touched.is_some_and(|at| at > ended_at)
+        || drain.pasted_between(&row.id, ended_at.saturating_add(1), now)
+        || program_active.is_some_and(|at| at > ended_at)
 }
 
 /// The compaction in flight: its busy start, its quiet end (a Finished
@@ -515,6 +549,7 @@ fn spawn_send(
 fn drop_turn(worker: &mut Worker) {
     worker.ended_at = None;
     worker.due = None;
+    worker.retrying = false;
 }
 
 fn trace(message: &str) {
