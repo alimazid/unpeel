@@ -35,6 +35,8 @@ concurrency:
 
 jobs:
   macos-clients:
+    # Forks run this only on manual dispatch: macOS runners often go unacquired there.
+    if: github.repository == 'unpeel-com/unpeel' || github.event_name == 'workflow_dispatch'
     runs-on: macos-26
     timeout-minutes: 90
     steps:

@@ -41,6 +41,9 @@ permissions:
 
 jobs:
   bench:
+    # Forks run this only on manual dispatch: macOS runners often go unacquired
+    # there, and a job-level if cannot see the matrix, so the Ubuntu rows skip too.
+    if: github.repository == 'unpeel-com/unpeel' || github.event_name == 'workflow_dispatch'
     strategy:
       fail-fast: false
       matrix:
