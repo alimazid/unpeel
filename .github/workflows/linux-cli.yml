@@ -15,6 +15,7 @@ on:
     branches: [main]
     paths:
       - 'crates/**'
+      - 'runtimes/**'
       - 'scripts/build-cli-linux.sh'
       - 'scripts/cli-glibc.sh'
       - 'scripts/rust-release-env.sh'

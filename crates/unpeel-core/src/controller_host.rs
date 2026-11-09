@@ -2117,6 +2117,12 @@ fn session_summary_with_menu_attention(
             value["phoneFitRows"] = fit.rows.into();
             value["phoneFitSinceUnixMs"] = fit.since_unix_ms.into();
         }
+        // Fork-only (#63): the host-probed local sites, so a Controller on
+        // this machine shows a site that started after it connected.
+        // Additive; same field shape as the serve Host's summary.
+        if !manifest.detected_local_urls.is_empty() {
+            value["detectedLocalURLs"] = manifest.detected_local_urls.clone().into();
+        }
     }
     if let Some(alert) = latest_alert {
         if let Some(body) = alert.message.as_deref() {
@@ -2886,6 +2892,50 @@ mod tests {
         );
         assert!(summary.get("activeAppID").is_none());
         assert!(summary.get("activeAppTintHex").is_none());
+    }
+
+    /// Fork-only (#63): the Mac app's Local globe reads a running Session's
+    /// host-probed URLs off its row; a stopped Session serves nothing.
+    #[test]
+    fn session_summary_advertises_a_running_sessions_local_urls() {
+        let mut manifest = manifest_with_runtime(HostedSessionState::Running, "");
+        let summary = session_summary(
+            &manifest,
+            "project-1",
+            false,
+            false,
+            "host-owner:test",
+            None,
+            None,
+        );
+        assert!(summary.get("detectedLocalURLs").is_none());
+
+        manifest.detected_local_urls = vec!["http://127.0.0.1:5173/".into()];
+        let summary = session_summary(
+            &manifest,
+            "project-1",
+            false,
+            false,
+            "host-owner:test",
+            None,
+            None,
+        );
+        assert_eq!(
+            summary["detectedLocalURLs"],
+            json!(["http://127.0.0.1:5173/"])
+        );
+
+        manifest.state = HostedSessionState::Exited;
+        let summary = session_summary(
+            &manifest,
+            "project-1",
+            false,
+            false,
+            "host-owner:test",
+            None,
+            None,
+        );
+        assert!(summary.get("detectedLocalURLs").is_none());
     }
 
     #[test]

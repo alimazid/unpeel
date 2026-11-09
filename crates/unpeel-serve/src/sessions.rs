@@ -1980,6 +1980,14 @@ pub(crate) fn mobile_snapshot_with_runs(
                     obj.insert("phoneFitRows".into(), fit.rows.into());
                     obj.insert("phoneFitSinceUnixMs".into(), fit.since_unix_ms.into());
                 }
+                // Fork-only (#63): the host-probed local sites. Additive;
+                // same field shape as the native Host's summary.
+                if !row.detected_local_urls.is_empty() {
+                    obj.insert(
+                        "detectedLocalURLs".into(),
+                        row.detected_local_urls.clone().into(),
+                    );
+                }
             }
             // Launch working directory, so a Controller can seed its pane's
             // cwd for cmd-clicked relative paths without a project lookup.
@@ -3228,6 +3236,32 @@ mod tests {
         // The launch cwd travels additively so a Controller pane can resolve
         // cmd-clicked relative paths against it.
         assert_eq!(summary["cwd"], "/tmp");
+    }
+
+    /// Fork-only (#63): same field as the native Host's summary; a stopped
+    /// row serves nothing.
+    #[test]
+    fn mobile_summary_carries_a_running_rows_local_urls() {
+        let summary_of = |row: SessionRow| {
+            let model = SidebarModel {
+                rows: vec![row],
+                items: vec![SidebarItem::Session(0)],
+                expired: Vec::new(),
+            };
+            mobile_snapshot(&model, None, &std::collections::HashSet::new(), None).bootstrap
+                ["sessions"][0]
+                .clone()
+        };
+        let mut row = recent_test_row("site", Status::Idle, true, 20, false);
+        assert!(summary_of(row.clone()).get("detectedLocalURLs").is_none());
+        row.detected_local_urls = vec!["http://127.0.0.1:5173/".into()];
+        assert_eq!(
+            summary_of(row.clone())["detectedLocalURLs"],
+            serde_json::json!(["http://127.0.0.1:5173/"])
+        );
+        row.running = false;
+        row.status = Status::Exited;
+        assert!(summary_of(row).get("detectedLocalURLs").is_none());
     }
 
     #[test]

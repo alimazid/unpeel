@@ -485,12 +485,16 @@ fn managed_command_runs_the_reporter_and_tolerates_a_removed_script() {
             .spawn()
             .expect("spawn sh");
         use std::io::Write;
-        child
+        // A removed script means `sh` exits without reading stdin, so this
+        // write races the child's exit and may see a closed pipe.
+        if let Err(error) = child
             .stdin
             .take()
             .unwrap()
             .write_all(br#"{"from":"idle","to":"in_progress"}"#)
-            .unwrap();
+        {
+            assert_eq!(error.kind(), std::io::ErrorKind::BrokenPipe, "{error}");
+        }
         child.wait_with_output().expect("wait for sh")
     };
     let output = run(&codewhale_hook_command(&script, "Busy"));

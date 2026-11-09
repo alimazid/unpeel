@@ -1555,7 +1555,7 @@ enum SidebarListContentBuilder {
     // Fork-only (#57): the globes the current instance's live page wears, on
     // top-level projects only, as there.
     private static func localSites(on nodes: [ProjectNode], store: UnpeelStore) -> [String: [String]] {
-        guard !store.detectedLocalURLs.isEmpty else { return [:] }
+        guard !store.localSites.isEmpty else { return [:] }
         return nodes.reduce(into: [:]) { sites, node in
             guard node.project.parentProjectID == nil else { return }
             let urls = store.knownLocalSiteURLs(forProjectFamilyOf: node.id)

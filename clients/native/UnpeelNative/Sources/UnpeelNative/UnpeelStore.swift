@@ -820,12 +820,18 @@ final class UnpeelStore: ObservableObject {
     @Published private(set) var restartRecommendations: [String: SessionRestartRecommendation] =
         [:]
 
-    /// Loopback URLs each live session currently serves as a browsable page,
-    /// from the host's `detected_local_urls` manifest field (printed on the
-    /// session's screen, then HTTP-probed live by the host; dead servers are
-    /// removed host-side). Keyed by session id; the titlebar chip aggregates
-    /// per project family via `localSiteURLs(forProjectFamilyOf:)`.
-    @Published private(set) var detectedLocalURLs: [String: [String]] = [:]
+    /// Loopback URLs each live session on this Mac currently serves as a
+    /// browsable page, from the host's `detected_local_urls` manifest field
+    /// (printed on the session's screen, then HTTP-probed live by the host;
+    /// dead servers are removed host-side), with the project chains that
+    /// group them. The disk scan fills it until the Local Host answers, then
+    /// each Local Host snapshot does (#63). The titlebar chip and the project
+    /// globe aggregate it per project family via
+    /// `localSiteURLs(forProjectFamilyOf:)`.
+    @Published private(set) var localSites = LocalSiteIndex.empty
+    /// The last disk scan's URLs per session, indexed once that scan's
+    /// session and project maps are in place.
+    private var scannedLocalURLs: [String: [String]] = [:]
 
     /// Display-layer verdicts for detected local-site URLs, keyed by URL.
     /// Session hosts are long-lived processes running whatever detection
@@ -904,72 +910,24 @@ final class UnpeelStore: ObservableObject {
     }
 
     /// Union of detected local-site URLs across every live session in the
-    /// same project family (the top-level project plus its groups and
-    /// worktrees) — the dev server usually runs in one session while the
-    /// user watches another, so the chip is project-scoped, not
-    /// session-scoped. Stable order: session creation time, then URL.
+    /// same project family (`LocalSiteIndex.candidates`), held to the
+    /// current-rules probe. Project-scoped, not session-scoped: the dev
+    /// server usually runs in one session while the user watches another.
     func localSiteURLs(forProjectFamilyOf projectID: String) -> [String] {
-        localSiteCandidates(forProjectFamilyOf: projectID).filter { localURLVerdict($0) }
+        localSites.candidates(forProjectFamilyOf: projectID).filter { localURLVerdict($0) }
     }
 
     /// Fork-only (#57): the same list from the verdicts already in hand. A
     /// pooled page reads it in the swipe's path, so it starts no probe and
     /// publishes nothing.
     func knownLocalSiteURLs(forProjectFamilyOf projectID: String) -> [String] {
-        localSiteCandidates(forProjectFamilyOf: projectID).filter { localURLVerdicts[$0]?.ok == true }
+        localSites.candidates(forProjectFamilyOf: projectID).filter { localURLVerdicts[$0]?.ok == true }
     }
 
-    private func localSiteCandidates(forProjectFamilyOf projectID: String) -> [String] {
-        func rootID(_ id: String) -> String {
-            var current = id
-            var hops = 0
-            while let parent = projectsByID[current]?.parentProjectID, hops < 8 {
-                current = parent
-                hops += 1
-            }
-            return current
+    private func publishLocalSites(_ next: LocalSiteIndex) {
+        if next != localSites {
+            localSites = next
         }
-        let familyRoot = rootID(projectID)
-        let members = detectedLocalURLs.compactMap { sessionID, urls -> (Int64, [String])? in
-            guard let entry = sessionsByID[sessionID],
-                  rootID(entry.projectID) == familyRoot
-            else { return nil }
-            return (entry.createdAt, urls)
-        }
-        // One row per server: group by origin and keep the URL closest to
-        // the parent — a deep link survives only while no parent URL exists
-        // for the same origin. The callers then hold each survivor to the
-        // current-rules probe.
-        var byOrigin: [(origin: String, url: String)] = []
-        for (_, urls) in members.sorted(by: { $0.0 < $1.0 }) {
-            for url in urls {
-                guard let origin = Self.urlOrigin(url) else { continue }
-                if let index = byOrigin.firstIndex(where: { $0.origin == origin }) {
-                    if Self.urlPathLength(url) < Self.urlPathLength(byOrigin[index].url) {
-                        byOrigin[index].url = url
-                    }
-                } else {
-                    byOrigin.append((origin, url))
-                }
-            }
-        }
-        return byOrigin.map(\.url)
-    }
-
-    /// "http://localhost:5173/whatever" → "http://localhost:5173/".
-    private static func urlOrigin(_ url: String) -> String? {
-        guard let schemeEnd = url.range(of: "://") else { return nil }
-        let rest = url[schemeEnd.upperBound...]
-        let authority = rest.prefix(while: { $0 != "/" })
-        return url[..<schemeEnd.upperBound] + authority + "/"
-    }
-
-    /// Path length after the authority; bare origin and "/" both count 0.
-    private static func urlPathLength(_ url: String) -> Int {
-        guard let schemeEnd = url.range(of: "://") else { return .max }
-        let rest = url[schemeEnd.upperBound...]
-        guard let slash = rest.firstIndex(of: "/") else { return 0 }
-        return rest.distance(from: slash, to: rest.endIndex) - 1
     }
 
     /// Sessions whose restart-with-resume relaunch failed because the
@@ -2101,15 +2059,17 @@ final class UnpeelStore: ObservableObject {
     /// Fork-only (#57): a local site this Mac has already probed, without a Host
     /// or a probe: a Session in `projectID` serving `url`, with its verdict.
     func noteLocalSiteForTesting(url: String, sessionID: String, projectID: String, probePassed: Bool) {
-        projectsByID[projectID] = Project(
-            id: projectID, name: projectID, path: "/fixture/\(projectID)", parentProjectID: nil, sortOrder: 0,
-            isFolder: nil, worktreeBranch: nil, workspacesEnabled: nil, mcpBlocked: nil
+        localSites = LocalSiteIndex(
+            servers: localSites.servers.filter { $0.sessionID != sessionID } + [
+                LocalSiteIndex.Server(sessionID: sessionID, projectID: projectID, createdAt: 1, urls: [url]),
+            ],
+            parentByProjectID: localSites.parentByProjectID.filter { $0.key != projectID }
         )
-        sessionsByID[sessionID] = Self.sessionEntry(fromRemote: RemoteSessionSummary(
-            id: sessionID, projectID: projectID, title: sessionID, command: "zsh",
-            createdAtUnixMs: 1, status: .running, activity: .idle, unread: false, pinned: false
-        ))
-        detectedLocalURLs[sessionID] = [url]
+        noteLocalURLVerdictForTesting(url: url, probePassed: probePassed)
+    }
+
+    /// Fork-only (#63): a verdict already in hand for `url`, without a probe.
+    func noteLocalURLVerdictForTesting(url: String, probePassed: Bool) {
         localURLVerdicts[url] = (probePassed, Date())
     }
 
@@ -5910,6 +5870,9 @@ final class UnpeelStore: ObservableObject {
         lastScanTauriPins = stateFile?.pinnedSessions ?? [:]
         hasCompletedScan = true
         _ = rebuildTree(projects: projects, sessions: sessions)
+        publishLocalSites(.fromScan(
+            urlsBySession: scannedLocalURLs, sessions: sessionsByID, projects: projectsByID
+        ))
 
         // Hook/unread bookkeeping for sessions that vanished, then settle
         // any pending unread transitions (sessionUnread.ts reconcile).
@@ -6688,9 +6651,7 @@ final class UnpeelStore: ObservableObject {
         if nextRestartRecommendations != restartRecommendations {
             restartRecommendations = nextRestartRecommendations
         }
-        if nextDetectedLocalURLs != detectedLocalURLs {
-            detectedLocalURLs = nextDetectedLocalURLs
-        }
+        scannedLocalURLs = nextDetectedLocalURLs
         // `seen` is this home's session dirs; a scoped workspace's overrides
         // are Host-published and reconciled by its projection instead.
         if selectedHostScope == .local,
@@ -16335,6 +16296,12 @@ extension UnpeelStore {
             // /mobile/resize-desktop); the letterbox and its "fit to desktop"
             // control follow the published grid.
             applyHostPublishedPhoneFits(snapshot.sessions)
+            // Fork-only (#63): so are local sites. The disk scan that used to
+            // fill them stops here, so a site that started after launch only
+            // reaches the globe this way.
+            publishLocalSites(.fromHost(
+                sessions: Array(summaries.values), projects: snapshotProjects
+            ))
             if activityLog.refreshFromHost() {
                 let entries = activityLog.entries
                 if entries != activityLogEntries {
