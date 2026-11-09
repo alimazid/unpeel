@@ -757,6 +757,11 @@ public struct RemoteSessionSummary: Codable, Equatable, Identifiable, Sendable {
     /// Controller shows that output, read-only, instead of its stopped
     /// placeholder. Absent (older Hosts, nothing kept) ⇒ false.
     public let keptOutput: Bool
+    /// Fork-only (#63): loopback URLs this running Session serves as
+    /// browsable pages, the Host's live-probed list. Only a Controller on the
+    /// Host's own machine can open them. Absent (an older Host, a stopped
+    /// Session, nothing served) ⇒ empty.
+    public let detectedLocalURLs: [String]
     /// Fork-only: this Session is the workspace's Super Agent (the Router).
     /// Additive; absent on older Hosts ⇒ false.
     public let superAgent: Bool
@@ -803,6 +808,7 @@ public struct RemoteSessionSummary: Codable, Equatable, Identifiable, Sendable {
         scheduleID: String? = nil,
         superseded: Bool = false,
         keptOutput: Bool = false,
+        detectedLocalURLs: [String] = [],
         superAgent: Bool = false,
         superAgentRouterID: String? = nil
     ) {
@@ -844,6 +850,7 @@ public struct RemoteSessionSummary: Codable, Equatable, Identifiable, Sendable {
         self.scheduleID = scheduleID
         self.superseded = superseded
         self.keptOutput = keptOutput
+        self.detectedLocalURLs = detectedLocalURLs
         self.superAgent = superAgent
         self.superAgentRouterID = superAgentRouterID
     }
@@ -865,6 +872,7 @@ public struct RemoteSessionSummary: Codable, Equatable, Identifiable, Sendable {
         case cwd
         case activitySource
         case scheduleID, superseded, keptOutput, superAgent, superAgentRouterID
+        case detectedLocalURLs
     }
 
     public init(from decoder: Decoder) throws {
@@ -909,6 +917,9 @@ public struct RemoteSessionSummary: Codable, Equatable, Identifiable, Sendable {
         scheduleID = try c.decodeIfPresent(String.self, forKey: .scheduleID)
         superseded = try c.decodeIfPresent(Bool.self, forKey: .superseded) ?? false
         keptOutput = try c.decodeIfPresent(Bool.self, forKey: .keptOutput) ?? false
+        detectedLocalURLs = try c.decodeIfPresent(
+            [String].self, forKey: .detectedLocalURLs
+        ) ?? []
         superAgent = try c.decodeIfPresent(Bool.self, forKey: .superAgent) ?? false
         superAgentRouterID = try c.decodeIfPresent(String.self, forKey: .superAgentRouterID)
     }
