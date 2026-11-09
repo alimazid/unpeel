@@ -126,15 +126,7 @@ final class SidebarTreeRowsCacheTests: XCTestCase {
     /// disk (Host-served lists arrive windowed): the launch seed, before
     /// the first bootstrap.
     func testTheLocalStoppedWindowKeepsTheCacheEqualToAFreshFlatten() throws {
-        _ = NSApplication.shared
-        let store = UnpeelStore(paneLayoutController: PaneLayoutController(
-            fileURL: LaunchConfig.unpeelDir
-                .appendingPathComponent("panes-\(UUID().uuidString.prefix(6)).json")
-        ))
-        let token = UUID().uuidString.prefix(6).lowercased()
-        let projectDirectory = LaunchConfig.unpeelDir.appendingPathComponent("window-\(token)")
-        try FileManager.default.createDirectory(at: projectDirectory, withIntermediateDirectories: true)
-        let projectID = store.addEphemeralProject(path: projectDirectory.path)
+        let (store, projectID, token) = try makeDiskStore()
         let stoppedIDs = (0..<8).map { "stopped-\(token)-\($0)" }
         for (index, id) in stoppedIDs.enumerated() {
             try writeStoppedManifest(id: id, projectID: projectID, createdAt: 1_000 + Int64(index))
@@ -171,15 +163,7 @@ final class SidebarTreeRowsCacheTests: XCTestCase {
     /// The target of a remove confirmation or a rename stays past the
     /// Controller's own stopped window, and leaves it when that ends.
     func testAConfirmOrRenameKeepsAStoppedRowPastTheWindowUntilItEnds() throws {
-        _ = NSApplication.shared
-        let store = UnpeelStore(paneLayoutController: PaneLayoutController(
-            fileURL: LaunchConfig.unpeelDir
-                .appendingPathComponent("panes-\(UUID().uuidString.prefix(6)).json")
-        ))
-        let token = UUID().uuidString.prefix(6).lowercased()
-        let projectDirectory = LaunchConfig.unpeelDir.appendingPathComponent("inline-\(token)")
-        try FileManager.default.createDirectory(at: projectDirectory, withIntermediateDirectories: true)
-        let projectID = store.addEphemeralProject(path: projectDirectory.path)
+        let (store, projectID, token) = try makeDiskStore()
         let stoppedIDs = (0..<5).map { "inline-\(token)-\($0)" }
         for (index, id) in stoppedIDs.enumerated() {
             try writeStoppedManifest(id: id, projectID: projectID, createdAt: 1_000 + Int64(index))
@@ -328,15 +312,7 @@ final class SidebarTreeRowsCacheTests: XCTestCase {
     /// (a reconnect's seed) shows the disk view for a moment. A list built
     /// there must not survive the Host's rows coming back unchanged.
     func testAListBuiltFromTheDiskViewDoesNotOutliveAnEqualBootstrap() throws {
-        _ = NSApplication.shared
-        let store = UnpeelStore(paneLayoutController: PaneLayoutController(
-            fileURL: LaunchConfig.unpeelDir
-                .appendingPathComponent("panes-\(UUID().uuidString.prefix(6)).json")
-        ))
-        let token = UUID().uuidString.prefix(6).lowercased()
-        let projectDirectory = LaunchConfig.unpeelDir.appendingPathComponent("seed-\(token)")
-        try FileManager.default.createDirectory(at: projectDirectory, withIntermediateDirectories: true)
-        let projectID = store.addEphemeralProject(path: projectDirectory.path)
+        let (store, projectID, token) = try makeDiskStore()
         let diskID = "disk-\(token)"
         try writeStoppedManifest(id: diskID, projectID: projectID, createdAt: 1_000)
         store.rescan()
@@ -375,6 +351,20 @@ final class SidebarTreeRowsCacheTests: XCTestCase {
             targetAppName: nil,
             requestedAt: Date(timeIntervalSince1970: 1)
         )
+    }
+
+    /// A store that lists what it scans from disk, not yet a Host client, with
+    /// an empty project to write manifests into.
+    private func makeDiskStore() throws -> (store: UnpeelStore, projectID: String, token: String) {
+        _ = NSApplication.shared
+        let store = UnpeelStore(paneLayoutController: PaneLayoutController(
+            fileURL: LaunchConfig.unpeelDir
+                .appendingPathComponent("panes-\(UUID().uuidString.prefix(6)).json")
+        ))
+        let token = UUID().uuidString.prefix(6).lowercased()
+        let projectDirectory = LaunchConfig.unpeelDir.appendingPathComponent("disk-\(token)")
+        try FileManager.default.createDirectory(at: projectDirectory, withIntermediateDirectories: true)
+        return (store, store.addEphemeralProject(path: projectDirectory.path), token)
     }
 
     private func makeStore(_ host: FixtureHost, heldInRuntime: Bool = false) -> UnpeelStore {
