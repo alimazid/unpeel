@@ -126,15 +126,7 @@ final class SidebarTreeRowsCacheTests: XCTestCase {
     /// disk (Host-served lists arrive windowed): the launch seed, before
     /// the first bootstrap.
     func testTheLocalStoppedWindowKeepsTheCacheEqualToAFreshFlatten() throws {
-        _ = NSApplication.shared
-        let store = UnpeelStore(paneLayoutController: PaneLayoutController(
-            fileURL: LaunchConfig.unpeelDir
-                .appendingPathComponent("panes-\(UUID().uuidString.prefix(6)).json")
-        ))
-        let token = UUID().uuidString.prefix(6).lowercased()
-        let projectDirectory = LaunchConfig.unpeelDir.appendingPathComponent("window-\(token)")
-        try FileManager.default.createDirectory(at: projectDirectory, withIntermediateDirectories: true)
-        let projectID = store.addEphemeralProject(path: projectDirectory.path)
+        let (store, projectID, token) = try makeDiskStore()
         let stoppedIDs = (0..<8).map { "stopped-\(token)-\($0)" }
         for (index, id) in stoppedIDs.enumerated() {
             try writeStoppedManifest(id: id, projectID: projectID, createdAt: 1_000 + Int64(index))
@@ -168,6 +160,54 @@ final class SidebarTreeRowsCacheTests: XCTestCase {
         }
     }
 
+    /// The target of a remove confirmation or a rename stays past the
+    /// Controller's own stopped window, and leaves it when that ends.
+    func testAConfirmOrRenameKeepsAStoppedRowPastTheWindowUntilItEnds() throws {
+        let (store, projectID, token) = try makeDiskStore()
+        let stoppedIDs = (0..<5).map { "inline-\(token)-\($0)" }
+        for (index, id) in stoppedIDs.enumerated() {
+            try writeStoppedManifest(id: id, projectID: projectID, createdAt: 1_000 + Int64(index))
+        }
+        defer { store.setSidebarStoppedLimit(UnpeelStore.defaultSidebarStoppedLimit) }
+        store.setSidebarStoppedLimit(3)
+        store.rescan()
+        store.expandedProjectIDs = [projectID]
+        let pastWindow = "session:\(stoppedIDs[0])"
+        XCTAssertFalse(store.sidebarTreeRows.contains { $0.id == pastWindow }, "the oldest row is windowed")
+
+        store.confirmingRemoveSessionID = stoppedIDs[0]
+        XCTAssertTrue(store.sidebarTreeRows.contains { $0.id == pastWindow }, "a remove confirmation keeps it")
+        store.confirmingRemoveSessionID = nil
+        XCTAssertFalse(store.sidebarTreeRows.contains { $0.id == pastWindow }, "the cancel windows it again")
+
+        store.editingSessionID = stoppedIDs[0]
+        XCTAssertTrue(store.sidebarTreeRows.contains { $0.id == pastWindow }, "a rename keeps it")
+        store.editingSessionID = nil
+        XCTAssertFalse(store.sidebarTreeRows.contains { $0.id == pastWindow }, "the end of the rename windows it again")
+    }
+
+    /// A stop confirmation arms only on a working row, which no window hides.
+    /// It counts once that Session stops with the confirmation open, so this
+    /// checks the edges reach the choke-point.
+    func testAStopConfirmationRebuildsTheRowsWhenItOpensAndCloses() {
+        var host = FixtureHost()
+        host.edit("s1") {
+            $0.activity = .working
+            $0.resumable = true
+        }
+        host.hostCapabilities = [RemoteHostRuntime.HostOperation.stop]
+        let store = makeStore(host, heldInRuntime: true)
+        let closed = store.sidebarTreeRows
+
+        store.requestStopSession("s1")
+        XCTAssertEqual(store.confirmingStopSessionID, "s1")
+        let armed = store.sidebarTreeRows
+        XCTAssertFalse(sameBuffer(closed, armed), "arming must reach the choke-point")
+
+        store.cancelStopConfirm()
+        XCTAssertFalse(sameBuffer(armed, store.sidebarTreeRows), "cancelling must reach the choke-point")
+    }
+
     func testReadingTheRowsNeverPublishes() {
         let store = makeStore(FixtureHost())
         var publishes = 0
@@ -182,15 +222,165 @@ final class SidebarTreeRowsCacheTests: XCTestCase {
         XCTAssertEqual(publishes, 0, "the cached rows are plain storage, never observed")
     }
 
+    // MARK: The list memo (#48)
+
+    func testACancelledDragPutsTheRowsBack() {
+        let store = makeStore(FixtureHost(), heldInRuntime: true)
+        let before = store.sidebarTreeRows
+
+        store.previewSessionMove(projectID: "project", draggedID: "s1", over: "s2")
+        XCTAssertNotEqual(store.sidebarTreeRows.map(\.id), before.map(\.id), "the preview moved s1")
+        store.cancelSessionReorder(projectID: "project")
+
+        XCTAssertEqual(store.sidebarTreeRows, before)
+    }
+
+    /// A rename on another row defers the projection the cancel re-runs, so
+    /// nothing else can drop the previewed order or render the rollback.
+    func testACancelledDragPutsTheRowsBackWhileARenameDefersTheProjection() {
+        let store = makeStore(FixtureHost(), heldInRuntime: true)
+        store.editingSessionID = "s3"
+        let before = store.sidebarTreeRows
+
+        store.previewSessionMove(projectID: "project", draggedID: "s1", over: "s2")
+        XCTAssertNotEqual(store.sidebarTreeRows.map(\.id), before.map(\.id), "the preview moved s1")
+        var publishes = 0
+        let observer = store.objectWillChange.sink { publishes += 1 }
+        defer { observer.cancel() }
+        store.cancelSessionReorder(projectID: "project")
+
+        XCTAssertEqual(store.sidebarTreeRows, before)
+        XCTAssertGreaterThan(publishes, 0, "the rollback must render")
+    }
+
+    func testAnUnchangedBootstrapDoesNotRebuildTheRows() {
+        let host = FixtureHost()
+        let store = makeStore(host, heldInRuntime: true)
+        let rows = store.sidebarTreeRows
+
+        store.projectRemoteScope(snapshot: host.snapshot)
+
+        XCTAssertTrue(sameBuffer(rows, store.sidebarTreeRows))
+    }
+
+    func testABootstrapChangingOneProjectKeepsTheOtherProjectsList() throws {
+        var host = FixtureHost()
+        let store = makeStore(host, heldInRuntime: true)
+        let project = try XCTUnwrap(store.findDisplayNode("project"))
+        let other = try XCTUnwrap(store.findDisplayNode("other"))
+        let projectList = store.renderedDisplayedSessions(in: project)
+        let otherList = store.renderedDisplayedSessions(in: other)
+
+        host.edit("s1") { $0.title = "renamed" }
+        store.projectRemoteScope(snapshot: host.snapshot)
+
+        XCTAssertFalse(sameBuffer(projectList, store.renderedDisplayedSessions(in: project)))
+        XCTAssertTrue(sameBuffer(otherList, store.renderedDisplayedSessions(in: other)))
+    }
+
+    func testAnApprovalArrivingAndEndingReachesTheRows() {
+        let store = makeStore(FixtureHost(), heldInRuntime: true)
+
+        expectFreshRows(store, "an approval arriving") {
+            store.pendingMcpApprovals.append(approval(caller: "s1", target: nil))
+        }
+        expectFreshRows(store, "the approval ending") {
+            store.pendingMcpApprovals.removeAll()
+        }
+    }
+
+    /// An approval shows on its target once the Host lists that Session, and
+    /// on its caller until then. The caller's project can lose or gain the
+    /// attention while its own rows stay equal.
+    func testAnApprovalMovingBetweenProjectsReachesTheCallersRows() {
+        var host = FixtureHost()
+        let store = makeStore(host, heldInRuntime: true)
+        store.pendingMcpApprovals = [approval(caller: "s1", target: "o2")]
+        _ = store.sidebarTreeRows
+
+        expectFreshRows(store, "the target appearing in another project") {
+            host.add(.init(id: "o2", projectID: "other", title: "other two", createdAt: 8))
+            store.projectRemoteScope(snapshot: host.snapshot)
+        }
+        expectFreshRows(store, "the target going away again") {
+            host.remove("o2")
+            store.projectRemoteScope(snapshot: host.snapshot)
+        }
+    }
+
+    /// A nil snapshot delivered while the runtime already holds the next one
+    /// (a reconnect's seed) shows the disk view for a moment. A list built
+    /// there must not survive the Host's rows coming back unchanged.
+    func testAListBuiltFromTheDiskViewDoesNotOutliveAnEqualBootstrap() throws {
+        let (store, projectID, token) = try makeDiskStore()
+        let diskID = "disk-\(token)"
+        try writeStoppedManifest(id: diskID, projectID: projectID, createdAt: 1_000)
+        store.rescan()
+
+        var host = FixtureHost()
+        host.addProject(.init(id: projectID, name: "Shared", parentID: nil))
+        host.add(.init(id: "h1", projectID: projectID, title: "host one", createdAt: 9))
+        store.markLocalHostClientStartedForTesting()
+        store.remoteHostRuntime.holdSnapshotForTesting(host.snapshot)
+        RunLoop.main.run(until: Date().addingTimeInterval(0.01))
+        store.projectRemoteScope(snapshot: host.snapshot)
+        _ = store.sidebarTreeRows
+
+        store.projectRemoteScope(snapshot: nil)
+        store.expandedProjectIDs = [projectID]
+        XCTAssertTrue(
+            store.sidebarTreeRows.contains { $0.id == "session:\(diskID)" },
+            "the disk view lists its own Session"
+        )
+        store.projectRemoteScope(snapshot: host.snapshot)
+
+        let rowIDs = store.sidebarTreeRows.map(\.id)
+        XCTAssertTrue(rowIDs.contains("session:h1"), "the Host's rows are back: \(rowIDs)")
+        XCTAssertFalse(rowIDs.contains("session:\(diskID)"), "no disk row survives: \(rowIDs)")
+    }
+
     // MARK: Helpers
 
-    private func makeStore(_ host: FixtureHost) -> UnpeelStore {
+    private func approval(caller: String, target: String?) -> PendingMcpApproval {
+        PendingMcpApproval(
+            id: "approval-\(caller)",
+            kind: .write,
+            callerSessionID: caller,
+            targetSessionID: target,
+            targetAppID: nil,
+            targetAppName: nil,
+            requestedAt: Date(timeIntervalSince1970: 1)
+        )
+    }
+
+    /// A store that lists what it scans from disk, not yet a Host client, with
+    /// an empty project to write manifests into.
+    private func makeDiskStore() throws -> (store: UnpeelStore, projectID: String, token: String) {
+        _ = NSApplication.shared
+        let store = UnpeelStore(paneLayoutController: PaneLayoutController(
+            fileURL: LaunchConfig.unpeelDir
+                .appendingPathComponent("panes-\(UUID().uuidString.prefix(6)).json")
+        ))
+        let token = UUID().uuidString.prefix(6).lowercased()
+        let projectDirectory = LaunchConfig.unpeelDir.appendingPathComponent("disk-\(token)")
+        try FileManager.default.createDirectory(at: projectDirectory, withIntermediateDirectories: true)
+        return (store, store.addEphemeralProject(path: projectDirectory.path), token)
+    }
+
+    private func makeStore(_ host: FixtureHost, heldInRuntime: Bool = false) -> UnpeelStore {
         let store = UnpeelStore.sidebarFixture(
             snapshot: host.snapshot,
-            expandedProjectIDs: ["project", "group", "wt", "other"]
+            expandedProjectIDs: ["project", "group", "wt", "other"],
+            heldInRuntime: heldInRuntime
         )
         XCTAssertFalse(store.sidebarTreeRows.isEmpty, "the fixture Host's tree renders")
         return store
+    }
+
+    /// The cache hands back the buffer it built, so two reads held alive share
+    /// one only when nothing rebuilt between them.
+    private func sameBuffer<Element>(_ lhs: [Element], _ rhs: [Element]) -> Bool {
+        lhs.withUnsafeBufferPointer(\.baseAddress) == rhs.withUnsafeBufferPointer(\.baseAddress)
     }
 
     /// Warms the cache, applies `change`, then checks that the change reached
@@ -253,6 +443,7 @@ private struct FixtureHost {
         var status: RemoteSessionStatus = .running
         var activity: RemoteActivityState = .idle
         var pinned = false
+        var resumable = false
         let createdAt: Int64
     }
 
@@ -281,6 +472,7 @@ private struct FixtureHost {
         Session(id: "w1", projectID: "wt", title: "worktree one", createdAt: 6),
         Session(id: "o1", projectID: "other", title: "other one", createdAt: 7),
     ]
+    var hostCapabilities: [String]?
 
     mutating func edit(_ id: String, _ change: (inout Session) -> Void) {
         guard let index = sessions.firstIndex(where: { $0.id == id }) else { return }
@@ -303,8 +495,17 @@ private struct FixtureHost {
         sessions.removeAll { $0.id == id }
     }
 
+    mutating func add(_ session: Session) {
+        sessions.append(session)
+    }
+
+    mutating func addProject(_ project: Project) {
+        projects.append(project)
+    }
+
     var snapshot: RemoteBootstrapSnapshot {
         RemoteBootstrapSnapshot(
+            hostProtocol: hostCapabilities.map { RemoteHostProtocolDescriptor(capabilities: $0) },
             folders: [],
             projects: projects.enumerated().map { index, project in
                 RemoteProjectSummary(
@@ -329,7 +530,10 @@ private struct FixtureHost {
                     createdAtUnixMs: session.createdAt,
                     status: session.status,
                     activity: session.activity,
-                    pinned: session.pinned
+                    pinned: session.pinned,
+                    capabilities: session.resumable
+                        ? RemoteSessionCapabilities(restart: false, notifyWhenDone: false, resumable: true)
+                        : nil
                 )
             },
             capturedAtUnixMs: 1

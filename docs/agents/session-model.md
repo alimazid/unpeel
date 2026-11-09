@@ -260,8 +260,11 @@ default is 5. Unread stopped rows stay past the cap and are never removed.
 stopped sections; the final exited manifest timestamp makes a newly stopped
 row recent. The phone mirrors the model from the same Host snapshot.
 `invalidateSidebarLists()` is the choke-point for these lists' inputs
-(pins, order, stopped windowing). A Host projection uses its per-project
-form, which only drops the projects that changed. The live PROJECTS rows
+(pins, order, stopped windowing, inline confirm and rename state, approval
+attention, which tree is displayed). An input invalidates only when its value
+changes. A Host projection uses the per-project form, which only drops the
+projects that changed, so an unchanged bootstrap rebuilds nothing (#48). A
+cancelled drag invalidates itself. The live PROJECTS rows
 (`sidebarTreeRows`, #44) are the flattener's output over the displayed
 tree. They are cached against a key of that tree, expansion, hidden pane
 members and the choke-point's revision.

@@ -745,7 +745,9 @@ final class UnpeelStore: ObservableObject {
     /// enqueueMcpApproval/answerMcpApproval (internal set for the same-module
     /// extension in MCPApprovalCenter.swift).
     @Published var pendingMcpApprovals: [PendingMcpApproval] = [] {
-        didSet { invalidateSidebarLists() }
+        // Fork-only (#48): every Host projection writes this through
+        // `reconcileApprovals`, usually with nothing to change.
+        didSet { if pendingMcpApprovals != oldValue { invalidateSidebarLists() } }
     }
     /// Approval rows whose blocking request and answer authority live in the
     /// canonical Rust workspace worker. The native app presents them only;
@@ -1667,7 +1669,11 @@ final class UnpeelStore: ObservableObject {
     /// The Local migration never swaps the sidebar to Host-backed structures
     /// until one complete snapshot has been projected. Disk-rescan state stays
     /// visible during service startup/recovery, avoiding an empty-state flash.
-    @Published private(set) var localHostProjectionReady = false
+    @Published private(set) var localHostProjectionReady = false {
+        // Fork-only (#48): this swaps `displayNodes` between the disk tree and
+        // the Host's, and the memo keys both by project id.
+        didSet { if localHostProjectionReady != oldValue { invalidateSidebarLists() } }
+    }
     private var localHostClientStarted = false
     /// Platform-adapter callbacks from the worker (`overlay.project-color.set`)
     /// must apply their native effect locally and return an honest
@@ -3570,6 +3576,8 @@ final class UnpeelStore: ObservableObject {
     /// idle sessions stop directly.
     @Published private(set) var confirmingStopSessionID: String? {
         didSet {
+            // Fork-only (#48): this row stays past the stopped window.
+            if confirmingStopSessionID != oldValue { invalidateSidebarLists() }
             if confirmingStopSessionID == nil {
                 scheduleDeferredRemoteProjectionFlush()
             }
@@ -8575,9 +8583,14 @@ final class UnpeelStore: ObservableObject {
     /// accepted drop. The persisted order was never touched.
     func cancelSessionReorder(projectID: String) {
         guard sessionOrderPreviews.removeValue(forKey: projectID) != nil else { return }
+        // Fork-only (#48): the memo still holds the preview, and the same
+        // bootstrap projects no change (or defers behind a rename), so the
+        // rollback needs its own invalidation and publish.
+        invalidateSidebarLists()
         if routesProjectVerbThroughHost(projectID) {
             withAnimation(.easeInOut(duration: 0.18)) {
                 projectRemoteScope(snapshot: remoteHostRuntime.snapshot)
+                objectWillChange.send()
             }
             return
         }
@@ -8613,6 +8626,8 @@ final class UnpeelStore: ObservableObject {
     /// (one at a time, like `editingSessionId` in ProjectItem.svelte:146).
     @Published var editingSessionID: String? {
         didSet {
+            // Fork-only (#48): this row stays past the stopped window.
+            if editingSessionID != oldValue { invalidateSidebarLists() }
             if editingSessionID == nil {
                 editingSessionSurface = .sidebar
                 scheduleDeferredRemoteProjectionFlush()
@@ -9205,6 +9220,8 @@ final class UnpeelStore: ObservableObject {
     /// instead of just the button).
     @Published var confirmingRemoveSessionID: String? {
         didSet {
+            // Fork-only (#48): this row stays past the stopped window.
+            if confirmingRemoveSessionID != oldValue { invalidateSidebarLists() }
             if confirmingRemoveSessionID == nil {
                 scheduleDeferredRemoteProjectionFlush()
             }
@@ -9212,7 +9229,10 @@ final class UnpeelStore: ObservableObject {
     }
 
     /// Sessions whose kill/cleanup is in flight; rows render disabled.
-    @Published private(set) var removingSessionIDs: Set<String> = []
+    @Published private(set) var removingSessionIDs: Set<String> = [] {
+        // Fork-only (#48): these rows stay past the stopped window.
+        didSet { if removingSessionIDs != oldValue { invalidateSidebarLists() } }
+    }
 
     /// Session dirs deleted by an explicit close/restart, keyed by session id.
     /// A host from an older build writes its final exited manifest up to a
@@ -15837,6 +15857,7 @@ extension UnpeelStore {
         let previousSummaries = remoteSummariesByID
         let previousProjectSummaries = remoteProjectSummariesByID
         let previousOrder = remoteSessionOrderByProject
+        let previousAttention = mcpApprovalAttentionSessionIDs // Fork-only (#48)
         var snapshotProjects = snapshot.projects
         if projectsLocalHost {
             let tombstoned = Set(
@@ -16099,6 +16120,12 @@ extension UnpeelStore {
             previousOrder: previousOrder, nextOrder: orderByProject
         )
         invalidateSidebarLists(projectIDs: affectedProjects) // Fork-only (#44)
+        // Fork-only (#48): the memo holds rows with the approval overlay, and
+        // an approval moves to its target once the Host lists that Session.
+        // The caller's project can change with no row of its own changing.
+        if mcpApprovalAttentionSessionIDs != previousAttention {
+            invalidateSidebarLists()
+        }
         if newNodes != remoteNodes {
             remoteNodes = newNodes
         }
