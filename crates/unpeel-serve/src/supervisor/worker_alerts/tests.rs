@@ -82,11 +82,25 @@ impl DrainView for FakeDrain {
     }
 }
 
+/// The Host's compaction of the Worker, sent at `sent` (#64).
+#[derive(Default)]
+struct FakeCompaction {
+    sent: Option<u64>,
+}
+
+impl CompactionView for FakeCompaction {
+    fn compaction_sent_at(&self, session_id: &str, started_at: u64) -> Option<u64> {
+        self.sent
+            .filter(|sent| session_id == WORKER && started_at >= *sent)
+    }
+}
+
 struct Fixture {
     _tmp: tempfile::TempDir,
     store: Store,
     host: Arc<FakeHost>,
     drain: FakeDrain,
+    compaction: FakeCompaction,
     alerts: WorkerAlerts,
 }
 
@@ -105,6 +119,7 @@ fn fixture() -> Fixture {
         store,
         host,
         drain: FakeDrain::default(),
+        compaction: FakeCompaction::default(),
         alerts,
     }
 }
@@ -168,7 +183,7 @@ impl Fixture {
     fn step(&mut self, rows: &[SessionRow], now: u64) -> Vec<Notice> {
         let mut all = vec![row(ROUTER, Status::Idle)];
         all.extend(rows.iter().cloned());
-        self.alerts.step(&all, now, &self.drain)
+        self.alerts.step(&all, now, &self.drain, &self.compaction)
     }
 
     fn divert(
@@ -178,7 +193,8 @@ impl Fixture {
         body: Option<&str>,
         now: u64,
     ) -> bool {
-        self.alerts.divert(row, kind, body, now, &self.drain)
+        self.alerts
+            .divert(row, kind, body, now, &self.drain, &self.compaction)
     }
 
     /// A Worker turn the supervisor watched start at `start`.
@@ -296,6 +312,7 @@ fn a_stopped_routers_workers_notify_the_user_as_before() {
         &[row(ROUTER, Status::Exited), worker(Status::Busy)],
         T0,
         &fx.drain,
+        &fx.compaction,
     );
     assert!(!fx.divert(
         &worker(Status::Idle),
@@ -1201,7 +1218,7 @@ fn auto_stop_never_sees_the_router_its_running_workers_or_a_pending_inbox() {
         row("user", Status::Idle),
         row("queued", Status::Idle),
     ];
-    fx.alerts.step(&rows, T0, &fx.drain);
+    fx.alerts.step(&rows, T0, &fx.drain, &fx.compaction);
     fx.drain.pending.insert("queued".into());
     let kept = fx.alerts.auto_stop_rows(&rows, &fx.drain);
     let ids: Vec<&str> = kept.iter().map(|row| row.id.as_str()).collect();
@@ -1212,7 +1229,7 @@ fn auto_stop_never_sees_the_router_its_running_workers_or_a_pending_inbox() {
 fn a_stopped_routers_workers_may_be_auto_stopped() {
     let mut fx = fixture();
     let rows = vec![row(ROUTER, Status::Exited), worker(Status::Idle)];
-    fx.alerts.step(&rows, T0, &fx.drain);
+    fx.alerts.step(&rows, T0, &fx.drain, &fx.compaction);
     let kept = fx.alerts.auto_stop_rows(&rows, &fx.drain);
     let ids: Vec<&str> = kept.iter().map(|row| row.id.as_str()).collect();
     assert_eq!(ids, [WORKER], "the Router itself never is");
@@ -1223,7 +1240,7 @@ fn without_a_router_auto_stop_sees_every_row() {
     let mut fx = fixture();
     fx.host.with(|world| world.router = None);
     let rows = vec![row("user", Status::Idle), worker(Status::Idle)];
-    fx.alerts.step(&rows, T0, &fx.drain);
+    fx.alerts.step(&rows, T0, &fx.drain, &fx.compaction);
     assert!(matches!(
         fx.alerts.auto_stop_rows(&rows, &fx.drain),
         std::borrow::Cow::Borrowed(_)
@@ -1317,6 +1334,7 @@ fn reconciliation_never_repeats_a_notice_the_router_already_has() {
         &[row(ROUTER, Status::Idle), worker(Status::Exited)],
         T0 + 60_000,
         &fx.drain,
+        &fx.compaction,
     );
     assert_eq!(fx.queued().len(), 1);
 }
@@ -1368,4 +1386,56 @@ fn a_heartbeat_is_kept_while_a_router_exists() {
     fx.host.with(|world| world.router = None);
     fx.step(&[], T0 + 5 * HEARTBEAT_MS);
     assert_eq!(fx.host.with(|world| world.heartbeats_written.len()), 2);
+}
+
+/// #64: the Host's own compaction is a turn (7501 working, then done) that
+/// nobody is waiting on: neither its finish nor its quiet end reaches the
+/// Router.
+#[test]
+fn the_hosts_compaction_turn_reaches_nobody() {
+    let mut fx = fixture();
+    fx.step(&[worker(Status::Idle)], T0 + 1_000);
+    fx.compaction.sent = Some(T0 + 2_000);
+    fx.turn(T0 + 3_000);
+    let done = SessionRow {
+        program_status: program(ProgramState::Done, Some(T0 + 30_000)),
+        ..worker(Status::Idle)
+    };
+    assert!(
+        fx.divert(
+            &done,
+            ActivityLogKind::Finished,
+            Some("old reply"),
+            T0 + 30_000
+        ),
+        "diverted, so the user is not notified either"
+    );
+    fx.step(&[done], T0 + 30_000);
+    // A compaction that ends with no done report: no went_quiet.
+    fx.turn(T0 + 40_000);
+    fx.step(&[worker(Status::Idle)], T0 + 50_000);
+    fx.step(&[worker(Status::Idle)], T0 + 51_000);
+    assert!(fx.queued().is_empty(), "{:?}", fx.queued());
+}
+
+/// #64: once the Router wrote to the Worker during its compaction, the
+/// turn may also answer that message, so it is reported as usual.
+#[test]
+fn a_compaction_turn_someone_wrote_into_is_reported() {
+    let mut fx = fixture();
+    fx.step(&[worker(Status::Idle)], T0 + 1_000);
+    fx.compaction.sent = Some(T0 + 2_000);
+    fx.turn(T0 + 3_000);
+    fx.store.touch_router(WORKER, T0 + 10_000).unwrap();
+    let done = SessionRow {
+        program_status: program(ProgramState::Done, Some(T0 + 60_000)),
+        ..worker(Status::Idle)
+    };
+    fx.divert(
+        &done,
+        ActivityLogKind::Finished,
+        Some("the answer"),
+        T0 + 60_000,
+    );
+    assert_eq!(fx.statuses(), ["finished"]);
 }

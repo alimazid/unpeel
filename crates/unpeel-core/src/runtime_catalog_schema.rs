@@ -49,6 +49,11 @@ pub struct RuntimeDescriptor {
     /// asked (`bypassesApprovals` on a preset row).
     #[serde(default)]
     pub approvals: RuntimeApprovals,
+    /// Fork-only (#64): each model's context window and the command that
+    /// compacts, for the Host's Worker compaction. A model none of the
+    /// windows names, or a runtime with no command, is never compacted.
+    #[serde(default)]
+    pub context: RuntimeContext,
     /// User-facing description of what the package's installer edits, and
     /// the provider's own command for registering the MCP shim by hand
     /// (`{shim}` is replaced with the shim path). Published in bootstrap.
@@ -263,6 +268,26 @@ pub struct RuntimeIntegrationInfo {
 pub struct RuntimeApprovals {
     #[serde(default)]
     pub bypass_flags: Vec<String>,
+}
+
+/// Fork-only (#64): context windows by model id prefix, and how to compact.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RuntimeContext {
+    #[serde(default)]
+    pub windows: Vec<RuntimeContextWindow>,
+    /// Typed as keys, then Enter, into an idle prompt (`/compact`).
+    #[serde(default)]
+    pub compact_command: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RuntimeContextWindow {
+    /// Matches every model id that starts with it.
+    pub model_prefix: String,
+    /// The window, in tokens.
+    pub tokens: u64,
 }
 
 /// Bottom-of-screen markers a runtime shows while working and at its idle
@@ -1073,6 +1098,46 @@ pub fn validate_runtime_descriptors(
                         ));
                     }
                 }
+            }
+        }
+
+        if has_duplicates(
+            descriptor
+                .context
+                .windows
+                .iter()
+                .map(|window| &window.model_prefix),
+        ) {
+            errors.push(format!(
+                "{prefix}: context.windows has a duplicate model prefix"
+            ));
+        }
+        for window in &descriptor.context.windows {
+            let model_prefix = &window.model_prefix;
+            if model_prefix.is_empty()
+                || model_prefix.trim() != model_prefix
+                || model_prefix.chars().any(char::is_control)
+            {
+                errors.push(format!(
+                    "{prefix}: context window model prefix '{model_prefix}' must be non-empty, \
+                     with no surrounding space or control characters"
+                ));
+            }
+            if window.tokens == 0 {
+                errors.push(format!(
+                    "{prefix}: context window for '{model_prefix}' must be at least 1 token"
+                ));
+            }
+        }
+        if let Some(command) = &descriptor.context.compact_command {
+            if command.is_empty()
+                || command.trim() != command
+                || command.chars().any(char::is_control)
+            {
+                errors.push(format!(
+                    "{prefix}: context.compact_command '{command}' must be non-empty, with no \
+                     surrounding space or control characters"
+                ));
             }
         }
 
@@ -2083,6 +2148,75 @@ attention_reliable = true
                 "unexpected validation result for {unsafe_root:?}: {error}"
             );
         }
+    }
+
+    /// Fork-only (#64): the context windows the Host compacts Workers by.
+    #[test]
+    fn context_windows_need_unique_prefixes_and_positive_sizes() {
+        let window = |model_prefix: &str, tokens: u64| RuntimeContextWindow {
+            model_prefix: model_prefix.into(),
+            tokens,
+        };
+        let mut runtime = parsed("alpha", "com.example.alpha");
+        runtime.descriptor.context.windows =
+            vec![window("model-5", 1_000_000), window("model-4-5", 200_000)];
+        assert!(validate_runtime_descriptors(vec![runtime.clone()]).is_ok());
+
+        for (windows, wanted) in [
+            (vec![window("model-5", 0)], "must be at least 1"),
+            (vec![window("", 1_000)], "model prefix '' must be"),
+            (
+                vec![window(" model", 1_000)],
+                "model prefix ' model' must be",
+            ),
+            (
+                vec![window("model-5", 1_000), window("model-5", 2_000)],
+                "duplicate model prefix",
+            ),
+        ] {
+            let mut invalid = runtime.clone();
+            invalid.descriptor.context.windows = windows;
+            let error = validate_runtime_descriptors(vec![invalid])
+                .unwrap_err()
+                .to_string();
+            assert!(error.contains(wanted), "{wanted}: {error}");
+        }
+    }
+
+    #[test]
+    fn a_compact_command_is_one_plain_line() {
+        let mut runtime = parsed("alpha", "com.example.alpha");
+        runtime.descriptor.context.compact_command = Some("/compact".into());
+        assert!(validate_runtime_descriptors(vec![runtime.clone()]).is_ok());
+        for command in ["", " /compact", "/compact\r"] {
+            let mut invalid = runtime.clone();
+            invalid.descriptor.context.compact_command = Some(command.into());
+            let error = validate_runtime_descriptors(vec![invalid])
+                .unwrap_err()
+                .to_string();
+            assert!(error.contains("compact_command"), "{command:?}: {error}");
+        }
+    }
+
+    #[test]
+    fn a_models_context_window_is_its_longest_matching_prefix() {
+        let context = RuntimeContext {
+            compact_command: None,
+            windows: vec![
+                RuntimeContextWindow {
+                    model_prefix: "model".into(),
+                    tokens: 100,
+                },
+                RuntimeContextWindow {
+                    model_prefix: "model-5".into(),
+                    tokens: 500,
+                },
+            ],
+        };
+        assert_eq!(context.window_for("model-5-5[1m]"), Some(500));
+        assert_eq!(context.window_for("model-4"), Some(100));
+        assert_eq!(context.window_for("other"), None);
+        assert_eq!(RuntimeContext::default().window_for("model-5"), None);
     }
 
     #[test]

@@ -170,6 +170,21 @@ pub fn write_key_unless_user_is_typing(
     write_to_session(session_id, sequence, WriteTerms::guarded(since))
 }
 
+/// Fork-only (#64): the Host's own guarded key write (a Worker's
+/// compaction), bounded so a wedged session host cannot hold the worker.
+pub fn write_key_unless_user_is_typing_within(
+    session_id: &str,
+    sequence: &str,
+    since: u64,
+    timeout: Duration,
+) -> Result<Option<Refusal>, String> {
+    let terms = WriteTerms {
+        timeout: Some(timeout),
+        ..WriteTerms::guarded(since)
+    };
+    write_to_session(session_id, sequence, terms)
+}
+
 fn deliver_sanitized_text_with_timeout(
     session_id: &str,
     sanitized: &str,

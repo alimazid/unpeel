@@ -21,6 +21,7 @@ use unpeel_core::activity_log::ActivityLogKind;
 use unpeel_core::session_inbox::{ItemKind, NewItem, Sender, Store};
 use unpeel_core::supervision::SupervisorConfig;
 
+use super::compaction::{CompactionView, Scope};
 use super::inbox_drain::{Notice, NoticeKind, CONFIRM_TIMEOUT_MS};
 use super::notices::TurnCause;
 use super::worker_host::{Exit, HostWorkers, WorkerHost};
@@ -115,6 +116,8 @@ struct View {
     router: Option<String>,
     router_running: bool,
     workers: HashSet<String>,
+    /// `supervisor_compact_percent`, for the Host's compaction (#64).
+    compact_percent: u8,
 }
 
 pub struct WorkerAlerts {
@@ -182,6 +185,7 @@ impl WorkerAlerts {
         body: Option<&str>,
         now: u64,
         drain: &dyn DrainView,
+        compaction: &dyn CompactionView,
     ) -> bool {
         if !matches!(
             kind,
@@ -199,7 +203,9 @@ impl WorkerAlerts {
         let touched = self.store.router_touched_at(&row.id);
         let notice = match kind {
             ActivityLogKind::NeedsInput => self.needs_input(row, touched, now),
-            ActivityLogKind::Finished => self.finished(row, &router, body, touched, now, drain),
+            ActivityLogKind::Finished => {
+                self.finished(row, &router, body, touched, now, drain, compaction)
+            }
             ActivityLogKind::Exited => self.exited(row, touched, now),
             _ => config.notify_started.then(|| notices::started(row)),
         };
@@ -227,6 +233,7 @@ impl WorkerAlerts {
         (!self_caused(track, touched, now, SELF_CAUSED_MS)).then(|| notices::needs_input(row))
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn finished(
         &mut self,
         row: &SessionRow,
@@ -235,6 +242,7 @@ impl WorkerAlerts {
         touched: Option<u64>,
         now: u64,
         drain: &dyn DrainView,
+        compaction: &dyn CompactionView,
     ) -> Option<NewItem> {
         let started_at = self.started_at;
         let track = self.tracks.entry(row.id.clone()).or_default();
@@ -250,6 +258,15 @@ impl WorkerAlerts {
                 watched: true,
             })
         });
+        let facts = TurnFacts {
+            drain,
+            touched,
+            typed_at: self.io.last_input_at(&row.id),
+        };
+        let turn_start = turn.map_or(now, |turn| turn.started_at);
+        if hosts_compaction(compaction, &row.id, turn_start, &facts, now) {
+            return None;
+        }
         // Interrupted (no reply) right after the Router wrote or pressed a
         // key: the Router knows. A reply is always the Worker's answer.
         if reply.is_none() && self_caused(track, touched, now, SELF_CAUSED_MS) {
@@ -263,11 +280,6 @@ impl WorkerAlerts {
             track.follow_up_owed = false;
             return None;
         }
-        let facts = TurnFacts {
-            drain,
-            touched,
-            typed_at: self.io.last_input_at(&row.id),
-        };
         let cause = track.settle(turn_cause(&row.id, turn, &facts, now));
         Some(notices::finished(row, reply, cause, finished_stamp(row)))
     }
@@ -290,7 +302,13 @@ impl WorkerAlerts {
     /// Once per rescan: update every track, raise the watchdog's alarms
     /// and escalations, catch up after a Host start, keep the heartbeat.
     /// Returns notifications for the user.
-    pub fn step(&mut self, rows: &[SessionRow], now: u64, drain: &dyn DrainView) -> Vec<Notice> {
+    pub fn step(
+        &mut self,
+        rows: &[SessionRow],
+        now: u64,
+        drain: &dyn DrainView,
+        compaction: &dyn CompactionView,
+    ) -> Vec<Notice> {
         let (router, config) = self.io.router_and_config();
         let floor = *self.floor.get_or_insert_with(|| self.io.heartbeat());
         for row in rows {
@@ -318,7 +336,7 @@ impl WorkerAlerts {
             if !self.reconciled {
                 self.reconcile(rows, router, &workers, floor, now);
             }
-            self.watch(rows, router, &workers, &config, now, drain);
+            self.watch(rows, router, &workers, &config, now, drain, compaction);
         }
         self.reconciled = true;
         // A quiet end had its one step to be reported.
@@ -339,11 +357,28 @@ impl WorkerAlerts {
             router,
             router_running,
             workers,
+            compact_percent: config.compact_percent,
         };
         notices
     }
 
+    /// The running Router's Workers and the compaction setting, as the
+    /// last step saw them (#64).
+    pub fn compaction_scope(&self) -> Option<Scope<'_>> {
+        let router = self
+            .view
+            .router
+            .as_deref()
+            .filter(|_| self.view.router_running)?;
+        Some(Scope {
+            router,
+            workers: &self.view.workers,
+            percent: self.view.compact_percent,
+        })
+    }
+
     /// The watchdog over the running Router's Workers.
+    #[allow(clippy::too_many_arguments)]
     fn watch(
         &mut self,
         rows: &[SessionRow],
@@ -352,6 +387,7 @@ impl WorkerAlerts {
         config: &SupervisorConfig,
         now: u64,
         drain: &dyn DrainView,
+        compaction: &dyn CompactionView,
     ) {
         let mut alarms = Vec::new();
         for row in rows.iter().filter(|row| workers.contains(&row.id)) {
@@ -373,7 +409,7 @@ impl WorkerAlerts {
                     .ended_quietly
                     .and_then(|_| self.io.last_input_at(&row.id)),
             };
-            match quiet_end(&self.store, router, track, row, &facts, now) {
+            match quiet_end(&self.store, router, track, row, &facts, compaction, now) {
                 Some(QuietEnd::WentQuiet(alarm)) => due.push(alarm),
                 Some(QuietEnd::ScreenFinished(notice)) => alarms.push(notice),
                 None => {}
@@ -568,6 +604,7 @@ fn quiet_end(
     track: &mut Track,
     row: &SessionRow,
     facts: &TurnFacts,
+    compaction: &dyn CompactionView,
     now: u64,
 ) -> Option<QuietEnd> {
     let (turn, ended_at) = track.ended_quietly.filter(|(_, at)| *at < now)?;
@@ -576,7 +613,11 @@ fn quiet_end(
     let interrupted_by_router = facts.touched.is_some_and(|touched| {
         touched <= ended_at && touched + SELF_CAUSED_MS >= ended_at && turn.started_at <= touched
     });
-    if finished || interrupted_by_router || row.status != Status::Idle {
+    if finished
+        || interrupted_by_router
+        || row.status != Status::Idle
+        || hosts_compaction(compaction, &row.id, turn.started_at, facts, ended_at)
+    {
         return None;
     }
     if !matches!(row.status_source, StatusSource::Screen | StatusSource::None) {
@@ -637,6 +678,26 @@ struct TurnFacts<'a> {
     touched: Option<u64>,
     /// The user's last keystroke, the manifest's `last_input_at`.
     typed_at: Option<u64>,
+}
+
+/// The turn is the Host's own compaction (#64) and nobody wrote to the
+/// Worker since: its finish or quiet end is nothing to report. Once someone
+/// did, the turn may also be their answer (a message queued behind the
+/// compaction), so it is reported as usual.
+fn hosts_compaction(
+    compaction: &dyn CompactionView,
+    worker: &str,
+    started_at: u64,
+    facts: &TurnFacts,
+    now: u64,
+) -> bool {
+    compaction
+        .compaction_sent_at(worker, started_at)
+        .is_some_and(|sent| {
+            !facts.drain.pasted_between(worker, sent, now)
+                && facts.touched.is_none_or(|at| at < sent)
+                && facts.typed_at.is_none_or(|at| at < sent)
+        })
 }
 
 /// Who a turn ending at `now` answers to, read through to its end: a Router

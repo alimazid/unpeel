@@ -12,6 +12,7 @@ pub(super) const ADAPTER: TranscriptAdapter = TranscriptAdapter {
     find_best,
     title_candidate: Some(summary_title_candidate),
     model_from_value: None,
+    context_usage: Some(context_usage),
 };
 
 fn resume_id_from_command(command: &str) -> Option<String> {
@@ -171,4 +172,66 @@ fn collect_line(value: &Value, include_tools: bool, state: &mut TranscriptParseS
         }
         _ => {}
     }
+}
+
+/// Fork-only (#64): Claude Code's own context figure, the one its status
+/// line shows: the latest main-chain request's input, cache writes and
+/// cache reads, or what a compaction since then left (`postTokens`).
+/// Subagents' requests and synthetic replies (errors, interruptions) are not
+/// the conversation's context.
+fn context_usage(lines: &[&str]) -> Option<ContextUsage> {
+    let mut compacted_to = None;
+    for line in lines.iter().rev() {
+        let Ok(value) = serde_json::from_str::<Value>(line) else {
+            continue;
+        };
+        match value.get("type").and_then(Value::as_str) {
+            Some("system")
+                if compacted_to.is_none()
+                    && value.get("subtype").and_then(Value::as_str) == Some("compact_boundary") =>
+            {
+                // What it left is unknown: so is the context.
+                compacted_to = Some(
+                    value
+                        .pointer("/compactMetadata/postTokens")
+                        .and_then(Value::as_u64)?,
+                );
+            }
+            Some("assistant") if value.get("isSidechain").and_then(Value::as_bool) != Some(true) => {
+                let Some(message) = value.get("message") else {
+                    continue;
+                };
+                let Some(model) = message
+                    .get("model")
+                    .and_then(Value::as_str)
+                    .filter(|model| !model.is_empty() && *model != "<synthetic>")
+                else {
+                    continue;
+                };
+                let Some(tokens) = compacted_to.or_else(|| request_tokens(message.get("usage")?))
+                else {
+                    continue;
+                };
+                return Some(ContextUsage {
+                    tokens,
+                    model: Some(model.to_owned()),
+                });
+            }
+            _ => {}
+        }
+    }
+    compacted_to.map(|tokens| ContextUsage {
+        tokens,
+        model: None,
+    })
+}
+
+fn request_tokens(usage: &Value) -> Option<u64> {
+    let tokens = |name| usage.get(name).and_then(Value::as_u64);
+    let input = tokens("input_tokens")?;
+    Some(
+        input
+            .saturating_add(tokens("cache_creation_input_tokens").unwrap_or(0))
+            .saturating_add(tokens("cache_read_input_tokens").unwrap_or(0)),
+    )
 }

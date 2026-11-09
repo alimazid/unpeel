@@ -8,6 +8,13 @@ use std::io::{Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
+/// Fork-only (#64).
+mod context;
+pub use context::{
+    compact_command, context_usage_in_lines, context_window, read_context, ContextReading,
+    ContextUsage,
+};
+
 const DEFAULT_TRANSCRIPT_TAIL_BYTES: u64 = 1024 * 1024;
 const DEFAULT_STREAM_MAX_BYTES: u64 = 256 * 1024;
 const MAX_STREAM_BYTES: u64 = 2 * 1024 * 1024;
@@ -15,6 +22,8 @@ const PROVIDER_TRANSCRIPT_SEARCH_LIMIT: usize = 1_200;
 
 type CollectDocument = fn(&Value, bool) -> Vec<TranscriptEntry>;
 type CollectLine = fn(&Value, bool, &mut TranscriptParseState);
+/// Fork-only (#64): JSONL lines, oldest first.
+type ReadContextUsage = fn(&[&str]) -> Option<ContextUsage>;
 
 /// Provider-owned transcript behavior compiled from one runtime package.
 ///
@@ -33,6 +42,9 @@ pub struct TranscriptAdapter {
     find_best: fn(&HostedSessionManifest) -> Option<PathBuf>,
     title_candidate: Option<fn(&str) -> Option<String>>,
     model_from_value: Option<fn(&Value) -> Option<String>>,
+    /// Fork-only (#64): how full the context is, for the Host's Worker
+    /// compaction.
+    context_usage: Option<ReadContextUsage>,
 }
 
 #[derive(Clone, Copy)]

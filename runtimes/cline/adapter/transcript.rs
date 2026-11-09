@@ -12,6 +12,7 @@ pub(super) const ADAPTER: TranscriptAdapter = TranscriptAdapter {
     find_best,
     title_candidate: None,
     model_from_value: Some(model_from_value),
+    context_usage: None,
 };
 
 fn model_from_value(value: &Value) -> Option<String> {

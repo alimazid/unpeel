@@ -36,6 +36,7 @@ Script this workspace's allowlisted settings:
   supervisor_max_deliveries_per_hour   1 or more
   supervisor_notify_started            true | false
   supervisor_inbox_low_confidence      true | false
+  supervisor_compact_percent           0 | 25 | 30 | 40 | 50 | 60 | 70 (compact Workers; 0 = off)
 
 The Sessions and Browser MCP gates are captured when a Session launches.
 Start or restart a Session after changing either of them.";
@@ -521,6 +522,7 @@ mod tests {
         let names: Vec<&str> = SettingKey::listed().iter().map(|key| key.name()).collect();
         for key in unpeel_core::supervision::SUPERVISOR_SETTINGS {
             assert!(names.contains(&key.key), "{} is listed", key.key);
+            assert!(HELP.contains(key.key), "{} is in the help", key.key);
         }
         assert!(HELP.contains("supervisor_max_children"));
 

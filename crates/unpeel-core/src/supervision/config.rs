@@ -23,6 +23,9 @@ pub struct SupervisorConfig {
     pub notify_started: bool,
     /// Deliver to a Session with no confident idle signal on a best guess.
     pub inbox_low_confidence: bool,
+    /// A Worker whose context is this full (percent of its model's window)
+    /// when a turn ends is compacted by the Host (#64); `0`: never.
+    pub compact_percent: u8,
 }
 
 /// One `supervisor_*` app-state key: the values it accepts and its default.
@@ -42,6 +45,8 @@ pub struct SupervisorSetting {
 enum Values {
     /// Minutes from a fixed menu; `0` turns that alarm off.
     Minutes(&'static [u64]),
+    /// A percent from a fixed menu; `0` turns it off.
+    Percent(&'static [u64]),
     /// A whole number in `low..=high`.
     Range(u64, u64),
     /// A whole number from 1 to `u32::MAX`.
@@ -104,8 +109,17 @@ const INBOX_LOW_CONFIDENCE: SupervisorSetting = SupervisorSetting {
     allowed: "true or false",
 };
 
+/// Nothing below 25: the startup context comes back after a compaction
+/// (7–10% of a 1M window), so a lower value would compact every turn.
+const COMPACT_PERCENT: SupervisorSetting = SupervisorSetting {
+    key: "supervisor_compact_percent",
+    values: Values::Percent(&[0, 25, 30, 40, 50, 60, 70]),
+    default: 40,
+    allowed: "0, 25, 30, 40, 50, 60, or 70 (0 = off)",
+};
+
 /// Every `supervisor_*` key, in `unpeel settings list` order.
-pub const SUPERVISOR_SETTINGS: [&SupervisorSetting; 9] = [
+pub const SUPERVISOR_SETTINGS: [&SupervisorSetting; 10] = [
     &STALL_MINUTES,
     &BLOCKED_MINUTES,
     &ESCALATE_MINUTES,
@@ -115,6 +129,7 @@ pub const SUPERVISOR_SETTINGS: [&SupervisorSetting; 9] = [
     &MAX_DELIVERIES_PER_HOUR,
     &NOTIFY_STARTED,
     &INBOX_LOW_CONFIDENCE,
+    &COMPACT_PERCENT,
 ];
 
 impl SupervisorSetting {
@@ -155,7 +170,7 @@ impl SupervisorSetting {
 
     fn accepts(&self, number: u64) -> bool {
         match self.values {
-            Values::Minutes(options) => options.contains(&number),
+            Values::Minutes(options) | Values::Percent(options) => options.contains(&number),
             Values::Range(low, high) => (low..=high).contains(&number),
             Values::Positive => number > 0 && u32::try_from(number).is_ok(),
             Values::Flag => false,
@@ -212,6 +227,8 @@ pub fn config_from_state(state: &Value, seconds_mode: bool) -> SupervisorConfig 
         max_deliveries_per_hour: rate(&MAX_DELIVERIES_PER_HOUR),
         notify_started: flag(&NOTIFY_STARTED),
         inbox_low_confidence: flag(&INBOX_LOW_CONFIDENCE),
+        // The menu tops out at 70.
+        compact_percent: u8::try_from(number(&COMPACT_PERCENT)).unwrap_or(0),
     }
 }
 
@@ -241,6 +258,7 @@ mod tests {
                 max_deliveries_per_hour: 60,
                 notify_started: false,
                 inbox_low_confidence: true,
+                compact_percent: 40,
             }
         );
         assert_eq!(SupervisorConfig::default(), config);
@@ -259,9 +277,16 @@ mod tests {
                 "supervisor_max_deliveries_per_hour": 500,
                 "supervisor_notify_started": true,
                 "supervisor_inbox_low_confidence": false,
+                "supervisor_compact_percent": 60,
             }),
             false,
         );
+        assert_eq!(config.compact_percent, 60);
+        let off = config_from_state(
+            &serde_json::json!({ "supervisor_compact_percent": 0 }),
+            false,
+        );
+        assert_eq!(off.compact_percent, 0, "0 turns compaction off");
         assert_eq!(config.stall_ms, 60 * MINUTE);
         assert_eq!(config.blocked_ms, 0, "0 turns the blocked alarm off");
         assert_eq!(config.escalate_ms, 15 * MINUTE);
@@ -286,10 +311,25 @@ mod tests {
                 "supervisor_max_deliveries_per_hour": null,
                 "supervisor_notify_started": "yes",
                 "supervisor_inbox_low_confidence": 0,
+                "supervisor_compact_percent": 10,
             }),
             false,
         );
         assert_eq!(config, SupervisorConfig::default());
+        // Below 25 would compact every turn: the startup context comes back
+        // after a compaction.
+        for junk in [
+            serde_json::json!(5),
+            serde_json::json!(24),
+            serde_json::json!(45),
+            serde_json::json!("40"),
+        ] {
+            let config = config_from_state(
+                &serde_json::json!({ "supervisor_compact_percent": junk }),
+                false,
+            );
+            assert_eq!(config.compact_percent, 40, "{junk}");
+        }
         let config = config_from_state(&serde_json::json!({ "supervisor_max_children": 0 }), false);
         assert_eq!(config.max_children, 8);
     }
@@ -328,6 +368,7 @@ mod tests {
                 "supervisor_max_deliveries_per_hour",
                 "supervisor_notify_started",
                 "supervisor_inbox_low_confidence",
+                "supervisor_compact_percent",
             ]
         );
         assert!(SupervisorSetting::named("supervisor_bogus").is_none());
@@ -362,6 +403,16 @@ mod tests {
                 "supervisor_notify_started",
                 vec![("TRUE", json!(true)), ("false", json!(false))],
                 vec!["yes", "1"],
+            ),
+            (
+                "supervisor_compact_percent",
+                vec![
+                    ("40", json!(40)),
+                    ("0", json!(0)),
+                    ("25", json!(25)),
+                    ("70", json!(70)),
+                ],
+                vec!["10", "24", "45", "80", "forty"],
             ),
         ] {
             let setting = setting(key);
@@ -400,12 +451,16 @@ mod tests {
             setting("supervisor_max_deliveries_per_hour").effective(None),
             json!(60)
         );
+        assert_eq!(
+            setting("supervisor_compact_percent").effective(Some(&json!(10))),
+            json!(40)
+        );
     }
 
     #[test]
     fn each_settings_allowed_text_names_its_menu() {
         for setting in SUPERVISOR_SETTINGS {
-            if let Values::Minutes(options) = setting.values {
+            if let Values::Minutes(options) | Values::Percent(options) = setting.values {
                 for option in options {
                     assert!(
                         setting.allowed.contains(&option.to_string()),
