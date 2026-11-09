@@ -264,6 +264,7 @@ private extension String {
 enum WorkspaceListOrder {
     nonisolated static let defaultsKey = "unpeel.native.workspaceOrder"
 
+    // Fork-only (#57)
     private nonisolated static let localPrefix = "local:"
 
     nonisolated static func localKey(home: String) -> String {

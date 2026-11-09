@@ -9,10 +9,10 @@ import XCTest
 /// takes the path a swipe takes: the neighbor's pooled page first, then the
 /// scope switch, then the live page.
 ///
-/// A local-site globe's pixels against the live page aren't covered: only the
-/// current instance's own Local scope wears one, and landing there needs a real
-/// Host, which a store test must not run. These tests stop at the page's input
-/// and at the globe being painted; the swipe recordings on #57 cover the rest.
+/// A local-site globe's whole page isn't compared: only the current instance's
+/// own Local scope wears one, and landing there needs a real Host, which a store
+/// test must not run. A globed header is, from one store already in Local; the
+/// swipe recordings on #57 cover the landing.
 @MainActor
 final class SidebarRowPixelParityTests: XCTestCase {
     /// The live page with its whole interaction layer, at rest: what the user
@@ -145,7 +145,7 @@ final class SidebarRowPixelParityTests: XCTestCase {
         let swipe = try WorkspaceSwipe(neighborKind: Self.currentInstance)
         defer { swipe.finish() }
         swipe.scopeAway()
-        swipe.store.noteLocalSiteForTesting(url: Self.site, sessionID: "alpha-plain", projectID: "alpha", isLive: true)
+        swipe.store.noteLocalSiteForTesting(url: Self.site, sessionID: "alpha-plain", projectID: "alpha", probePassed: true)
         SidebarListContentBuilder.invalidate()
 
         let content = try XCTUnwrap(SidebarListContentBuilder.content(for: swipe.neighbor, store: swipe.store))
@@ -153,12 +153,49 @@ final class SidebarRowPixelParityTests: XCTestCase {
         XCTAssertEqual(content.inputs.localSites, ["alpha": [Self.site]])
     }
 
+    /// Landing on Local takes a real Host, but a store already there can paint a
+    /// project's header both ways.
+    func testAGlobedHeaderPaintsTheSameFromBothPagesInputs() throws {
+        let store = UnpeelStore.sidebarFixture(
+            snapshot: WorkspaceSwipe.workspaceTree,
+            expandedProjectIDs: Set(WorkspaceSwipe.expanded)
+        )
+        let page = WorkspaceListRowModel(
+            id: WorkspaceListOrder.localKey(home: WorkspaceSwipe.home), name: "Parity", detail: "", icon: "", badge: nil,
+            home: WorkspaceSwipe.home, tint: .none,
+            kind: Self.currentInstance
+        )
+        store.workspacePool.start(targetsProvider: { [] }, excludedKeys: { [page.id] }, foregroundKey: { page.id })
+        defer {
+            store.workspacePool.stop()
+            SidebarListContentBuilder.invalidate()
+        }
+        store.workspacePool.noteExternalSnapshot(WorkspaceSwipe.workspaceTree, forKey: page.id, name: page.name)
+        // A verdict stays fresh for 5 s, so the live row below never probes.
+        store.noteLocalSiteForTesting(url: Self.site, sessionID: "alpha-plain", projectID: "alpha", probePassed: true)
+        SidebarListContentBuilder.invalidate()
+
+        let content = try XCTUnwrap(SidebarListContentBuilder.content(for: page, store: store))
+        let pooledRow = try XCTUnwrap(content.rows.first { $0.id == "folder:alpha" })
+        let liveRow = try XCTUnwrap(store.sidebarTreeRows.first { $0.id == "folder:alpha" })
+        let live = try Pixels.settled(of: Self.strip(Self.restingRow(
+            liveRow,
+            list: SidebarLiveTreeList(store: store, dragState: SidebarDragState()),
+            inputs: SidebarLiveRowInputs(store: store),
+            lit: content.inputs.highlightedFolderIDs
+        )))
+        let pooled = try Pixels.settled(of: Self.strip(SidebarPooledTreeRow(row: pooledRow, inputs: content.inputs)))
+
+        XCTAssertEqual(content.inputs.localSites, ["alpha": [Self.site]])
+        Pixels.assertEqual(pooled, live, "a globed header")
+    }
+
     /// A site that failed its probe stays hidden, as on the live page.
     func testAGlobeNeedsASiteThatPassedItsProbe() throws {
         let swipe = try WorkspaceSwipe(neighborKind: Self.currentInstance)
         defer { swipe.finish() }
         swipe.scopeAway()
-        swipe.store.noteLocalSiteForTesting(url: Self.site, sessionID: "alpha-plain", projectID: "alpha", isLive: false)
+        swipe.store.noteLocalSiteForTesting(url: Self.site, sessionID: "alpha-plain", projectID: "alpha", probePassed: false)
         SidebarListContentBuilder.invalidate()
 
         let content = try XCTUnwrap(SidebarListContentBuilder.content(for: swipe.neighbor, store: swipe.store))
@@ -170,7 +207,7 @@ final class SidebarRowPixelParityTests: XCTestCase {
     func testAnotherWorkspacesPageHasNoGlobe() throws {
         let swipe = try WorkspaceSwipe()
         defer { swipe.finish() }
-        swipe.store.noteLocalSiteForTesting(url: Self.site, sessionID: "alpha-plain", projectID: "alpha", isLive: true)
+        swipe.store.noteLocalSiteForTesting(url: Self.site, sessionID: "alpha-plain", projectID: "alpha", probePassed: true)
         SidebarListContentBuilder.invalidate()
 
         let content = try XCTUnwrap(SidebarListContentBuilder.content(for: swipe.neighbor, store: swipe.store))

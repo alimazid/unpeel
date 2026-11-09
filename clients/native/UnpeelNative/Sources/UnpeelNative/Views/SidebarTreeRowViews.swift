@@ -160,7 +160,7 @@ struct SidebarPooledRowInputs: Equatable {
     /// Projects whose list is date-sorted: their rows show an age.
     let dateSortedProjectIDs: Set<String>
     let folderColors: [String: ProjectFolderColor]
-    // Fork-only (#57)
+    /// Fork-only (#57)
     let activeBranch: SidebarActiveBranch?
     /// Fork-only (#57): the local-site URLs behind each top-level project's
     /// globe. Only the current instance's own page has any.

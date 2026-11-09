@@ -2098,9 +2098,9 @@ final class UnpeelStore: ObservableObject {
         localHostClientStarted = true
     }
 
-    /// A local site this Mac has already probed, without a Host or a probe:
-    /// a test sets a Session in `projectID` serving `url`, with its verdict.
-    func noteLocalSiteForTesting(url: String, sessionID: String, projectID: String, isLive: Bool) {
+    /// Fork-only (#57): a local site this Mac has already probed, without a Host
+    /// or a probe: a Session in `projectID` serving `url`, with its verdict.
+    func noteLocalSiteForTesting(url: String, sessionID: String, projectID: String, probePassed: Bool) {
         projectsByID[projectID] = Project(
             id: projectID, name: projectID, path: "/fixture/\(projectID)", parentProjectID: nil, sortOrder: 0,
             isFolder: nil, worktreeBranch: nil, workspacesEnabled: nil, mcpBlocked: nil
@@ -2110,7 +2110,7 @@ final class UnpeelStore: ObservableObject {
             createdAtUnixMs: 1, status: .running, activity: .idle, unread: false, pinned: false
         ))
         detectedLocalURLs[sessionID] = [url]
-        localURLVerdicts[url] = (isLive, Date())
+        localURLVerdicts[url] = (probePassed, Date())
     }
 
     /// Pull `name` from `app-state.json` into the native project records for
@@ -14649,7 +14649,7 @@ final class UnpeelStore: ObservableObject {
         }
         guard titlebarBranchRequestsInFlight.insert(path).inserted else { return }
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
-            let branch = WorktreeGit.currentBranch(repoPath: path)
+            let branch = WorktreeGit.checkedOutBranch(repoPath: path)
             DispatchQueue.main.async {
                 guard let self else { return }
                 self.titlebarBranchRequestsInFlight.remove(path)
