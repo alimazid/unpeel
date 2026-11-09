@@ -398,6 +398,79 @@ final class WorkspacePoolTests: XCTestCase {
         XCTAssertEqual(pool.snapshot(forKey: "a")?.sessions.map(\.id), ["s1", "s2", "s3"])
     }
 
+    /// Fork-only (#50): a first folder move, on a list with no ranks yet.
+    func testAHeldFolderMoveKeepsThePooledPageUntilTheHostRanksIt() {
+        makePool()
+        let initial = Self.makeFolderOrderSnapshot(order: nil, capturedAtUnixMs: 1_000)
+        pool.noteExternalSnapshot(initial, forKey: "a", name: "Workspace a")
+        func poolOrder() -> [String]? {
+            pool.snapshot(forKey: "a")?.projects.first { $0.id == "p1" }?.sessionOrder
+        }
+
+        let dropped = ["g2", "g1", "s1", "s2"]
+        pool.holdSessionOrder(forKey: "a", projectID: "p1", orderedIDs: dropped)
+        XCTAssertEqual(poolOrder(), dropped)
+
+        // The Sessions' own order never changed, so it can't confirm this.
+        pool.noteExternalSnapshot(
+            initial.withCapturedAt(2_000), forKey: "a", name: "Workspace a"
+        )
+        XCTAssertEqual(poolOrder(), dropped, "a stale bootstrap must not snap the folder back")
+
+        pool.noteExternalSnapshot(
+            Self.makeFolderOrderSnapshot(order: dropped, capturedAtUnixMs: 3_000),
+            forKey: "a",
+            name: "Workspace a"
+        )
+        XCTAssertEqual(poolOrder(), dropped)
+
+        // The hold let go, so a later Host order is authoritative again.
+        pool.noteExternalSnapshot(
+            initial.withCapturedAt(4_000), forKey: "a", name: "Workspace a"
+        )
+        XCTAssertNil(poolOrder())
+    }
+
+    func testASessionOnlyHoldKeepsAMixedListsFolderSlots() {
+        let snapshot = Self.makeFolderOrderSnapshot(
+            order: ["g1", "s1", "g2", "s2"], capturedAtUnixMs: 1_000
+        )
+
+        let held = snapshot.applyingSessionOrder(projectID: "p1", orderedIDs: ["s2", "s1"])
+
+        XCTAssertEqual(
+            held.projects.first { $0.id == "p1" }?.sessionOrder,
+            ["g1", "s2", "g2", "s1"]
+        )
+    }
+
+    private static func makeFolderOrderSnapshot(
+        order: [String]?,
+        capturedAtUnixMs: Int64
+    ) -> RemoteBootstrapSnapshot {
+        let folders = ["g1", "g2"].map { id in
+            RemoteProjectSummary(
+                id: id,
+                name: id,
+                path: "/tmp/p1",
+                parentProjectID: "p1",
+                isGroup: true
+            )
+        }
+        return RemoteBootstrapSnapshot(
+            hostProtocol: RemoteHostProtocolDescriptor(capabilities: ["host.bootstrap"]),
+            macID: "host",
+            macName: "Host",
+            folders: [],
+            projects: [
+                RemoteProjectSummary(id: "p1", name: "p1", path: "/tmp/p1", sessionOrder: order),
+            ] + folders,
+            presets: [],
+            sessions: ["s1", "s2"].map { makeSession(id: $0, projectID: "p1", activity: .idle) },
+            capturedAtUnixMs: capturedAtUnixMs
+        )
+    }
+
     private func assertHeldOrganizationOrder(
         file: StaticString = #filePath,
         line: UInt = #line

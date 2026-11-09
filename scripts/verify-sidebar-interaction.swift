@@ -27,11 +27,13 @@ if command == "locked" {
 }
 
 /// What `--only` takes. A name missing here is refused, so a new scenario adds
-/// its name; the scrolled ones and long-list-drop run only when named.
+/// its name; the scrolled ones, long-list-drop, session-above-folder and
+/// folder-persisted run only when named.
 let knownScenarios: Set<String> = [
     "toggle-project", "toggle", "group-reorder", "list-reorder", "group-drop", "out-and-back",
     "folder-reorder", "project-reorder",
     "scrolled-list-reorder", "scrolled-group-drop", "long-list-drop", "scrolled-back-reorder",
+    "session-above-folder", "folder-persisted",
 ]
 let only = option("--only").map { Set($0.split(separator: ",").map(String.init)) }
 if let only {
@@ -400,6 +402,23 @@ func hostOrder(of projectID: String) -> [String] {
     return (orders[projectID] ?? []).compactMap { labels[$0] }
 }
 
+/// The order the Host persisted for one list as it is on disk, folder ids and all.
+func hostRawOrder(of projectID: String) -> [String] {
+    (homeJSON("session-order.json") as? [String: [String]])?[projectID] ?? []
+}
+
+func hostProjectID(named name: String) -> String? {
+    guard let state = homeJSON("app-state.json") as? [String: Any],
+          let projects = state["projects"] as? [[String: Any]] else { return nil }
+    return projects.first { ($0["name"] as? String) == name }?["id"] as? String
+}
+
+/// Whether `first` comes before `second`; nil unless the list has both.
+func isAbove(_ first: String, _ second: String, in order: [String]) -> Bool? {
+    guard let one = order.firstIndex(of: first), let two = order.firstIndex(of: second) else { return nil }
+    return one < two
+}
+
 /// The project order the Host persisted, as project names. Empty until a first
 /// project reorder writes it.
 func hostProjectOrder() -> [String] {
@@ -487,6 +506,8 @@ func runToggles(_ group: String, children: [String], count: Int) {
 }
 
 /// One drag whose result is `expected()`. A drag the user interrupted is retried.
+/// `reverted`, when given, is watched for a moment after it lands: rows that
+/// land and then snap back read as landed to `expected` alone.
 func runDrag(
     _ scenario: Scenario,
     attempt: Int,
@@ -497,6 +518,7 @@ func runDrag(
     aim: (() -> CGPoint?)? = nil,
     aimWait: Double = 0,
     expected: @escaping () -> Bool,
+    reverted: (() -> Bool)? = nil,
     actual: () -> String
 ) {
     for _ in 0 ..< 5 {
@@ -521,7 +543,14 @@ func runDrag(
                 nudge()
                 return expected()
             }) {
-                scenario.pass()
+                if let reverted, waitUntil(seconds: 2, {
+                    nudge()
+                    return reverted()
+                }) {
+                    scenario.fail("drag \(attempt): \(describe): landed, then reverted: \(actual())")
+                } else {
+                    scenario.pass()
+                }
             } else {
                 scenario.fail("drag \(attempt): \(describe): landed wrong: \(actual())")
             }
@@ -845,19 +874,179 @@ func runFolderStaysPut(_ name: String, count: Int) {
     log("\(name): drag Beta above Alpha x\(count): it stays put")
     for attempt in 1 ... count {
         let rows = readRows()
-        guard let beta = rows.first(where: { $0.label == "Beta" }),
-              let alpha = rows.first(where: { $0.label == "Alpha" }) else {
+        guard let moved = rows.first(where: { $0.label == "Beta" }),
+              let target = rows.first(where: { $0.label == "Alpha" }) else {
             scenario.fail("drag \(attempt): the rows are not on screen: \(layout(rows))")
             continue
         }
         let order = labels(rows)
         runDrag(
-            scenario, attempt: attempt, from: press(beta.frame),
-            path: [CGPoint(x: alpha.frame.minX + 6, y: alpha.frame.minY + 2)],
-            describe: "Beta above Alpha",
+            scenario, attempt: attempt, from: press(moved.frame),
+            path: [CGPoint(x: target.frame.minX + 6, y: target.frame.minY + 2)],
+            describe: "\(moved.label) above \(target.label)",
             expected: { labels(readRows()) == order },
             actual: { layout(readRows()) }
         )
+    }
+}
+
+/// One drag of a row onto another's place, where the Host's order and the rows
+/// on screen both have to show `movedID` on the wanted side of `targetID`.
+func dragIntoPlace(
+    _ scenario: Scenario,
+    attempt: Int,
+    list: String,
+    moved: Row,
+    movedID: String,
+    target: Row,
+    targetID: String,
+    aimY: CGFloat
+) {
+    let goAbove = moved.frame.midY > target.frame.midY
+    runDrag(
+        scenario, attempt: attempt, from: press(moved.frame),
+        path: [CGPoint(x: moved.frame.minX + 6, y: aimY)],
+        describe: "\(summary([moved.label])) \(goAbove ? "above" : "below") \(summary([target.label]))",
+        expected: {
+            isAbove(moved.label, target.label, in: labels(readRows())) == goAbove
+                && isAbove(movedID, targetID, in: hostRawOrder(of: list)) == goAbove
+        },
+        reverted: { isAbove(moved.label, target.label, in: labels(readRows())) == !goAbove },
+        actual: { "the Host has \(hostRawOrder(of: list)); on screen \(layout(readRows()))" }
+    )
+}
+
+/// Collapsed folders swap places. Every drag changes the order, so none can pass
+/// by leaving things as they were, and the run ends with Beta above Alpha, which
+/// isn't the default order, so a relaunch has something to lose.
+func runFolderReorder(count: Int) {
+    let scenario = Scenario("folder-collapsed")
+    scenarios.append(scenario)
+    log("folder-collapsed: swap Beta and Alpha x\(count), ending with Beta above")
+    guard let big = hostProjectID(named: "Big") else {
+        scenario.fail("the Host has no project named Big")
+        return
+    }
+    let ids = ["Alpha": "g-alpha", "Beta": "g-beta"]
+    func swapOnce(attempt: Int) {
+        let rows = readRows()
+        guard let alpha = rows.first(where: { $0.label == "Alpha" }),
+              let beta = rows.first(where: { $0.label == "Beta" }) else {
+            scenario.fail("drag \(attempt): the rows are not on screen: \(layout(rows))")
+            return
+        }
+        let (moved, target) = beta.frame.midY > alpha.frame.midY ? (beta, alpha) : (alpha, beta)
+        dragIntoPlace(
+            scenario, attempt: attempt, list: big,
+            moved: moved, movedID: ids[moved.label] ?? "",
+            target: target, targetID: ids[target.label] ?? "",
+            aimY: target.frame.minY + 2
+        )
+    }
+    for attempt in 1 ... count { swapOnce(attempt: attempt) }
+    if isAbove("Beta", "Alpha", in: labels(readRows())) != true { swapOnce(attempt: count + 1) }
+}
+
+/// A folder is a slot like any other in the list: one moves past the Session
+/// below it, and back.
+func runFolderPastSession(count: Int) {
+    let scenario = Scenario("folder-past-session")
+    scenarios.append(scenario)
+    log("folder-past-session: Alpha past the Session below it, and back, x\(count)")
+    let rows = readRows()
+    guard let big = hostProjectID(named: "Big"),
+          let index = rows.firstIndex(where: { $0.label == "Alpha" }), index + 1 < rows.count,
+          let session = hostSessions().first(where: { $0.label == rows[index + 1].label }) else {
+        scenario.fail("no Session below Alpha: \(layout(rows))")
+        return
+    }
+    for attempt in 1 ... count {
+        let now = readRows()
+        guard let alpha = now.first(where: { $0.label == "Alpha" }),
+              let target = now.first(where: { $0.label == session.label }) else {
+            scenario.fail("drag \(attempt): the rows are not on screen: \(layout(now))")
+            continue
+        }
+        dragIntoPlace(
+            scenario, attempt: attempt, list: big,
+            moved: alpha, movedID: "g-alpha",
+            target: target, targetID: session.id,
+            aimY: target.frame.midY
+        )
+    }
+}
+
+/// A Session dropped above a folder stays above it, on a list that ranked no
+/// folder before the drop. The bands at a folder's edges place a Session beside
+/// the folder, not in it.
+func runSessionAboveFolder(count: Int) {
+    let scenario = Scenario("session-above-folder")
+    scenarios.append(scenario)
+    log("session-above-folder: the Session below Beta goes above it, and back, x\(count)")
+    let rows = readRows()
+    guard let big = hostProjectID(named: "Big"),
+          let index = rows.firstIndex(where: { $0.label == "Beta" }), index + 1 < rows.count,
+          let session = hostSessions().first(where: { $0.label == rows[index + 1].label }) else {
+        scenario.fail("no Session below Beta: \(layout(rows))")
+        return
+    }
+    guard !hostRawOrder(of: big).contains("g-beta") else {
+        scenario.fail("the list already ranks a folder, so this proves nothing: \(hostRawOrder(of: big))")
+        return
+    }
+    for attempt in 1 ... count {
+        let now = readRows()
+        guard let beta = now.first(where: { $0.label == "Beta" }),
+              let moved = now.first(where: { $0.label == session.label }) else {
+            scenario.fail("drag \(attempt): the rows are not on screen: \(layout(now))")
+            continue
+        }
+        dragIntoPlace(
+            scenario, attempt: attempt, list: big,
+            moved: moved, movedID: session.id,
+            target: beta, targetID: "g-beta",
+            aimY: moved.frame.midY > beta.frame.midY ? beta.frame.minY + 2 : beta.frame.maxY - 2
+        )
+    }
+}
+
+/// Session-only drags leave a list's folders unranked: a list that ranks one
+/// renders new Sessions above the folders.
+func checkFoldersUnranked() {
+    let scenario = Scenario("folders-unranked")
+    scenarios.append(scenario)
+    guard let big = hostProjectID(named: "Big") else {
+        scenario.fail("the Host has no project named Big")
+        return
+    }
+    let order = hostRawOrder(of: big)
+    if order.contains("g-alpha") || order.contains("g-beta") {
+        scenario.fail("Session drags ranked a folder: \(order)")
+    } else {
+        scenario.pass()
+    }
+}
+
+/// After a relaunch, Beta is still above Alpha. The app's first rows come from
+/// its own disk scan, which reads the order file directly, so only rows read
+/// after the Host's first bootstrap can show a rank that didn't survive it.
+func runFolderPersisted() {
+    let scenario = Scenario("folder-persisted")
+    scenarios.append(scenario)
+    log("folder-persisted: Beta is still above Alpha after a relaunch")
+    guard let big = hostProjectID(named: "Big"),
+          isAbove("g-beta", "g-alpha", in: hostRawOrder(of: big)) == true else {
+        scenario.fail("the Host doesn't have Beta above Alpha, so this proves nothing")
+        return
+    }
+    Thread.sleep(forTimeInterval: 8)
+    if waitUntil(seconds: 2, {
+        nudge()
+        return isAbove("Beta", "Alpha", in: labels(readRows())) != true
+    }) {
+        scenario.fail("the Host has \(hostRawOrder(of: big)); on screen \(layout(readRows()))")
+    } else {
+        scenario.pass()
     }
 }
 
@@ -950,17 +1139,29 @@ func setExpanded(_ group: String, children: [String], _ expanded: Bool) {
     Thread.sleep(forTimeInterval: 0.8)
 }
 
+if only == nil || only?.contains("list-reorder") == true || only?.contains("out-and-back") == true {
+    checkFoldersUnranked()
+}
 if wanted("folder-reorder") {
-    // A folder lifts and shows its gap, but a Host-served list commits only its
-    // Sessions' order (`commitSessionReorder`), so the drop snaps back, collapsed
-    // or expanded. This asserts today's behaviour; a fix for it flips this check.
+    // An expanded folder gets no reorder map (`SidebarSessionDrag`): its block is
+    // taller than the one-slot gap, so it opens no gap and its drop does nothing.
+    // It still lifts and snaps back; #53 tracks making it move. A fix flips this.
     runFolderStaysPut("folder-expanded", count: dragCount)
     setExpanded("Alpha", children: alphaChildren, false)
     setExpanded("Beta", children: betaChildren, false)
-    runFolderStaysPut("folder-collapsed", count: dragCount)
+    runFolderReorder(count: dragCount)
+    runFolderPastSession(count: min(dragCount, 6))
     setExpanded("Alpha", children: alphaChildren, true)
     setExpanded("Beta", children: betaChildren, true)
 }
+if only?.contains("session-above-folder") == true {
+    setExpanded("Alpha", children: alphaChildren, false)
+    setExpanded("Beta", children: betaChildren, false)
+    runSessionAboveFolder(count: min(dragCount, 6))
+    setExpanded("Alpha", children: alphaChildren, true)
+    setExpanded("Beta", children: betaChildren, true)
+}
+if only?.contains("folder-persisted") == true { runFolderPersisted() }
 if wanted("project-reorder") {
     setExpanded("Small", children: smallChildren, true)
     runProjectReorder(count: dragCount)
