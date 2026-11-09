@@ -3202,9 +3202,6 @@ fn compact_tail_lines(text: &str, max_lines: usize) -> Vec<String> {
     lines[start..].to_vec()
 }
 
-/// Render a viewport snapshot to plain screen text (right-trimmed rows,
-/// newline-joined) for wait_for_text; the reads use `screen_read`, which
-/// also marks suggested input.
 /// First line of `screen` containing `needle` under the given case rule.
 /// `needle` must already be lowercased when `case_sensitive` is false.
 fn find_matching_line<'a>(screen: &'a str, needle: &str, case_sensitive: bool) -> Option<&'a str> {

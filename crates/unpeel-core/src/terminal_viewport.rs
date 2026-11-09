@@ -144,8 +144,10 @@ impl TerminalViewportSnapshot {
             .get(suggested.byte_start as usize..suggested.byte_end as usize)
     }
 
-    /// The rows as newline-terminated lines, right-trimmed: what the menu
-    /// detector and `wait_for_text` read.
+    /// The rows as newline-terminated lines, right-trimmed: for the live
+    /// window the text `TerminalViewportState::current_screen_text` renders,
+    /// without a second render. `wait_for_text` and the draft guard's menu
+    /// check read it.
     pub fn screen_text(&self) -> String {
         self.viewport_rows
             .iter()
@@ -183,10 +185,16 @@ impl TerminalViewportSnapshot {
         Some(self.viewport_rows.get(above)?.text.as_str())
     }
 
+    /// The cursor's row counted from the top of the scrollback, which stays
+    /// put while the window scrolls.
+    pub fn cursor_absolute_row(&self) -> u32 {
+        self.scrollback_rows + u32::from(self.cursor_row)
+    }
+
     /// The cursor's row as an index into `viewport_rows`; `None` when the
     /// cursor is outside them.
     fn cursor_row_index(&self) -> Option<usize> {
-        (self.scrollback_rows + u32::from(self.cursor_row))
+        self.cursor_absolute_row()
             .checked_sub(self.viewport_start_row)
             .map(|row| row as usize)
     }

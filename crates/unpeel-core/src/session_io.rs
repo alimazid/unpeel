@@ -1508,7 +1508,7 @@ fn input_screen(viewport: &Mutex<TerminalViewportState>) -> crate::typed_input::
             .to_owned(),
         cursor_at: crate::typed_input::CursorAt {
             alternate: snapshot.alternate_screen,
-            row: u64::from(snapshot.scrollback_rows) + u64::from(snapshot.cursor_row),
+            row: u64::from(snapshot.cursor_absolute_row()),
         },
         last_char_before_cursor: snapshot
             .last_char_before_cursor
