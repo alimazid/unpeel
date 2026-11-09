@@ -1482,34 +1482,20 @@ pub(crate) fn handle_client(stream: UnixStream, shared: &SessionShared) -> Resul
     dispatch_client_command(stream, command, shared)
 }
 
-/// What a `Write` did. Fork-only (#38, #61): `TypedSince` and `Draft` refuse
-/// it.
+/// What a `Write` did. Fork-only (#38, #61): `Refused` because of the user's
+/// typing.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Applied {
     Written,
     /// A retry of a `write_id` already applied.
     Duplicate,
-    TypedSince,
-    Draft,
-}
-
-impl Applied {
-    /// The refused write's wire code.
-    fn refusal(self) -> Option<&'static str> {
-        match self {
-            Self::TypedSince => Some(crate::session_host::TYPED_SINCE_ERROR),
-            Self::Draft => Some(crate::session_host::DRAFT_ERROR),
-            Self::Written | Self::Duplicate => None,
-        }
-    }
+    Refused(crate::typed_input::Refusal),
 }
 
 /// Fork-only (#61): what the draft guard reads off the screen. The lock order
 /// is the write paths' own, runtime then viewport.
 fn input_screen(viewport: &Mutex<TerminalViewportState>) -> crate::typed_input::InputScreen {
-    let mut viewport = viewport
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let mut viewport = viewport.lock().unwrap();
     crate::typed_input::InputScreen {
         menu: viewport_has_menu_prompt(&viewport.current_screen_text()),
         line: viewport
@@ -1589,13 +1575,13 @@ pub(crate) fn dispatch_client_command(
                         {
                             // Fork-only (#38): the user typed since the
                             // Inbox looked at the line.
-                            Applied::TypedSince
+                            Applied::Refused(crate::typed_input::Refusal::Typing)
                         } else if unless_draft
                             && guard.typing.has_draft(|| input_screen(&shared.viewport))
                         {
                             // Fork-only (#61): an agent's send would land on
                             // what the user left unsent.
-                            Applied::Draft
+                            Applied::Refused(crate::typed_input::Refusal::Draft)
                         } else {
                             // Fork-only (#61): before the bytes go in, so the
                             // draft guard reads the line without this key.
@@ -1645,10 +1631,13 @@ pub(crate) fn dispatch_client_command(
                             &shared.title_done,
                         );
                     }
-                    let refusal = applied.refusal();
+                    let refused = match applied {
+                        Applied::Refused(refusal) => Some(refusal.wire_code().to_owned()),
+                        Applied::Written | Applied::Duplicate => None,
+                    };
                     SessionHostResponse {
-                        ok: refusal.is_none(),
-                        error: refusal.map(str::to_owned),
+                        ok: refused.is_none(),
+                        error: refused,
                         viewport: None,
                     }
                 }

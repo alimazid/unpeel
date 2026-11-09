@@ -12,9 +12,9 @@
 
 use crate::screen_read;
 use crate::session_host::{self, HostedSessionManifest, HostedSessionState};
+use crate::session_input::sanitize_paste_text;
 #[cfg(test)]
 use crate::session_input::{encode_bracketed_paste, looks_like_it_contains_a_path};
-use crate::session_input::{sanitize_paste_text, GuardedPaste};
 use crate::state::{current_timestamp_ms, McpGrant, McpRole, McpScope};
 #[cfg(test)]
 use crate::transcripts::transcript_provider_for_command;
@@ -3377,21 +3377,9 @@ fn tool_send_text(args: &Value) -> Result<String, String> {
         Some(header) => format!("{header}\n{sanitized}"),
         None => sanitized.clone(),
     };
-    // Fork-only (#61): refused, with nothing written, while the user is typing
-    // there or has a draft on the line.
-    match crate::session_input::paste_unless_user_is_typing(session_id, &delivered, submit)? {
-        GuardedPaste::Submitted => {}
-        GuardedPaste::NotPasted(refusal) => return Err(refusal.explain(session_id)),
-        GuardedPaste::NotSubmitted => {
-            return Err(format!(
-                "Not submitted (typing): the user started typing in session {session_id} while \
-the text was being pasted, so it waits on their line with their keys and Enter was not \
-pressed. Don't send it again."
-            ))
-        }
-    }
+    let unguarded = crate::agent_send::deliver_text(session_id, &delivered, submit)?; // Fork-only (#61)
     Ok(format!(
-        "Sent {} characters to session {}{}{}",
+        "Sent {} characters to session {}{}{}{unguarded}",
         sanitized.chars().count(),
         session_id,
         if submit { " and pressed Enter" } else { "" },
@@ -3433,28 +3421,20 @@ fn tool_send_keys(args: &Value) -> Result<String, String> {
     }
 
     require_session(session_id, WriteAccess::Write)?;
-    // Fork-only (#61): after the gate, which can block on the user's approval.
-    let since = crate::session_input::typing_window_start(crate::state::current_timestamp_ms());
+    let guarded = crate::agent_send::Keys::start(session_id, sequences.len()); // Fork-only (#61)
     for (index, sequence) in sequences.iter().enumerate() {
         if index > 0 && delay_ms > 0 {
             thread::sleep(Duration::from_millis(delay_ms));
             // A cancelled caller stops typing between keys, never mid-sequence.
             crate::mcp_cancel::bail_if_cancelled()?;
         }
-        if let Some(refusal) =
-            crate::session_input::write_key_unless_user_is_typing(session_id, sequence, since)?
-        {
-            let total = sequences.len();
-            return Err(format!(
-                "Sent {index} of {total} keys. {}",
-                refusal.explain(session_id)
-            ));
-        }
+        guarded.write(index, sequence)?;
     }
     Ok(format!(
-        "Sent {} keys to session {}",
+        "Sent {} keys to session {}{}",
         sequences.len(),
-        session_id
+        session_id,
+        guarded.note()
     ))
 }
 
@@ -4125,6 +4105,9 @@ fn load_manifest(session_id: &str) -> Option<HostedSessionManifest> {
     serde_json::from_slice(&raw).ok()
 }
 
+/// Fork-only (#61): `send_text` delivers through `agent_send::deliver_text`
+/// instead, under the draft guard.
+///
 /// Single delivery choke point for typing an inter-session message into a
 /// target session's terminal (the proven bracketed-paste + settle + double
 /// Enter recipe). Terminal-to-terminal is today's only message channel; when
@@ -4527,6 +4510,7 @@ mod tests {
             terminal_modes: None,
             screen_changed_at: None,
             last_input_at: None,
+            draft_guard: false,
             detected_local_urls: Vec::new(),
             heartbeat_at: 1,
             updated_at: 1,

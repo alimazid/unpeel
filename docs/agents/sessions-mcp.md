@@ -106,7 +106,9 @@ Advertised ownership (old mixed `sessions` spellings remain decode-only):
     on the line. `send_keys` stops at the refused key ("Sent 1 of 3 keys").
     Suggested input is no draft, and a select menu takes keys over one. The
     call refuses rather than waits: send again once the user is done, or ask
-    them. PTY proof: `send_text_draft_guard`.
+    them. A target whose PTY core predates the guard (no `draft_guard` in its
+    manifest) is written unchecked, and the result ends `(unguarded: …)`.
+    PTY proof: `send_text_draft_guard`.
 - `agents`: `list`, `get`, `read_transcript`, `wait`. Every action targets one
   explicit recognized occurrence; the unreleased group-wide wait and summary
   actions were removed. `list` returns an occurrence-bound `agent_ref`

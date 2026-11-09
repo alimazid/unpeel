@@ -39,6 +39,32 @@ pub const TYPED_SINCE_ERROR: &str = "typed_since";
 /// A wire code, like [`TYPED_SINCE_ERROR`]: never reword it.
 pub const DRAFT_ERROR: &str = "draft";
 
+/// Why the PTY core refused a guarded `Write` (#38, #61).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Refusal {
+    /// The user typed at or after its `unless_typed_since`.
+    Typing,
+    /// Its `unless_draft`: the input line holds what the user typed and has
+    /// not sent.
+    Draft,
+}
+
+impl Refusal {
+    pub fn wire_code(self) -> &'static str {
+        match self {
+            Self::Typing => TYPED_SINCE_ERROR,
+            Self::Draft => DRAFT_ERROR,
+        }
+    }
+
+    /// The refusal a session host's error names, if it names one.
+    pub fn from_wire(error: &str) -> Option<Self> {
+        [Self::Typing, Self::Draft]
+            .into_iter()
+            .find(|refusal| refusal.wire_code() == error)
+    }
+}
+
 /// What the draft guard reads off the screen.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct InputScreen {
@@ -284,6 +310,10 @@ mod tests {
         ));
         assert_eq!(TYPED_SINCE_ERROR, "typed_since", "a wire code");
         assert_eq!(DRAFT_ERROR, "draft", "a wire code");
+        for refusal in [Refusal::Typing, Refusal::Draft] {
+            assert_eq!(Refusal::from_wire(refusal.wire_code()), Some(refusal));
+        }
+        assert_eq!(Refusal::from_wire("Write error: EIO"), None);
         let user = SessionHostCommand::Write {
             data: "x".into(),
             write_id: None,

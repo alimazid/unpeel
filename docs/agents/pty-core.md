@@ -156,7 +156,9 @@ runtime observation. A select menu on screen neither starts a draft nor
 refuses a write. A `Write` with `unless_draft` is refused with the error
 `draft` while the line differs from the kept one; finding it equal ends the
 draft. The lock order is runtime, then viewport, as on the other write
-paths.
+paths. The core marks the manifest `draft_guard: true` at launch, so an
+agent's send can say when its target's core predates the guard
+(`crate::agent_send`).
 
 Session end (PTY EOF/error, Kill followed by a final drain, or a failed
 journal write) detaches the fds on the reactor and runs the old epilogue on

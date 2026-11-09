@@ -5,13 +5,17 @@ ask the target's PTY core to refuse the write while the user typed in the
 last 3 s (`typing`) or their unsent input is on the input line (`draft`);
 nothing is written then. An empty box takes the send, a faint proposed reply
 (suggested input) is no draft, and a select menu takes keys over a draft.
-Driven through `unpeel mcp` and `unpeel send`, the dispatcher an agent's MCP
-server uses, against a session hosted by the real PTY core.
+Driven through `unpeel mcp`, `unpeel send` and `unpeel keys`, the dispatcher
+an agent's MCP server uses, against a session hosted by the real PTY core;
+the user types on the attach stream (a terminal) and the control socket's
+`Write` (the Mac app's controller writes).
 """
 
 import json
 import os
 import shlex
+import socket
+import struct
 import subprocess
 import sys
 import time
@@ -118,9 +122,22 @@ def body(case):
     def cli_send(text):
         return as_caller("send", agent, text, "--enter")
 
+    def cli_keys(*keys):
+        return as_caller("keys", agent, *keys)
+
     def typed(data):
-        # No `origin`: the user's keys, as the attach stream sends them.
+        # No `origin`: the user's keys, as the Mac app's controller writes them.
         return control(home, agent, data)
+
+    def typed_on_attach(data):
+        # The user's keys from a terminal: one attach stream input frame.
+        with socket.socket(socket.AF_UNIX) as client:
+            client.settimeout(5)
+            client.connect(home.path("app-sessions", agent, "session.sock"))
+            client.sendall(b'{"type":"stream_input"}\n')
+            client.recv(1)
+            client.sendall(struct.pack(">I", len(data)) + data)
+            time.sleep(0.3)
 
     def program(data):
         return control(home, agent, data, origin="program")
@@ -153,18 +170,28 @@ def body(case):
                           read(home.path("app-sessions", agent, "output.bin"))[-200:]):
             return
 
-        # 1. An empty box takes the send.
+        case.check("the core advertises the guard",
+                   read_json(home.path("app-sessions", agent, "manifest.json")).get("draft_guard") is True)
+
+        # 1. An empty box takes the send, from either surface.
         done = send_text("into-an-empty-box")
         case.check("a send to an empty box is delivered",
-                   done.returncode == 0 and "Sent " in done.stdout
+                   done.returncode == 0 and "Sent " in done.stdout and "unguarded" not in done.stdout
                    and until(lambda: "into-an-empty-box" in read(submitted)), said(done))
+        done = cli_send("cli-into-an-empty-box")
+        case.check("`unpeel send` to an empty box is delivered",
+                   done.returncode == 0
+                   and until(lambda: "cli-into-an-empty-box" in read(submitted)), said(done))
 
         # 2. The user is typing: refused, nothing written.
         # Whole ms, as the PTY core stamps it.
         before = int(time.time() * 1000)
-        typed("abc")
+        typed_on_attach(b"abc")
         done = cli_send("while-typing")
         case.check("`unpeel send` while the user types is refused as typing",
+                   done.returncode != 0 and "Not sent (typing)" in done.stderr, said(done))
+        done = send_text("mcp-while-typing")
+        case.check("send_text while the user types is refused as typing",
                    done.returncode != 0 and "Not sent (typing)" in done.stderr, said(done))
         case.check("nothing of it was written", "while-typing" not in read(log), read(log)[-200:])
         case.check("the typing is stamped as current",
@@ -178,19 +205,22 @@ def body(case):
         case.check("a send onto a paused draft is refused as a draft",
                    done.returncode != 0 and "Not sent (draft)" in done.stderr
                    and "read_screen" in done.stderr, said(done))
+        done = cli_send("cli-onto-a-draft")
+        case.check("`unpeel send` onto the draft is refused too",
+                   done.returncode != 0 and "Not sent (draft)" in done.stderr, said(done))
         done = send_keys("x")
         case.check("send_keys onto the draft is refused too",
                    done.returncode != 0 and "Sent 0 of 1 keys" in done.stderr
                    and "Not sent (draft)" in done.stderr, said(done))
-        case.check("neither was written",
+        case.check("none was written",
                    "onto-a-draft" not in read(log) and not read(log).endswith("x"), read(log)[-200:])
         case.check("the draft is untouched", "> abc" in screen(), screen()[-300:])
 
         # 4. A select menu over the draft takes the keys; the draft stays.
         program("\x0e")
         until(lambda: "to navigate" in screen(), timeout=5)
-        done = send_keys("down", "enter")
-        case.check("send_keys answers a menu over a draft",
+        done = cli_keys("down", "enter")
+        case.check("`unpeel keys` answers a menu over a draft",
                    done.returncode == 0 and "Sent 2 keys" in done.stdout
                    and until(lambda: "CHOSE" in read(submitted)), said(done))
         done = send_text("after-the-menu")

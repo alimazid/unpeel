@@ -53,9 +53,17 @@ says how many went in.
 
 ## Consequences
 
-The guard holds only on a PTY core of this build. A Session started on an
-older core writes as before until it is resumed. A key that a program takes
-without Enter (a one-key `y/n` prompt) reads as a draft until the line
-returns or the user presses Enter, so a send there is refused with a reason
-the caller can check with `read_screen`. The Inbox keeps ADR 0008's guard;
-`report` without a Host worker still pastes unguarded.
+The guard holds only on a PTY core of this build, which says so in the
+manifest (`draft_guard`). A Session started on an older core writes as
+before until it is resumed, and the result then ends `(unguarded: …)` so
+the caller knows to read the screen first.
+
+A false draft is possible and lasts until the line returns or the user
+presses Enter: a key that a program takes without Enter (a one-key `y/n`
+prompt), or a key typed right after Enter, before the program has redrawn
+the line, so the kept line is the old one. The refusal says to ask the user
+to press Enter when the line shows nothing of theirs. Menu-like text
+anywhere on screen reads as a menu, so a draft under it does not refuse.
+
+The Inbox keeps ADR 0008's guard; `report` without a Host worker still
+pastes unguarded.

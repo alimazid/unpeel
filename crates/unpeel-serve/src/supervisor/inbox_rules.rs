@@ -165,7 +165,7 @@ fn source_readiness(facts: &Facts) -> Readiness {
 }
 
 /// The screen must have been still this long before a paste.
-pub const QUIET_MS: u64 = unpeel_core::session_input::TYPING_QUIET_MS;
+pub const QUIET_MS: u64 = 3_000;
 /// A best guess waits longer: nothing else says the agent is done.
 pub const BEST_GUESS_QUIET_MS: u64 = 10_000;
 /// Debounce: the newest item must be this old…

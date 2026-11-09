@@ -405,6 +405,11 @@ pub struct HostedSessionManifest {
     /// Absent before anyone typed and on manifests from older hosts.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_input_at: Option<u64>,
+    /// Fork-only (#61): this session's PTY core refuses `unless_draft` writes
+    /// (`crate::agent_send`). Absent from older cores, which write them
+    /// unchecked; one that rewrites the manifest drops it.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub draft_guard: bool,
     /// Local service URLs this session's processes currently serve, in the
     /// browsable sense: printed on the session's screen with a loopback
     /// authority and an explicit port, and answering the host's HTTP probe
@@ -5851,15 +5856,17 @@ pub(crate) fn build_session_timer_jobs(inputs: SessionJobInputs) -> Vec<HostTime
                     pending_generation != 0 && (observed_expected_runtime || completion_observed);
                 let observed_runtime_for_manifest = observation.clone();
                 let next = tracker.observe(observation, returned_to_owned_shell);
-                {
-                    let mut runtime = runtime_for_observer
+                runtime_for_observer
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner())
+                    .last_runtime_observation = tracker.current.clone();
+                // Fork-only (#61): another program holds the line now.
+                if next.is_some() {
+                    runtime_for_observer
                         .lock()
-                        .unwrap_or_else(|poisoned| poisoned.into_inner());
-                    runtime.last_runtime_observation = tracker.current.clone();
-                    // Fork-only (#61): another program holds the line now.
-                    if next.is_some() {
-                        runtime.typing.forget_draft();
-                    }
+                        .unwrap_or_else(|poisoned| poisoned.into_inner())
+                        .typing
+                        .forget_draft();
                 }
                 if next.is_some() || clear_pending {
                     let updated =
@@ -6274,6 +6281,7 @@ pub(crate) fn start_host(
             terminal_modes: None,
             screen_changed_at: None,
             last_input_at: None,
+            draft_guard: true, // Fork-only (#61)
             detected_local_urls: Vec::new(),
             heartbeat_at: current_timestamp_ms(),
             updated_at: current_timestamp_ms(),
@@ -6435,6 +6443,7 @@ pub(crate) fn start_host(
             manifest.exit_code = None;
             manifest.host_build_id = host_build_id.clone();
             manifest.host_protocol_version = Some(SESSION_HOST_PROTOCOL_VERSION);
+            manifest.draft_guard = true; // Fork-only (#61)
             manifest.runtime_launch_generation = u64::from(launches_stable_runtime);
             manifest.runtime_launch_pending = launches_resume_agent_runtime;
             manifest.runtime_launched_at = initial_runtime_launched_at;
@@ -7507,6 +7516,7 @@ exit "${UNPEEL_FAKE_PROVIDER_STATUS:-0}"
             terminal_modes: None,
             screen_changed_at: None,
             last_input_at: None,
+            draft_guard: false,
             detected_local_urls: Vec::new(),
             heartbeat_at,
             updated_at,
@@ -7630,6 +7640,7 @@ exit "${UNPEEL_FAKE_PROVIDER_STATUS:-0}"
             terminal_modes: None,
             screen_changed_at: None,
             last_input_at: None,
+            draft_guard: false,
             detected_local_urls: Vec::new(),
             heartbeat_at: 1,
             updated_at: 1,

@@ -5,7 +5,9 @@
 //! Host actions such as screenshot requests. UI clients send semantic actions;
 //! they never construct terminal escape sequences themselves.
 
-use crate::session_host::{self, SessionHostCommand, WriteOrigin, DRAFT_ERROR, TYPED_SINCE_ERROR};
+use crate::session_host::{self, SessionHostCommand, WriteOrigin};
+// Fork-only (#61)
+pub use crate::typed_input::Refusal;
 use std::thread;
 use std::time::Duration;
 
@@ -35,53 +37,6 @@ pub fn encode_bracketed_paste(text: &str) -> String {
 pub fn looks_like_it_contains_a_path(text: &str) -> bool {
     text.split_whitespace()
         .any(|word| word.len() > 1 && word.contains('/'))
-}
-
-/// Fork-only (#61): keys this recent mean the user is at the keyboard. The
-/// Inbox's quiet window for typing is the same.
-pub const TYPING_QUIET_MS: u64 = 3_000;
-
-/// Fork-only (#61): where the "is typing" window starts for a send at `now`.
-/// The manifest's `last_input_at` can lag a key by up to ~2.5 s, so the send
-/// asks the PTY core, which sees the key at once, with this as its
-/// `unless_typed_since`.
-pub fn typing_window_start(now: u64) -> u64 {
-    now.saturating_sub(TYPING_QUIET_MS)
-}
-
-/// Fork-only (#61): why the PTY core refused a guarded write.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Refusal {
-    /// The user typed within the window: they are at the keyboard.
-    Typing,
-    /// The input line holds what the user typed and has not sent.
-    Draft,
-}
-
-impl Refusal {
-    fn from_core_error(error: &str) -> Option<Self> {
-        match error {
-            TYPED_SINCE_ERROR => Some(Self::Typing),
-            DRAFT_ERROR => Some(Self::Draft),
-            _ => None,
-        }
-    }
-
-    /// The word and the next step an agent's result gives its caller.
-    pub fn explain(&self, session_id: &str) -> String {
-        match self {
-            Self::Typing => format!(
-                "Not sent (typing): the user typed in session {session_id} within the last \
-{} s. Nothing was written. Send again once they have stopped.",
-                TYPING_QUIET_MS / 1_000
-            ),
-            Self::Draft => format!(
-                "Not sent (draft): session {session_id} has input the user typed and has not \
-sent. Nothing was written. Look at it with read_screen, and send again once they have sent or \
-cleared it. Ask them if it stays."
-            ),
-        }
-    }
 }
 
 /// Fork-only (#38): who a write speaks for, its socket timeout, and the
@@ -135,7 +90,7 @@ fn write_to_session(
     };
     match sent {
         Ok(()) => Ok(None),
-        Err(error) => Refusal::from_core_error(&error).map(Some).ok_or(error),
+        Err(error) => Refusal::from_wire(&error).map(Some).ok_or(error),
     }
 }
 
@@ -168,7 +123,8 @@ pub fn deliver_sanitized_text_as_user(
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum GuardedPaste {
     Submitted,
-    /// The user typed before the paste: nothing was written.
+    /// Refused before anything was written: the user typed, or (#61) left a
+    /// draft on the line.
     NotPasted(Refusal),
     /// The user typed after the paste: it waits on the line, unsubmitted.
     NotSubmitted,
@@ -191,23 +147,21 @@ pub fn paste_unless_typed(
     deliver_sanitized_text_with_timeout(session_id, sanitized, true, terms)
 }
 
-/// Fork-only (#61): an agent's `send_text`. The PTY core refuses it, with
-/// nothing written, while the user is typing or has a draft on the line. It
-/// asks the core rather than reading the screen first, so nothing can slip in
-/// between a look and the write. A host that predates a guard writes anyway.
+/// Fork-only (#61): an agent's `send_text` (`crate::agent_send`). The PTY
+/// core refuses it, with nothing written, while the user typed at or after
+/// `since` or has a draft on the line. A host that predates a guard writes
+/// anyway.
 pub fn paste_unless_user_is_typing(
     session_id: &str,
     sanitized: &str,
     submit: bool,
+    since: u64,
 ) -> Result<GuardedPaste, String> {
-    let terms = WriteTerms::guarded(typing_window_start(crate::state::current_timestamp_ms()));
-    deliver_sanitized_text_with_timeout(session_id, sanitized, submit, terms)
+    deliver_sanitized_text_with_timeout(session_id, sanitized, submit, WriteTerms::guarded(since))
 }
 
 /// Fork-only (#61): one key of an agent's `send_keys`, under the same guards.
-/// A menu takes the keys, so a draft under one does not refuse them. `since`
-/// comes from [`typing_window_start`] once per call, so the user's first key
-/// stops the rest of the sequence.
+/// A menu takes the keys, so a draft under one does not refuse them.
 pub fn write_key_unless_user_is_typing(
     session_id: &str,
     sequence: &str,
@@ -339,32 +293,6 @@ mod tests {
         let (result, written) = recipe_with_refusals_after("", 0, Refusal::Draft);
         assert_eq!(result, Ok(GuardedPaste::NotPasted(Refusal::Draft)));
         assert!(written.is_empty());
-    }
-
-    #[test]
-    fn refusals_name_a_stable_word_and_what_to_do() {
-        let typing = Refusal::Typing.explain("s1");
-        assert!(typing.starts_with("Not sent (typing):"), "{typing}");
-        assert!(typing.contains("s1") && typing.contains("Nothing was written"));
-        let draft = Refusal::Draft.explain("s1");
-        assert!(draft.starts_with("Not sent (draft):"), "{draft}");
-        assert!(draft.contains("read_screen") && draft.contains("Nothing was written"));
-    }
-
-    #[test]
-    fn a_core_error_code_maps_to_its_refusal() {
-        assert_eq!(
-            Refusal::from_core_error("typed_since"),
-            Some(Refusal::Typing)
-        );
-        assert_eq!(Refusal::from_core_error("draft"), Some(Refusal::Draft));
-        assert_eq!(Refusal::from_core_error("Write error: EIO"), None);
-    }
-
-    #[test]
-    fn the_typing_window_reaches_back_from_now() {
-        assert_eq!(typing_window_start(10_000), 7_000);
-        assert_eq!(typing_window_start(1), 0);
     }
 
     #[test]

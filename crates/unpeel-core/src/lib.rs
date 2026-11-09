@@ -12,6 +12,9 @@
 pub mod activity_log;
 #[cfg(feature = "native-host")]
 pub mod agent_readiness;
+// Fork-only (#61)
+#[cfg(feature = "native-host")]
+pub mod agent_send;
 #[cfg(feature = "native-host")]
 pub mod app_installer;
 #[cfg(feature = "native-host")]
