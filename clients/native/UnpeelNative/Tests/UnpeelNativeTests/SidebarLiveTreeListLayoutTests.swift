@@ -145,6 +145,26 @@ final class SidebarLiveTreeListLayoutTests: XCTestCase {
         XCTAssertEqual(frame.midY, panel.visibleRect.midY, accuracy: 1)
     }
 
+    /// A selection made with a request leaves the scroll to it, once. Selecting
+    /// the row again right after takes its own scroll.
+    func testReselectingARevealedRowRightAwayScrollsToItAgain() throws {
+        let panel = try HostedPanel()
+        defer { panel.close() }
+        panel.store.revealSessionInSidebar(Self.farSession)
+        panel.settle()
+        panel.scrollView.contentView.scroll(to: .zero)
+        panel.scrollView.reflectScrolledClipView(panel.scrollView.contentView)
+        panel.flush()
+        let visibleRow = try XCTUnwrap(panel.mountedSessions.first, "a row at the top")
+        panel.store.selectedSessionID = visibleRow.id
+        panel.flush()
+
+        panel.store.selectedSessionID = Self.farSession
+
+        let frame = try panel.settledFrame(of: Self.farSession)
+        XCTAssertTrue(panel.visibleRect.contains(frame), "\(frame) in \(panel.visibleRect)")
+    }
+
     /// A Host-scope switch lands at the top at once. The far selection it
     /// adopts in the same commit starts no reveal scroll underneath.
     func testAScopeSwitchLandsAtTheTopWithNoRevealScroll() throws {
@@ -264,7 +284,8 @@ final class SidebarLiveTreeListLayoutTests: XCTestCase {
     /// reachable.
     private static let farSession = "second-15"
 
-    /// How far past a row's ends a minimal scroll stops (spec #41).
+    /// How far past a row's ends a minimal scroll stops: spec #41's number, a
+    /// literal on purpose.
     private static let margin: CGFloat = 48
 
     private static func firstScrollView(in view: NSView) -> NSScrollView? {

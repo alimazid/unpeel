@@ -473,8 +473,9 @@ final class UnpeelStore: ObservableObject {
     /// collapsed project, a worktrees pane switch, or the "Show N more" cap.
     @Published private(set) var sidebarSessionRevealRequest: SidebarSessionRevealRequest?
     /// Fork-only (#46): set as soon as a request is asked for, a main-queue
-    /// turn before it publishes, and cleared when it expires. Never observed.
-    private var pendingSidebarReveal: SidebarSessionRevealRequest?
+    /// turn before it publishes. It clears when a selection takes it or the
+    /// request expires. Never observed.
+    private var sidebarSessionRevealPending: SidebarSessionRevealRequest?
     private var sidebarSessionRevealSerial = 0
 
     /// Sidebar collapsed (hidden) state. The Svelte app does not persist
@@ -6985,24 +6986,28 @@ final class UnpeelStore: ObservableObject {
             serial: sidebarSessionRevealSerial,
             centered: centered
         )
-        pendingSidebarReveal = request
+        sidebarSessionRevealPending = request // Fork-only (#46)
         DispatchQueue.main.async { [weak self] in
             guard let self, self.displaySessionsByID[sessionID] != nil else { return }
             self.sidebarSessionRevealRequest = request
         }
         DispatchQueue.main.asyncAfter(deadline: .now() + 1) { [weak self] in
             guard let self else { return }
-            if self.pendingSidebarReveal == request { self.pendingSidebarReveal = nil }
+            // Fork-only (#46)
+            if self.sidebarSessionRevealPending == request { self.sidebarSessionRevealPending = nil }
             guard self.sidebarSessionRevealRequest == request else { return }
             self.sidebarSessionRevealRequest = nil
         }
     }
 
-    /// Fork-only (#46): whether a reveal request is on its way to this row. A
-    /// selection made together with a request leaves the scroll to it: a second
-    /// scroll in flight can overrule the one the request asked for.
-    func sidebarRevealIsPending(for sessionID: String) -> Bool {
-        pendingSidebarReveal?.sessionID == sessionID
+    /// Fork-only (#46): whether a reveal request is on its way to this row, which
+    /// the caller then takes. A selection made together with a request leaves
+    /// the scroll to it: a second scroll in flight can overrule the one the
+    /// request asked for.
+    func takeSidebarSessionRevealPending(for sessionID: String) -> Bool {
+        guard sidebarSessionRevealPending?.sessionID == sessionID else { return false }
+        sidebarSessionRevealPending = nil
+        return true
     }
 
     private func prepareSidebarToRenderSession(_ session: SessionEntry) {

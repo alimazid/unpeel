@@ -951,7 +951,7 @@ struct SidebarProjectTreePanel: View {
                 SidebarSelectionScrollObserver(
                     selection: store.sessionSelection,
                     scope: store.selectedHostScope,
-                    store: store,
+                    store: store, // Fork-only (#46)
                     proxy: proxy,
                     treeTopScrollID: Self.treeTopScrollID,
                     sessionDragController: sessionDragController
@@ -1036,7 +1036,7 @@ private struct SidebarScrollCue: Equatable {
 private struct SidebarSelectionScrollObserver: View {
     @ObservedObject var selection: SessionSelectionState
     let scope: SelectedHostScope
-    /// Plain reference, never observed.
+    /// Fork-only (#46): a plain reference, never observed.
     let store: UnpeelStore
     let proxy: ScrollViewProxy
     let treeTopScrollID: String
@@ -1062,7 +1062,7 @@ private struct SidebarSelectionScrollObserver: View {
                     }
                 } else if let id = newCue.selection,
                           // Fork-only (#46): one scroll per selection.
-                          !store.sidebarRevealIsPending(for: id),
+                          !store.takeSidebarSessionRevealPending(for: id),
                           sessionDragController.sessionRowNeedsReveal(
                               id,
                               // Fork-only: sidebar sections — rows are only
@@ -1093,13 +1093,16 @@ extension ScrollViewProxy {
     /// row (it has a registered frame) scrolls to its margin target. An
     /// unmounted row has no margin target yet, because that id lives inside
     /// the row. The lazy list knows every row's own id, so it scrolls there,
-    /// centered.
+    /// centered. A drag owns the list's scroll, so nothing moves during one:
+    /// the selection a lift restores stays off screen rather than pull the
+    /// list from under the card.
     @MainActor
     func scrollToSessionRow(
         _ sessionID: String,
         mountedAnchor: UnitPoint? = nil,
         controller: SidebarSessionDragController
     ) {
+        guard !controller.isDragging else { return }
         if controller.registeredRowFrame(id: sessionID) == nil {
             scrollTo(SidebarTreeRow.sessionRowID(sessionID), anchor: .center)
         } else {

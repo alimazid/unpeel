@@ -383,6 +383,12 @@ final class SidebarSessionDragController: ObservableObject {
         rows[id]?.frame
     }
 
+    /// Fork-only (#46): whether a row or pane is lifted.
+    var isDragging: Bool {
+        if case .dragging = phase { return true }
+        return false
+    }
+
     /// Scoped to the registering reporter: a moved row's OLD view tears down
     /// after the new one registered the same id, and must not delete it.
     func removeRowFrame(id: String, token: UUID) {
@@ -394,14 +400,11 @@ final class SidebarSessionDragController: ObservableObject {
     /// Missing geometry fails toward revealing: the row may be outside the
     /// LazyVStack's mounted region. Rows already clear of the titlebar veil
     /// and bottom fade avoid an otherwise costly animated `scrollTo` pass.
-    /// Fork-only (#46): a drag owns the list's scroll. The selection its lift
-    /// restores stays off screen instead of pulling the list from under the card.
     func sessionRowNeedsReveal(
         _ sessionID: String,
         topOcclusion: CGFloat,
         edgeMargin: CGFloat
     ) -> Bool {
-        if case .dragging = phase { return false }
         guard let record = rows[sessionID],
               case .session? = record.kind,
               let scrollView = monitorView?.enclosingScrollView

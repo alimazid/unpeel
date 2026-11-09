@@ -710,6 +710,8 @@ func runFarSelect(count: Int) {
     let smallRow = "~/w/Big/small-3"
     let digit1: CGKeyCode = 18
     let digit2: CGKeyCode = 19
+    // A press counts as keyboard input for `userInterfered` this long.
+    let keyInputHold: TimeInterval = 2.1
 
     /// Presses the key with `label` off screen, and returns its row once the
     /// list holds still.
@@ -752,8 +754,7 @@ func runFarSelect(count: Int) {
 
     for attempt in 1 ... count {
         guard select(smallRow, keyCode: digit2, attempt: attempt) != nil else { continue }
-        // The presses count as keyboard input for `userInterfered` for 2 s.
-        Thread.sleep(forTimeInterval: 2.1)
+        Thread.sleep(forTimeInterval: keyInputHold)
         guard let selected = select(bigRow, keyCode: digit1, attempt: attempt) else { continue }
         let offset = selected.row.frame.midY - selected.area.midY
         if abs(offset) <= 10 {
@@ -761,7 +762,7 @@ func runFarSelect(count: Int) {
         } else {
             scenario.fail("select \(attempt): \(summary([bigRow])) landed \(Int(offset)) pt from the list's center")
         }
-        Thread.sleep(forTimeInterval: 2.1)
+        Thread.sleep(forTimeInterval: keyInputHold)
     }
 }
 
