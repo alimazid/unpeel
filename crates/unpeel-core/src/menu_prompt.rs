@@ -13,9 +13,10 @@
 //!
 //! Provider-agnostic and hook-free by construction: it only trusts the
 //! on-screen text, so it works for any CLI that draws a keyboard-navigable
-//! select menu. Detection requires BOTH a navigation hint and a select/cancel
-//! hint on screen at once, so ordinary prose that merely mentions "select"
-//! cannot trip it.
+//! select menu. Detection requires a pair of hints on screen at once (a
+//! navigation hint and a select hint, or a confirm key and a cancel key), or
+//! a cancel/amend or Enter hint beside a selected numbered choice list, so
+//! ordinary prose that merely mentions "select" cannot trip it.
 
 /// Footer phrases advertising arrow-key navigation.
 const NAV_MARKERS: &[&str] = &["to navigate", "↑/↓", "↑ ↓", "▲/▼", "arrow keys"];
@@ -47,13 +48,7 @@ const AMEND_MARKERS: &[&str] = &["tab to amend"];
 /// "enter continue · esc skip" under their options: no navigation hint, and
 /// no "to confirm". Enter there takes the highlighted option, which for the
 /// update picker runs a global install.
-const ENTER_MARKERS: &[&str] = &[
-    "enter to",
-    "return to",
-    "enter continue",
-    "enter confirm",
-    "enter select",
-];
+const ENTER_MARKERS: &[&str] = &["enter to", "return to", "enter continue"];
 
 /// Phrases that mark a hint row as a passive status footer rather than an
 /// answerable menu. Claude Code's subagent list pins

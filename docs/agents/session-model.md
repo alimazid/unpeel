@@ -175,8 +175,7 @@ termination output is drained first. Never signal an unverified process group.
   Running Session with no activity is never ready, and neither is one
   showing a select menu (`menu_prompt_active`), whichever tier says idle:
   the text's Enter would answer it, as on Codex's update picker (#55).
-  After 120 s nothing is
-  typed. An `agentReady` wait's outcome lands in
+  After 120 s nothing is typed. An `agentReady` wait's outcome lands in
   `<session dir>/initial-text.json` (`state`: `waiting`, `delivered` with
   its `signal`, `readiness_timeout`, `exited`, `host_not_ready`,
   `delivery_failed`); `attached` records nothing, as before the field.

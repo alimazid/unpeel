@@ -44,8 +44,13 @@ struct MenuPromptApprovalTests {
     @Test
     func enterHintRequiresNearbySelectedChoices() {
         #expect(!RemoteGhosttyRenderer.viewportHasMenuPrompt("Press Enter to continue."))
+        #expect(!RemoteGhosttyRenderer.viewportHasMenuPrompt("  enter continue · esc skip"))
         #expect(!RemoteGhosttyRenderer.viewportHasMenuPrompt(
             Self.codexUpdate.replacingOccurrences(of: "›", with: " ")
+        ))
+        #expect(!RemoteGhosttyRenderer.viewportHasMenuPrompt(
+            Self.codexUpdate.replacingOccurrences(of: "  2.", with: "  x.")
+                .replacingOccurrences(of: "  3.", with: "  x.")
         ))
         #expect(!RemoteGhosttyRenderer.viewportHasMenuPrompt(
             Self.codexUpdate.replacingOccurrences(of: "  enter continue", with:

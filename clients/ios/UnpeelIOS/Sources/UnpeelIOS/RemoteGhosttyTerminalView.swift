@@ -3537,9 +3537,10 @@ final class RemoteGhosttyRenderer: ObservableObject {
     @Published private(set) var menuOptionCount = 0
 
     /// Footer phrases a select menu prints to advertise its keys. Detection
-    /// requires a marker pair on the same or adjacent rows — nav + select, or
-    /// confirm + cancel — so ordinary transcript prose mentioning "select"
-    /// can't trip it. Marker grammar stays aligned with the host-side scan;
+    /// requires a marker pair on the same or adjacent rows — nav + select,
+    /// confirm + cancel, or cancel/amend or Enter beside selected numbered
+    /// choices — so ordinary transcript prose mentioning "select" can't trip
+    /// it. Marker grammar stays aligned with the host-side scan;
     /// the phone additionally requires visible choices because showing input
     /// controls needs higher confidence than an attention hint.
     private static let menuNavMarkers = ["to navigate", "↑/↓", "↑ ↓", "▲/▼", "arrow keys"]
@@ -3556,9 +3557,7 @@ final class RemoteGhosttyRenderer: ObservableObject {
     /// Enter-key hints that qualify only beside selected numbered choices:
     /// Codex's startup pickers print "enter continue · esc skip". Twin of
     /// `ENTER_MARKERS` in `menu_prompt.rs`.
-    private static let menuEnterMarkers = [
-        "enter to", "return to", "enter continue", "enter confirm", "enter select",
-    ]
+    private static let menuEnterMarkers = ["enter to", "return to", "enter continue"]
     /// Phrases marking a hint row as a passive status footer, not an
     /// answerable menu — Claude Code's subagent list pins
     /// "↑/↓ to select · Enter to view" for the whole run.
