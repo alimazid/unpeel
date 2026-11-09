@@ -67,8 +67,10 @@ pub(super) fn stored_item(id: String, at: u64, new: NewItem) -> InboxItem {
 }
 
 /// The pending items to drop so `incoming` fits under the caps (empty when
-/// it already fits), or `None` when it can't: only a Host notice makes
-/// room, and only by replacing older Host notices about the same child.
+/// it already fits), or `None` when it can't. A Host notice replaces older
+/// Host notices about the same child. Then, for any item, a Host notice
+/// waiting to ride along gives way, so a looping Worker's turns never crowd
+/// out a report.
 pub(super) fn room_for(
     pending: &[(InboxItem, u64)],
     incoming: &InboxItem,
@@ -76,11 +78,17 @@ pub(super) fn room_for(
 ) -> Option<Vec<String>> {
     let mut count = pending.len() + 1;
     let mut bytes = pending.iter().map(|(_, size)| size).sum::<u64>() + incoming_bytes;
-    let mut candidates = pending.iter().filter(|(item, _)| {
+    let about_same_child = |item: &InboxItem| {
         incoming.sender == Sender::Host
             && item.sender == Sender::Host
             && item.about == incoming.about
-    });
+    };
+    let (same_child, others): (Vec<_>, Vec<_>) =
+        pending.iter().partition(|(item, _)| about_same_child(item));
+    let riding_along = others
+        .into_iter()
+        .filter(|(item, _)| item.sender == Sender::Host && item.priority == Priority::RideAlong);
+    let mut candidates = same_child.into_iter().chain(riding_along);
     let mut victims = Vec::new();
     while count > MAX_PENDING_ITEMS || bytes > MAX_PENDING_BYTES {
         let (victim, size) = candidates.next()?;

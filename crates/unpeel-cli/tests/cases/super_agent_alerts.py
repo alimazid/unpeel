@@ -5,7 +5,10 @@ local socket, so every notification the Host sends is observed. The Router
 (marked directly in this private home's app-state) starts a Worker with a
 task. When the Worker finishes, its reply reaches the Router as a pasted
 `finished` notice and the adapter hears nothing about the Worker, while the
-Router's own finished turn still notifies the user. With
+Router's own finished turn still notifies the user. The first turn nothing
+started after that (a timer firing) wakes the Router too, since it may be the
+task's answer; the next waits in its Inbox instead, and a turn the user typed
+says so and carries it along (#60). With
 `UNPEEL_SUPERVISOR_SECONDS=1` and a 5-"minute" stall time, a Worker that goes
 busy and silent is reported `stalled`; killing it while it is busy reports
 `exited_unexpectedly`.
@@ -34,6 +37,7 @@ FIXTURE = '''
 import base64, os, select, time, tty
 tty.setraw(0)
 log = os.path.join(os.getcwd(), "stdin.log")
+timer = os.path.join(os.getcwd(), "timer")
 open(os.path.join(os.getcwd(), "agent.pid"), "w").write(str(os.getpid()))
 def report(pairs):
     os.write(1, b"\\x1b]7501;" + pairs.encode() + b":app=alerts\\x1b\\\\")
@@ -45,9 +49,15 @@ report("state=idle")
 pasted = False
 phase = None
 while True:
-    wait = None if phase is None else max(0.0, phase[1] - time.time())
+    if os.path.exists(timer):
+        os.remove(timer)
+        report("state=working")
+        phase = ("working", time.time() + WORK_SECONDS)
+    wait = 0.2 if phase is None else max(0.0, min(0.2, phase[1] - time.time()))
     ready, _, _ = select.select([0], [], [], wait)
     if not ready:
+        if phase is None or time.time() < phase[1]:
+            continue
         if phase[0] == "working":
             report("state=done:msg=" + msg(REPLY))
             phase = ("done", time.time() + 1.5)
@@ -74,8 +84,9 @@ while True:
 
 def write_fixture(path, reply, work_seconds):
     """A 7501 program with bracketed paste, logging stdin to `stdin.log` in
-    its working directory: a submitted paste is a turn (working, then done
-    with `reply`, then idle); `w` goes working and silent; `q` quits."""
+    its working directory: a submitted paste or a `timer` file there is a turn
+    (working, then done with `reply`, then idle); `w` goes working and silent;
+    `q` quits."""
     with open(path, "w") as handle:
         handle.write(f"#!{sys.executable}\nREPLY = {reply!r}\nWORK_SECONDS = {work_seconds!r}\n"
                      + FIXTURE)
@@ -239,13 +250,64 @@ def body(case):
         case.check("the finished Worker is not left unread",
                    activity.get(worker, {}).get("unread") is not True, str(activity.get(worker)))
 
-        # 2. Busy and silent past the stall time: a `stalled` notice.
+        # 2. The first turn nothing started may be the task's answer. Past the
+        # 30 s a paste gets to start a turn, so the task's paste is not its cause.
+        def timer_fires():
+            with open(os.path.join(folders["q"], "timer"), "w"):
+                pass
+
+        service.read_for(31)
+        before = len(log_of("p"))
+        timer_fires()
+        case.check("the first turn nothing started after a task wakes the Router",
+                   bool(service.wait_for(lambda: "\"fix login\" finished." in log_of("p")[before:],
+                                         timeout=40)), log_of("p")[before:][-800:])
+        case.check("the Router's Inbox is empty again",
+                   bool(service.wait_for(lambda: not mcp(router, "inbox", {})[0].get("pending"),
+                                         timeout=30)), str(mcp(router, "inbox", {})[0])[:400])
+
+        # 3. The next one waits for the next wake batch.
+        service.read_for(3)
+        before = len(log_of("p"))
+
+        def waiting_notice():
+            listing = mcp(router, "inbox", {})[0]
+            return listing.get("hold") == "ride_along" and [
+                item for item in listing.get("pending", [])
+                if item.get("about") == worker and "neither you" in item.get("summary", "")]
+
+        timer_fires()
+        case.check("a later turn nothing started waits in the Router's Inbox",
+                   bool(service.wait_for(waiting_notice, timeout=30)),
+                   str(mcp(router, "inbox", {})[0])[:600])
+        service.read_for(5)
+        case.check("it does not wake the Router", log_of("p")[before:] == "",
+                   log_of("p")[before:][-400:])
+
+        # 4. A turn the user typed says so, and carries the waiting notice.
+        worker_manifest = home.path("app-sessions", worker, "manifest.json")
+        input_before = read_json(worker_manifest).get("last_input_at")
+        control(home, worker, "\x1b[200~are you there\x1b[201~\r")
+        case.check("the Host notices the user typing into the Worker",
+                   bool(service.wait_for(lambda: read_json(worker_manifest).get("last_input_at")
+                                         != input_before, timeout=10)),
+                   str(read_json(worker_manifest))[:300])
+        case.check("the typed turn wakes the Router and says the user talked to the Worker",
+                   bool(service.wait_for(lambda: "the user talked to it directly"
+                                         in log_of("p")[before:], timeout=40)),
+                   log_of("p")[before:][-800:])
+        # A batch folds one Worker's notices into the latest, naming the rest.
+        case.check("the waiting notice comes with that batch",
+                   "2 items" in log_of("p")[before:] and "earlier: finished" in log_of("p")[before:],
+                   log_of("p")[before:][-800:])
+
+        # 5. Busy and silent past the stall time: a `stalled` notice.
         control(home, worker, "w")
         case.check("a silent busy Worker is reported stalled",
                    bool(service.wait_for(lambda: notice_pasted(worker, "stalled"), timeout=45)),
                    log_of("p")[-800:])
 
-        # 3. Killed while busy: an `exited_unexpectedly` notice.
+        # 6. Killed while busy: an `exited_unexpectedly` notice.
         manifest = read_json(home.path("app-sessions", worker, "manifest.json"))
         with open(os.path.join(folders["q"], "agent.pid")) as handle:
             agent_pid = int(handle.read().strip())

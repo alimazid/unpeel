@@ -271,6 +271,34 @@ fn a_full_inbox_refuses_reports_but_a_host_notice_replaces_the_oldest_about_its_
 }
 
 #[test]
+fn a_full_inbox_of_ride_along_notices_makes_room_for_any_report() {
+    let (_tmp, store) = store();
+    let tick = |n: usize| NewItem {
+        priority: Priority::RideAlong,
+        ..host_notice("looper", &format!("finished {n}"), None)
+    };
+    let oldest = store.enqueue("router", tick(0), 1).unwrap();
+    let newer = store.enqueue("router", tick(1), 2).unwrap();
+    for n in 2..MAX_PENDING_ITEMS {
+        store.enqueue("router", tick(n), 3).unwrap();
+    }
+
+    let accepted = store
+        .enqueue("router", report("w1", "the result"), 4)
+        .unwrap();
+    assert_eq!(accepted.replaced, vec![oldest.item_id.clone()]);
+    assert_eq!(accepted.pending, MAX_PENDING_ITEMS);
+    assert!(store.item("router", &newer.item_id).unwrap().is_some());
+
+    // Another child's Host notice gets the same room, and a wake notice is
+    // never what gives way.
+    let notice = store
+        .enqueue("router", host_notice("w3", "started", None), 5)
+        .unwrap();
+    assert_eq!(notice.replaced, vec![newer.item_id.clone()]);
+}
+
+#[test]
 fn the_pending_byte_cap_also_fills_the_inbox() {
     let (_tmp, store) = store();
     let mut results = Vec::new();

@@ -1,6 +1,6 @@
 //! Fork-only: what the Worker alerts and the watchdog read outside the
 //! sidebar rows — the Router mark, Worker markers, exit facts, durable
-//! progress stamps and the supervisor's heartbeat. [`HostWorkers`] reads
+//! progress stamps, the user's last keystroke and the supervisor's heartbeat. [`HostWorkers`] reads
 //! the real home; tests use a fake.
 
 use std::path::PathBuf;
@@ -33,6 +33,9 @@ pub trait WorkerHost: Send + Sync {
     /// hook-capable launch, the screen only when nothing better speaks (a
     /// spinner would otherwise hide a stall).
     fn durable_progress(&self, row: &SessionRow) -> Option<u64>;
+    /// When the user last typed into the Session, from its manifest. Blind
+    /// to what never crosses the PTY, such as a program's own remote channel.
+    fn last_input_at(&self, session_id: &str) -> Option<u64>;
     /// The last heartbeat any supervisor of this home wrote.
     fn heartbeat(&self) -> Option<u64>;
     fn write_heartbeat(&self, at_ms: u64);
@@ -83,6 +86,10 @@ impl WorkerHost for HostWorkers {
         (hooks || screen_only)
             .then(|| unpeel_core::session_ops::last_activity_ms(&row.id, &row.command))
             .flatten()
+    }
+
+    fn last_input_at(&self, session_id: &str) -> Option<u64> {
+        unpeel_core::session_host::load_manifest(session_id)?.last_input_at
     }
 
     fn heartbeat(&self) -> Option<u64> {
