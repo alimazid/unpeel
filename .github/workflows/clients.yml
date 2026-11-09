@@ -13,14 +13,16 @@ on:
     paths:
       - 'clients/**'
       - 'crates/unpeel-native-bridge/**'
-      - 'scripts/verify-sidebar-interaction.*'
+      - 'scripts/verify-sidebar-interaction.sh'
+      - 'scripts/sidebar-driver/**'
       - 'scripts/ci/check-sidebar-driver.sh'
       - '.github/workflows/clients.yml'
   pull_request:
     paths:
       - 'clients/**'
       - 'crates/unpeel-native-bridge/**'
-      - 'scripts/verify-sidebar-interaction.*'
+      - 'scripts/verify-sidebar-interaction.sh'
+      - 'scripts/sidebar-driver/**'
       - 'scripts/ci/check-sidebar-driver.sh'
       - '.github/workflows/clients.yml'
 
