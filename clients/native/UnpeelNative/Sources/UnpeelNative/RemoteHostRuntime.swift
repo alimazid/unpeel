@@ -258,6 +258,13 @@ final class RemoteHostRuntime: ObservableObject {
         }
     }
 
+    /// Fork-only test hook (#48): the runtime holds a bootstrap with no
+    /// connection behind it, so a store's re-projection from `snapshot` sees
+    /// real rows. Production code never calls it.
+    func holdSnapshotForTesting(_ held: RemoteBootstrapSnapshot) {
+        snapshot = held
+    }
+
     private final class ActiveConnection: @unchecked Sendable {
         let epoch: UInt64
         let transport: RemoteHostTransport

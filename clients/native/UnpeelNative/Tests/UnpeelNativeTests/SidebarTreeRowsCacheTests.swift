@@ -182,12 +182,44 @@ final class SidebarTreeRowsCacheTests: XCTestCase {
         XCTAssertEqual(publishes, 0, "the cached rows are plain storage, never observed")
     }
 
+    // MARK: The list memo (#48)
+
+    func testACancelledDragPutsTheRowsBack() {
+        let store = makeStore(FixtureHost(), heldInRuntime: true)
+        let before = store.sidebarTreeRows
+
+        store.previewSessionMove(projectID: "project", draggedID: "s1", over: "s2")
+        XCTAssertNotEqual(store.sidebarTreeRows.map(\.id), before.map(\.id), "the preview moved s1")
+        store.cancelSessionReorder(projectID: "project")
+
+        XCTAssertEqual(store.sidebarTreeRows, before)
+    }
+
+    /// A rename on another row defers the projection the cancel re-runs, so
+    /// nothing else can drop the previewed order or render the rollback.
+    func testACancelledDragPutsTheRowsBackWhileARenameDefersTheProjection() {
+        let store = makeStore(FixtureHost(), heldInRuntime: true)
+        store.editingSessionID = "s3"
+        let before = store.sidebarTreeRows
+
+        store.previewSessionMove(projectID: "project", draggedID: "s1", over: "s2")
+        XCTAssertNotEqual(store.sidebarTreeRows.map(\.id), before.map(\.id), "the preview moved s1")
+        var publishes = 0
+        let observer = store.objectWillChange.sink { publishes += 1 }
+        defer { observer.cancel() }
+        store.cancelSessionReorder(projectID: "project")
+
+        XCTAssertEqual(store.sidebarTreeRows, before)
+        XCTAssertGreaterThan(publishes, 0, "the rollback must render")
+    }
+
     // MARK: Helpers
 
-    private func makeStore(_ host: FixtureHost) -> UnpeelStore {
+    private func makeStore(_ host: FixtureHost, heldInRuntime: Bool = false) -> UnpeelStore {
         let store = UnpeelStore.sidebarFixture(
             snapshot: host.snapshot,
-            expandedProjectIDs: ["project", "group", "wt", "other"]
+            expandedProjectIDs: ["project", "group", "wt", "other"],
+            heldInRuntime: heldInRuntime
         )
         XCTAssertFalse(store.sidebarTreeRows.isEmpty, "the fixture Host's tree renders")
         return store

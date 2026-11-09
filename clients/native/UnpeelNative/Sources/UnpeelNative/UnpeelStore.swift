@@ -8575,9 +8575,14 @@ final class UnpeelStore: ObservableObject {
     /// accepted drop. The persisted order was never touched.
     func cancelSessionReorder(projectID: String) {
         guard sessionOrderPreviews.removeValue(forKey: projectID) != nil else { return }
+        // Fork-only (#48): the memo still holds the preview, and the same
+        // bootstrap projects no change (or defers behind a rename), so the
+        // rollback needs its own invalidation and publish.
+        invalidateSidebarLists()
         if routesProjectVerbThroughHost(projectID) {
             withAnimation(.easeInOut(duration: 0.18)) {
                 projectRemoteScope(snapshot: remoteHostRuntime.snapshot)
+                objectWillChange.send()
             }
             return
         }
