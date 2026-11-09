@@ -1502,6 +1502,10 @@ fn input_screen(viewport: &Mutex<TerminalViewportState>) -> crate::typed_input::
         line: snapshot
             .cursor_row_text_without_suggestion()
             .unwrap_or_default(),
+        row_above: snapshot
+            .row_above_cursor_text()
+            .unwrap_or_default()
+            .to_owned(),
         cursor_at: crate::typed_input::CursorAt {
             alternate: snapshot.alternate_screen,
             row: u64::from(snapshot.scrollback_rows) + u64::from(snapshot.cursor_row),
@@ -2493,6 +2497,7 @@ mod input_screen_tests {
         let screen = input_screen(&viewport);
         assert!(!screen.menu);
         assert_eq!(screen.line, "> hi");
+        assert_eq!(screen.row_above, "four");
         assert_eq!(
             screen.cursor_at,
             crate::typed_input::CursorAt {

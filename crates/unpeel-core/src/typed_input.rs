@@ -73,6 +73,9 @@ impl Refusal {
 /// being drawn.
 pub(crate) const QUIET_BEFORE_ENDING: std::time::Duration = std::time::Duration::from_millis(500);
 
+/// What a program draws for each key of a secret it masks.
+const MASKS: [char; 4] = ['*', '\u{2022}', '\u{25cf}', '\u{00b7}'];
+
 /// Where the cursor sits: which screen, and its row counted from the top of
 /// scrollback, so a row keeps its number while the screen scrolls.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -89,6 +92,8 @@ pub(crate) struct InputScreen {
     /// The cursor's row without suggested input: a proposed reply comes and
     /// goes on its own and is never the user's.
     pub(crate) line: String,
+    /// The row above the cursor's, as drawn.
+    pub(crate) row_above: String,
     pub(crate) cursor_at: CursorAt,
     /// The last character drawn before the cursor, blanks skipped. `None`
     /// while the cursor is hidden: the program has not put it where it
@@ -142,11 +147,13 @@ impl Draft {
     }
 
     /// Whether a program took the keys and moved on, read off a quiet
-    /// screen: the cursor has left the row they were typed on, and what it
-    /// follows is none of the characters typed. Either alone is a draft: one
-    /// that wraps or whose input box moves, or a program that redraws its
-    /// line in place (a changed prompt, masked echo). A hidden cursor or only
-    /// blanks typed tell nothing.
+    /// screen: the cursor has left the row they were typed on, what it
+    /// follows is none of the characters typed, and neither is anything on
+    /// the row above (a draft that wrapped, the cursor waiting after a
+    /// border or gutter at the start of the next row). Any of these alone is
+    /// a draft: one that wraps or whose input box moves, or a program that
+    /// redraws its line in place (a changed prompt, masked echo). A hidden
+    /// cursor, a masking glyph or only blanks typed tell nothing.
     fn taken_by_program(&self, screen: &InputScreen) -> bool {
         let Some(typed) = self
             .typed
@@ -155,10 +162,15 @@ impl Draft {
         else {
             return false;
         };
+        let typed_here = |text: &str| {
+            text.chars()
+                .any(|shown| !shown.is_whitespace() && typed.contains(shown))
+        };
         screen.cursor_at != self.started_at
             && screen
                 .last_char_before_cursor
-                .is_some_and(|shown| !typed.contains(shown))
+                .is_some_and(|shown| !typed.contains(shown) && !MASKS.contains(&shown))
+            && !typed_here(&screen.row_above)
     }
 }
 

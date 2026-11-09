@@ -157,8 +157,7 @@ impl TerminalViewportSnapshot {
     /// what is really on an input line. `None` when the cursor row is
     /// outside `viewport_rows`.
     pub fn cursor_row_text_without_suggestion(&self) -> Option<String> {
-        let cursor_row = (self.scrollback_rows + u32::from(self.cursor_row))
-            .checked_sub(self.viewport_start_row)? as usize;
+        let cursor_row = self.cursor_row_index()?;
         let text = &self.viewport_rows.get(cursor_row)?.text;
         let suggested = self
             .suggested_input
@@ -174,6 +173,22 @@ impl TerminalViewportSnapshot {
             None => text.clone(),
         };
         Some(without.trim_end().to_owned())
+    }
+
+    /// Fork-only (#65): the row above the cursor's, where a draft that
+    /// wrapped onto the cursor's row has the rest of its text. `None` at the
+    /// top of the window.
+    pub fn row_above_cursor_text(&self) -> Option<&str> {
+        let above = self.cursor_row_index()?.checked_sub(1)?;
+        Some(self.viewport_rows.get(above)?.text.as_str())
+    }
+
+    /// The cursor's row as an index into `viewport_rows`; `None` when the
+    /// cursor is outside them.
+    fn cursor_row_index(&self) -> Option<usize> {
+        (self.scrollback_rows + u32::from(self.cursor_row))
+            .checked_sub(self.viewport_start_row)
+            .map(|row| row as usize)
     }
 }
 
@@ -2378,6 +2393,11 @@ mod tests {
         // The last column written: the cursor waits on that cell to wrap.
         assert_eq!(before(b"> 12345678", 10), Some('8'), "pending wrap");
         assert_eq!(before(b"> 12345678ab", 10), Some('b'), "wrapped");
+        let wrapped =
+            render_terminal_viewport_from_bytes(b"> hello\r\n  ", 40, 3, 0, false, 0, None);
+        assert_eq!(wrapped.row_above_cursor_text(), Some("> hello"));
+        let top = render_terminal_viewport_from_bytes(b"> hello", 40, 3, 0, false, 0, None);
+        assert_eq!(top.row_above_cursor_text(), None);
     }
 
     #[test]

@@ -35,10 +35,12 @@ look and the write:
   keys, a paste, a Backspace into what was there before) leaves only the
   kept line to end it. Erasing every key ends the draft, so a line kept
   from before a redraw no longer matters. A program took the keys and
-  moved on when the cursor has left the row they were typed on **and**
-  what it follows is none of the characters typed; either alone is still a
-  draft (one that wraps or whose input box moves; a prompt redrawn in
-  place, masked echo). The screen counts only when quiet: nothing drawn
+  moved on when the cursor has left the row they were typed on, **and**
+  what it follows is none of the characters typed and no mask (`*`, `•`,
+  `●`, `·`), **and** the row above shows none of them; short of all three
+  it is still a draft (one that wraps, onto a new row or past a box
+  border; one whose input box moves; a prompt redrawn in place; masked
+  echo). The screen counts only when quiet: nothing drawn
   for 500 ms, no synchronized update open, and for the cursor, shown.
   A program's take holds while the screen is busy, so the send's own
   paste echoing does not refuse its Enter, and any key of the user's undoes
@@ -47,7 +49,9 @@ look and the write:
   it was (12 ns; one read is ~140 µs at 80×24, ~600 µs at 200×60). So a
   text key a menu took is counted too; what the line shows of the user's is
   still among the counted characters, because a Backspace at a menu reads
-  the screen and is not counted. A draft may end late, never early.
+  the screen and is not counted. Where the core cannot tell, the draft
+  stays: the rule is built to end late rather than early, and the few
+  early ends it cannot see are listed below.
 
 The send is **refused, not held**. The result starts with a stable phrase:
 `Not sent (typing)` or `Not sent (draft)` (nothing written, with what to do

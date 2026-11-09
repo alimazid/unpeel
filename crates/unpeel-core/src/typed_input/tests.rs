@@ -120,12 +120,21 @@ fn prompt(line: &str) -> InputScreen {
     on_row(0, line)
 }
 
+/// [`on_row`], under `row_above`.
+fn below(row: u64, row_above: &str, line: &str) -> InputScreen {
+    InputScreen {
+        row_above: row_above.to_owned(),
+        ..on_row(row, line)
+    }
+}
+
 /// `line` on `row` of a quiet screen, the cursor after its last
 /// character.
 fn on_row(row: u64, line: &str) -> InputScreen {
     InputScreen {
         menu: false,
         line: line.to_owned(),
+        row_above: String::new(),
         cursor_at: CursorAt {
             alternate: false,
             row,
@@ -320,8 +329,18 @@ fn a_key_a_program_took_is_no_draft_once_it_moved_on() {
     // shell prompts two rows down.
     let mut clock = TypingClock::default();
     typed(&mut clock, b"y", on_row(3, "Delete it? [y/n]"));
-    assert!(!clock.has_draft(|| on_row(5, "$")));
+    assert!(!clock.has_draft(|| below(5, "deleted", "$")));
     assert_eq!(clock.typed_at(), Some(1), "they still typed");
+    assert!(
+        clock.has_draft(|| below(5, "your file is gone", "$")),
+        "the row above may show it: late, not early"
+    );
+    let mut spaced = TypingClock::default();
+    typed(&mut spaced, b"y ", on_row(3, "Delete it? [y/n]"));
+    assert!(
+        !spaced.has_draft(|| below(5, "all deleted", "$")),
+        "blanks are no one's"
+    );
     // What they type at the new prompt is a draft until erased.
     typed(&mut clock, b"ls", on_row(5, "$"));
     assert!(clock.has_draft(|| on_row(5, "$ ls")));
@@ -358,6 +377,26 @@ fn a_draft_that_wraps_onto_more_rows_stays() {
         ..on_row(11, "")
     };
     assert!(clock.has_draft(|| caret_starts_the_row));
+}
+
+#[test]
+fn a_draft_stays_when_the_cursor_waits_after_a_border_on_its_next_row() {
+    // A TUI draws `│` down the side of its input box. After a space that
+    // wraps the line, or text that fills a row, the cursor waits at the
+    // start of the next row: the character before it is the border.
+    let mut clock = TypingClock::default();
+    typed(&mut clock, b"hello world ", on_row(9, "\u{2502} >"));
+    assert!(clock.has_draft(|| below(10, "\u{2502} > hello world \u{2502}", "\u{2502}")));
+    typed(&mut clock, b"again", on_row(10, "\u{2502}"));
+    assert!(clock.has_draft(|| below(10, "\u{2502} > hello world \u{2502}", "\u{2502} again")));
+}
+
+#[test]
+fn a_masked_draft_stays_when_its_input_box_moves() {
+    let mut clock = TypingClock::default();
+    typed(&mut clock, b"hunter2", on_row(2, "Password:"));
+    assert!(clock.has_draft(|| below(3, "ok.", "Password: *******")));
+    assert!(clock.has_draft(|| below(3, "ok.", "Password: \u{2022}\u{2022}")));
 }
 
 #[test]

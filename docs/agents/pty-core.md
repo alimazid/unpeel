@@ -158,7 +158,8 @@ refuses a write. A `Write` with `unless_draft` is refused with the error
 draft. Fork-only (#65): while only text and Backspace typed the draft,
 `typing` also keeps that text; erasing all of it ends the draft, and so
 does a program taking the keys (the cursor left their row and follows none
-of their characters). Only a quiet screen ends one: nothing fed for 500 ms
+of their characters and no mask, and the row above shows none of them).
+Only a quiet screen ends one: nothing fed for 500 ms
 (`TerminalViewportState::drawn_within`), no synchronized update, and the
 cursor shown. The screen is read at a draft's first key, at Enter and at a
 write with Backspace, never at a text key (`input_screen_cost`, ignored,
