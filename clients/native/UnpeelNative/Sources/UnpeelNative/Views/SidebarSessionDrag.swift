@@ -2900,8 +2900,8 @@ final class SidebarSessionDragController: ObservableObject {
 
     private func closeCardWindow() {
         if let window = cardWindow {
-            // Fork-only (#53): a child still listed on its parent comes
-            // back with it.
+            // Fork-only (#53): on macOS 26.6.2 `orderOut` detaches a child by
+            // itself; older systems weren't measured (#56).
             window.parent?.removeChildWindow(window)
             window.orderOut(nil)
         }
