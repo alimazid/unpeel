@@ -3,8 +3,9 @@
 // running dev app with real pointer events and checks every step against the
 // app's accessibility tree and the Host's session list.
 //
-//   driver prepare --pid P
-//   driver run --pid P --ls <script> --order-file F [--clicks N] [--drags N] [--only a,b] [--report F]
+//   driver check [--only a,b]
+//   driver prepare --pid P [--window-height H] [--scale S]
+//   driver run --pid P --ls <script> --home DIR [--clicks N] [--drags N] [--only a,b] [--report F] [--scale S]
 //
 // It never fights the user: it starts only after the machine has been quiet,
 // and any pointer motion or key press it did not make pauses the run, releases
@@ -24,15 +25,35 @@ if command == "locked" {
     let session = CGSessionCopyCurrentDictionary() as? [String: Any]
     exit((session?["CGSSessionScreenIsLocked"] as? Bool) == true ? 0 : 1)
 }
+
+/// What `--only` takes. A name missing here is refused, so a new scenario adds
+/// its name; the scrolled ones and long-list-drop run only when named.
+let knownScenarios: Set<String> = [
+    "toggle-project", "toggle", "group-reorder", "list-reorder", "group-drop", "out-and-back",
+    "folder-reorder", "project-reorder",
+    "scrolled-list-reorder", "scrolled-group-drop", "long-list-drop", "scrolled-back-reorder",
+]
+let only = option("--only").map { Set($0.split(separator: ",").map(String.init)) }
+if let only {
+    let unknown = only.subtracting(knownScenarios).sorted()
+    guard !only.isEmpty, unknown.isEmpty else {
+        print("--only: no scenario named '\(unknown.joined(separator: ","))'; there are: "
+            + knownScenarios.sorted().joined(separator: ","))
+        exit(2)
+    }
+}
+if command == "check" { exit(0) }
+
 guard let pidValue = option("--pid").flatMap({ pid_t($0) }) else {
-    print("usage: driver prepare|run --pid P [--ls script] [--clicks N] [--drags N] [--only a,b] [--report F]")
+    print("usage: driver check|prepare|run --pid P [--ls script] [--home DIR] [--clicks N] [--drags N] [--only a,b] [--report F] [--scale S]")
     exit(2)
 }
 let pid = pidValue
 let clickCount = option("--clicks").flatMap(Int.init) ?? 30
 let dragCount = option("--drags").flatMap(Int.init) ?? 20
-let only = option("--only").map { Set($0.split(separator: ",").map(String.init)) }
 let listScript = option("--ls")
+let fixtureHome = option("--home")
+let wantedScale = option("--scale").flatMap(Double.init).map { CGFloat($0) }
 let reportPath = option("--report")
 let quietSeconds = option("--quiet").flatMap(Double.init) ?? 20
 
@@ -103,6 +124,21 @@ func readRows() -> [Row] {
     }
     walk(area, 0)
     return rows.sorted { $0.frame.midY < $1.frame.midY }
+}
+
+// MARK: - Displays
+
+/// A rectangle from AppKit's bottom-up space in the top-down one AX and CGEvent use.
+func topDown(_ rect: CGRect) -> CGRect {
+    let primaryHeight = NSScreen.screens.first?.frame.height ?? 0
+    return CGRect(x: rect.minX, y: primaryHeight - rect.maxY, width: rect.width, height: rect.height)
+}
+
+/// The scale of the display under the window's center.
+func windowScale() -> CGFloat? {
+    guard let window = mainWindow().flatMap({ frame(of: $0) }) else { return nil }
+    let center = CGPoint(x: window.midX, y: window.midY)
+    return NSScreen.screens.first { topDown($0.frame).contains(center) }?.backingScaleFactor
 }
 
 // MARK: - Staying out of the user's way
@@ -350,13 +386,30 @@ func hostProjects() -> [String: String] {
     Dictionary(uniqueKeysWithValues: hostSessions().map { ($0.label, $0.projectID) })
 }
 
+func homeJSON(_ name: String) -> Any? {
+    guard let fixtureHome,
+          let data = FileManager.default.contents(atPath: (fixtureHome as NSString).appendingPathComponent(name))
+    else { return nil }
+    return try? JSONSerialization.jsonObject(with: data)
+}
+
 /// The order the Host persisted for one list, as row labels.
 func hostOrder(of projectID: String) -> [String] {
-    guard let orderPath = option("--order-file"),
-          let data = FileManager.default.contents(atPath: orderPath),
-          let orders = (try? JSONSerialization.jsonObject(with: data)) as? [String: [String]] else { return [] }
+    guard let orders = homeJSON("session-order.json") as? [String: [String]] else { return [] }
     let labels = Dictionary(uniqueKeysWithValues: hostSessions().map { ($0.id, $0.label) })
     return (orders[projectID] ?? []).compactMap { labels[$0] }
+}
+
+/// The project order the Host persisted, as project names. Empty until a first
+/// project reorder writes it.
+func hostProjectOrder() -> [String] {
+    guard let ids = homeJSON("project-order.json") as? [String],
+          let state = homeJSON("app-state.json") as? [String: Any],
+          let projects = state["projects"] as? [[String: Any]] else { return [] }
+    let names = projects.reduce(into: [String: String]()) { names, project in
+        if let id = project["id"] as? String, let name = project["name"] as? String { names[id] = name }
+    }
+    return ids.compactMap { names[$0] }
 }
 
 /// Moves the pointer off the rows. A hovered row's title leaves the
@@ -385,6 +438,7 @@ func waitForStillRows() {
 let alphaChildren = ["Inner", "~/w/Big/alpha-3", "~/w/Big/alpha-2", "~/w/Big/alpha-1"]
 let betaChildren = ["~/w/Big/beta-3", "~/w/Big/beta-2", "~/w/Big/beta-1"]
 let innerChildren = ["~/w/Big/inner-1", "~/w/Big/inner-2"]
+let smallChildren = ["~/w/Big/small-3", "~/w/Big/small-2", "~/w/Big/small-1"]
 
 /// Every click on a group header flips it, and its rows all come or all go.
 func runToggles(_ group: String, children: [String], count: Int) {
@@ -402,22 +456,26 @@ func runToggles(_ group: String, children: [String], count: Int) {
             continue
         }
         let before = Set(labels(readRows()))
+        guard before.contains(group) else {
+            scenario.fail("click \(attempt): no \(group) row on screen")
+            continue
+        }
         let wasExpanded = children.contains(where: before.contains)
-        let started = Date()
-        click(point)
-        let settled = waitUntil(seconds: 1.5) {
+        // A hung app reads as no rows at all, which isn't a collapse: the
+        // header has to be there too.
+        func applied() -> Bool {
             let now = Set(labels(readRows()))
+            guard now.contains(group) else { return false }
             return wasExpanded ? !children.contains(where: now.contains) : children.allSatisfy(now.contains)
         }
-        if settled {
+        let started = Date()
+        click(point)
+        if waitUntil(seconds: 1.5, applied) {
             scenario.pass()
         } else {
             // Does it clear by itself, or only with another click? Asked once
             // per scenario: a stuck header would otherwise cost 6 s per click.
-            let late = waitUntil(seconds: scenario.failed == 0 ? 6 : 0.3) {
-                let now = Set(labels(readRows()))
-                return wasExpanded ? !children.contains(where: now.contains) : children.allSatisfy(now.contains)
-            }
+            let late = waitUntil(seconds: scenario.failed == 0 ? 6 : 0.3, applied)
             scenario.fail(
                 "click \(attempt): \(group) stayed \(wasExpanded ? "expanded" : "collapsed")"
                     + (late ? "; it applied late" : "; still unchanged")
@@ -507,6 +565,8 @@ func runGroupReorder(count: Int) {
     }
 }
 
+func rowsOfBig() -> [String] { labels(readRows()).filter { $0.hasPrefix("~/w/Big/big-") } }
+
 /// Reorder in a project's own list, past no folder: one Session moves down two
 /// rows, then back up. The Host's order and the rows on screen both show it.
 func runListReorder(count: Int) {
@@ -515,7 +575,6 @@ func runListReorder(count: Int) {
     let session = "~/w/Big/big-05"
     let home = hostProjects()[session] ?? ""
     log("reorder \(summary([session])) in Big's own list x\(count)")
-    func rowsOfBig() -> [String] { labels(readRows()).filter { $0.hasPrefix("~/w/Big/big-") } }
     for attempt in 1 ... count {
         let rows = readRows()
         let order = rowsOfBig()
@@ -565,17 +624,15 @@ func scroll(by pixels: Int32) {
 func scrollToBottom() { scroll(by: -300) }
 func scrollToTop() { scroll(by: 300) }
 
-/// The same reorder as `runListReorder`, in a list scrolled to its end: the
-/// rows at the top are unmounted by then.
-func runScrolledListReorder(count: Int) {
-    let scenario = Scenario("scrolled-list-reorder")
+/// The same reorder as `runListReorder`, in a list scrolled by `scrollFirst`:
+/// the rows out of view are unmounted by then.
+func runScrolledReorder(_ name: String, session: String, how: String, count: Int, scrollFirst: () -> Void) {
+    let scenario = Scenario(name)
     scenarios.append(scenario)
-    let session = "~/w/Big/big-05"
     let home = hostProjects()[session] ?? ""
-    log("reorder \(summary([session])) in a scrolled list x\(count)")
-    func rowsOfBig() -> [String] { labels(readRows()).filter { $0.hasPrefix("~/w/Big/big-") } }
+    log("reorder \(summary([session])) \(how) x\(count)")
     for attempt in 1 ... count {
-        scrollToBottom()
+        scrollFirst()
         let rows = readRows()
         let order = rowsOfBig()
         guard let from = order.firstIndex(of: session),
@@ -592,58 +649,14 @@ func runScrolledListReorder(count: Int) {
         var expected = order
         expected.remove(at: from)
         expected.insert(session, at: to)
-        // The whole list, since the visible rows are only part of what's ordered.
-        let before = hostOrder(of: home).filter { $0.hasPrefix("~/w/Big/big-") }
         runDrag(
             scenario, attempt: attempt, from: press(source.frame),
             path: [CGPoint(x: source.frame.minX + 6, y: anchor.frame.midY)],
             describe: "\(summary([session])) to \(summary([order[to]]))'s place",
-            expected: {
-                let host = hostOrder(of: home).filter { $0.hasPrefix("~/w/Big/big-") }
-                guard let index = host.firstIndex(of: session) else { return false }
-                return before.firstIndex(of: session).map { abs($0 - index) == 2 } ?? (host != before)
-            },
-            actual: { "the Host has \(summary(hostOrder(of: home))); on screen \(layout(readRows()))" }
-        )
-    }
-}
-
-/// A row that scrolled away and back still lifts and reorders. A row missing
-/// from the drag registry looks fine and ignores the press.
-func runScrolledBackReorder(count: Int) {
-    let scenario = Scenario("scrolled-back-reorder")
-    scenarios.append(scenario)
-    let session = "~/w/Big/big-28"
-    let home = hostProjects()[session] ?? ""
-    log("reorder \(summary([session])) after scrolling away and back x\(count)")
-    func rowsOfBig() -> [String] { labels(readRows()).filter { $0.hasPrefix("~/w/Big/big-") } }
-    for attempt in 1 ... count {
-        scrollToBottom()
-        scrollToTop()
-        let rows = readRows()
-        let order = rowsOfBig()
-        guard let from = order.firstIndex(of: session),
-              let source = rows.first(where: { $0.label == session }) else {
-            scenario.fail("drag \(attempt): \(summary([session])) is not on screen: \(layout(rows))")
-            continue
-        }
-        let to = attempt % 2 == 1 ? from + 2 : from - 2
-        guard order.indices.contains(to),
-              let anchor = rows.first(where: { $0.label == order[to] }) else {
-            scenario.fail("drag \(attempt): no row two away from \(summary([session]))")
-            continue
-        }
-        let before = hostOrder(of: home).filter { $0.hasPrefix("~/w/Big/big-") }
-        runDrag(
-            scenario, attempt: attempt, from: press(source.frame),
-            path: [CGPoint(x: source.frame.minX + 6, y: anchor.frame.midY)],
-            describe: "\(summary([session])) to \(summary([order[to]]))'s place",
-            expected: {
-                let host = hostOrder(of: home).filter { $0.hasPrefix("~/w/Big/big-") }
-                guard let index = host.firstIndex(of: session) else { return false }
-                return before.firstIndex(of: session).map { abs($0 - index) == 2 } ?? (host != before)
-            },
-            actual: { "the Host has \(summary(hostOrder(of: home)))" }
+            // Only the rows that were on screen: the Host's list is longer, and
+            // it has none at all before this list's first reorder.
+            expected: { hostOrder(of: home).filter(order.contains) == expected },
+            actual: { "the Host has \(summary(hostOrder(of: home))); expected \(summary(expected))" }
         )
     }
 }
@@ -676,18 +689,46 @@ func runLongListDrop(count: Int) {
 }
 
 /// Filing a Session whose group is off screen: the drag holds at the list's top
-/// edge until auto-scroll brings the group in, then drops on it.
+/// edge until auto-scroll brings the group in, then drops on it. The trip back
+/// home is its own scenario, so the report shows when one failed.
 func runScrolledGroupDrop(count: Int) {
     let scenario = Scenario("scrolled-group-drop")
-    scenarios.append(scenario)
+    let homeTrip = Scenario("scrolled-group-home")
+    scenarios += [scenario, homeTrip]
     let session = "~/w/Big/big-05"
     let home = hostProjects()[session] ?? ""
     log("file \(summary([session])) into off-screen Beta x\(count)")
+    func location() -> String { hostProjects()[session] ?? "nothing" }
+    // From the top: auto-scroll can stop with Big just above the list.
+    func sendHome(attempt: Int) {
+        scrollToTop()
+        let rows = readRows()
+        guard let filed = rows.first(where: { $0.label == session }),
+              let big = rows.first(where: { $0.label == "Big" }) else {
+            homeTrip.fail("drag \(attempt): the rows are not on screen: \(layout(rows))")
+            return
+        }
+        runDrag(
+            homeTrip, attempt: attempt, from: press(filed.frame), path: [press(big.frame)],
+            describe: "\(summary([session])) back onto Big", holdMs: 350,
+            aim: { readRows().first(where: { $0.label == "Big" }).map { press($0.frame) } },
+            expected: { hostProjects()[session] == home },
+            actual: { "the Host has it in \(location()); \(layout(readRows()))" }
+        )
+    }
     for attempt in 1 ... count {
+        // A Session already in Beta would pass this drop without filing anything.
+        if hostProjects()[session] != home {
+            sendHome(attempt: attempt)
+            guard hostProjects()[session] == home else {
+                scenario.fail("drag \(attempt): \(summary([session])) isn't home, so a drop proves nothing: it is in \(location())")
+                continue
+            }
+        }
         scrollToBottom()
         var rows = readRows()
         if !labels(rows).contains(session) {
-            // A drop that landed elsewhere left it nearer the top.
+            // A reorder that landed elsewhere left it nearer the top.
             scrollToTop()
             rows = readRows()
         }
@@ -703,18 +744,9 @@ func runScrolledGroupDrop(count: Int) {
             aim: { readRows().first(where: { $0.label == "Beta" }).map { press($0.frame) } },
             aimWait: 12,
             expected: { hostProjects()[session] == "g-beta" },
-            actual: { "the Host has it in \(hostProjects()[session] ?? "nothing"); \(layout(readRows()))" }
+            actual: { "the Host has it in \(location()); \(layout(readRows()))" }
         )
-        // Back home for the next round: both are near the top now.
-        let now = readRows()
-        if hostProjects()[session] == "g-beta",
-           let filed = now.first(where: { $0.label == session }),
-           let big = now.first(where: { $0.label == "Big" }) {
-            _ = ready(for: press(filed.frame))
-            _ = drag(from: press(filed.frame), path: [press(big.frame)], holdMs: 350,
-                     aim: { readRows().first(where: { $0.label == "Big" }).map { press($0.frame) } })
-            _ = waitUntil(seconds: 3) { hostProjects()[session] == home }
-        }
+        if hostProjects()[session] == "g-beta" { sendHome(attempt: attempt) }
         Thread.sleep(forTimeInterval: 0.4)
     }
 }
@@ -724,7 +756,7 @@ func runScrolledGroupDrop(count: Int) {
 func runGroupDrop(count: Int) {
     let scenario = Scenario("group-drop")
     scenarios.append(scenario)
-    let session = "~/w/Big/big-11"
+    let session = "~/w/Big/big-02"
     let home = hostProjects()[session] ?? ""
     log("file \(summary([session])) into Beta and back x\(count)")
     for attempt in 1 ... count {
@@ -773,31 +805,35 @@ func runDragOutAndBack(count: Int) {
     }
 }
 
-/// Reorder two rows that sit side by side: whichever is lower goes above the
-/// other. `sameLevel` keeps only the rows being compared.
-func runSwap(_ name: String, first: String, second: String, count: Int) {
-    let scenario = Scenario(name)
+/// Quiet goes around Small, which is expanded: above aims at Small's header,
+/// below at its last row, where #45 pins each gap. The direction comes from
+/// where Quiet is, so no attempt asks for the order it already has. The rows on
+/// screen and the order the Host wrote both have to show it.
+func runProjectReorder(count: Int) {
+    let scenario = Scenario("project-reorder")
     scenarios.append(scenario)
-    log("\(name): swap \(first) and \(second) x\(count)")
+    let moved = "Quiet", target = "Small"
+    log("project-reorder: \(moved) above and below \(target) x\(count)")
+    func isAbove(_ order: [String]) -> Bool? {
+        guard let first = order.firstIndex(of: moved), let second = order.firstIndex(of: target) else { return nil }
+        return first < second
+    }
     for attempt in 1 ... count {
         let rows = readRows()
-        guard let a = rows.first(where: { $0.label == first }),
-              let b = rows.first(where: { $0.label == second }) else {
-            scenario.fail("drag \(attempt): the rows are not on screen")
+        guard let source = rows.first(where: { $0.label == moved }),
+              let header = rows.first(where: { $0.label == target }),
+              let last = rows.last(where: { $0.label == target || smallChildren.contains($0.label) }) else {
+            scenario.fail("drag \(attempt): the rows are not on screen: \(layout(rows))")
             continue
         }
-        let (upper, lower) = a.frame.midY < b.frame.midY ? (a, b) : (b, a)
-        let target = CGPoint(x: lower.frame.minX + 6, y: upper.frame.minY + 2)
+        let goAbove = source.frame.midY > header.frame.midY
+        let aimY = goAbove ? header.frame.minY + 2 : last.frame.maxY - 2
         runDrag(
-            scenario, attempt: attempt, from: press(lower.frame), path: [target],
-            describe: "\(lower.label) above \(upper.label)",
-            expected: {
-                let now = readRows()
-                guard let moved = now.first(where: { $0.label == lower.label }),
-                      let other = now.first(where: { $0.label == upper.label }) else { return false }
-                return moved.frame.midY < other.frame.midY
-            },
-            actual: { layout(readRows()) }
+            scenario, attempt: attempt, from: press(source.frame),
+            path: [CGPoint(x: source.frame.minX + 6, y: aimY)],
+            describe: "\(moved) \(goAbove ? "above \(target)" : "below \(target)'s last row")",
+            expected: { isAbove(labels(readRows())) == goAbove && isAbove(hostProjectOrder()) == goAbove },
+            actual: { "the Host has \(hostProjectOrder()); on screen \(layout(readRows()))" }
         )
     }
 }
@@ -834,6 +870,15 @@ if command == "prepare" {
     }
     var origin = CGPoint(x: 60, y: 60)
     var size = CGSize(width: 1100, height: option("--window-height").flatMap(Double.init) ?? 1280)
+    if let wantedScale {
+        guard let screen = NSScreen.screens.first(where: { $0.backingScaleFactor == wantedScale }) else {
+            print("no display at \(wantedScale)x")
+            exit(1)
+        }
+        let area = topDown(screen.visibleFrame)
+        origin = CGPoint(x: area.minX + 60, y: area.minY + 10)
+        size.height = min(size.height, area.height - 20)
+    }
     AXUIElementSetAttributeValue(window, kAXPositionAttribute as CFString, AXValueCreate(.cgPoint, &origin)!)
     AXUIElementSetAttributeValue(window, kAXSizeAttribute as CFString, AXValueCreate(.cgSize, &size)!)
     print(summary(labels(readRows())))
@@ -848,10 +893,16 @@ guard AXIsProcessTrusted() else {
 waitForQuiet()
 NSRunningApplication(processIdentifier: pid)?.activate(options: [])
 Thread.sleep(forTimeInterval: 0.6)
+let scale = windowScale()
+log("display scale: \(scale.map { "\($0)x" } ?? "unknown")")
+if let wantedScale, scale != wantedScale {
+    log("the window is not on a \(wantedScale)x display")
+    exit(1)
+}
 log("rows: \(summary(labels(readRows())))")
 
 if wanted("toggle-project") {
-    runToggles("Small", children: ["~/w/Big/small-3", "~/w/Big/small-2", "~/w/Big/small-1"], count: clickCount)
+    runToggles("Small", children: smallChildren, count: clickCount)
     runToggles("Quiet", children: ["~/w/Big/quiet-1"], count: clickCount)
     // Quiet starts collapsed, and an even count leaves it there.
 }
@@ -873,10 +924,21 @@ if wanted("toggle") {
     }
 }
 if wanted("group-reorder") { runGroupReorder(count: dragCount) }
-if only?.contains("scrolled-list-reorder") == true { runScrolledListReorder(count: dragCount) }
+if only?.contains("scrolled-list-reorder") == true {
+    runScrolledReorder("scrolled-list-reorder", session: "~/w/Big/big-05", how: "in a scrolled list", count: dragCount) {
+        scrollToBottom()
+    }
+}
 if only?.contains("scrolled-group-drop") == true { runScrolledGroupDrop(count: dragCount) }
 if only?.contains("long-list-drop") == true { runLongListDrop(count: dragCount) }
-if only?.contains("scrolled-back-reorder") == true { runScrolledBackReorder(count: dragCount) }
+if only?.contains("scrolled-back-reorder") == true {
+    // This doesn't catch a row missing from the drag registry: it stays green
+    // with d978306 reverted. scrolled-group-drop and long-list-drop catch that.
+    runScrolledReorder("scrolled-back-reorder", session: "~/w/Big/big-28", how: "after scrolling away and back", count: dragCount) {
+        scrollToBottom()
+        scrollToTop()
+    }
+}
 if wanted("list-reorder") { runListReorder(count: dragCount) }
 if wanted("group-drop") { runGroupDrop(count: dragCount) }
 if wanted("out-and-back") { runDragOutAndBack(count: dragCount) }
@@ -899,12 +961,19 @@ if wanted("folder-reorder") {
     setExpanded("Alpha", children: alphaChildren, true)
     setExpanded("Beta", children: betaChildren, true)
 }
-if wanted("project-reorder") { runSwap("project-reorder", first: "Quiet", second: "Empty", count: dragCount) }
+if wanted("project-reorder") {
+    setExpanded("Small", children: smallChildren, true)
+    runProjectReorder(count: dragCount)
+}
 
+guard !scenarios.isEmpty else {
+    log("no scenario ran")
+    exit(2)
+}
 log("")
-log("scenario            passed  failed")
+log("scenario                passed  failed")
 for scenario in scenarios {
-    log(scenario.name.padding(toLength: 20, withPad: " ", startingAt: 0)
+    log(scenario.name.padding(toLength: 24, withPad: " ", startingAt: 0)
         + String(format: "%6d  %6d", scenario.passed, scenario.failed))
 }
 let failures = scenarios.reduce(0) { $0 + $1.failed }
