@@ -16,6 +16,10 @@ is a Session you started, or one the user handed to you.
   list_presets` with the same `project_id`) and pass it as `preset`. With no
   `preset` or `command` the Worker runs your own agent: that Project's preset
   for it, else its plain command.
+- A Codex Worker needs `--no-daemon` on its command line: without it Codex
+  runs the Worker through its shared background daemon, outside the
+  Session, and the Worker gets no Unpeel tools. If the Project's Codex
+  preset lacks the flag, pass `command` with it instead of `preset`.
 - Put the task in `text`: the user's own words for that task, plus at most a
   short routing note. Never write an implementation plan or acceptance
   criteria; the Worker reads its Project's own instructions.

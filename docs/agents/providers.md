@@ -73,7 +73,26 @@ Codex:
   turn-completion (Stop/idle) source and a compatibility bridge for Codex
   builds without the `hooks` feature, plus `[mcp_servers.unpeel]` pointing
   at the MCP shim. Codex spawns MCP servers with a minimal environment, so
-  the shim's gate recovers the Session from process ancestry.
+  the shim's gate recovers the Session from process ancestry. The table
+  forwards no `UNPEEL_*` variable (`env_vars`), because a daemon's copy can
+  name another Session.
+- **Codex runs in a Session with `--no-daemon`**, so the suggested preset is
+  `codex --no-daemon --dangerously-bypass-approvals-and-sandbox`. Without the
+  flag an interactive `codex` attaches to a running shared background
+  app-server daemon (`codex app-server --managed-daemon`) under `CODEX_HOME`,
+  and from 0.157 it also starts one (`daemon_auto_start`, on by default). That
+  daemon starts the MCP servers and runs the hooks with the environment of
+  whoever started it. Once the `codex` that started it has exited, the gate
+  finds no Session and serves no tools; while it still runs in a Session, the
+  daemon's MCP servers trace up to that Session through it (#71). The hooks
+  report to the Session that started the daemon, or to none (#70).
+  `--no-daemon` keeps the app-server embedded in the TUI, inside the Session,
+  and `codex resume <id> --no-daemon` keeps it there. Nothing appends the flag
+  at launch, so a preset made before this change, or a `codex` typed by hand,
+  still attaches to the daemon. Codex older than 0.156 rejects the flag, so
+  drop it there; such a Codex never starts a daemon but still attaches to one
+  that is running. `crates/unpeel-cli/tests/cases/codex_mcp_tools.py` covers
+  both launches.
 - The Codex package's notify normalizer maps raw event `type`s onto Unpeel states before calling the provider-neutral transport: `agent-turn-complete`/`task_complete`/`turn_aborted` → Stop, `task_started`/`exec_command_begin` → Start, `request_permissions`/`exec_approval_request`/`apply_patch_approval_request`/`approval-requested` → PermissionRequest.
 - Codex's descriptor declares the inherited `CODEX_*` identity variables the generic Host boundary strips, so nested Codex sessions do not cross-fire hooks.
 
