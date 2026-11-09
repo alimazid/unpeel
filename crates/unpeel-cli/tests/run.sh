@@ -13,8 +13,9 @@
 # an outside lock. Every case first takes one of UNPEEL_TUI_SLOTS
 # machine-wide slots (default 4, at most 9). A slot is a flock held on an
 # open file, so a run that dies frees its slot with no cleanup. The slot also
-# names the case's home (/tmp/s<slot>-<case>), so no two live cases ever
-# share a home, and every sweep below is scoped to one home. Ports are never
+# names the case's home (/tmp/s<slot>-<case>, or inside UNPEEL_TUI_SLOT_DIR
+# when that moves the slots), so no two live cases ever share a home, and
+# every sweep below is scoped to one home or to one slot's. Ports are never
 # fixed: the harness and the Host bind :0, or a random port outside the
 # kernel's ephemeral range when a port has to be released and bound again.
 # Waiting cases line up for the next free slot, so a short rerun waits for
@@ -44,7 +45,18 @@ while (( $# )); do
 done
 
 slots="${UNPEEL_TUI_SLOTS:-4}"
-slot_dir="${UNPEEL_TUI_SLOT_DIR:-/tmp/unpeel-pty-matrix.slots}"
+machine_slot_dir=/tmp/unpeel-pty-matrix.slots
+slot_dir="${UNPEEL_TUI_SLOT_DIR:-$machine_slot_dir}"
+# A run holding slot N clears every home named for slot N (clear_slot_homes),
+# so a slot directory and its homes go together: the machine's slots name
+# /tmp/s<slot>-<case>, and a private slot directory (the runner's self-test)
+# keeps its homes inside itself, where no run on the machine's slots looks.
+# Keep a private one short: the harness refuses a home that would overflow.
+if [[ "$slot_dir" == "$machine_slot_dir" ]]; then
+  home_prefix=/tmp/s
+else
+  home_prefix="$slot_dir/s"
+fi
 # One digit keeps /tmp/s<slot>-<case> as short as the old /tmp/ut-<case>:
 # a hosted session binds <home>/app-sessions/<uuid>/session.sock, and
 # host_launch_conformance's sub-homes already sit 1 byte under the limit.
@@ -176,12 +188,13 @@ take_slot() {
   return 1
 }
 
-# A run holding slot N owns every /tmp/sN-* home, since no live case of any
-# run can be using one: clear what a run that died left behind there, so a
-# leaked host stops writing into a home nobody will reuse soon.
+# A run holding slot N owns every home named for slot N (/tmp/sN-* on the
+# machine's slots), since no live case of any run on the same slots can be
+# using one: clear what a run that died left behind there, so a leaked host
+# stops writing into a home nobody will reuse soon.
 clear_slot_homes() {
   local home
-  for home in /tmp/s"$1"-*; do
+  for home in "$home_prefix$1"-*; do
     [[ -e "$home" ]] || continue
     sweep_home "$home"
     rm -rf "$home"
@@ -208,7 +221,7 @@ run_case() {
     sweep_home "$home"
     rm -rf "$home"
   else
-    home="/tmp/s$slot-$name"
+    home="$home_prefix$slot-$name"
     clear_slot_homes "$slot"
   fi
   start=$(date +%s)

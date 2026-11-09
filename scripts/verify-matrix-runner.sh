@@ -5,6 +5,10 @@
 # only sleep and log, then drives the copy the way several Workers would.
 #
 # Verifies:
+#   0. isolation — a run on a private slot directory keeps its homes inside
+#                  it, and a live home in the machine's /tmp/s<slot>-*
+#                  survives; checked first, since a failure means the
+#                  sections below would remove a real run's homes
 #   1. serial    — the default runs one case at a time, in name order
 #   2. jobs      — -j N runs a run's cases at once, still printed in order
 #   3. slots     — two runs at once never hold more cases than there are
@@ -18,7 +22,8 @@
 #   7. queue     — a run that arrives while another holds the only slot
 #                  gets it after that run's current case, not its last
 #
-# Usage: scripts/verify-matrix-runner.sh   (about 30 s; touches no real case)
+# Usage: scripts/verify-matrix-runner.sh   (about 30 s; touches no real case,
+#        so it may run beside a real matrix)
 # Exit:  0 = all checks pass; non-zero with FAIL lines otherwise.
 
 set -uo pipefail
@@ -26,15 +31,27 @@ set -uo pipefail
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 TESTS="$REPO_ROOT/crates/unpeel-cli/tests"
 
-sandbox="$(mktemp -d "${TMPDIR:-/tmp}/matrix-runner.XXXXXX")"
+# In /tmp, not $TMPDIR: a private slot directory holds its runs' homes, and
+# the harness refuses a home too long for a hosted session's socket.
+sandbox="$(mktemp -d /tmp/mr.XXXXXX)"
 # Every run in here shares one private slot directory: a stand-in for the
 # machine's, so these checks never take a slot from a real matrix.
 export UNPEEL_TUI_SLOT_DIR="$sandbox/slots"
 export UNPEEL_TUI_SKIP_BUILD=1
 export UNPEEL_TUI_BINARY=/usr/bin/true
+# The machine's slots (run.sh's default), and the home on its slot 9 that
+# section 0 owns while it holds that slot.
+machine_slots=/tmp/unpeel-pty-matrix.slots
+decoy=/tmp/s9-runner_selftest
 holder=""
+owner=""
+owns_decoy=0
 cleanup() {
   [[ -n "$holder" ]] && kill -9 "$holder" 2>/dev/null
+  # Only while the machine's slot 9 is still held: once it is free, a home
+  # there belongs to whoever holds the slot next.
+  (( owns_decoy )) && rm -rf "$decoy"
+  [[ -n "$owner" ]] && kill -9 "$owner" 2>/dev/null
   rm -rf "$sandbox"
 }
 trap cleanup EXIT
@@ -104,6 +121,51 @@ max_overlap() {
     | awk '{ now += $2; if (now > top) top = now } END { print top + 0 }'
 }
 
+# 0. isolation: a run holding slot N clears every home named for slot N, so a
+# run on the private slots must never name its homes like the machine's. This
+# holds the machine's slot 9 (no run polls it at the default 4 slots), which
+# makes /tmp/s9-* this script's to touch, and keeps a live home there while a
+# run takes its private slot 9: one slot left free past 1-8, which it holds.
+make_runner "$sandbox/iso" rt_iso
+mkdir -p "$machine_slots" "$UNPEEL_TUI_SLOT_DIR"
+python3 -c 'import fcntl, sys, time
+machine, private, ready = sys.argv[1:]
+held = [open(f"{machine}/9", "a")] + [open(f"{private}/{i}", "a") for i in range(1, 9)]
+for handle in held:
+    fcntl.flock(handle, fcntl.LOCK_EX)
+open(ready, "w").close()
+time.sleep(600)' "$machine_slots" "$UNPEEL_TUI_SLOT_DIR" "$sandbox/owner.ready" &
+owner=$!
+# A real run with 9 slots may hold slot 9 for one case: wait that out.
+for _ in $(seq 600); do
+  [[ -e "$sandbox/owner.ready" ]] || ! kill -0 "$owner" 2>/dev/null && break
+  sleep 0.5
+done
+if [[ ! -e "$sandbox/owner.ready" ]]; then
+  check "isolation: hold the machine's slot 9" 0 "its holder exited, or 300s passed"
+  exit 1
+fi
+owns_decoy=1
+rm -rf "$decoy"
+mkdir -p "$decoy"
+echo '{}' >"$decoy/app-state.json"
+log="$sandbox/iso.log"
+out="$(RUNNER_LOG="$log" RUNNER_SLEEP=0.2 UNPEEL_TUI_SLOTS=9 "$sandbox/iso/run.sh" 2>&1)"
+status=$?
+check "isolation: the run passes" "$(( status == 0 ))" "exit $status: $out"
+iso_home="$(awk '$1 == "start" { print $4 }' "$log" 2>/dev/null)"
+check "isolation: the run's home is inside its slot directory" \
+  "$(holds test "$iso_home" = "$UNPEEL_TUI_SLOT_DIR/s9-rt_iso")" "$iso_home"
+check "isolation: a live home outside the sandbox survives" \
+  "$(holds test -e "$decoy/app-state.json")" "$decoy was removed"
+rm -rf "$decoy"
+owns_decoy=0
+{ kill -9 "$owner"; wait "$owner"; } 2>/dev/null; owner=""
+if (( failures )); then
+  echo "isolation failed: the sections below would remove a real run's homes"
+  exit 1
+fi
+
 # 1. serial
 make_runner "$sandbox/one" rt_a rt_b rt_c
 log="$sandbox/serial.log"
@@ -157,8 +219,10 @@ overlapping_homes="$(awk '$1=="start"{home[$2]=$4; from[$2]=$3} $1=="end"{to[$2]
   "$first" "$second")"
 check "slots: no two live cases share a home" "$(holds test -z "$overlapping_homes")" "$overlapping_homes"
 homes="$(awk '$1=="start"{print $4}' "$first" "$second" | sort -u)"
-bad_homes="$(grep -vE '^/tmp/s[12]-rt_[a-f]$' <<<"$homes")"
-check "slots: homes are /tmp/s<slot>-<case>" "$(holds test -z "$bad_homes")" "$bad_homes"
+bad_homes="$(for home in $homes; do
+  [[ "$home" == "$UNPEEL_TUI_SLOT_DIR/s"[12]-rt_[a-f] ]] || echo "$home"
+done)"
+check "slots: homes are <slot dir>/s<slot>-<case>" "$(holds test -z "$bad_homes")" "$bad_homes"
 left="$(for home in $homes; do [[ -e "$home" ]] && echo "$home"; done)"
 check "slots: homes are removed after the run" "$(holds test -z "$left")" "$left"
 check "slots: fd 9 is closed in every case" \
