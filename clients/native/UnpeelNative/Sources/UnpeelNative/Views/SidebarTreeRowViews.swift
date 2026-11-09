@@ -162,6 +162,9 @@ struct SidebarPooledRowInputs: Equatable {
     let folderColors: [String: ProjectFolderColor]
     // Fork-only (#57)
     let activeBranch: SidebarActiveBranch?
+    /// Fork-only (#57): the local-site URLs behind each top-level project's
+    /// globe. Only the current instance's own page has any.
+    let localSites: [String: [String]]
 }
 
 /// A pooled page's row: the REAL row component with inert inputs, in the row
@@ -242,6 +245,7 @@ struct SidebarPooledTreeRow: View {
             quickGroups: [],
             menuPresets: [],
             folderColor: inputs.folderColors[node.id],
+            localSiteURLs: inputs.localSites[node.id] ?? [],
             pooledBranch: inputs.activeBranch?.projectID == node.id ? inputs.activeBranch?.name : nil,
             onToggle: {},
             onLaunchPreset: { _ in },

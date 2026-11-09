@@ -9,8 +9,10 @@ import XCTest
 /// takes the path a swipe takes: the neighbor's pooled page first, then the
 /// scope switch, then the live page.
 ///
-/// Not covered, because only the live page has it: a project's local-site
-/// globe. The fixture's paths serve no sites.
+/// A local-site globe's pixels against the live page aren't covered: only the
+/// current instance's own Local scope wears one, and landing there needs a real
+/// Host, which a store test must not run. These tests stop at the page's input
+/// and at the globe being painted; the swipe recordings on #57 cover the rest.
 @MainActor
 final class SidebarRowPixelParityTests: XCTestCase {
     /// The live page with its whole interaction layer, at rest: what the user
@@ -130,6 +132,78 @@ final class SidebarRowPixelParityTests: XCTestCase {
         XCTAssertTrue(content.inputs.folderColors.isEmpty)
     }
 
+    // MARK: The local-site globe (#57)
+
+    private static let site = "http://localhost:5173/"
+    private static let currentInstance = WorkspaceListRowModel.Kind.local(
+        record: nil, isDefault: true, isCurrentInstance: true, isRunning: true
+    )
+
+    /// Swiping back to this instance's own Local page: its top-level project
+    /// wears the globe before the swap, from a verdict already in hand.
+    func testTheCurrentInstancesPageWearsItsProjectsGlobe() throws {
+        let swipe = try WorkspaceSwipe(neighborKind: Self.currentInstance)
+        defer { swipe.finish() }
+        swipe.scopeAway()
+        swipe.store.noteLocalSiteForTesting(url: Self.site, sessionID: "alpha-plain", projectID: "alpha", isLive: true)
+        SidebarListContentBuilder.invalidate()
+
+        let content = try XCTUnwrap(SidebarListContentBuilder.content(for: swipe.neighbor, store: swipe.store))
+
+        XCTAssertEqual(content.inputs.localSites, ["alpha": [Self.site]])
+    }
+
+    /// A site that failed its probe stays hidden, as on the live page.
+    func testAGlobeNeedsASiteThatPassedItsProbe() throws {
+        let swipe = try WorkspaceSwipe(neighborKind: Self.currentInstance)
+        defer { swipe.finish() }
+        swipe.scopeAway()
+        swipe.store.noteLocalSiteForTesting(url: Self.site, sessionID: "alpha-plain", projectID: "alpha", isLive: false)
+        SidebarListContentBuilder.invalidate()
+
+        let content = try XCTUnwrap(SidebarListContentBuilder.content(for: swipe.neighbor, store: swipe.store))
+
+        XCTAssertEqual(content.inputs.localSites, [:])
+    }
+
+    /// Another workspace's page never does: its live page has no globe.
+    func testAnotherWorkspacesPageHasNoGlobe() throws {
+        let swipe = try WorkspaceSwipe()
+        defer { swipe.finish() }
+        swipe.store.noteLocalSiteForTesting(url: Self.site, sessionID: "alpha-plain", projectID: "alpha", isLive: true)
+        SidebarListContentBuilder.invalidate()
+
+        let content = try XCTUnwrap(SidebarListContentBuilder.content(for: swipe.neighbor, store: swipe.store))
+
+        XCTAssertEqual(content.inputs.localSites, [:])
+    }
+
+    /// The globe really is painted from that input.
+    func testTheComparisonSeesTheGlobe() throws {
+        let swipe = try WorkspaceSwipe()
+        defer { swipe.finish() }
+        let content = try XCTUnwrap(SidebarListContentBuilder.content(for: swipe.neighbor, store: swipe.store))
+        let header = try XCTUnwrap(content.rows.first { $0.id == "folder:alpha" })
+        let inputs = content.inputs
+        let globed = SidebarPooledRowInputs(
+            selectedSessionID: inputs.selectedSessionID,
+            highlightedFolderIDs: inputs.highlightedFolderIDs,
+            unreadSessionIDs: inputs.unreadSessionIDs,
+            paneItemsByRepresentative: inputs.paneItemsByRepresentative,
+            dateSortedProjectIDs: inputs.dateSortedProjectIDs,
+            folderColors: inputs.folderColors,
+            activeBranch: inputs.activeBranch,
+            localSites: ["alpha": [Self.site]]
+        )
+
+        let bare = try Pixels.settled(of: Self.strip(SidebarPooledTreeRow(row: header, inputs: inputs)))
+        let marked = try Pixels.settled(of: Self.strip(SidebarPooledTreeRow(row: header, inputs: globed)))
+
+        for (scale, (one, other)) in zip(Pixels.scales, zip(marked, bare)) {
+            XCTAssertNotEqual(one, other, "the globe at \(scale)x")
+        }
+    }
+
     // MARK: The branch mark (#57)
 
     /// A page on this Mac takes the name from the checkout, not from the Host's
@@ -247,7 +321,8 @@ final class SidebarRowPixelParityTests: XCTestCase {
             paneItemsByRepresentative: content.inputs.paneItemsByRepresentative,
             dateSortedProjectIDs: content.inputs.dateSortedProjectIDs,
             folderColors: content.inputs.folderColors,
-            activeBranch: nil
+            activeBranch: nil,
+            localSites: content.inputs.localSites
         )
 
         let marked = try Pixels.settled(of: Self.strip(SidebarPooledTreeRow(row: header, inputs: content.inputs)))
@@ -272,7 +347,8 @@ final class SidebarRowPixelParityTests: XCTestCase {
             paneItemsByRepresentative: content.inputs.paneItemsByRepresentative,
             dateSortedProjectIDs: content.inputs.dateSortedProjectIDs,
             folderColors: content.inputs.folderColors,
-            activeBranch: content.inputs.activeBranch
+            activeBranch: content.inputs.activeBranch,
+            localSites: content.inputs.localSites
         )
 
         func painted(shift: CGFloat = 0, inputs: SidebarPooledRowInputs) throws -> [Pixels] {

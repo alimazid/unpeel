@@ -909,6 +909,17 @@ final class UnpeelStore: ObservableObject {
     /// user watches another, so the chip is project-scoped, not
     /// session-scoped. Stable order: session creation time, then URL.
     func localSiteURLs(forProjectFamilyOf projectID: String) -> [String] {
+        localSiteCandidates(forProjectFamilyOf: projectID).filter { localURLVerdict($0) }
+    }
+
+    /// Fork-only (#57): the same list from the verdicts already in hand. A
+    /// pooled page reads it in the swipe's path, so it starts no probe and
+    /// publishes nothing.
+    func knownLocalSiteURLs(forProjectFamilyOf projectID: String) -> [String] {
+        localSiteCandidates(forProjectFamilyOf: projectID).filter { localURLVerdicts[$0]?.ok == true }
+    }
+
+    private func localSiteCandidates(forProjectFamilyOf projectID: String) -> [String] {
         func rootID(_ id: String) -> String {
             var current = id
             var hops = 0
@@ -927,7 +938,7 @@ final class UnpeelStore: ObservableObject {
         }
         // One row per server: group by origin and keep the URL closest to
         // the parent — a deep link survives only while no parent URL exists
-        // for the same origin. Then each survivor must pass the
+        // for the same origin. The callers then hold each survivor to the
         // current-rules probe.
         var byOrigin: [(origin: String, url: String)] = []
         for (_, urls) in members.sorted(by: { $0.0 < $1.0 }) {
@@ -942,7 +953,7 @@ final class UnpeelStore: ObservableObject {
                 }
             }
         }
-        return byOrigin.map(\.url).filter { localURLVerdict($0) }
+        return byOrigin.map(\.url)
     }
 
     /// "http://localhost:5173/whatever" → "http://localhost:5173/".
@@ -2085,6 +2096,21 @@ final class UnpeelStore: ObservableObject {
     /// with fixture bootstraps. Production code never calls it.
     func markLocalHostClientStartedForTesting() {
         localHostClientStarted = true
+    }
+
+    /// A local site this Mac has already probed, without a Host or a probe:
+    /// a test sets a Session in `projectID` serving `url`, with its verdict.
+    func noteLocalSiteForTesting(url: String, sessionID: String, projectID: String, isLive: Bool) {
+        projectsByID[projectID] = Project(
+            id: projectID, name: projectID, path: "/fixture/\(projectID)", parentProjectID: nil, sortOrder: 0,
+            isFolder: nil, worktreeBranch: nil, workspacesEnabled: nil, mcpBlocked: nil
+        )
+        sessionsByID[sessionID] = Self.sessionEntry(fromRemote: RemoteSessionSummary(
+            id: sessionID, projectID: projectID, title: sessionID, command: "zsh",
+            createdAtUnixMs: 1, status: .running, activity: .idle, unread: false, pinned: false
+        ))
+        detectedLocalURLs[sessionID] = [url]
+        localURLVerdicts[url] = (isLive, Date())
     }
 
     /// Pull `name` from `app-state.json` into the native project records for
