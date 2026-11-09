@@ -24,6 +24,62 @@ final class WorktreeGitTests: XCTestCase {
         XCTAssertTrue(message.contains("noisy-stderr"), message)
     }
 
+    // MARK: - Checked-out branch (#57)
+
+    /// A repo on `branch`, with one commit.
+    private func repo(on branch: String) throws -> URL {
+        let repo = try makeTempDir()
+        git(repo, ["init", "-b", branch])
+        git(repo, ["commit", "--allow-empty", "-m", "one"])
+        return repo
+    }
+
+    func testCheckedOutBranchNamesASlashBranchWhole() throws {
+        let repo = try repo(on: "feat/some-thing")
+        defer { try? FileManager.default.removeItem(at: repo) }
+
+        XCTAssertEqual(WorktreeGit.checkedOutBranch(repoPath: repo.path), "feat/some-thing")
+    }
+
+    /// The sidebar's mark says what HEAD's own text says. `--short` would print
+    /// `heads/foo` here.
+    func testCheckedOutBranchIgnoresATagOfTheSameName() throws {
+        let repo = try repo(on: "foo")
+        defer { try? FileManager.default.removeItem(at: repo) }
+        git(repo, ["tag", "foo"])
+
+        XCTAssertEqual(WorktreeGit.checkedOutBranch(repoPath: repo.path), "foo")
+    }
+
+    /// The worktree dialog selects its current branch by title in the branch
+    /// list, which spells this one `heads/foo`.
+    func testCurrentBranchIsAmongTheDialogsBranchesBesideATagOfTheSameName() throws {
+        let repo = try repo(on: "foo")
+        defer { try? FileManager.default.removeItem(at: repo) }
+        git(repo, ["tag", "foo"])
+
+        let current = try XCTUnwrap(WorktreeGit.currentBranch(repoPath: repo.path))
+
+        XCTAssertTrue(WorktreeGit.listBranches(repoPath: repo.path).contains(current), current)
+    }
+
+    func testCheckedOutBranchNamesAHeadOutsideRefsHeads() throws {
+        let repo = try repo(on: "main")
+        defer { try? FileManager.default.removeItem(at: repo) }
+        git(repo, ["update-ref", "refs/remotes/origin/main", "HEAD"])
+        git(repo, ["symbolic-ref", "HEAD", "refs/remotes/origin/main"])
+
+        XCTAssertEqual(WorktreeGit.checkedOutBranch(repoPath: repo.path), "origin/main")
+    }
+
+    func testCheckedOutBranchNamesNothingOnADetachedHead() throws {
+        let repo = try repo(on: "main")
+        defer { try? FileManager.default.removeItem(at: repo) }
+        git(repo, ["checkout", "--detach"])
+
+        XCTAssertNil(WorktreeGit.checkedOutBranch(repoPath: repo.path))
+    }
+
     // MARK: - Default base ref
 
     private func makeTempDir() throws -> URL {

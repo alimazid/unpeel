@@ -909,6 +909,17 @@ final class UnpeelStore: ObservableObject {
     /// user watches another, so the chip is project-scoped, not
     /// session-scoped. Stable order: session creation time, then URL.
     func localSiteURLs(forProjectFamilyOf projectID: String) -> [String] {
+        localSiteCandidates(forProjectFamilyOf: projectID).filter { localURLVerdict($0) }
+    }
+
+    /// Fork-only (#57): the same list from the verdicts already in hand. A
+    /// pooled page reads it in the swipe's path, so it starts no probe and
+    /// publishes nothing.
+    func knownLocalSiteURLs(forProjectFamilyOf projectID: String) -> [String] {
+        localSiteCandidates(forProjectFamilyOf: projectID).filter { localURLVerdicts[$0]?.ok == true }
+    }
+
+    private func localSiteCandidates(forProjectFamilyOf projectID: String) -> [String] {
         func rootID(_ id: String) -> String {
             var current = id
             var hops = 0
@@ -927,7 +938,7 @@ final class UnpeelStore: ObservableObject {
         }
         // One row per server: group by origin and keep the URL closest to
         // the parent — a deep link survives only while no parent URL exists
-        // for the same origin. Then each survivor must pass the
+        // for the same origin. The callers then hold each survivor to the
         // current-rules probe.
         var byOrigin: [(origin: String, url: String)] = []
         for (_, urls) in members.sorted(by: { $0.0 < $1.0 }) {
@@ -942,7 +953,7 @@ final class UnpeelStore: ObservableObject {
                 }
             }
         }
-        return byOrigin.map(\.url).filter { localURLVerdict($0) }
+        return byOrigin.map(\.url)
     }
 
     /// "http://localhost:5173/whatever" → "http://localhost:5173/".
@@ -2085,6 +2096,21 @@ final class UnpeelStore: ObservableObject {
     /// with fixture bootstraps. Production code never calls it.
     func markLocalHostClientStartedForTesting() {
         localHostClientStarted = true
+    }
+
+    /// Fork-only (#57): a local site this Mac has already probed, without a Host
+    /// or a probe: a Session in `projectID` serving `url`, with its verdict.
+    func noteLocalSiteForTesting(url: String, sessionID: String, projectID: String, probePassed: Bool) {
+        projectsByID[projectID] = Project(
+            id: projectID, name: projectID, path: "/fixture/\(projectID)", parentProjectID: nil, sortOrder: 0,
+            isFolder: nil, worktreeBranch: nil, workspacesEnabled: nil, mcpBlocked: nil
+        )
+        sessionsByID[sessionID] = Self.sessionEntry(fromRemote: RemoteSessionSummary(
+            id: sessionID, projectID: projectID, title: sessionID, command: "zsh",
+            createdAtUnixMs: 1, status: .running, activity: .idle, unread: false, pinned: false
+        ))
+        detectedLocalURLs[sessionID] = [url]
+        localURLVerdicts[url] = (probePassed, Date())
     }
 
     /// Pull `name` from `app-state.json` into the native project records for
@@ -14563,7 +14589,7 @@ final class UnpeelStore: ObservableObject {
     /// Guards async branch resolution against stale results after a switch.
     private var titlebarBranchPath: String?
     private var titlebarBranchRequestsInFlight: Set<String> = []
-    private var titlebarBranchCache: [String: (branch: String?, resolvedAt: Date)] = [:]
+    private var titlebarBranchResolvedAt: [String: Date] = [:]
     private static let titlebarBranchCacheTTL: TimeInterval = 5
 
     func refreshTitlebarBranch() {
@@ -14600,10 +14626,12 @@ final class UnpeelStore: ObservableObject {
         titlebarBranchState.update(name: nil, isWorktree: false)
     }
 
-    /// Plain git project on this Mac: immediately reuse a recently resolved
-    /// result. Selection ping-pong previously launched one git process per
-    /// click; a short cache plus one in-flight request per path bounds that
-    /// work.
+    /// Plain git project on this Mac. Fork-only (#57): show what
+    /// `workspacePool.checkouts` knows at once, the same name the incoming
+    /// pooled page showed, so a swipe's swap has no gap and no disk read. `git`
+    /// then confirms it. Selection ping-pong previously launched one git
+    /// process per click; a short TTL plus one in-flight request per path
+    /// bounds that work.
     private func resolveLocalTitlebarBranch(path: String) {
         guard UnpeelStore.isGitRepo(path: path) else {
             titlebarBranchPath = nil
@@ -14611,21 +14639,22 @@ final class UnpeelStore: ObservableObject {
             return
         }
         titlebarBranchPath = path
-        if let cached = titlebarBranchCache[path] {
-            titlebarBranchState.update(name: cached.branch, isWorktree: false)
-            if Date().timeIntervalSince(cached.resolvedAt) < Self.titlebarBranchCacheTTL {
-                return
-            }
-        } else {
-            titlebarBranchState.update(name: nil, isWorktree: false)
+        titlebarBranchState.update(
+            name: workspacePool.checkouts.branch(atPath: path),
+            isWorktree: false
+        )
+        if let resolvedAt = titlebarBranchResolvedAt[path],
+           Date().timeIntervalSince(resolvedAt) < Self.titlebarBranchCacheTTL {
+            return
         }
         guard titlebarBranchRequestsInFlight.insert(path).inserted else { return }
-        DispatchQueue.global(qos: .userInitiated).async {
-            let branch = WorktreeGit.currentBranch(repoPath: path)
-            DispatchQueue.main.async { [weak self] in
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            let branch = WorktreeGit.checkedOutBranch(repoPath: path)
+            DispatchQueue.main.async {
                 guard let self else { return }
                 self.titlebarBranchRequestsInFlight.remove(path)
-                self.titlebarBranchCache[path] = (branch, Date())
+                self.titlebarBranchResolvedAt[path] = Date()
+                self.workspacePool.checkouts.noteGitAnswer(branch, atPath: path)
                 guard self.titlebarBranchPath == path else { return }
                 self.titlebarBranchState.update(name: branch, isWorktree: false)
             }

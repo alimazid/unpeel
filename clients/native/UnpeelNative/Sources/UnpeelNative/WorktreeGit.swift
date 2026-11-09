@@ -200,6 +200,17 @@ enum WorktreeGit {
         return out
     }
 
+    /// Fork-only (#57): the name the sidebar's branch mark shows, and the one
+    /// `GitHeadReader.checkedOutBranch` reads from HEAD's text. Not `--short`:
+    /// beside a tag of the same name it prints `heads/foo`, as `listBranches`
+    /// does, which `currentBranch` has to match.
+    static func checkedOutBranch(repoPath: String) -> String? {
+        guard case .ok(let ref) = runGit(
+            repo: repoPath, ["symbolic-ref", "--quiet", "HEAD"]
+        ), !ref.isEmpty else { return nil }
+        return ref.split(separator: "/", maxSplits: 2).dropFirst(2).first.map(String.init) ?? ref
+    }
+
     /// Branches already checked out in some worktree — git refuses to check
     /// them out a second time (mirrors usedBranches in NewWorkspaceView.svelte).
     static func checkedOutBranches(repoPath: String) -> Set<String> {
