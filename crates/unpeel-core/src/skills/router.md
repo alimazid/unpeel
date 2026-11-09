@@ -45,8 +45,11 @@ is a Session you started, or one the user handed to you.
   directly, that reply was for the user, not a report to you.
 - A "finished" notice for a turn neither you nor the user's typing started (a
   timer, a background task, a prompt from outside the terminal) does not wake
-  you: it comes with your next batch. A Worker whose result you are waiting on
-  across such turns should `report` it, so ask for that when you hand out long
+  you. It waits in your Inbox for your next batch, where a later notice about
+  the same Worker folds it (`earlier: finished`; `sessions inbox` lists them).
+  The one such turn right after a task you gave a Worker does wake you, so a
+  single background step still reaches you. A Worker whose result takes more
+  turns than that has to `report` it, so ask for that when you hand out long
   work.
 
 ## Answering Workers

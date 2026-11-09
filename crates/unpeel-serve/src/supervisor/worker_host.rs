@@ -1,6 +1,6 @@
 //! Fork-only: what the Worker alerts and the watchdog read outside the
 //! sidebar rows — the Router mark, Worker markers, exit facts, durable
-//! progress stamps and the supervisor's heartbeat. [`HostWorkers`] reads
+//! progress stamps, the user's last keystroke and the supervisor's heartbeat. [`HostWorkers`] reads
 //! the real home; tests use a fake.
 
 use std::path::PathBuf;

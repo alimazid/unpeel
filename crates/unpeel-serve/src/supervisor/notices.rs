@@ -16,18 +16,29 @@ pub const NEEDS_INPUT_STATUS: &str = "needs_input";
 pub const EXITED_STATUS: &str = "exited";
 pub const STARTED_STATUS: &str = "started";
 
-/// Who started a Worker's turn, as far as the Host can tell.
+/// Who a Worker's turn answers to, as far as the Host can tell.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TurnCause {
-    /// A Host paste or a Router write, or a start nobody saw: the reply may
-    /// be what the Router is waiting for.
+    /// A Host paste or Router write came just before it or during it, nobody
+    /// saw it start, or it follows such a turn: its reply may be what the
+    /// Router is waiting for.
     HostOrUnseen,
-    /// The user typed into the Worker during the turn: the reply was for
-    /// the user.
+    /// The user typed into the Worker just before it or during it: its reply
+    /// was for the user.
     UserTyped,
     /// Seen starting from idle with neither: a timer, a background task, a
-    /// prompt from outside the terminal. It waits for the next wake batch.
-    Neither,
+    /// prompt from outside the terminal.
+    Unprompted,
+}
+
+impl TurnCause {
+    /// A turn nobody prompted waits for the next wake batch.
+    fn priority(self) -> Priority {
+        match self {
+            Self::HostOrUnseen | Self::UserTyped => Priority::Wake,
+            Self::Unprompted => Priority::RideAlong,
+        }
+    }
 }
 
 /// A Worker finished a turn. `reply` is its final reply (the snippet the
@@ -38,42 +49,36 @@ pub fn finished(
     cause: TurnCause,
     stamp: Option<u64>,
 ) -> NewItem {
-    let (summary, priority) = match cause {
-        TurnCause::HostOrUnseen => (format!("{} finished.", name(row)), Priority::Wake),
-        TurnCause::UserTyped => (
-            format!(
-                "{} finished after the user talked to it directly; its reply was for the user, \
-                 not a report to you.",
-                name(row)
-            ),
-            Priority::Wake,
+    let summary = match cause {
+        TurnCause::HostOrUnseen => format!("{} finished.", name(row)),
+        TurnCause::UserTyped => format!(
+            "{} finished after the user talked to it directly; its reply was for the user, \
+             not a report to you.",
+            name(row)
         ),
-        TurnCause::Neither => (
-            format!(
-                "{} finished a turn neither you nor the user's typing started (a timer, a \
-                 background task, or a prompt from outside the terminal).",
-                name(row)
-            ),
-            Priority::RideAlong,
+        TurnCause::Unprompted => format!(
+            "{} finished a turn neither you nor the user's typing started (a timer, a \
+             background task, or a prompt from outside the terminal).",
+            name(row)
         ),
     };
     NewItem {
         dedupe_key: stamp.map(|stamp| format!("fin:{}:{stamp}", row.id)),
-        ..lifecycle(row, FINISHED_STATUS, priority, summary, reply)
+        ..lifecycle(row, FINISHED_STATUS, cause.priority(), summary, reply)
     }
 }
 
 /// A Worker only its screen speaks for went idle after a turn. The screen
 /// tier never makes a Finished edge, so this best guess stands in for one,
 /// marked as such; there is no reply to carry. Once per turn.
-pub fn screen_finished(row: &SessionRow, turn_started_at: u64) -> NewItem {
+pub fn screen_finished(row: &SessionRow, turn_started_at: u64, cause: TurnCause) -> NewItem {
     let summary = format!(
         "{} finished (screen-detected: no reply was captured; read its screen for the result).",
         name(row)
     );
     NewItem {
         dedupe_key: Some(format!("fin:{}:screen:{turn_started_at}", row.id)),
-        ..lifecycle(row, FINISHED_STATUS, Priority::Wake, summary, None)
+        ..lifecycle(row, FINISHED_STATUS, cause.priority(), summary, None)
     }
 }
 

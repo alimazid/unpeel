@@ -21,7 +21,7 @@ use unpeel_core::activity_log::ActivityLogKind;
 use unpeel_core::session_inbox::{ItemKind, NewItem, Sender, Store};
 use unpeel_core::supervision::SupervisorConfig;
 
-use super::inbox_drain::{Notice, NoticeKind};
+use super::inbox_drain::{Notice, NoticeKind, CONFIRM_TIMEOUT_MS};
 use super::notices::TurnCause;
 use super::worker_host::{Exit, HostWorkers, WorkerHost};
 use super::{notices, watchdog};
@@ -32,9 +32,10 @@ pub const SELF_CAUSED_MS: u64 = 5_000;
 /// The same for an exit: the stop verb waits up to 8 s for the exited
 /// manifest, and a rescan follows.
 pub const SELF_CAUSED_EXIT_MS: u64 = 15_000;
-/// A Host paste, Router write or keystroke this long before a turn began
-/// started it.
-pub const TURN_CAUSE_MS: u64 = 10_000;
+/// A keystroke this long before a turn began counts as the user's start. A
+/// Host paste or Router write gets `CONFIRM_TIMEOUT_MS`, the time the drain
+/// itself gives a paste to start a turn.
+const TYPED_CAUSE_MS: u64 = 10_000;
 pub const HEARTBEAT_MS: u64 = 30_000;
 /// Restart reconciliation looks back at most this far (the Inbox keeps
 /// delivered notices, and so their dedupe keys, for a day).
@@ -66,8 +67,29 @@ struct Track {
     finished_at: Option<u64>,
     /// A turn that ended without finishing, checked one step later.
     ended_quietly: Option<(Turn, u64)>,
+    /// A turn the Host may have started ended with no report: the next turn
+    /// nobody prompted can carry its answer.
+    follow_up_owed: bool,
     /// Watchdog episodes already reported.
     fired: HashSet<(watchdog::Rule, u64)>,
+}
+
+impl Track {
+    /// A turn nobody prompted right after one the Host may have started can
+    /// be that task's answer (a background task finishing), so it wakes,
+    /// once. A loop's later ticks do not.
+    fn settle(&mut self, cause: TurnCause) -> TurnCause {
+        match cause {
+            TurnCause::HostOrUnseen => {
+                self.follow_up_owed = true;
+                cause
+            }
+            TurnCause::Unprompted if std::mem::take(&mut self.follow_up_owed) => {
+                TurnCause::HostOrUnseen
+            }
+            TurnCause::Unprompted | TurnCause::UserTyped => cause,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -238,10 +260,15 @@ impl WorkerAlerts {
             .or(previous)
             .unwrap_or(started_at);
         if reported_since(&self.store, router, &row.id, since) {
+            track.follow_up_owed = false;
             return None;
         }
-        let typed_at = self.io.last_input_at(&row.id);
-        let cause = turn_cause(drain, &row.id, turn, touched, typed_at, now);
+        let facts = TurnFacts {
+            drain,
+            touched,
+            typed_at: self.io.last_input_at(&row.id),
+        };
+        let cause = track.settle(turn_cause(&row.id, turn, &facts, now));
         Some(notices::finished(row, reply, cause, finished_stamp(row)))
     }
 
@@ -263,7 +290,7 @@ impl WorkerAlerts {
     /// Once per rescan: update every track, raise the watchdog's alarms
     /// and escalations, catch up after a Host start, keep the heartbeat.
     /// Returns notifications for the user.
-    pub fn step(&mut self, rows: &[SessionRow], now: u64) -> Vec<Notice> {
+    pub fn step(&mut self, rows: &[SessionRow], now: u64, drain: &dyn DrainView) -> Vec<Notice> {
         let (router, config) = self.io.router_and_config();
         let floor = *self.floor.get_or_insert_with(|| self.io.heartbeat());
         for row in rows {
@@ -291,7 +318,7 @@ impl WorkerAlerts {
             if !self.reconciled {
                 self.reconcile(rows, router, &workers, floor, now);
             }
-            self.watch(rows, router, &workers, &config, now);
+            self.watch(rows, router, &workers, &config, now, drain);
         }
         self.reconciled = true;
         // A quiet end had its one step to be reported.
@@ -324,6 +351,7 @@ impl WorkerAlerts {
         workers: &HashSet<String>,
         config: &SupervisorConfig,
         now: u64,
+        drain: &dyn DrainView,
     ) {
         let mut alarms = Vec::new();
         for row in rows.iter().filter(|row| workers.contains(&row.id)) {
@@ -338,7 +366,14 @@ impl WorkerAlerts {
             };
             let mut due =
                 watchdog::due(&evidence(track, row, durable, self.started_at), config, now);
-            match quiet_end(&self.store, router, track, row, touched, now) {
+            let facts = TurnFacts {
+                drain,
+                touched,
+                typed_at: track
+                    .ended_quietly
+                    .and_then(|_| self.io.last_input_at(&row.id)),
+            };
+            match quiet_end(&self.store, router, track, row, &facts, now) {
                 Some(QuietEnd::WentQuiet(alarm)) => due.push(alarm),
                 Some(QuietEnd::ScreenFinished(notice)) => alarms.push(notice),
                 None => {}
@@ -532,13 +567,13 @@ fn quiet_end(
     router: &str,
     track: &mut Track,
     row: &SessionRow,
-    touched: Option<u64>,
+    facts: &TurnFacts,
     now: u64,
 ) -> Option<QuietEnd> {
     let (turn, ended_at) = track.ended_quietly.filter(|(_, at)| *at < now)?;
     track.ended_quietly = None;
     let finished = track.finished_at.is_some_and(|at| at >= turn.started_at);
-    let interrupted_by_router = touched.is_some_and(|touched| {
+    let interrupted_by_router = facts.touched.is_some_and(|touched| {
         touched <= ended_at && touched + SELF_CAUSED_MS >= ended_at && turn.started_at <= touched
     });
     if finished || interrupted_by_router || row.status != Status::Idle {
@@ -551,8 +586,16 @@ fn quiet_end(
         )));
     }
     track.finished_at = Some(ended_at);
-    (!reported_since(store, router, &row.id, turn.started_at))
-        .then(|| QuietEnd::ScreenFinished(notices::screen_finished(row, turn.started_at)))
+    if reported_since(store, router, &row.id, turn.started_at) {
+        track.follow_up_owed = false;
+        return None;
+    }
+    let cause = track.settle(turn_cause(&row.id, Some(turn), facts, ended_at));
+    Some(QuietEnd::ScreenFinished(notices::screen_finished(
+        row,
+        turn.started_at,
+        cause,
+    )))
 }
 
 fn evidence(
@@ -587,28 +630,38 @@ fn self_caused(track: &Track, touched: Option<u64>, now: u64, window: u64) -> bo
     })
 }
 
-/// Who started a turn that ends at `now`. The Host comes first: a reply it
-/// may be waiting for never loses its wake to a keystroke.
-fn turn_cause(
-    drain: &dyn DrainView,
-    worker: &str,
-    turn: Option<Turn>,
+/// What shows who a Worker's turn answers to.
+struct TurnFacts<'a> {
+    drain: &'a dyn DrainView,
+    /// The Router's last write, keypress or stop.
     touched: Option<u64>,
+    /// The user's last keystroke, the manifest's `last_input_at`.
     typed_at: Option<u64>,
-    now: u64,
-) -> TurnCause {
+}
+
+/// Who a turn ending at `now` answers to, read through to its end: a Router
+/// write the program queued mid-turn is answered by this same turn. The Host
+/// comes first, so a reply it may be waiting for never loses its wake to a
+/// keystroke.
+fn turn_cause(worker: &str, turn: Option<Turn>, facts: &TurnFacts, now: u64) -> TurnCause {
     let Some(turn) = turn.filter(|turn| turn.watched) else {
         return TurnCause::HostOrUnseen;
     };
-    let during = turn.started_at.saturating_sub(TURN_CAUSE_MS)..=now;
-    if drain.pasted_between(worker, *during.start(), now)
-        || touched.is_some_and(|at| during.contains(&at))
+    let host_from = turn.started_at.saturating_sub(CONFIRM_TIMEOUT_MS);
+    let typed_from = turn.started_at.saturating_sub(TYPED_CAUSE_MS);
+    if facts.drain.pasted_between(worker, host_from, now)
+        || facts
+            .touched
+            .is_some_and(|at| (host_from..=now).contains(&at))
     {
         TurnCause::HostOrUnseen
-    } else if typed_at.is_some_and(|at| during.contains(&at)) {
+    } else if facts
+        .typed_at
+        .is_some_and(|at| (typed_from..=now).contains(&at))
+    {
         TurnCause::UserTyped
     } else {
-        TurnCause::Neither
+        TurnCause::Unprompted
     }
 }
 

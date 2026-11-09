@@ -168,7 +168,7 @@ impl Fixture {
     fn step(&mut self, rows: &[SessionRow], now: u64) -> Vec<Notice> {
         let mut all = vec![row(ROUTER, Status::Idle)];
         all.extend(rows.iter().cloned());
-        self.alerts.step(&all, now)
+        self.alerts.step(&all, now, &self.drain)
     }
 
     fn divert(
@@ -191,6 +191,12 @@ impl Fixture {
     fn typed(&self, at: u64) {
         self.host
             .with(|world| world.typed_at.insert(WORKER.into(), at));
+    }
+
+    /// The Router took everything pending.
+    fn deliver_all(&self) {
+        let last = self.queued().pop().unwrap();
+        self.store.ack_through(ROUTER, &last.id, last.at).unwrap();
     }
 
     /// The one queued notice's summary and priority.
@@ -286,8 +292,11 @@ fn edges_of_sessions_that_are_not_a_running_routers_workers_go_to_the_user() {
 #[test]
 fn a_stopped_routers_workers_notify_the_user_as_before() {
     let mut fx = fixture();
-    fx.alerts
-        .step(&[row(ROUTER, Status::Exited), worker(Status::Busy)], T0);
+    fx.alerts.step(
+        &[row(ROUTER, Status::Exited), worker(Status::Busy)],
+        T0,
+        &fx.drain,
+    );
     assert!(!fx.divert(
         &worker(Status::Idle),
         ActivityLogKind::Finished,
@@ -547,6 +556,7 @@ fn what_the_worker_does_after_a_router_write_is_still_reported() {
     assert_eq!(fx.statuses(), ["finished", "finished", "needs_input"]);
 }
 
+const PLAIN: &str = "\"fix-login\" finished.";
 const USER_TALKED: &str = "\"fix-login\" finished after the user talked to it directly; its \
                            reply was for the user, not a report to you.";
 const NOBODY_STARTED: &str = "\"fix-login\" finished a turn neither you nor the user's typing \
@@ -607,18 +617,43 @@ fn a_timer_turn_rides_along_in_the_shape_the_cards_read() {
     assert_eq!(notice.body, "Checked the board; nothing new.");
 }
 
+/// A turn the Host started ended, and left a task running.
+fn host_task_finished(fx: &mut Fixture) {
+    fx.drain.pastes.push((WORKER.into(), T0 + 9_500));
+    fx.turn(T0 + 10_000);
+    fx.divert(
+        &worker(Status::Idle),
+        ActivityLogKind::Finished,
+        Some("Running the build."),
+        T0 + 20_000,
+    );
+    fx.deliver_all();
+}
+
 #[test]
-fn a_background_task_turn_no_rescan_saw_busy_rides_along() {
+fn the_first_background_task_turn_after_a_host_task_wakes_and_later_ones_ride_along() {
     let mut fx = fixture();
-    fx.step(&[worker(Status::Idle)], T0);
-    // The task's notification dates a turn too short for a rescan.
+    host_task_finished(&mut fx);
+    // Its notification dates a turn too short for a rescan.
+    fx.step(&[worker(Status::Idle)], T0 + 5 * MIN);
     fx.alerts
-        .observe_hook(WORKER, "UserPromptSubmit", T0 + 20_000);
+        .observe_hook(WORKER, "UserPromptSubmit", T0 + 6 * MIN);
     fx.divert(
         &worker(Status::Idle),
         ActivityLogKind::Finished,
         Some("The build passed."),
-        T0 + 21_000,
+        T0 + 7 * MIN,
+    );
+    assert_eq!(fx.only_notice(), (PLAIN.into(), Priority::Wake));
+    fx.deliver_all();
+
+    fx.alerts
+        .observe_hook(WORKER, "UserPromptSubmit", T0 + 8 * MIN);
+    fx.divert(
+        &worker(Status::Idle),
+        ActivityLogKind::Finished,
+        Some("The second build passed."),
+        T0 + 9 * MIN,
     );
     assert_eq!(
         fx.only_notice(),
@@ -627,10 +662,77 @@ fn a_background_task_turn_no_rescan_saw_busy_rides_along() {
 }
 
 #[test]
-fn typing_from_before_the_turn_is_no_evidence() {
+fn a_loop_ticks_quietly_after_its_one_follow_up() {
     let mut fx = fixture();
-    // The Desk on 2026-11-09: its last keystroke hours old, the prompts that
-    // followed came over Remote Control and never crossed the PTY.
+    host_task_finished(&mut fx);
+    let mut priorities = Vec::new();
+    for tick in 1..=4 {
+        fx.turn(T0 + tick * 10 * MIN);
+        fx.divert(
+            &worker(Status::Idle),
+            ActivityLogKind::Finished,
+            Some("Nothing new."),
+            T0 + tick * 10 * MIN + 20_000,
+        );
+        priorities.push(fx.queued().last().unwrap().priority);
+    }
+    assert_eq!(
+        priorities,
+        [
+            Priority::Wake,
+            Priority::RideAlong,
+            Priority::RideAlong,
+            Priority::RideAlong
+        ]
+    );
+}
+
+#[test]
+fn a_worker_that_reported_owes_no_follow_up() {
+    let mut fx = fixture();
+    fx.drain.pastes.push((WORKER.into(), T0 + 9_500));
+    fx.turn(T0 + 10_000);
+    fx.report_from_worker("done", T0 + 15_000);
+    fx.divert(
+        &worker(Status::Idle),
+        ActivityLogKind::Finished,
+        Some("Reported."),
+        T0 + 20_000,
+    );
+    fx.deliver_all();
+    fx.turn(T0 + 10 * MIN);
+    fx.divert(
+        &worker(Status::Idle),
+        ActivityLogKind::Finished,
+        Some("A later tick."),
+        T0 + 11 * MIN,
+    );
+    assert_eq!(
+        fx.only_notice(),
+        (NOBODY_STARTED.into(), Priority::RideAlong)
+    );
+}
+
+#[test]
+fn a_paste_the_program_took_long_to_start_on_keeps_its_wake() {
+    let mut fx = fixture();
+    // Busy 25 s after the paste: the drain still counts that as its turn.
+    fx.drain.pastes.push((WORKER.into(), T0 + 5_000));
+    fx.turn(T0 + 30_000);
+    fx.divert(
+        &worker(Status::Idle),
+        ActivityLogKind::Finished,
+        Some("the answer"),
+        T0 + 40_000,
+    );
+    assert_eq!(fx.only_notice(), (PLAIN.into(), Priority::Wake));
+}
+
+#[test]
+fn a_keystroke_long_before_the_turn_is_no_evidence() {
+    let mut fx = fixture();
+    // The last keystroke is an hour and a half old; the prompts after it
+    // came over the program's own remote channel and never crossed the PTY.
     fx.typed(T0);
     fx.turn(T0 + 90 * MIN);
     fx.divert(
@@ -657,10 +759,7 @@ fn a_host_start_outranks_the_users_typing() {
         Some("the task's result"),
         T0 + 30_000,
     );
-    assert_eq!(
-        fx.only_notice(),
-        ("\"fix-login\" finished.".into(), Priority::Wake)
-    );
+    assert_eq!(fx.only_notice(), (PLAIN.into(), Priority::Wake));
 }
 
 #[test]
@@ -675,10 +774,7 @@ fn a_router_write_during_a_turn_keeps_its_wake() {
         Some("the answer"),
         T0 + 30_000,
     );
-    assert_eq!(
-        fx.only_notice(),
-        ("\"fix-login\" finished.".into(), Priority::Wake)
-    );
+    assert_eq!(fx.only_notice(), (PLAIN.into(), Priority::Wake));
 }
 
 #[test]
@@ -707,10 +803,7 @@ fn a_finish_with_no_turn_to_read_keeps_its_wake() {
         Some("a"),
         T0 + 30_000,
     );
-    assert_eq!(
-        fx.only_notice(),
-        ("\"fix-login\" finished.".into(), Priority::Wake)
-    );
+    assert_eq!(fx.only_notice(), (PLAIN.into(), Priority::Wake));
 }
 
 #[test]
@@ -752,10 +845,7 @@ fn a_turn_whose_start_was_not_watched_is_never_called_user_typed() {
         Some("a"),
         T0 + 30_000,
     );
-    assert_eq!(
-        fx.only_notice(),
-        ("\"fix-login\" finished.".into(), Priority::Wake)
-    );
+    assert_eq!(fx.only_notice(), (PLAIN.into(), Priority::Wake));
 }
 
 #[test]
@@ -1017,6 +1107,32 @@ fn a_screen_detected_turn_end_is_a_finished_notice_not_went_quiet() {
 }
 
 #[test]
+fn screen_detected_turns_wake_by_the_same_rule_as_finished_edges() {
+    let mut fx = fixture();
+    // Nobody prompted it, and no Host task came before it.
+    screen_turn(&mut fx, T0 + 10_000, StatusSource::Screen);
+    // A Host task, its one follow-up, and a tick after that.
+    fx.drain.pastes.push((WORKER.into(), T0 + 2 * MIN));
+    screen_turn(&mut fx, T0 + 2 * MIN + 1_000, StatusSource::Screen);
+    screen_turn(&mut fx, T0 + 4 * MIN, StatusSource::Screen);
+    screen_turn(&mut fx, T0 + 6 * MIN, StatusSource::Screen);
+    // The user typed.
+    fx.typed(T0 + 8 * MIN);
+    screen_turn(&mut fx, T0 + 8 * MIN + 1_000, StatusSource::Screen);
+    let priorities: Vec<Priority> = fx.queued().iter().map(|item| item.priority).collect();
+    assert_eq!(
+        priorities,
+        [
+            Priority::RideAlong,
+            Priority::Wake,
+            Priority::Wake,
+            Priority::RideAlong,
+            Priority::Wake
+        ]
+    );
+}
+
+#[test]
 fn a_screen_detected_finish_comes_once_per_busy_to_idle() {
     let mut fx = fixture();
     screen_turn(&mut fx, T0 + 10_000, StatusSource::None);
@@ -1085,7 +1201,7 @@ fn auto_stop_never_sees_the_router_its_running_workers_or_a_pending_inbox() {
         row("user", Status::Idle),
         row("queued", Status::Idle),
     ];
-    fx.alerts.step(&rows, T0);
+    fx.alerts.step(&rows, T0, &fx.drain);
     fx.drain.pending.insert("queued".into());
     let kept = fx.alerts.auto_stop_rows(&rows, &fx.drain);
     let ids: Vec<&str> = kept.iter().map(|row| row.id.as_str()).collect();
@@ -1096,7 +1212,7 @@ fn auto_stop_never_sees_the_router_its_running_workers_or_a_pending_inbox() {
 fn a_stopped_routers_workers_may_be_auto_stopped() {
     let mut fx = fixture();
     let rows = vec![row(ROUTER, Status::Exited), worker(Status::Idle)];
-    fx.alerts.step(&rows, T0);
+    fx.alerts.step(&rows, T0, &fx.drain);
     let kept = fx.alerts.auto_stop_rows(&rows, &fx.drain);
     let ids: Vec<&str> = kept.iter().map(|row| row.id.as_str()).collect();
     assert_eq!(ids, [WORKER], "the Router itself never is");
@@ -1107,7 +1223,7 @@ fn without_a_router_auto_stop_sees_every_row() {
     let mut fx = fixture();
     fx.host.with(|world| world.router = None);
     let rows = vec![row("user", Status::Idle), worker(Status::Idle)];
-    fx.alerts.step(&rows, T0);
+    fx.alerts.step(&rows, T0, &fx.drain);
     assert!(matches!(
         fx.alerts.auto_stop_rows(&rows, &fx.drain),
         std::borrow::Cow::Borrowed(_)
@@ -1200,6 +1316,7 @@ fn reconciliation_never_repeats_a_notice_the_router_already_has() {
     restarted.step(
         &[row(ROUTER, Status::Idle), worker(Status::Exited)],
         T0 + 60_000,
+        &fx.drain,
     );
     assert_eq!(fx.queued().len(), 1);
 }
