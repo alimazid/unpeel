@@ -27,7 +27,7 @@ if let only {
 }
 if command == "check" { exit(0) }
 
-_ = pid
+_ = pid // Refuses a missing --pid here, ahead of the steps below.
 
 if command == "prepare" {
     guard let window = mainWindow() else {
@@ -67,7 +67,7 @@ if let wantedScale, scale != wantedScale {
 }
 log("rows: \(summary(labels(readRows())))")
 
-for step in scenarioSteps where wanted(step) { step.run() }
+for step in runSteps where wanted(step) { step.run() }
 
 guard !scenarios.isEmpty else {
     log("no scenario ran")

@@ -21,3 +21,12 @@ final class Scenario {
 }
 
 var scenarios: [Scenario] = []
+
+func waitUntil(seconds: Double, _ condition: () -> Bool) -> Bool {
+    let end = Date().addingTimeInterval(seconds)
+    repeat {
+        if condition() { return true }
+        Thread.sleep(forTimeInterval: 0.05)
+    } while Date() < end
+    return condition()
+}

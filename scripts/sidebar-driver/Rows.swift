@@ -1,12 +1,31 @@
 import AppKit
+import ApplicationServices
 
-func waitUntil(seconds: Double, _ condition: () -> Bool) -> Bool {
-    let end = Date().addingTimeInterval(seconds)
-    repeat {
-        if condition() { return true }
-        Thread.sleep(forTimeInterval: 0.05)
-    } while Date() < end
-    return condition()
+struct Row {
+    let label: String
+    let frame: CGRect
+}
+
+/// The PROJECTS rows on screen, top to bottom: one per title text.
+func readRows() -> [Row] {
+    guard let window = mainWindow(), let area = firstScrollArea(in: window),
+          let visible = frame(of: area) else { return [] }
+    var rows: [Row] = []
+    func walk(_ element: AXUIElement, _ depth: Int) {
+        if (attribute(element, kAXRoleAttribute) as? String) == "AXStaticText",
+           let text = (attribute(element, kAXValueAttribute) as? String)
+           ?? (attribute(element, kAXTitleAttribute) as? String),
+           text != "›", !text.isEmpty, let rect = frame(of: element),
+           rect.midY > visible.minY, rect.midY < visible.maxY {
+            rows.append(Row(label: text, frame: rect))
+        }
+        guard depth < 14 else { return }
+        for child in (attribute(element, kAXChildrenAttribute) as? [AXUIElement]) ?? [] {
+            walk(child, depth + 1)
+        }
+    }
+    walk(area, 0)
+    return rows.sorted { $0.frame.midY < $1.frame.midY }
 }
 
 func press(_ rect: CGRect) -> CGPoint { CGPoint(x: rect.minX + 6, y: rect.midY) }
@@ -37,12 +56,4 @@ func movedRows(_ names: [String], from before: [String: CGFloat], to now: [Strin
         guard let was = before[name], let current = now[name] else { return false }
         return abs(was - current) > 2
     }
-}
-
-func setExpanded(_ group: String, children: [String], _ expanded: Bool) {
-    let rows = readRows()
-    guard Set(labels(rows)).isSuperset(of: children) != expanded,
-          let header = rows.first(where: { $0.label == group }) else { return }
-    click(press(header.frame))
-    Thread.sleep(forTimeInterval: 0.8)
 }

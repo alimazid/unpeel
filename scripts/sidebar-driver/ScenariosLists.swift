@@ -46,6 +46,25 @@ func runToggles(_ group: String, children: [String], count: Int) {
     }
 }
 
+/// The three groups' headers each toggle, and all three end up open for the drags.
+func runGroupToggles(count: Int) {
+    runToggles("Inner", children: innerChildren, count: count)
+    if !Set(labels(readRows())).isSuperset(of: innerChildren), let inner = readRows().first(where: { $0.label == "Inner" }) {
+        click(press(inner.frame))
+        Thread.sleep(forTimeInterval: 0.7)
+    }
+    runToggles("Beta", children: betaChildren, count: count)
+    runToggles("Alpha", children: alphaChildren, count: count)
+    // Leave all three open for the drags, whatever state the toggles ended in.
+    for (group, children) in [("Alpha", alphaChildren), ("Inner", innerChildren), ("Beta", betaChildren)] {
+        let rows = readRows()
+        if !Set(labels(rows)).isSuperset(of: children), let header = rows.first(where: { $0.label == group }) {
+            click(press(header.frame))
+            Thread.sleep(forTimeInterval: 0.8)
+        }
+    }
+}
+
 /// Reorder inside a group: the group's first row goes below its last. The
 /// Host's order and the rows on screen both have to show it.
 func runGroupReorder(count: Int) {

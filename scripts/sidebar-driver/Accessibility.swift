@@ -38,30 +38,3 @@ func firstScrollArea(in element: AXUIElement, depth: Int = 0) -> AXUIElement? {
     }
     return nil
 }
-
-struct Row {
-    let label: String
-    let frame: CGRect
-}
-
-/// The PROJECTS rows on screen, top to bottom: one per title text.
-func readRows() -> [Row] {
-    guard let window = mainWindow(), let area = firstScrollArea(in: window),
-          let visible = frame(of: area) else { return [] }
-    var rows: [Row] = []
-    func walk(_ element: AXUIElement, _ depth: Int) {
-        if (attribute(element, kAXRoleAttribute) as? String) == "AXStaticText",
-           let text = (attribute(element, kAXValueAttribute) as? String)
-           ?? (attribute(element, kAXTitleAttribute) as? String),
-           text != "›", !text.isEmpty, let rect = frame(of: element),
-           rect.midY > visible.minY, rect.midY < visible.maxY {
-            rows.append(Row(label: text, frame: rect))
-        }
-        guard depth < 14 else { return }
-        for child in (attribute(element, kAXChildrenAttribute) as? [AXUIElement]) ?? [] {
-            walk(child, depth + 1)
-        }
-    }
-    walk(area, 0)
-    return rows.sorted { $0.frame.midY < $1.frame.midY }
-}

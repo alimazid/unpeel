@@ -293,3 +293,24 @@ func checkFoldersUnranked() {
         scenario.pass()
     }
 }
+
+/// Every way a folder moves in Big's list, open and closed, ending with both open.
+func runFolderMoves(count: Int) {
+    runOpenFolderMoves(count: count)
+    setExpanded("Alpha", children: alphaChildren, false)
+    setExpanded("Beta", children: betaChildren, false)
+    runFolderReorder("folder-collapsed", count: count)
+    runFolderPastSession(count: min(count, 6))
+    setExpanded("Alpha", children: alphaChildren, true)
+    runBetaPastExpandedAlpha(count: count)
+    setExpanded("Beta", children: betaChildren, true)
+    runOpenFolderLastMoves()
+}
+
+func setExpanded(_ group: String, children: [String], _ expanded: Bool) {
+    let rows = readRows()
+    guard Set(labels(rows)).isSuperset(of: children) != expanded,
+          let header = rows.first(where: { $0.label == group }) else { return }
+    click(press(header.frame))
+    Thread.sleep(forTimeInterval: 0.8)
+}
