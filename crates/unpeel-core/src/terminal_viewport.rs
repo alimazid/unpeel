@@ -18,6 +18,7 @@ use std::collections::HashMap;
 use std::ops::Range;
 use std::path::PathBuf;
 use std::sync::{Mutex, OnceLock};
+use std::time::{Duration, Instant};
 
 const DEFAULT_VIEWPORT_REPLAY_MAX_BYTES: usize = 512 * 1024;
 const MAX_VIEWPORT_REPLAY_MAX_BYTES: usize = 4 * 1024 * 1024;
@@ -112,6 +113,13 @@ pub struct TerminalViewportSnapshot {
     /// outside `viewport_rows`, or from a Host that predates the field.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub suggested_input: Option<TerminalSuggestedInput>,
+    /// Fork-only (#65): the last character drawn before the cursor on its
+    /// row, blanks skipped; under a pending wrap the cell the cursor waits on
+    /// counts. Where a person's last key shows, if it stayed on the line.
+    /// The draft guard reads it from the Host's own viewport: never on the
+    /// wire.
+    #[serde(skip)]
+    pub last_char_before_cursor: Option<char>,
 }
 
 /// Where [`TerminalViewportSnapshot::suggested_input`] sits in the snapshot.
@@ -136,12 +144,22 @@ impl TerminalViewportSnapshot {
             .get(suggested.byte_start as usize..suggested.byte_end as usize)
     }
 
+    /// The rows as newline-terminated lines, right-trimmed: for the live
+    /// window the text `TerminalViewportState::current_screen_text` renders,
+    /// without a second render. `wait_for_text` and the draft guard's menu
+    /// check read it.
+    pub fn screen_text(&self) -> String {
+        self.viewport_rows
+            .iter()
+            .map(|row| format!("{}\n", row.text.trim_end()))
+            .collect()
+    }
+
     /// The cursor's row, right-trimmed, with the suggested input cut out:
     /// what is really on an input line. `None` when the cursor row is
     /// outside `viewport_rows`.
     pub fn cursor_row_text_without_suggestion(&self) -> Option<String> {
-        let cursor_row = (self.scrollback_rows + u32::from(self.cursor_row))
-            .checked_sub(self.viewport_start_row)? as usize;
+        let cursor_row = self.cursor_row_index()?;
         let text = &self.viewport_rows.get(cursor_row)?.text;
         let suggested = self
             .suggested_input
@@ -157,6 +175,28 @@ impl TerminalViewportSnapshot {
             None => text.clone(),
         };
         Some(without.trim_end().to_owned())
+    }
+
+    /// Fork-only (#65): the row above the cursor's, where a draft that
+    /// wrapped onto the cursor's row has the rest of its text. `None` at the
+    /// top of the window.
+    pub fn row_above_cursor_text(&self) -> Option<&str> {
+        let above = self.cursor_row_index()?.checked_sub(1)?;
+        Some(self.viewport_rows.get(above)?.text.as_str())
+    }
+
+    /// The cursor's row counted from the top of the scrollback, which stays
+    /// put while the window scrolls.
+    pub fn cursor_absolute_row(&self) -> u32 {
+        self.scrollback_rows + u32::from(self.cursor_row)
+    }
+
+    /// The cursor's row as an index into `viewport_rows`; `None` when the
+    /// cursor is outside them.
+    fn cursor_row_index(&self) -> Option<usize> {
+        self.cursor_absolute_row()
+            .checked_sub(self.viewport_start_row)
+            .map(|row| row as usize)
     }
 }
 
@@ -563,7 +603,6 @@ impl VtTerminal {
         rc == vt::GHOSTTY_SUCCESS && config.value
     }
 
-    #[cfg(test)]
     fn cursor_pending_wrap(&self) -> bool {
         let mut value = false;
         let rc = unsafe {
@@ -687,18 +726,18 @@ impl VtTerminal {
 
     /// Render the current viewport and return its rows.
     fn viewport_rows(&mut self, with_styles: bool) -> Vec<TerminalViewportRow> {
-        self.viewport_rows_with_faint_tail(with_styles, None).0
+        self.viewport_rows_at_cursor(with_styles, None).0
     }
 
-    /// [`Self::viewport_rows`], plus the byte range of the faint text that
-    /// starts at `from = (row, col)` of this viewport (see
-    /// [`faint_text_from`]).
-    fn viewport_rows_with_faint_tail(
+    /// [`Self::viewport_rows`], plus what the row shows around the cursor at
+    /// `cursor = (row, col)` of this viewport, when that row was rendered.
+    fn viewport_rows_at_cursor(
         &mut self,
         with_styles: bool,
-        from: Option<(usize, u16)>,
-    ) -> (Vec<TerminalViewportRow>, Option<Range<usize>>) {
+        cursor: Option<(usize, u16)>,
+    ) -> (Vec<TerminalViewportRow>, Option<AroundCursor>) {
         let row_count = self.rows as usize;
+        let pending_wrap = cursor.is_some() && self.cursor_pending_wrap();
         with_render_scratch(self, |scratch| unsafe {
             if vt::ghostty_render_state_get(
                 scratch.render,
@@ -710,7 +749,7 @@ impl VtTerminal {
             }
 
             let mut rows = Vec::with_capacity(row_count);
-            let mut faint_tail = None;
+            let mut around_cursor = None;
             while vt::ghostty_render_state_row_iterator_next(scratch.row_iter) {
                 let mut wrapped = false;
                 let mut raw_row: vt::GhosttyRow = 0;
@@ -739,17 +778,27 @@ impl VtTerminal {
                     });
                     continue;
                 }
-                let faint_from = from
+                let cursor_col = cursor
                     .filter(|(row, _)| *row == rows.len())
-                    .map(|(_, col)| col);
-                let (mut row, tail) = read_row_cells(scratch.cells, with_styles, faint_from);
+                    .map(|(_, col)| (col, pending_wrap));
+                let (mut row, around) = read_row_cells(scratch.cells, with_styles, cursor_col);
                 row.wrapped = wrapped;
                 rows.push(row);
-                faint_tail = faint_tail.or(tail);
+                around_cursor = around_cursor.or(around);
             }
-            (rows, faint_tail)
+            (rows, around_cursor)
         })
     }
+}
+
+/// What the cursor's row shows around the cursor.
+#[derive(Debug)]
+struct AroundCursor {
+    /// The byte range of the faint text that starts at the cursor (see
+    /// [`faint_text_from`]).
+    faint_tail: Option<Range<usize>>,
+    /// See [`TerminalViewportSnapshot::last_char_before_cursor`].
+    last_char_before: Option<char>,
 }
 
 /// One rendered cell: its text piece (empty for wide-char spacers, a space
@@ -885,13 +934,13 @@ fn style_color_string(color: &vt::GhosttyStyleColor) -> Option<String> {
     }
 }
 
-/// One row's text and style runs; with `faint_from`, also the byte range of
-/// the faint text starting at that cell (see [`faint_text_from`]).
+/// One row's text and style runs; with the cursor's `(col, pending_wrap)` on
+/// this row, also what the row shows around it.
 fn read_row_cells(
     cells: vt::GhosttyRenderStateRowCells,
     with_styles: bool,
-    faint_from: Option<u16>,
-) -> (TerminalViewportRow, Option<Range<usize>>) {
+    cursor: Option<(u16, bool)>,
+) -> (TerminalViewportRow, Option<AroundCursor>) {
     let mut pieces: Vec<String> = Vec::new();
     let mut cell_styles: Vec<CellStyle> = Vec::new();
     let mut previous_style = CellStyle::default();
@@ -911,8 +960,13 @@ fn read_row_cells(
         .map(|index| index + 1)
         .unwrap_or(0);
     let text: String = pieces[..text_end].concat();
-    let faint_tail = faint_from
-        .and_then(|col| faint_text_from(&pieces[..text_end], &cell_styles, usize::from(col)));
+    let around = cursor.map(|(col, pending_wrap)| {
+        let col = usize::from(col);
+        AroundCursor {
+            faint_tail: faint_text_from(&pieces[..text_end], &cell_styles, col),
+            last_char_before: last_char_before(&pieces, col + usize::from(pending_wrap)),
+        }
+    });
 
     let styles = if with_styles {
         style_runs(&cell_styles)
@@ -924,7 +978,17 @@ fn read_row_cells(
         styles,
         wrapped: false,
     };
-    (row, faint_tail)
+    (row, around)
+}
+
+/// The last character in the cells before `end`, blanks and wide-character
+/// spacers skipped.
+fn last_char_before(pieces: &[String], end: usize) -> Option<char> {
+    pieces[..end.min(pieces.len())]
+        .iter()
+        .rev()
+        .flat_map(|piece| piece.chars().rev())
+        .find(|character| !character.is_whitespace())
 }
 
 /// Byte range, in the concatenation of `pieces`, of the faint cells from
@@ -1021,6 +1085,7 @@ fn snapshot_terminal(
     let end_row = viewport_start_row + viewport_row_count;
     let mut viewport_rows = Vec::with_capacity(viewport_row_count);
     let mut suggested_input = None;
+    let mut last_char_before_cursor = None;
     let mut absolute_row = viewport_start_row;
     while absolute_row < end_row {
         // Any absolute row is reachable from a viewport position in
@@ -1033,16 +1098,19 @@ fn snapshot_terminal(
             .checked_sub(position)
             .filter(|row| *row >= skip && cursor_absolute_row < end_row)
             .map(|row| (row, cursor_col));
-        let (rendered, faint_tail) = term.viewport_rows_with_faint_tail(true, cursor_in_pass);
+        let (rendered, around_cursor) = term.viewport_rows_at_cursor(true, cursor_in_pass);
         if skip >= rendered.len() {
             break;
         }
-        if let (Some(range), Some(_)) = (faint_tail, cursor_in_pass) {
-            suggested_input = Some(TerminalSuggestedInput {
-                row: (cursor_absolute_row - viewport_start_row) as u16,
-                byte_start: range.start as u32,
-                byte_end: range.end as u32,
-            });
+        if let Some(around) = around_cursor {
+            last_char_before_cursor = around.last_char_before;
+            if let Some(range) = around.faint_tail {
+                suggested_input = Some(TerminalSuggestedInput {
+                    row: (cursor_absolute_row - viewport_start_row) as u16,
+                    byte_start: range.start as u32,
+                    byte_end: range.end as u32,
+                });
+            }
         }
         for row in rendered.into_iter().skip(skip) {
             if absolute_row >= end_row {
@@ -1073,6 +1141,7 @@ fn snapshot_terminal(
         application_cursor: term.mode(1),
         viewport_rows,
         suggested_input,
+        last_char_before_cursor,
     }
 }
 
@@ -1146,6 +1215,8 @@ pub struct TerminalViewportState {
     /// Only populated when `set_graphics_capture(true)`; bounded by
     /// `MAX_CAPTURED_GRAPHICS` / `MAX_CAPTURED_APC_BYTES`.
     captured_graphics: Vec<CapturedGraphicsCommand>,
+    /// Fork-only (#65): when output was last fed.
+    last_fed: Option<Instant>,
 }
 
 /// One complete kitty graphics APC (`ESC _ G … ESC \`) captured from a fed
@@ -1340,6 +1411,7 @@ impl TerminalViewportState {
             history_truncated: false,
             apc_filter: KittyApcFilter::default(),
             captured_graphics: Vec::new(),
+            last_fed: None,
         }
     }
 
@@ -1416,6 +1488,20 @@ impl TerminalViewportState {
             }
         }
         self.output_offset = self.output_offset.saturating_add(data.len() as u64);
+        self.last_fed = Some(Instant::now());
+    }
+
+    /// Fork-only (#65): output was fed within `window`. A program can be
+    /// caught between the writes of one redraw; once it has been quiet a
+    /// while, the screen is what it meant.
+    pub fn drawn_within(&self, window: Duration) -> bool {
+        self.last_fed.is_some_and(|at| at.elapsed() < window)
+    }
+
+    /// Whether the cursor is shown (DEC 25). Fork-only (#65): a program that
+    /// hides it, while it redraws or for good, has not put it where it means.
+    pub fn cursor_visible(&self) -> bool {
+        self.term.mode(25)
     }
 
     fn write_terminal(&mut self, bytes: &[u8]) {
@@ -2293,6 +2379,45 @@ mod tests {
             typed.cursor_row_text_without_suggestion().as_deref(),
             Some("❯\u{a0}fix")
         );
+    }
+
+    #[test]
+    fn snapshot_reports_the_last_character_before_the_cursor() {
+        let before = |bytes: &[u8], cols: u16| {
+            render_terminal_viewport_from_bytes(bytes, cols, 3, 0, false, 0, None)
+                .last_char_before_cursor
+        };
+        assert_eq!(before("❯\u{a0}fix".as_bytes(), 40), Some('x'));
+        assert_eq!(before("❯\u{a0}fix  ".as_bytes(), 40), Some('x'), "blanks");
+        assert_eq!(
+            before("❯\u{a0}fix\x1b[1;3H".as_bytes(), 40),
+            Some('❯'),
+            "the cursor moved back"
+        );
+        assert_eq!(before(CLAUDE_SUGGESTION_ROW, 40), Some('❯'), "a suggestion");
+        assert_eq!(before("> 日本".as_bytes(), 40), Some('本'), "wide");
+        assert_eq!(before(b"\x1b[2m> \x1b[22m\r\n  ", 40), None, "only blanks");
+        assert_eq!(before(b"> hi\r\n", 40), None, "the start of a row");
+        // The last column written: the cursor waits on that cell to wrap.
+        assert_eq!(before(b"> 12345678", 10), Some('8'), "pending wrap");
+        assert_eq!(before(b"> 12345678ab", 10), Some('b'), "wrapped");
+        let wrapped =
+            render_terminal_viewport_from_bytes(b"> hello\r\n  ", 40, 3, 0, false, 0, None);
+        assert_eq!(wrapped.row_above_cursor_text(), Some("> hello"));
+        let top = render_terminal_viewport_from_bytes(b"> hello", 40, 3, 0, false, 0, None);
+        assert_eq!(top.row_above_cursor_text(), None);
+    }
+
+    #[test]
+    fn viewport_state_reports_when_it_was_last_drawn() {
+        let mut state = TerminalViewportState::new(20, 2);
+        assert!(!state.drawn_within(std::time::Duration::from_secs(60)));
+        state.feed(b"> ");
+        assert!(state.drawn_within(std::time::Duration::from_secs(60)));
+        assert!(!state.drawn_within(std::time::Duration::ZERO));
+        assert!(state.cursor_visible());
+        state.feed(b"\x1b[?25l");
+        assert!(!state.cursor_visible());
     }
 
     #[test]

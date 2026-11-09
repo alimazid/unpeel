@@ -104,10 +104,13 @@ Advertised ownership (old mixed `sessions` spellings remain decode-only):
     written, and the result says `Not sent (typing)` or `Not sent (draft)`;
     `Not submitted (typing)` means a key landed after the paste, which waits
     on the line. `send_keys` stops at the refused key ("Sent 1 of 3 keys").
-    Suggested input is no draft, and a select menu takes keys over one. The
-    call refuses rather than waits: send again once the user is done, or ask
-    them. A target whose PTY core predates the guard (no `draft_guard` in its
-    manifest) is written unchecked, and the result ends `(unguarded: …)`.
+    Suggested input is no draft, and a select menu takes keys over one. A
+    draft whose keys the user erased, or that a program took without Enter
+    and moved on from (#65), is no draft either; one that wraps or whose
+    input box moves still is. The call refuses rather than waits: send again
+    once the user is done, or ask them. A target whose PTY core predates the
+    guard (no `draft_guard` in its manifest) is written unchecked, and the
+    result ends `(unguarded: …)`.
     PTY proof: `send_text_draft_guard`.
 - `agents`: `list`, `get`, `read_transcript`, `wait`. Every action targets one
   explicit recognized occurrence; the unreleased group-wide wait and summary

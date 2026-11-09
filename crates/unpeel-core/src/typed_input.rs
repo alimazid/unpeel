@@ -5,7 +5,9 @@
 //! records the time of every write that comes from the user and can change
 //! an input line, and the session manifest carries it as `last_input_at`.
 //! For the draft it also keeps the line as it was before the first key the
-//! user has not sent, since only the core sees that key arrive.
+//! user has not sent, since only the core sees that key arrive, and follows
+//! what their text and Backspace leave there (#65): a draft whose keys were
+//! erased, or taken by a program that moved on, is no draft.
 
 use serde::{Deserialize, Serialize};
 
@@ -65,6 +67,25 @@ impl Refusal {
     }
 }
 
+/// How long the program must have drawn nothing before the draft guard ends
+/// a draft on what the screen shows (#65). A redraw can be caught between
+/// its writes, with the input line erased or the cursor where output is
+/// being drawn.
+pub(crate) const QUIET_BEFORE_ENDING: std::time::Duration = std::time::Duration::from_millis(500);
+
+/// What a program draws for each key of a secret it masks.
+const MASKS: [char; 6] = [
+    '*', '\u{2022}', '\u{25cf}', '\u{00b7}', '\u{25aa}', '\u{25a0}',
+];
+
+/// Where the cursor sits: which screen, and its row counted from the top of
+/// scrollback, so a row keeps its number while the screen scrolls.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct CursorAt {
+    pub(crate) alternate: bool,
+    pub(crate) row: u64,
+}
+
 /// What the draft guard reads off the screen.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct InputScreen {
@@ -73,6 +94,94 @@ pub(crate) struct InputScreen {
     /// The cursor's row without suggested input: a proposed reply comes and
     /// goes on its own and is never the user's.
     pub(crate) line: String,
+    /// The row above the cursor's, as drawn.
+    pub(crate) row_above: String,
+    pub(crate) cursor_at: CursorAt,
+    /// The last character drawn before the cursor, blanks skipped. `None`
+    /// while the cursor is hidden: the program has not put it where it
+    /// means.
+    pub(crate) last_char_before_cursor: Option<char>,
+    /// Nothing drawn for [`QUIET_BEFORE_ENDING`] and no synchronized update
+    /// open: the screen is not caught mid-redraw.
+    pub(crate) quiet: bool,
+}
+
+/// What the user typed and has not sent.
+#[derive(Debug, Clone)]
+struct Draft {
+    /// The line before its first key.
+    line_before: String,
+    /// Where the cursor was at that key.
+    started_at: CursorAt,
+    /// What its keys left on the line while only text and Backspace typed
+    /// it (see [`typed_after`]). `None` once the count could not follow a
+    /// key or a click moved the cursor in it: then only finding the line as
+    /// it was ends the draft. Text a menu took is in it too, since text keys
+    /// read no screen; Backspace does, so a menu's never counts. What the
+    /// line shows of theirs is then always among these characters.
+    typed: Option<String>,
+    /// A quiet screen last showed a program took its keys. That holds while
+    /// the screen is busy, so a send's own paste echoing does not make the
+    /// draft come back before its Enter; any key of theirs undoes it.
+    taken: bool,
+}
+
+impl Draft {
+    /// The draft `bytes` start on `screen`, unless they erase themselves.
+    fn start(screen: InputScreen, bytes: &[u8]) -> Option<Self> {
+        let typed = typed_after(String::new(), bytes);
+        (typed.as_deref() != Some("")).then_some(Self {
+            line_before: screen.line,
+            started_at: screen.cursor_at,
+            typed,
+            taken: false,
+        })
+    }
+
+    /// The draft after `bytes`; `None` once they erased every key of it.
+    fn typed_on(self, bytes: &[u8]) -> Option<Self> {
+        let typed = self.typed.and_then(|typed| typed_after(typed, bytes));
+        (typed.as_deref() != Some("")).then_some(Self {
+            typed,
+            taken: false,
+            ..self
+        })
+    }
+
+    /// The draft once the count cannot follow it any more.
+    fn uncounted(self) -> Self {
+        Self {
+            typed: None,
+            ..self
+        }
+    }
+
+    /// Whether a program took the keys and moved on, read off a quiet
+    /// screen: the cursor has left the row they were typed on, what it
+    /// follows is none of the characters typed, and neither is anything on
+    /// the row above (a draft that wrapped, the cursor waiting after a
+    /// border or gutter at the start of the next row). Any of these alone is
+    /// a draft: one that wraps or whose input box moves, or a program that
+    /// redraws its line in place (a changed prompt, masked echo). A hidden
+    /// cursor, a masking glyph or only blanks typed tell nothing.
+    fn taken_by_program(&self, screen: &InputScreen) -> bool {
+        let Some(typed) = self
+            .typed
+            .as_deref()
+            .filter(|typed| !typed.trim().is_empty())
+        else {
+            return false;
+        };
+        let typed_here = |text: &str| {
+            text.chars()
+                .any(|shown| !shown.is_whitespace() && typed.contains(shown))
+        };
+        screen.cursor_at != self.started_at
+            && screen
+                .last_char_before_cursor
+                .is_some_and(|shown| !typed.contains(shown) && !MASKS.contains(&shown))
+            && !typed_here(&screen.row_above)
+    }
 }
 
 /// When the user last typed into one session and what that left on the line,
@@ -80,14 +189,14 @@ pub(crate) struct InputScreen {
 #[derive(Debug, Default, Clone)]
 pub(crate) struct TypingClock {
     typed_at: Option<u64>,
-    /// The line before the first key the user has not sent. `None`: nothing
-    /// of theirs is waiting.
-    line_before_typing: Option<String>,
+    /// `None`: nothing of theirs is waiting.
+    draft: Option<Draft>,
 }
 
 impl TypingClock {
     /// One write about to reach the PTY at `now`, before it can echo. The
-    /// screen is read only when the key can start or end a draft.
+    /// screen is read only when the key can start or end a draft: the first
+    /// key, Enter, and a Backspace the count follows.
     pub(crate) fn note(
         &mut self,
         origin: WriteOrigin,
@@ -95,20 +204,38 @@ impl TypingClock {
         now: u64,
         screen: impl FnOnce() -> InputScreen,
     ) {
-        if !origin.is_user() || !is_typing(bytes) {
+        if !origin.is_user() {
+            return;
+        }
+        if has_mouse_click(bytes) {
+            self.draft = self.draft.take().map(Draft::uncounted);
+        }
+        if !is_typing(bytes) {
             return;
         }
         self.typed_at = Some(now);
         let enter = ends_in_enter(bytes);
-        // A key on a draft already started, or Enter with none, changes
-        // nothing.
-        if self.line_before_typing.is_some() != enter {
-            return;
+        let text_key = !enter && !bytes.iter().copied().any(is_backspace);
+        match self.draft.as_ref() {
+            // Enter with no draft, or a key the count no longer follows,
+            // changes nothing.
+            None if enter => return,
+            Some(draft) if !enter && draft.typed.is_none() => return,
+            Some(_) if text_key => {
+                self.draft = self.draft.take().and_then(|draft| draft.typed_on(bytes));
+                return;
+            }
+            _ => {}
         }
         let screen = screen();
-        if !screen.menu {
-            self.line_before_typing = (!enter).then_some(screen.line);
+        if screen.menu {
+            return;
         }
+        self.draft = match self.draft.take() {
+            _ if enter => None,
+            None => Draft::start(screen, bytes),
+            Some(draft) => draft.typed_on(bytes),
+        };
     }
 
     pub(crate) fn typed_at(&self) -> Option<u64> {
@@ -121,28 +248,67 @@ impl TypingClock {
     }
 
     /// Whether the line holds input the user has not sent. A menu over it
-    /// takes the keys, so it does not count. Finding the line as it was ends
-    /// the draft, so a program's later text there is not taken for theirs.
+    /// takes the keys, so it does not count. Only a quiet screen can end a
+    /// draft: finding the line as it was ends it, so a program's later text
+    /// there is not taken for theirs, and so does finding a program took its
+    /// keys, until they type again.
     pub(crate) fn has_draft(&mut self, screen: impl FnOnce() -> InputScreen) -> bool {
-        let Some(before) = self.line_before_typing.as_ref() else {
+        let Some(draft) = self.draft.as_mut() else {
             return false;
         };
         let screen = screen();
         if screen.menu {
             return false;
         }
-        if screen.line == *before {
-            self.line_before_typing = None;
-            return false;
+        if screen.quiet {
+            if screen.line == draft.line_before {
+                self.draft = None;
+                return false;
+            }
+            draft.taken = draft.taken_by_program(&screen);
         }
-        true
+        !draft.taken
     }
 
     /// The program that held the input line changed, and what was on it went
     /// with that program.
     pub(crate) fn forget_draft(&mut self) {
-        self.line_before_typing = None;
+        self.draft = None;
     }
+}
+
+/// The text the user's keys leave on the line after `text`: text adds to
+/// it, Backspace takes its last character off (where several draw as one,
+/// the rest stay, which can only make a draft end later). `None` for a key
+/// the count cannot follow: any other key (arrows, Tab, Escape, control
+/// keys, a paste, which an input box may show as a placeholder), and
+/// Backspace with nothing of theirs left, which erases what was there before.
+fn typed_after(mut text: String, bytes: &[u8]) -> Option<String> {
+    let mut rest = bytes;
+    while let Some((&first, after)) = rest.split_first() {
+        rest = match first {
+            byte if is_backspace(byte) => {
+                text.pop()?;
+                after
+            }
+            0x1b => after.get(report_len(after)?..)?,
+            0x00..=0x1f => return None,
+            _ => {
+                let end = rest
+                    .iter()
+                    .position(|&byte| byte < 0x20 || is_backspace(byte))
+                    .unwrap_or(rest.len());
+                text.push_str(std::str::from_utf8(&rest[..end]).ok()?);
+                &rest[end..]
+            }
+        };
+    }
+    Some(text)
+}
+
+/// Backspace, as a terminal sends it: DEL, or Ctrl+H.
+fn is_backspace(byte: u8) -> bool {
+    matches!(byte, 0x7f | 0x08)
 }
 
 /// Whether the user's write ends by pressing plain Enter, which sends the
@@ -172,6 +338,37 @@ pub(crate) fn is_typing(bytes: &[u8]) -> bool {
         }
     }
     false
+}
+
+/// The bits of a mouse report's button code that mark a pointer move and a
+/// wheel turn.
+const MOUSE_MOTION: u8 = 32;
+const MOUSE_WHEEL: u8 = 64;
+
+/// Whether `bytes` hold a mouse click, X10 or SGR, which can put the cursor
+/// anywhere in a draft. A pointer move or the wheel cannot. Its release
+/// counts too: it only ever follows a press.
+fn has_mouse_click(bytes: &[u8]) -> bool {
+    bytes
+        .windows(2)
+        .enumerate()
+        .filter(|(_, head)| *head == b"\x1b[")
+        .filter_map(|(start, _)| mouse_button(&bytes[start + 2..]))
+        .any(|code| code & (MOUSE_MOTION | MOUSE_WHEEL) == 0)
+}
+
+/// The button code of the mouse report `body`, after its CSI, starts with;
+/// `None` when it is no mouse report.
+fn mouse_button(body: &[u8]) -> Option<u8> {
+    match body.split_first()? {
+        (b'M', after) => after.first().map(|code| code.wrapping_sub(32)),
+        (b'<', after) => {
+            let end = after.iter().position(|byte| matches!(byte, b'M' | b'm'))?;
+            let (code, _) = std::str::from_utf8(&after[..end]).ok()?.split_once(';')?;
+            code.parse().ok()
+        }
+        _ => None,
+    }
 }
 
 /// The length, after its ESC, of the terminal report at the start of
@@ -221,228 +418,4 @@ fn string_len(body: &[u8]) -> Option<usize> {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::session_host::SessionHostCommand;
-
-    #[test]
-    fn keys_text_and_pastes_are_typing() {
-        let inputs: [&[u8]; 12] = [
-            b"a",
-            b"can yo",
-            b"\x7f",
-            b"\r",
-            b"\x1b",
-            b"\x1b[A",
-            b"\x1bOA",
-            b"\x1bb",
-            b"\x1b[97;5u",
-            b"\x1b[3~",
-            "dictado: \u{bf}qu\u{e9} tal?".as_bytes(),
-            b"\x1b[200~pasted text\x1b[201~",
-        ];
-        for input in inputs {
-            assert!(is_typing(input), "{:?}", String::from_utf8_lossy(input));
-        }
-    }
-
-    #[test]
-    fn the_terminals_own_reports_are_not_typing() {
-        let inputs: [&[u8]; 14] = [
-            b"",
-            b"\x1b[<35;10;5M\x1b[<35;11;5M",
-            b"\x1b[<0;10;5m",
-            b"\x1b[M #!",
-            b"\x1b[I",
-            b"\x1b[O",
-            b"\x1b[?62;22c",
-            b"\x1b[>1;10;0c",
-            b"\x1b[12;40R",
-            b"\x1b[?1u",
-            b"\x1b[?2004;1$y",
-            b"\x1b]11;rgb:0000/0000/0000\x1b\\",
-            b"\x1b]10;rgb:ffff/ffff/ffff\x07",
-            b"\x1bP>|ghostty 1.2\x1b\\",
-        ];
-        for input in inputs {
-            assert!(!is_typing(input), "{:?}", String::from_utf8_lossy(input));
-        }
-    }
-
-    #[test]
-    fn a_report_next_to_a_key_is_typing() {
-        assert!(is_typing(b"\x1b[Ia"));
-        assert!(is_typing(b"\x1b[<35;1;1Mx"));
-        assert!(is_typing(b"x\x1b]11;rgb:0/0/0\x07"));
-    }
-
-    #[test]
-    fn alt_with_a_report_introducer_is_still_a_key() {
-        assert!(is_typing(b"\x1bP"), "Alt+P");
-        assert!(is_typing(b"\x1b]"), "Alt+]");
-    }
-
-    #[test]
-    fn only_a_persons_typing_moves_the_clock() {
-        let mut clock = TypingClock::default();
-        clock.note(WriteOrigin::Program, b"pasted by the Inbox\r", 100, unread);
-        assert_eq!(clock.typed_at(), None);
-        clock.note(WriteOrigin::User, b"\x1b[I", 200, unread);
-        assert_eq!(clock.typed_at(), None, "a focus report");
-        clock.note(WriteOrigin::User, b"h", 300, || prompt("> "));
-        assert_eq!(clock.typed_at(), Some(300));
-        assert!(clock.typed_since(300));
-        assert!(!clock.typed_since(301));
-    }
-
-    #[test]
-    fn a_write_without_an_origin_is_the_users_and_serializes_as_before() {
-        let old: SessionHostCommand =
-            serde_json::from_str(r#"{"type":"write","data":"x"}"#).unwrap();
-        assert!(matches!(
-            old,
-            SessionHostCommand::Write {
-                origin: WriteOrigin::User,
-                unless_typed_since: None,
-                unless_draft: false,
-                ..
-            }
-        ));
-        assert_eq!(TYPED_SINCE_ERROR, "typed_since", "a wire code");
-        assert_eq!(DRAFT_ERROR, "draft", "a wire code");
-        for refusal in [Refusal::Typing, Refusal::Draft] {
-            assert_eq!(Refusal::from_wire(refusal.wire_code()), Some(refusal));
-        }
-        assert_eq!(Refusal::from_wire("Write error: EIO"), None);
-        let user = SessionHostCommand::Write {
-            data: "x".into(),
-            write_id: None,
-            origin: WriteOrigin::User,
-            unless_typed_since: None,
-            unless_draft: false,
-        };
-        assert_eq!(
-            serde_json::to_value(&user).unwrap(),
-            serde_json::json!({ "type": "write", "data": "x" })
-        );
-        let enter = SessionHostCommand::Write {
-            data: "\r".into(),
-            write_id: None,
-            origin: WriteOrigin::Program,
-            unless_typed_since: Some(5),
-            unless_draft: true,
-        };
-        assert_eq!(
-            serde_json::to_value(&enter).unwrap(),
-            serde_json::json!({
-                "type": "write", "data": "\r", "origin": "program",
-                "unless_typed_since": 5, "unless_draft": true
-            })
-        );
-    }
-
-    fn prompt(line: &str) -> InputScreen {
-        InputScreen {
-            menu: false,
-            line: line.to_owned(),
-        }
-    }
-
-    fn menu() -> InputScreen {
-        InputScreen {
-            menu: true,
-            line: "  1. Yes".to_owned(),
-        }
-    }
-
-    /// For a step that must not read the screen.
-    fn unread() -> InputScreen {
-        panic!("the screen was read")
-    }
-
-    fn typed(clock: &mut TypingClock, bytes: &[u8], screen: InputScreen) {
-        clock.note(WriteOrigin::User, bytes, 1, || screen);
-    }
-
-    #[test]
-    fn what_the_user_typed_is_a_draft_until_the_line_is_back() {
-        let mut clock = TypingClock::default();
-        typed(&mut clock, b"h", prompt("> "));
-        clock.note(WriteOrigin::User, b"i", 2, unread);
-        assert!(clock.has_draft(|| prompt("> hi")));
-        assert!(clock.has_draft(|| prompt("> hi")), "asking changes nothing");
-        assert!(!clock.has_draft(|| prompt("> ")), "erased");
-        // Program text on the line after that is not theirs (a multi-key
-        // send_keys, a paste left unsubmitted).
-        assert!(!clock.has_draft(|| prompt("> /com")));
-    }
-
-    #[test]
-    fn a_program_write_or_a_terminal_report_starts_no_draft() {
-        let mut clock = TypingClock::default();
-        clock.note(WriteOrigin::Program, b"pasted", 1, unread);
-        clock.note(WriteOrigin::User, b"\x1b[<35;10;5M", 2, unread);
-        clock.note(WriteOrigin::User, b"\x1b[I", 3, unread);
-        assert!(!clock.has_draft(|| prompt("> pasted")));
-    }
-
-    #[test]
-    fn enter_sends_the_draft_and_the_next_key_reads_the_line_again() {
-        let mut clock = TypingClock::default();
-        typed(&mut clock, b"hi", prompt("> "));
-        typed(&mut clock, b"\r", prompt("> hi"));
-        assert!(
-            !clock.has_draft(|| prompt("$ ")),
-            "whatever the line is now"
-        );
-        typed(&mut clock, b"x", prompt("$ "));
-        assert!(clock.has_draft(|| prompt("$ x")));
-        assert!(!clock.has_draft(|| prompt("$ ")));
-    }
-
-    #[test]
-    fn keys_at_a_menu_start_no_draft_and_leave_the_one_under_it() {
-        let mut clock = TypingClock::default();
-        typed(&mut clock, b"1", menu());
-        typed(&mut clock, b"\r", menu());
-        assert!(!clock.has_draft(|| prompt("> ")), "answered a menu");
-
-        typed(&mut clock, b"hi", prompt("> "));
-        typed(&mut clock, b"\x1b[B", menu());
-        typed(&mut clock, b"\r", menu());
-        assert!(!clock.has_draft(menu), "keys go to the menu");
-        assert!(
-            clock.has_draft(|| prompt("> hi")),
-            "the draft is still there"
-        );
-    }
-
-    #[test]
-    fn a_draft_does_not_outlive_the_program_that_held_the_line() {
-        let mut clock = TypingClock::default();
-        typed(&mut clock, b"\x03", prompt("> "));
-        clock.forget_draft();
-        assert!(!clock.has_draft(|| prompt("$ ")));
-        assert_eq!(clock.typed_at(), Some(1), "they still typed");
-    }
-
-    #[test]
-    fn only_plain_enter_sends_the_line() {
-        for sends in [&b"\r"[..], b"hi\r", b"\x1b[13u", b"\x1b[13;1u"] {
-            assert!(ends_in_enter(sends), "{:?}", String::from_utf8_lossy(sends));
-        }
-        for keeps in [
-            &b"h"[..],
-            b"\n",
-            b"\x1b\r",
-            b"\x1b[13;2u",
-            b"\x1b[200~a\rb\x1b[201~",
-        ] {
-            assert!(
-                !ends_in_enter(keeps),
-                "{:?}",
-                String::from_utf8_lossy(keeps)
-            );
-        }
-    }
-}
+mod tests;
