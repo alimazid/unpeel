@@ -1113,6 +1113,7 @@ fn write_session(body: &Value) -> Result<Value, ControllerApiError> {
             write_id,
             origin: session_host::WriteOrigin::User, // Fork-only (#38)
             unless_typed_since: None,
+            unless_draft: false,
         },
         SESSION_COMMAND_TIMEOUT,
     ))

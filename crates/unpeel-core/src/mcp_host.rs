@@ -11,10 +11,10 @@
 //! required beyond the hosts themselves.
 
 use crate::screen_read;
-use crate::session_host::{self, HostedSessionManifest, HostedSessionState, SessionHostCommand};
-use crate::session_input::sanitize_paste_text;
+use crate::session_host::{self, HostedSessionManifest, HostedSessionState};
 #[cfg(test)]
 use crate::session_input::{encode_bracketed_paste, looks_like_it_contains_a_path};
+use crate::session_input::{sanitize_paste_text, GuardedPaste};
 use crate::state::{current_timestamp_ms, McpGrant, McpRole, McpScope};
 #[cfg(test)]
 use crate::transcripts::transcript_provider_for_command;
@@ -2214,7 +2214,10 @@ pub(crate) fn legacy_sessions_tool_definitions() -> Vec<Value> {
         approval by default — the call may block up to ~2 minutes on the dialog — and the \
         delivered text is prefixed with a provenance header, \
         '[message from id:<your session id>, channel: terminal]', so the receiving agent \
-        knows who is talking and can reply to that id.",
+        knows who is talking and can reply to that id. The call fails with 'Not sent (typing)' \
+        while the user is typing in that session and 'Not sent (draft)' while their unsent \
+        input is on its line: nothing was written, and nothing queues it, so send again once \
+        they are done. A faint proposed reply (⟪suggested: …⟫) doesn't count.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -2233,7 +2236,10 @@ pub(crate) fn legacy_sessions_tool_definitions() -> Vec<Value> {
         a menu. Supported keys: enter, tab, shift+tab, space, esc, up, down, left, right, \
         home, end, pageup, pagedown, backspace, delete, ctrl+<letter>, or any single character. \
         Same approval rule as send_text: every target asks the user first unless that \
-        caller-to-target pair was already approved or the live policy is Always allow.",
+        caller-to-target pair was already approved or the live policy is Always allow. Same \
+        refusals too ('typing', 'draft'), stopping at the key they hit; the result says how \
+        many keys went in. A select menu takes the keys, so a draft under one doesn't refuse \
+        them.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -3371,7 +3377,19 @@ fn tool_send_text(args: &Value) -> Result<String, String> {
         Some(header) => format!("{header}\n{sanitized}"),
         None => sanitized.clone(),
     };
-    deliver_text_to_terminal(session_id, &delivered, submit)?;
+    // Fork-only (#61): refused, with nothing written, while the user is typing
+    // there or has a draft on the line.
+    match crate::session_input::paste_unless_user_is_typing(session_id, &delivered, submit)? {
+        GuardedPaste::Submitted => {}
+        GuardedPaste::NotPasted(refusal) => return Err(refusal.explain(session_id)),
+        GuardedPaste::NotSubmitted => {
+            return Err(format!(
+                "Not submitted (typing): the user started typing in session {session_id} while \
+the text was being pasted, so it waits on their line with their keys and Enter was not \
+pressed. Don't send it again."
+            ))
+        }
+    }
     Ok(format!(
         "Sent {} characters to session {}{}{}",
         sanitized.chars().count(),
@@ -3415,13 +3433,23 @@ fn tool_send_keys(args: &Value) -> Result<String, String> {
     }
 
     require_session(session_id, WriteAccess::Write)?;
+    // Fork-only (#61): after the gate, which can block on the user's approval.
+    let since = crate::session_input::typing_window_start(crate::state::current_timestamp_ms());
     for (index, sequence) in sequences.iter().enumerate() {
         if index > 0 && delay_ms > 0 {
             thread::sleep(Duration::from_millis(delay_ms));
             // A cancelled caller stops typing between keys, never mid-sequence.
             crate::mcp_cancel::bail_if_cancelled()?;
         }
-        write_to_session(session_id, sequence)?;
+        if let Some(refusal) =
+            crate::session_input::write_key_unless_user_is_typing(session_id, sequence, since)?
+        {
+            let total = sequences.len();
+            return Err(format!(
+                "Sent {index} of {total} keys. {}",
+                refusal.explain(session_id)
+            ));
+        }
     }
     Ok(format!(
         "Sent {} keys to session {}",
@@ -4095,18 +4123,6 @@ fn load_manifest(session_id: &str) -> Option<HostedSessionManifest> {
     }
     let raw = std::fs::read(session_host::manifest_path(session_id)).ok()?;
     serde_json::from_slice(&raw).ok()
-}
-
-fn write_to_session(session_id: &str, data: &str) -> Result<(), String> {
-    session_host::send_command(
-        session_id,
-        &SessionHostCommand::Write {
-            data: data.to_string(),
-            write_id: None,
-            origin: session_host::WriteOrigin::Program, // Fork-only (#38)
-            unless_typed_since: None,
-        },
-    )
 }
 
 /// Single delivery choke point for typing an inter-session message into a

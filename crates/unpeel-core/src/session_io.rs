@@ -983,6 +983,7 @@ impl SessionIo {
                     crate::session_host::WriteOrigin::User,
                     &data,
                     current_timestamp_ms(),
+                    || input_screen(&shared.viewport),
                 );
             if let Err(error) = self.write_pty_input(registry, &data) {
                 log::warn!(
@@ -1481,13 +1482,41 @@ pub(crate) fn handle_client(stream: UnixStream, shared: &SessionShared) -> Resul
     dispatch_client_command(stream, command, shared)
 }
 
-/// What a `Write` did. Fork-only (#38): `TypedSince` refuses it.
+/// What a `Write` did. Fork-only (#38, #61): `TypedSince` and `Draft` refuse
+/// it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Applied {
     Written,
     /// A retry of a `write_id` already applied.
     Duplicate,
     TypedSince,
+    Draft,
+}
+
+impl Applied {
+    /// The refused write's wire code.
+    fn refusal(self) -> Option<&'static str> {
+        match self {
+            Self::TypedSince => Some(crate::session_host::TYPED_SINCE_ERROR),
+            Self::Draft => Some(crate::session_host::DRAFT_ERROR),
+            Self::Written | Self::Duplicate => None,
+        }
+    }
+}
+
+/// Fork-only (#61): what the draft guard reads off the screen. The lock order
+/// is the write paths' own, runtime then viewport.
+fn input_screen(viewport: &Mutex<TerminalViewportState>) -> crate::typed_input::InputScreen {
+    let mut viewport = viewport
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    crate::typed_input::InputScreen {
+        menu: viewport_has_menu_prompt(&viewport.current_screen_text()),
+        line: viewport
+            .snapshot(0, None)
+            .cursor_row_text_without_suggestion()
+            .unwrap_or_default(),
+    }
 }
 
 /// Execute a one-shot control command on the calling (transient) thread and
@@ -1534,6 +1563,7 @@ pub(crate) fn dispatch_client_command(
             write_id,
             origin,
             unless_typed_since,
+            unless_draft,
         } => {
             match validate_write_id(write_id.as_deref()) {
                 Err(error) => SessionHostResponse {
@@ -1560,7 +1590,21 @@ pub(crate) fn dispatch_client_command(
                             // Fork-only (#38): the user typed since the
                             // Inbox looked at the line.
                             Applied::TypedSince
+                        } else if unless_draft
+                            && guard.typing.has_draft(|| input_screen(&shared.viewport))
+                        {
+                            // Fork-only (#61): an agent's send would land on
+                            // what the user left unsent.
+                            Applied::Draft
                         } else {
+                            // Fork-only (#61): before the bytes go in, so the
+                            // draft guard reads the line without this key.
+                            guard.typing.note(
+                                origin,
+                                data.as_bytes(),
+                                current_timestamp_ms(),
+                                || input_screen(&shared.viewport),
+                            );
                             let mut remaining = data.as_bytes();
                             let menu_active = remaining.contains(&0x1b)
                                 && viewport_has_menu_prompt(
@@ -1583,9 +1627,6 @@ pub(crate) fn dispatch_client_command(
                                 );
                                 remaining = &remaining[written..];
                             }
-                            guard
-                                .typing
-                                .note(origin, data.as_bytes(), current_timestamp_ms());
                             if let Some(write_id) = write_id {
                                 guard.recent_write_ids.record_applied(write_id);
                             }
@@ -1604,11 +1645,10 @@ pub(crate) fn dispatch_client_command(
                             &shared.title_done,
                         );
                     }
-                    let typed_since = applied == Applied::TypedSince;
+                    let refusal = applied.refusal();
                     SessionHostResponse {
-                        ok: !typed_since,
-                        error: typed_since
-                            .then(|| crate::session_host::TYPED_SINCE_ERROR.to_owned()),
+                        ok: refusal.is_none(),
+                        error: refusal.map(str::to_owned),
                         viewport: None,
                     }
                 }
