@@ -99,4 +99,24 @@ final class GitHeadReaderTests: XCTestCase {
 
         XCTAssertEqual(GitHeadReader.currentBranch(repoPath: path), "1976b60")
     }
+
+    /// Fork-only (#59): the Host adapter names a HEAD outside refs/heads the
+    /// way the mark does once `git` answers, and never the reftable stub.
+    func testCurrentBranchNamesAHeadOutsideRefsHeads() throws {
+        let path = try checkout(head: "ref: refs/remotes/origin/main\n")
+
+        XCTAssertEqual(GitHeadReader.currentBranch(repoPath: path), "origin/main")
+    }
+
+    func testCurrentBranchNamesNoBranchForTheReftableStub() throws {
+        let path = try checkout(head: "ref: refs/heads/.invalid\n")
+
+        XCTAssertNil(GitHeadReader.currentBranch(repoPath: path))
+    }
+
+    func testCurrentBranchKeepsASlashBranchWhole() throws {
+        let path = try checkout(head: "ref: refs/heads/feat/some-thing\n")
+
+        XCTAssertEqual(GitHeadReader.currentBranch(repoPath: path), "feat/some-thing")
+    }
 }

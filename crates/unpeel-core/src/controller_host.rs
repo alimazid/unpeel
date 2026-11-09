@@ -318,7 +318,7 @@ impl DiskCatalog {
                 if let Some(branch) = project.worktree_branch.as_deref() {
                     object.insert("worktreeBranch".into(), branch.into());
                 }
-                if let Some(branch) = git_head_branch(&project.path) {
+                if let Some(branch) = crate::git_head::branch(&project.path) {
                     object.insert("gitBranch".into(), branch.into());
                 }
                 if project.is_folder && project.parent_id.is_some() {
@@ -1793,37 +1793,6 @@ fn disk_protocol() -> HostProtocolDescriptor {
         });
     }
     protocol
-}
-
-/// Current HEAD branch of a checkout. Follows a worktree `.git` file to
-/// the real gitdir, matching the native Host's `GitHeadReader`.
-fn git_head_branch(repo_path: &str) -> Option<String> {
-    let git_entry = std::path::Path::new(repo_path).join(".git");
-    let meta = std::fs::metadata(&git_entry).ok()?;
-    let head_path = if meta.is_dir() {
-        git_entry.join("HEAD")
-    } else {
-        let contents = std::fs::read_to_string(&git_entry).ok()?;
-        let gitdir = contents.lines().find_map(|line| {
-            line.strip_prefix("gitdir:")
-                .map(|rest| rest.trim().to_owned())
-        })?;
-        let resolved = if std::path::Path::new(&gitdir).is_absolute() {
-            std::path::PathBuf::from(gitdir)
-        } else {
-            std::path::Path::new(repo_path).join(gitdir)
-        };
-        resolved.join("HEAD")
-    };
-    let head = std::fs::read_to_string(head_path).ok()?;
-    let head = head.trim();
-    if let Some(branch) = head.strip_prefix("ref: refs/heads/") {
-        Some(branch.to_string())
-    } else if !head.is_empty() {
-        Some(head.chars().take(7).collect())
-    } else {
-        None
-    }
 }
 
 fn project_records(state: &Value) -> Vec<ProjectRecord> {
@@ -3758,43 +3727,6 @@ mod tests {
             !wait_for_manifest_in(&spawning, Duration::from_millis(150), || false),
             "a spawn that never materializes still times out"
         );
-    }
-
-    #[test]
-    fn git_head_branch_reads_checkout_worktree_and_detached_head() {
-        let root = tempfile::tempdir().unwrap();
-        let repo = root.path().join("repo");
-        std::fs::create_dir_all(repo.join(".git")).unwrap();
-        std::fs::write(repo.join(".git/HEAD"), "ref: refs/heads/main\n").unwrap();
-        assert_eq!(
-            git_head_branch(repo.to_str().unwrap()).as_deref(),
-            Some("main")
-        );
-
-        let worktree = root.path().join("worktree");
-        std::fs::create_dir_all(&worktree).unwrap();
-        let gitdir = repo.join(".git/worktrees/feature");
-        std::fs::create_dir_all(&gitdir).unwrap();
-        std::fs::write(gitdir.join("HEAD"), "ref: refs/heads/feature/x\n").unwrap();
-        std::fs::write(
-            worktree.join(".git"),
-            format!("gitdir: {}\n", gitdir.display()),
-        )
-        .unwrap();
-        assert_eq!(
-            git_head_branch(worktree.to_str().unwrap()).as_deref(),
-            Some("feature/x")
-        );
-
-        std::fs::write(repo.join(".git/HEAD"), "abcdef1234567890\n").unwrap();
-        assert_eq!(
-            git_head_branch(repo.to_str().unwrap()).as_deref(),
-            Some("abcdef1")
-        );
-
-        let empty = root.path().join("empty");
-        std::fs::create_dir_all(&empty).unwrap();
-        assert_eq!(git_head_branch(empty.to_str().unwrap()), None);
     }
 
     #[test]
