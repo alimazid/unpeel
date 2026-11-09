@@ -5,18 +5,18 @@
 # accessibility tree and the Host's session list.
 #
 #   scripts/verify-sidebar-interaction.sh --app clients/native/dist/Unpeel.app \
-#       [--clicks 30] [--drags 20] [--only toggle-project,toggle,group-reorder,list-reorder,group-drop,out-and-back,folder-reorder,project-reorder] \
+#       [--clicks 30] [--drags 20] [--only toggle-project,toggle,group-reorder,list-reorder,group-drop,out-and-back,drop-card,folder-cancel,folder-reorder,folder-pinned,project-reorder] \
 #       [--report FILE] [--quiet SECONDS] [--app-log FILE] [--dump DIR] [--scale 1|2]
 #
 # The default tree fits the window. To drive a list that scrolls, use a longer
 # one in a shorter window, and name its scenarios (they don't run by default):
 #
-#   --big-rows 30 --window-height 760 --only scrolled-list-reorder,scrolled-group-drop,long-list-drop,scrolled-back-reorder,far-select
+#   --big-rows 30 --window-height 760 --only scrolled-list-reorder,scrolled-group-drop,long-list-drop,scrolled-back-reorder,far-select,scrolled-folder
 #
 # Two more run only when named, on a list with no folder ranks yet:
-# --only cross-project-insert,session-above-folder. After folder-reorder the script
-# quits the app, relaunches it against the same Host, and runs folder-persisted
-# (report: FILE.relaunch).
+# --only cross-project-insert,session-above-folder. After folder-reorder or
+# folder-pinned the script quits the app, relaunches it against the same Host, and
+# runs folder-persisted or pinned-persisted (report: FILE.relaunch).
 #
 # --scale puts the window on a display of that backing scale and fails if there
 # is none. A laptop screen at 2x is too short for the default tree; use a smaller
@@ -160,7 +160,7 @@ fi
 # every Session lives in the Host's PTY core and a drop can commit.
 mkdir -p "$H/tmp" "$HOME_A" "$H/w"
 : > "$H/.zshrc"
-for name in Big Small Quiet Empty; do
+for name in Big Small Quiet Empty Pins; do
   mkdir -p "$H/w/$name"
   ucli projects add "$name" "$H/w/$name" >/dev/null
 done
@@ -175,13 +175,20 @@ with open(os.path.join(home, "app-state.lock"), "a") as lock:
     for order, project in enumerate(projects):
         project["sort_order"] = order
     big = next(p for p in projects if p["name"] == "Big")
-    for group_id, name, parent, order in (
-        ("g-alpha", "Alpha", big["id"], 1),
-        ("g-inner", "Inner", "g-alpha", 0),
-        ("g-beta", "Beta", big["id"], 2),
+    pins = next(p for p in projects if p["name"] == "Pins")
+    for group_id, name, parent, order, folder_path in (
+        ("g-alpha", "Alpha", big["id"], 1, big["path"]),
+        ("g-inner", "Inner", "g-alpha", 0, big["path"]),
+        ("g-beta", "Beta", big["id"], 2, big["path"]),
+        ("g-pin-a", "Pin-A", pins["id"], 0, pins["path"]),
+        ("g-pin-b", "Pin-B", pins["id"], 1, pins["path"]),
+        ("g-plain", "Plain", pins["id"], 2, pins["path"]),
     ):
-        projects.append({"id": group_id, "name": name, "path": big["path"],
-                         "parent_project_id": parent, "is_folder": True, "sort_order": order})
+        project = {"id": group_id, "name": name, "path": folder_path,
+                   "parent_project_id": parent, "is_folder": True, "sort_order": order}
+        if group_id in ("g-pin-a", "g-pin-b"):
+            project["pinned_at"] = 1
+        projects.append(project)
     fd, tmp = tempfile.mkstemp(dir=home, prefix=".app-state.", suffix=".tmp")
     with os.fdopen(fd, "w") as f:
         json.dump(state, f, indent=2)
@@ -213,11 +220,13 @@ SMALL="$(project_id Small)"
 for n in 1 2 3; do new_session "$SMALL" "small-$n"; done
 QUIET_PROJECT="$(project_id Quiet)"
 new_session "$QUIET_PROJECT" "quiet-1"
+new_session "$(project_id Pins)" "pins-1"
+for group in pin-a pin-b plain; do new_session "g-$group" "$group-1"; done
 
-# Everything expanded but Quiet; only PROJECTS open, so the whole tree fits.
+# Everything expanded but Quiet and Pins; only PROJECTS open, so the whole tree fits.
 SUITES_BEFORE="$(ls "$PREFS" | grep '^com\.unpeel\.devhome\.' || echo none)"
 uenv defaults write "$SUITE" unpeel.native.expandedProjects -array \
-  "$BIG" g-alpha g-inner g-beta "$SMALL" "$(project_id Empty)"
+  "$BIG" g-alpha g-inner g-beta g-pin-a g-pin-b g-plain "$SMALL" "$(project_id Empty)"
 uenv defaults write "$SUITE" unpeel.native.selectedSession -string "$SELECTED"
 uenv defaults write "$SUITE" unpeel.native.notifyWhenDoneAllAgents -bool false
 LAYOUT='{"version":1,"order":["projects","agents","scheduled","explorer","gitHistory"],"hidden":[],"collapsed":["agents","explorer","gitHistory","scheduled"],"weights":{"projects":0.4,"agents":0.25,"scheduled":0.2,"explorer":0.6,"gitHistory":0.4}}'
@@ -299,13 +308,14 @@ driver_run() {
 launch_app
 status=0
 driver_run ${ONLY:+--only "$ONLY"} ${REPORT:+--report "$REPORT"} || status=$?
-case ",$ONLY," in
-  ,,|*,folder-reorder,*)
-    stop_app
-    launch_app
-    relaunch_status=0
-    driver_run --only folder-persisted ${REPORT:+--report "$REPORT.relaunch"} || relaunch_status=$?
-    [ "$status" -ne 0 ] || status=$relaunch_status
-    ;;
-esac
+AFTER_RELAUNCH=""
+case ",$ONLY," in ,,|*,folder-reorder,*) AFTER_RELAUNCH="folder-persisted" ;; esac
+case ",$ONLY," in ,,|*,folder-pinned,*) AFTER_RELAUNCH="${AFTER_RELAUNCH:+$AFTER_RELAUNCH,}pinned-persisted" ;; esac
+if [ -n "$AFTER_RELAUNCH" ]; then
+  stop_app
+  launch_app
+  relaunch_status=0
+  driver_run --only "$AFTER_RELAUNCH" ${REPORT:+--report "$REPORT.relaunch"} || relaunch_status=$?
+  [ "$status" -ne 0 ] || status=$relaunch_status
+fi
 exit "$status"
