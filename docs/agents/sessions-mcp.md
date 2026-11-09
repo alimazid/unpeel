@@ -97,6 +97,16 @@ Advertised ownership (old mixed `sessions` spellings remain decode-only):
     (`TerminalViewportSnapshot::suggested_input`, a byte range into one row;
     style runs carry `faint`), and `screen_read.rs` renders it.
     `wait_for_text` matches the unmarked rows.
+  - Draft guard (fork-only, #61, ADR 0011): `send_text` and `send_keys`
+    send every write with `unless_typed_since` = now − 3 s and
+    `unless_draft`, and the target's PTY core refuses them while the user
+    typed in the last 3 s or their unsent input is on the line. Nothing is
+    written, and the result says `Not sent (typing)` or `Not sent (draft)`;
+    `Not submitted (typing)` means a key landed after the paste, which waits
+    on the line. `send_keys` stops at the refused key ("Sent 1 of 3 keys").
+    Suggested input is no draft, and a select menu takes keys over one. The
+    call refuses rather than waits: send again once the user is done, or ask
+    them. PTY proof: `send_text_draft_guard`.
 - `agents`: `list`, `get`, `read_transcript`, `wait`. Every action targets one
   explicit recognized occurrence; the unreleased group-wide wait and summary
   actions were removed. `list` returns an occurrence-bound `agent_ref`

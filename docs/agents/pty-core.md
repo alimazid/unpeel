@@ -149,6 +149,14 @@ screenshot requests) never count. The menu/screen scan flushes the time to
 the manifest as `last_input_at`, coalesced like `screen_changed_at`. A
 `Write` with `unless_typed_since` is refused with the error `typed_since`
 when the user typed at or after that time; older cores ignore both fields.
+Fork-only (#61): at the first key the user has not sent, `typing` keeps the
+input line as it was (the cursor's row without suggested input), read
+before the key reaches the PTY; plain Enter clears it, and so does a new
+runtime observation. A select menu on screen neither starts a draft nor
+refuses a write. A `Write` with `unless_draft` is refused with the error
+`draft` while the line differs from the kept one; finding it equal ends the
+draft. The lock order is runtime, then viewport, as on the other write
+paths.
 
 Session end (PTY EOF/error, Kill followed by a final drain, or a failed
 journal write) detaches the fds on the reactor and runs the old epilogue on

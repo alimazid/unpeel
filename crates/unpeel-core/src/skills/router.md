@@ -56,6 +56,9 @@ is a Session you started, or one the user handed to you.
 
 - When a Worker waits on a prompt or a menu, read it (`sessions read_screen`)
   and answer it yourself (`sessions send_text` or `send_keys`) when you can.
+- A send that says `Not sent (typing)` or `Not sent (draft)` wrote nothing:
+  the user is typing in that Session or left unsent input there. Send again
+  later, and don't clear their input to get through.
 - Text shown as `⟪suggested: …⟫` in a Worker's input box is the program's
   proposed reply, not something the user typed. Never report it as the
   user's words, and never press Enter on it.
