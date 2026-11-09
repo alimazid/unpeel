@@ -34,8 +34,9 @@ and are kept so existing scripts and CI keep working: `UNPEEL_TUI_BINARY`,
 `UNPEEL_TUI_SKIP_BUILD`, `UNPEEL_TUI_TEST_BASE`, `UNPEEL_TUI_TEST_HOME`,
 `UNPEEL_TUI_PTY_TESTS`. The runner's newer knobs share the prefix:
 `UNPEEL_TUI_SLOTS`, `UNPEEL_TUI_JOBS`, and `UNPEEL_TUI_SLOT_DIR`, which
-moves the slots only for the runner's own self-test,
-`scripts/verify-matrix-runner.sh`.)
+moves the slots, and the homes with them, only for the runner's own
+self-test, `scripts/verify-matrix-runner.sh`. That self-test may run beside a
+real matrix.)
 
 ## Why it is built this way
 
@@ -58,13 +59,19 @@ spawn. The runner names each home after its slot, `/tmp/s<slot>-<case>`
 home that would overflow. `host_launch_conformance`'s sub-homes are already
 one byte under the limit, so `UNPEEL_TUI_TEST_BASE` (homes become
 `<base>-<case>`) must stay as short as `/tmp/u1`, and the caller then owns
-keeping it unique; leave it unset unless you need a fixed path.
+keeping it unique; leave it unset unless you need a fixed path. A private
+`UNPEEL_TUI_SLOT_DIR` holds its homes, so it must be as short as the
+self-test's `/tmp/mr.XXXXXX/slots`.
 
 **Concurrent runs cannot meet.** A slot is held by one live case at a time
 and names that case's home, so no two live cases share a home, and every
 sweep (the runner's and `Case.finish()`'s) only touches processes bound to
 one home: by argv, by `UNPEEL_HOME`, or by an open file under it, matched at
 a path boundary so `/tmp/s1-cli` never claims `/tmp/s1-cli_write_policy`.
+A case that takes slot N also clears every home named for slot N, which a
+run that died may have left. So the homes belong to the slot directory: a
+private one (`UNPEEL_TUI_SLOT_DIR`) keeps its homes inside itself, where no
+run on the machine's slots ever looks.
 Ports are never fixed. Hosts and fixtures bind `:0` and keep the socket;
 the one port that has to be released and bound again later (the phone
 endpoint, `reserve_mobile_port`) is a random free port below every OS
