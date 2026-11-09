@@ -269,7 +269,113 @@ final class SidebarTreeRowsCacheTests: XCTestCase {
         XCTAssertGreaterThan(publishes, 0, "the rollback must render")
     }
 
+    func testAnUnchangedBootstrapDoesNotRebuildTheRows() {
+        let host = FixtureHost()
+        let store = makeStore(host, heldInRuntime: true)
+        let rows = store.sidebarTreeRows
+
+        store.projectRemoteScope(snapshot: host.snapshot)
+
+        XCTAssertTrue(sameBuffer(rows, store.sidebarTreeRows))
+    }
+
+    func testABootstrapChangingOneProjectKeepsTheOtherProjectsList() throws {
+        var host = FixtureHost()
+        let store = makeStore(host, heldInRuntime: true)
+        let project = try XCTUnwrap(store.findDisplayNode("project"))
+        let other = try XCTUnwrap(store.findDisplayNode("other"))
+        let projectList = store.renderedDisplayedSessions(in: project)
+        let otherList = store.renderedDisplayedSessions(in: other)
+
+        host.edit("s1") { $0.title = "renamed" }
+        store.projectRemoteScope(snapshot: host.snapshot)
+
+        XCTAssertFalse(sameBuffer(projectList, store.renderedDisplayedSessions(in: project)))
+        XCTAssertTrue(sameBuffer(otherList, store.renderedDisplayedSessions(in: other)))
+    }
+
+    func testAnApprovalArrivingAndEndingReachesTheRows() {
+        let store = makeStore(FixtureHost(), heldInRuntime: true)
+
+        expectFreshRows(store, "an approval arriving") {
+            store.pendingMcpApprovals.append(approval(caller: "s1", target: nil))
+        }
+        expectFreshRows(store, "the approval ending") {
+            store.pendingMcpApprovals.removeAll()
+        }
+    }
+
+    /// An approval shows on its target once the Host lists that Session, and
+    /// on its caller until then. The caller's project can lose or gain the
+    /// attention while its own rows stay equal.
+    func testAnApprovalMovingBetweenProjectsReachesTheCallersRows() {
+        var host = FixtureHost()
+        let store = makeStore(host, heldInRuntime: true)
+        store.pendingMcpApprovals = [approval(caller: "s1", target: "o2")]
+        _ = store.sidebarTreeRows
+
+        expectFreshRows(store, "the target appearing in another project") {
+            host.add(.init(id: "o2", projectID: "other", title: "other two", createdAt: 8))
+            store.projectRemoteScope(snapshot: host.snapshot)
+        }
+        expectFreshRows(store, "the target going away again") {
+            host.remove("o2")
+            store.projectRemoteScope(snapshot: host.snapshot)
+        }
+    }
+
+    /// A nil snapshot delivered while the runtime already holds the next one
+    /// (a reconnect's seed) shows the disk view for a moment. A list built
+    /// there must not survive the Host's rows coming back unchanged.
+    func testAListBuiltFromTheDiskViewDoesNotOutliveAnEqualBootstrap() throws {
+        _ = NSApplication.shared
+        let store = UnpeelStore(paneLayoutController: PaneLayoutController(
+            fileURL: LaunchConfig.unpeelDir
+                .appendingPathComponent("panes-\(UUID().uuidString.prefix(6)).json")
+        ))
+        let token = UUID().uuidString.prefix(6).lowercased()
+        let projectDirectory = LaunchConfig.unpeelDir.appendingPathComponent("seed-\(token)")
+        try FileManager.default.createDirectory(at: projectDirectory, withIntermediateDirectories: true)
+        let projectID = store.addEphemeralProject(path: projectDirectory.path)
+        let diskID = "disk-\(token)"
+        try writeStoppedManifest(id: diskID, projectID: projectID, createdAt: 1_000)
+        store.rescan()
+
+        var host = FixtureHost()
+        host.addProject(.init(id: projectID, name: "Shared", parentID: nil))
+        host.add(.init(id: "h1", projectID: projectID, title: "host one", createdAt: 9))
+        store.markLocalHostClientStartedForTesting()
+        store.remoteHostRuntime.holdSnapshotForTesting(host.snapshot)
+        RunLoop.main.run(until: Date().addingTimeInterval(0.01))
+        store.projectRemoteScope(snapshot: host.snapshot)
+        _ = store.sidebarTreeRows
+
+        store.projectRemoteScope(snapshot: nil)
+        store.expandedProjectIDs = [projectID]
+        XCTAssertTrue(
+            store.sidebarTreeRows.contains { $0.id == "session:\(diskID)" },
+            "the disk view lists its own Session"
+        )
+        store.projectRemoteScope(snapshot: host.snapshot)
+
+        let rowIDs = store.sidebarTreeRows.map(\.id)
+        XCTAssertTrue(rowIDs.contains("session:h1"), "the Host's rows are back: \(rowIDs)")
+        XCTAssertFalse(rowIDs.contains("session:\(diskID)"), "no disk row survives: \(rowIDs)")
+    }
+
     // MARK: Helpers
+
+    private func approval(caller: String, target: String?) -> PendingMcpApproval {
+        PendingMcpApproval(
+            id: "approval-\(caller)",
+            kind: .write,
+            callerSessionID: caller,
+            targetSessionID: target,
+            targetAppID: nil,
+            targetAppName: nil,
+            requestedAt: Date(timeIntervalSince1970: 1)
+        )
+    }
 
     private func makeStore(_ host: FixtureHost, heldInRuntime: Bool = false) -> UnpeelStore {
         let store = UnpeelStore.sidebarFixture(
@@ -283,7 +389,7 @@ final class SidebarTreeRowsCacheTests: XCTestCase {
 
     /// The cache hands back the buffer it built, so two reads held alive share
     /// one only when nothing rebuilt between them.
-    private func sameBuffer(_ lhs: [SidebarTreeRow], _ rhs: [SidebarTreeRow]) -> Bool {
+    private func sameBuffer<Element>(_ lhs: [Element], _ rhs: [Element]) -> Bool {
         lhs.withUnsafeBufferPointer(\.baseAddress) == rhs.withUnsafeBufferPointer(\.baseAddress)
     }
 
@@ -397,6 +503,14 @@ private struct FixtureHost {
 
     mutating func remove(_ id: String) {
         sessions.removeAll { $0.id == id }
+    }
+
+    mutating func add(_ session: Session) {
+        sessions.append(session)
+    }
+
+    mutating func addProject(_ project: Project) {
+        projects.append(project)
     }
 
     var snapshot: RemoteBootstrapSnapshot {

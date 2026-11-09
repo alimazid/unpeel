@@ -745,7 +745,9 @@ final class UnpeelStore: ObservableObject {
     /// enqueueMcpApproval/answerMcpApproval (internal set for the same-module
     /// extension in MCPApprovalCenter.swift).
     @Published var pendingMcpApprovals: [PendingMcpApproval] = [] {
-        didSet { invalidateSidebarLists() }
+        // Fork-only (#48): every Host projection writes this through
+        // `reconcileApprovals`, usually with nothing to change.
+        didSet { if pendingMcpApprovals != oldValue { invalidateSidebarLists() } }
     }
     /// Approval rows whose blocking request and answer authority live in the
     /// canonical Rust workspace worker. The native app presents them only;
@@ -1667,7 +1669,11 @@ final class UnpeelStore: ObservableObject {
     /// The Local migration never swaps the sidebar to Host-backed structures
     /// until one complete snapshot has been projected. Disk-rescan state stays
     /// visible during service startup/recovery, avoiding an empty-state flash.
-    @Published private(set) var localHostProjectionReady = false
+    @Published private(set) var localHostProjectionReady = false {
+        // Fork-only (#48): this swaps `displayNodes` between the disk tree and
+        // the Host's, and the memo keys both by project id.
+        didSet { if localHostProjectionReady != oldValue { invalidateSidebarLists() } }
+    }
     private var localHostClientStarted = false
     /// Platform-adapter callbacks from the worker (`overlay.project-color.set`)
     /// must apply their native effect locally and return an honest
@@ -15851,6 +15857,7 @@ extension UnpeelStore {
         let previousSummaries = remoteSummariesByID
         let previousProjectSummaries = remoteProjectSummariesByID
         let previousOrder = remoteSessionOrderByProject
+        let previousAttention = mcpApprovalAttentionSessionIDs // Fork-only (#48)
         var snapshotProjects = snapshot.projects
         if projectsLocalHost {
             let tombstoned = Set(
@@ -16113,6 +16120,12 @@ extension UnpeelStore {
             previousOrder: previousOrder, nextOrder: orderByProject
         )
         invalidateSidebarLists(projectIDs: affectedProjects) // Fork-only (#44)
+        // Fork-only (#48): the memo holds rows with the approval overlay, and
+        // an approval moves to its target once the Host lists that Session.
+        // The caller's project can change with no row of its own changing.
+        if mcpApprovalAttentionSessionIDs != previousAttention {
+            invalidateSidebarLists()
+        }
         if newNodes != remoteNodes {
             remoteNodes = newNodes
         }
