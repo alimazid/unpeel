@@ -23,6 +23,7 @@ struct World {
     markers: HashMap<String, String>,
     exits: HashMap<String, Exit>,
     progress: HashMap<String, u64>,
+    typed_at: HashMap<String, u64>,
     heartbeat: Option<u64>,
     heartbeats_written: Vec<u64>,
 }
@@ -51,6 +52,9 @@ impl WorkerHost for FakeHost {
     }
     fn durable_progress(&self, row: &SessionRow) -> Option<u64> {
         self.with(|world| world.progress.get(&row.id).copied())
+    }
+    fn last_input_at(&self, session_id: &str) -> Option<u64> {
+        self.with(|world| world.typed_at.get(session_id).copied())
     }
     fn heartbeat(&self) -> Option<u64> {
         self.with(|world| world.heartbeat)
@@ -181,6 +185,19 @@ impl Fixture {
     fn turn(&mut self, start: u64) {
         self.step(&[worker(Status::Idle)], start - 1_000);
         self.step(&[worker(Status::Busy)], start);
+    }
+
+    /// The user's last keystroke in the Worker, as its manifest has it.
+    fn typed(&self, at: u64) {
+        self.host
+            .with(|world| world.typed_at.insert(WORKER.into(), at));
+    }
+
+    /// The one queued notice's summary and priority.
+    fn only_notice(&self) -> (String, Priority) {
+        let queued = self.queued();
+        assert_eq!(queued.len(), 1, "{queued:?}");
+        (queued[0].summary.clone(), queued[0].priority)
     }
 
     fn queued(&self) -> Vec<InboxItem> {
@@ -530,9 +547,16 @@ fn what_the_worker_does_after_a_router_write_is_still_reported() {
     assert_eq!(fx.statuses(), ["finished", "finished", "needs_input"]);
 }
 
+const USER_TALKED: &str = "\"fix-login\" finished after the user talked to it directly; its \
+                           reply was for the user, not a report to you.";
+const NOBODY_STARTED: &str = "\"fix-login\" finished a turn neither you nor the user's typing \
+                              started (a timer, a background task, or a prompt from outside the \
+                              terminal).";
+
 #[test]
 fn a_turn_the_user_typed_says_so() {
     let mut fx = fixture();
+    fx.typed(T0 + 9_900);
     fx.turn(T0 + 10_000);
     fx.divert(
         &worker(Status::Idle),
@@ -540,12 +564,153 @@ fn a_turn_the_user_typed_says_so() {
         Some("hi!"),
         T0 + 30_000,
     );
-    assert_eq!(
-        fx.queued()[0].summary,
-        "\"fix-login\" finished after the user talked to it directly; its reply was for the \
-         user, not a report to you."
-    );
+    assert_eq!(fx.only_notice(), (USER_TALKED.into(), Priority::Wake));
     assert_eq!(fx.queued()[0].status.as_deref(), Some("finished"));
+}
+
+#[test]
+fn typing_during_the_turn_is_evidence_too() {
+    let mut fx = fixture();
+    fx.turn(T0 + 10_000);
+    fx.typed(T0 + 20_000);
+    fx.divert(
+        &worker(Status::Idle),
+        ActivityLogKind::Finished,
+        Some("hi!"),
+        T0 + 30_000,
+    );
+    assert_eq!(fx.only_notice(), (USER_TALKED.into(), Priority::Wake));
+}
+
+#[test]
+fn a_timer_turn_rides_along_in_the_shape_the_cards_read() {
+    let mut fx = fixture();
+    // A timer or a `/loop` tick: Busy from idle, and no input of any kind.
+    fx.turn(T0 + 10_000);
+    let diverted = fx.divert(
+        &worker(Status::Idle),
+        ActivityLogKind::Finished,
+        Some("Checked the board; nothing new."),
+        T0 + 30_000,
+    );
+    assert!(diverted, "the user is not notified");
+    let queued = fx.queued();
+    assert_eq!(queued.len(), 1);
+    let notice = &queued[0];
+    assert_eq!(notice.priority, Priority::RideAlong);
+    assert_eq!(notice.summary, NOBODY_STARTED);
+    assert_eq!(notice.sender, Sender::Host);
+    assert_eq!(notice.kind, ItemKind::Lifecycle);
+    assert_eq!(notice.about.as_deref(), Some(WORKER));
+    assert_eq!(notice.status.as_deref(), Some("finished"));
+    assert_eq!(notice.label.as_deref(), Some("fix-login"));
+    assert_eq!(notice.body, "Checked the board; nothing new.");
+}
+
+#[test]
+fn a_background_task_turn_no_rescan_saw_busy_rides_along() {
+    let mut fx = fixture();
+    fx.step(&[worker(Status::Idle)], T0);
+    // The task's notification dates a turn too short for a rescan.
+    fx.alerts
+        .observe_hook(WORKER, "UserPromptSubmit", T0 + 20_000);
+    fx.divert(
+        &worker(Status::Idle),
+        ActivityLogKind::Finished,
+        Some("The build passed."),
+        T0 + 21_000,
+    );
+    assert_eq!(
+        fx.only_notice(),
+        (NOBODY_STARTED.into(), Priority::RideAlong)
+    );
+}
+
+#[test]
+fn typing_from_before_the_turn_is_no_evidence() {
+    let mut fx = fixture();
+    // The Desk on 2026-11-09: its last keystroke hours old, the prompts that
+    // followed came over Remote Control and never crossed the PTY.
+    fx.typed(T0);
+    fx.turn(T0 + 90 * MIN);
+    fx.divert(
+        &worker(Status::Idle),
+        ActivityLogKind::Finished,
+        Some("ok"),
+        T0 + 91 * MIN,
+    );
+    assert_eq!(
+        fx.only_notice(),
+        (NOBODY_STARTED.into(), Priority::RideAlong)
+    );
+}
+
+#[test]
+fn a_host_start_outranks_the_users_typing() {
+    let mut fx = fixture();
+    fx.drain.pastes.push((WORKER.into(), T0 + 9_500));
+    fx.turn(T0 + 10_000);
+    fx.typed(T0 + 20_000);
+    fx.divert(
+        &worker(Status::Idle),
+        ActivityLogKind::Finished,
+        Some("the task's result"),
+        T0 + 30_000,
+    );
+    assert_eq!(
+        fx.only_notice(),
+        ("\"fix-login\" finished.".into(), Priority::Wake)
+    );
+}
+
+#[test]
+fn a_router_write_during_a_turn_keeps_its_wake() {
+    let mut fx = fixture();
+    fx.turn(T0 + 10_000);
+    // The program queues the message; its answer ends this same turn.
+    fx.store.touch_router(WORKER, T0 + 20_000).unwrap();
+    fx.divert(
+        &worker(Status::Idle),
+        ActivityLogKind::Finished,
+        Some("the answer"),
+        T0 + 30_000,
+    );
+    assert_eq!(
+        fx.only_notice(),
+        ("\"fix-login\" finished.".into(), Priority::Wake)
+    );
+}
+
+#[test]
+fn a_turn_nobody_started_that_ends_on_a_prompt_wakes_the_router() {
+    let mut fx = fixture();
+    fx.turn(T0 + 10_000);
+    fx.divert(
+        &worker(Status::Attention),
+        ActivityLogKind::NeedsInput,
+        None,
+        T0 + 30_000,
+    );
+    let queued = fx.queued();
+    assert_eq!(queued.len(), 1);
+    assert_eq!(queued[0].status.as_deref(), Some("needs_input"));
+    assert_eq!(queued[0].priority, Priority::Wake);
+}
+
+#[test]
+fn a_finish_with_no_turn_to_read_keeps_its_wake() {
+    let mut fx = fixture();
+    fx.step(&[worker(Status::Idle)], T0);
+    fx.divert(
+        &worker(Status::Idle),
+        ActivityLogKind::Finished,
+        Some("a"),
+        T0 + 30_000,
+    );
+    assert_eq!(
+        fx.only_notice(),
+        ("\"fix-login\" finished.".into(), Priority::Wake)
+    );
 }
 
 #[test]
@@ -577,15 +742,20 @@ fn a_turn_started_by_a_host_paste_or_a_router_write_is_the_workers_own() {
 #[test]
 fn a_turn_whose_start_was_not_watched_is_never_called_user_typed() {
     let mut fx = fixture();
-    // First seen already busy (a Host restart mid-turn).
+    // First seen already busy (a Host restart mid-turn): it may be a Host
+    // task, so it keeps its wake.
     fx.step(&[worker(Status::Busy)], T0 + 1_000);
+    fx.typed(T0 + 2_000);
     fx.divert(
         &worker(Status::Idle),
         ActivityLogKind::Finished,
         Some("a"),
         T0 + 30_000,
     );
-    assert_eq!(fx.queued()[0].summary, "\"fix-login\" finished.");
+    assert_eq!(
+        fx.only_notice(),
+        ("\"fix-login\" finished.".into(), Priority::Wake)
+    );
 }
 
 #[test]

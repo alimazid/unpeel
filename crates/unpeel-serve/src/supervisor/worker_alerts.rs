@@ -22,6 +22,7 @@ use unpeel_core::session_inbox::{ItemKind, NewItem, Sender, Store};
 use unpeel_core::supervision::SupervisorConfig;
 
 use super::inbox_drain::{Notice, NoticeKind};
+use super::notices::TurnCause;
 use super::worker_host::{Exit, HostWorkers, WorkerHost};
 use super::{notices, watchdog};
 use crate::sessions::{SessionRow, Status, StatusSource};
@@ -31,15 +32,13 @@ pub const SELF_CAUSED_MS: u64 = 5_000;
 /// The same for an exit: the stop verb waits up to 8 s for the exited
 /// manifest, and a rescan follows.
 pub const SELF_CAUSED_EXIT_MS: u64 = 15_000;
-/// A Host paste or Router write this long before a turn began started it;
-/// with neither, the user typed it.
+/// A Host paste, Router write or keystroke this long before a turn began
+/// started it.
 pub const TURN_CAUSE_MS: u64 = 10_000;
 pub const HEARTBEAT_MS: u64 = 30_000;
 /// Restart reconciliation looks back at most this far (the Inbox keeps
 /// delivered notices, and so their dedupe keys, for a day).
 const RECONCILE_MAX_AGE_MS: u64 = unpeel_core::session_inbox::DELIVERED_KEEP_MS;
-/// Slack for a turn start the supervisor saw a rescan late.
-const OBSERVATION_SLACK_MS: u64 = 1_000;
 
 /// What the Worker alerts read from the Inbox drain.
 pub trait DrainView {
@@ -241,15 +240,9 @@ impl WorkerAlerts {
         if reported_since(&self.store, router, &row.id, since) {
             return None;
         }
-        let user_typed = turn.is_some_and(|turn| {
-            turn.watched && !caused_by_host(drain, &row.id, touched, turn.started_at)
-        });
-        Some(notices::finished(
-            row,
-            reply,
-            user_typed,
-            finished_stamp(row),
-        ))
+        let typed_at = self.io.last_input_at(&row.id);
+        let cause = turn_cause(drain, &row.id, turn, touched, typed_at, now);
+        Some(notices::finished(row, reply, cause, finished_stamp(row)))
     }
 
     fn exited(&mut self, row: &SessionRow, touched: Option<u64>, now: u64) -> Option<NewItem> {
@@ -432,7 +425,8 @@ impl WorkerAlerts {
             } else if let Some(stamp) = finished_stamp(row).filter(|stamp| *stamp > floor) {
                 if row.status == Status::Idle {
                     let reply = row.program_status.as_ref().and_then(|p| p.msg.as_deref());
-                    caught_up.push(notices::finished(row, reply, false, Some(stamp)));
+                    let cause = TurnCause::HostOrUnseen;
+                    caught_up.push(notices::finished(row, reply, cause, Some(stamp)));
                 }
             }
         }
@@ -593,11 +587,29 @@ fn self_caused(track: &Track, touched: Option<u64>, now: u64, window: u64) -> bo
     })
 }
 
-/// A Host paste or a Router write came just before the turn began.
-fn caused_by_host(drain: &dyn DrainView, worker: &str, touched: Option<u64>, started: u64) -> bool {
-    let from = started.saturating_sub(TURN_CAUSE_MS);
-    let to = started + OBSERVATION_SLACK_MS;
-    drain.pasted_between(worker, from, to) || touched.is_some_and(|at| (from..=to).contains(&at))
+/// Who started a turn that ends at `now`. The Host comes first: a reply it
+/// may be waiting for never loses its wake to a keystroke.
+fn turn_cause(
+    drain: &dyn DrainView,
+    worker: &str,
+    turn: Option<Turn>,
+    touched: Option<u64>,
+    typed_at: Option<u64>,
+    now: u64,
+) -> TurnCause {
+    let Some(turn) = turn.filter(|turn| turn.watched) else {
+        return TurnCause::HostOrUnseen;
+    };
+    let during = turn.started_at.saturating_sub(TURN_CAUSE_MS)..=now;
+    if drain.pasted_between(worker, *during.start(), now)
+        || touched.is_some_and(|at| during.contains(&at))
+    {
+        TurnCause::HostOrUnseen
+    } else if typed_at.is_some_and(|at| during.contains(&at)) {
+        TurnCause::UserTyped
+    } else {
+        TurnCause::Neither
+    }
 }
 
 /// The Worker reported to its Router (a result, not progress) at or after

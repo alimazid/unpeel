@@ -83,6 +83,26 @@ fn a_card_shows_the_last_report_status_and_what_the_worker_said_last() {
 }
 
 #[test]
+fn a_finished_notice_waiting_to_ride_along_previews_too() {
+    let home = TestHome::new().worker("w1", true, WorkerOrigin::Created, 10);
+    let finished = NewItem {
+        about: Some("w1".into()),
+        priority: Priority::RideAlong,
+        body: "Checked the board; nothing new.".into(),
+        ..item(
+            Sender::Host,
+            ItemKind::Lifecycle,
+            Some(FINISHED_STATUS),
+            "w1 finished a turn",
+        )
+    };
+    home.inbox.enqueue(ROUTER, finished, 100).unwrap();
+
+    let card = &extras(&home, ROUTER).unwrap()["workers"][0];
+    assert_eq!(card["preview"], "Checked the board; nothing new.");
+}
+
+#[test]
 fn a_finished_notice_previews_the_workers_reply() {
     let home = TestHome::new().worker("w1", true, WorkerOrigin::Created, 10);
     let report = item(

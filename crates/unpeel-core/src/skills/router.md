@@ -43,6 +43,11 @@ is a Session you started, or one the user handed to you.
 - A Worker's "finished" notice with its last reply is its answer. Workers do
   not have to call `report`. If the notice says the user talked to the Worker
   directly, that reply was for the user, not a report to you.
+- A "finished" notice for a turn neither you nor the user's typing started (a
+  timer, a background task, a prompt from outside the terminal) does not wake
+  you: it comes with your next batch. A Worker whose result you are waiting on
+  across such turns should `report` it, so ask for that when you hand out long
+  work.
 
 ## Answering Workers
 

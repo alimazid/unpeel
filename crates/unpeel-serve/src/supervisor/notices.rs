@@ -16,27 +16,50 @@ pub const NEEDS_INPUT_STATUS: &str = "needs_input";
 pub const EXITED_STATUS: &str = "exited";
 pub const STARTED_STATUS: &str = "started";
 
+/// Who started a Worker's turn, as far as the Host can tell.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TurnCause {
+    /// A Host paste or a Router write, or a start nobody saw: the reply may
+    /// be what the Router is waiting for.
+    HostOrUnseen,
+    /// The user typed into the Worker during the turn: the reply was for
+    /// the user.
+    UserTyped,
+    /// Seen starting from idle with neither: a timer, a background task, a
+    /// prompt from outside the terminal. It waits for the next wake batch.
+    Neither,
+}
+
 /// A Worker finished a turn. `reply` is its final reply (the snippet the
-/// user's notification would have shown); `user_typed` marks a turn the
-/// user started by typing into the Worker, whose reply was for the user.
+/// user's notification would have shown).
 pub fn finished(
     row: &SessionRow,
     reply: Option<&str>,
-    user_typed: bool,
+    cause: TurnCause,
     stamp: Option<u64>,
 ) -> NewItem {
-    let summary = if user_typed {
-        format!(
-            "{} finished after the user talked to it directly; its reply was for the user, \
-             not a report to you.",
-            name(row)
-        )
-    } else {
-        format!("{} finished.", name(row))
+    let (summary, priority) = match cause {
+        TurnCause::HostOrUnseen => (format!("{} finished.", name(row)), Priority::Wake),
+        TurnCause::UserTyped => (
+            format!(
+                "{} finished after the user talked to it directly; its reply was for the user, \
+                 not a report to you.",
+                name(row)
+            ),
+            Priority::Wake,
+        ),
+        TurnCause::Neither => (
+            format!(
+                "{} finished a turn neither you nor the user's typing started (a timer, a \
+                 background task, or a prompt from outside the terminal).",
+                name(row)
+            ),
+            Priority::RideAlong,
+        ),
     };
     NewItem {
         dedupe_key: stamp.map(|stamp| format!("fin:{}:{stamp}", row.id)),
-        ..lifecycle(row, FINISHED_STATUS, Priority::Wake, summary, reply)
+        ..lifecycle(row, FINISHED_STATUS, priority, summary, reply)
     }
 }
 
