@@ -61,4 +61,37 @@ final class PluginListDragTests: XCTestCase {
         controller.endDrag(cancelled: true)
         XCTAssertEqual(commits.count, 1, "Escape must not change the saved order")
     }
+
+    /// Fork-only (#56): the app window comes to the front at mouse-up, so a card
+    /// that is only a sibling spends its flight home hidden behind it.
+    func testCardIsAChildOfTheWindowFromLiftUntilItIsGone() async throws {
+        let window = NSWindow(contentRect: NSRect(x: 100, y: 100, width: 600, height: 500),
+                              styleMask: [.borderless], backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        let container = FlippedView(frame: NSRect(x: 0, y: 0, width: 600, height: 500))
+        window.contentView = container
+        let controller = PluginListDragController()
+        let ids = ["claude", "codex"]
+        controller.bind(view: container, ids: ids, enabled: true,
+                        preview: { _ in AnyView(Color.gray) }, commit: { _ in })
+        for (index, id) in ids.enumerated() {
+            let row = NSView(frame: NSRect(x: 0, y: CGFloat(index) * 80, width: 600, height: 64))
+            container.addSubview(row)
+            controller.register(row, id: id)
+        }
+        let press = window.convertPoint(toScreen: container.convert(NSPoint(x: 30, y: 20), to: nil))
+        defer { controller.detach(); window.close() }
+
+        controller.beginDrag(id: "claude", at: press)
+        XCTAssertEqual(window.childWindows?.count, 1, "The lifted card must be a child of the window")
+        controller.endDrag(cancelled: false)
+        XCTAssertEqual(window.childWindows?.count, 1, "The card must stay a child for the flight home")
+        try await Task.sleep(nanoseconds: 450_000_000)
+        XCTAssertEqual(window.childWindows ?? [], [], "The landed card must come off the window's child list")
+
+        controller.beginDrag(id: "claude", at: press)
+        XCTAssertEqual(window.childWindows?.count, 1)
+        controller.detach()
+        XCTAssertEqual(window.childWindows ?? [], [], "The detached card must come off the window's child list")
+    }
 }
