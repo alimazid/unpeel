@@ -2809,10 +2809,9 @@ final class SidebarSessionDragController: ObservableObject {
     // MARK: Card window
 
     /// Builds the borderless, click-through window that carries the floating
-    /// card and orders it above the app window (explicit ordering, NOT
-    /// `addChildWindow`: the card is short-lived and self-moved, and the
-    /// parent/child frame coupling has nothing to offer a window that must
-    /// follow the cursor, not the parent). AppKit `NSWindow` moves are not
+    /// card, a child of the app window. Fork-only (#53): the app window orders
+    /// itself to the front at mouse-up, so a sibling ordered above it spent its
+    /// whole flight home hidden behind it. AppKit `NSWindow` moves are not
     /// implicitly animated, so per-move `setFrameOrigin` calls land
     /// synchronously — the card tracks the cursor exactly.
     private func presentCardWindow(
@@ -2848,7 +2847,7 @@ final class SidebarSessionDragController: ObservableObject {
             x: rowScreen.minX - margin, y: rowScreen.minY - margin
         ))
         window.level = parent.level
-        window.order(.above, relativeTo: parent.windowNumber)
+        parent.addChildWindow(window, ordered: .above)
         cardWindow = window
         cardState = state
         if SidebarMotion.reduceMotion {
@@ -2898,6 +2897,8 @@ final class SidebarSessionDragController: ObservableObject {
 
     private func closeCardWindow() {
         if let window = cardWindow {
+            // A child still listed on its parent comes back with it.
+            window.parent?.removeChildWindow(window)
             window.orderOut(nil)
         }
         cardWindow = nil
