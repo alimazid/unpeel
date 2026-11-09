@@ -4,10 +4,10 @@ import UnpeelShared
 import XCTest
 @testable import UnpeelNative
 
-/// #41 story 32 as a test (#49): the pooled carousel page is pixel-identical to
-/// the live page it becomes at the commit swap. Each test takes the path a
-/// swipe takes: the neighbor's pooled page first, then the scope switch, then
-/// the live page.
+/// Fork-only (#49): #41 story 32 as a test. The pooled carousel page is
+/// pixel-identical to the live page it becomes at the commit swap. Each test
+/// takes the path a swipe takes: the neighbor's pooled page first, then the
+/// scope switch, then the live page.
 ///
 /// Not covered, because only the live page has them: a plain git project's
 /// checked-out branch beside its name, and a project's local-site globe. The
