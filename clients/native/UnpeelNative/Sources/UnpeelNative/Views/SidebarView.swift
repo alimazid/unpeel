@@ -951,6 +951,7 @@ struct SidebarProjectTreePanel: View {
                 SidebarSelectionScrollObserver(
                     selection: store.sessionSelection,
                     scope: store.selectedHostScope,
+                    store: store,
                     proxy: proxy,
                     treeTopScrollID: Self.treeTopScrollID,
                     sessionDragController: sessionDragController
@@ -983,6 +984,7 @@ struct SidebarProjectTreePanel: View {
     ) {
         DispatchQueue.main.async {
             withAnimation(.easeOut(duration: 0.22)) {
+                // Fork-only (#46): reaches an unmounted row too.
                 proxy.scrollToSessionRow(
                     sessionID,
                     mountedAnchor: anchor,
@@ -1034,6 +1036,8 @@ private struct SidebarScrollCue: Equatable {
 private struct SidebarSelectionScrollObserver: View {
     @ObservedObject var selection: SessionSelectionState
     let scope: SelectedHostScope
+    /// Plain reference, never observed.
+    let store: UnpeelStore
     let proxy: ScrollViewProxy
     let treeTopScrollID: String
     let sessionDragController: SidebarSessionDragController
@@ -1057,6 +1061,8 @@ private struct SidebarSelectionScrollObserver: View {
                         proxy.scrollTo(treeTopScrollID, anchor: .top)
                     }
                 } else if let id = newCue.selection,
+                          // Fork-only (#46): one scroll per selection.
+                          !store.sidebarRevealIsPending(for: id),
                           sessionDragController.sessionRowNeedsReveal(
                               id,
                               // Fork-only: sidebar sections — rows are only
@@ -1065,6 +1071,7 @@ private struct SidebarSelectionScrollObserver: View {
                               edgeMargin: SessionScrollTarget.margin
                           ) {
                     withAnimation(.easeOut(duration: 0.15)) {
+                        // Fork-only (#46): reaches an unmounted row too.
                         proxy.scrollToSessionRow(id, controller: sessionDragController)
                     }
                 }
