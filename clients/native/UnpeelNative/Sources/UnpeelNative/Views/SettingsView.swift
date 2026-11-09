@@ -597,7 +597,9 @@ private struct HostAdvancedSettingsPanel: View {
                                 + "same treatment as Stop: the row stays, ready "
                                 + "to Resume. Each project keeps its newest "
                                 + "stopped sessions up to the limit; older ones "
-                                + "are removed (pinned and unread ones are kept)."
+                                + "are removed (pinned and unread ones are kept). "
+                                + "A Scheduled Task's Run stops after at most 2 "
+                                + "idle hours."
                         )
                     }
                 } else {
@@ -4616,7 +4618,7 @@ struct AdvancedSettingsPanel: View {
         } header: {
             SettingsSectionHeader(
                 title: "Cleanup",
-                description: "Sessions that have stayed idle for the selected time are stopped — the same as clicking \"Stop\": the terminal stops and the row stays in the sidebar, where Resume continues the conversation. Sessions that keep working (including loops — any activity resets the clock), or that are pinned, selected, unread, or waiting for input, are left alone; plain shell terminals are never touched. Each project keeps its newest stopped sessions up to the limit; older ones are removed automatically, except pinned and unread ones. The agent's own history (for example claude --resume) still has those conversations."
+                description: "Sessions that have stayed idle for the selected time are stopped — the same as clicking \"Stop\": the terminal stops and the row stays in the sidebar, where Resume continues the conversation. A Scheduled Task's Run stops after 2 idle hours when the selected time is longer, and its output stays readable in its row. Sessions that keep working (including loops — any activity resets the clock), or that are pinned, selected, unread, or waiting for input, are left alone; plain shell terminals are never touched. Each project keeps its newest stopped sessions up to the limit; older ones are removed automatically, except pinned and unread ones. The agent's own history (for example claude --resume) still has those conversations."
             )
         }
     }

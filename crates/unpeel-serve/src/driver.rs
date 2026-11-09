@@ -1070,9 +1070,10 @@ impl HostRuntime {
     }
 
     /// Once per rescan: stop Sessions idle past the workspace cutoff (a Run
-    /// Session's is shorter, `auto_stop::cutoff_minutes`). The setting is
-    /// re-read from disk each time so a `unpeel settings set` or an app
-    /// edit applies at the next sweep without a restart.
+    /// Session's is never longer than two hours,
+    /// `auto_stop::cutoff_minutes`). The setting is re-read from disk each
+    /// time so a `unpeel settings set` or an app edit applies at the next
+    /// sweep without a restart.
     fn sweep_auto_stop(&mut self, emitted: &mut Vec<ServeEvent>) {
         let now_ms = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -1088,11 +1089,13 @@ impl HostRuntime {
             match event {
                 crate::auto_stop::SweepEvent::Stopped {
                     session_id,
-                    minutes,
+                    cutoff_minutes,
                 } => {
                     crate::tracelog::trace(
                         "host-worker",
-                        &format!("auto-stopped idle session {session_id} after {minutes} minutes"),
+                        &format!(
+                            "auto-stopped idle session {session_id} after {cutoff_minutes} minutes"
+                        ),
                     );
                     self.status_dirty = true;
                 }

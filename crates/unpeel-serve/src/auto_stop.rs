@@ -6,8 +6,8 @@
 //!
 //! A Run Session of a Scheduled Task stops sooner, after [`RUN_MINUTES`]
 //! (#62): otherwise a finished Run keeps its whole agent process alive for
-//! the workspace's day. A looping Run that wakes at least hourly restarts
-//! its idle clock on every wake, so it stays live.
+//! the workspace's cutoff, a day by default. A looping Run restarts its
+//! idle clock on every wake, so one that wakes at least hourly stays live.
 //!
 //! Rules: the idle clock is anchored to the canonical hook lifecycle stamp
 //! (raw repaints never postpone it), pinned rows and rows without resume
@@ -65,8 +65,8 @@ pub fn minutes_from_disk() -> u64 {
 #[derive(Debug)]
 pub struct Outcome {
     pub session_id: String,
-    /// The cutoff the Session was stopped under.
-    pub minutes: u64,
+    /// The cutoff the Session was stopped under ([`cutoff_minutes`]).
+    pub cutoff_minutes: u64,
     pub error: Option<String>,
 }
 
@@ -75,7 +75,7 @@ pub enum SweepEvent {
     Stopped {
         session_id: String,
         /// The cutoff that applied ([`cutoff_minutes`]).
-        minutes: u64,
+        cutoff_minutes: u64,
     },
     Failed {
         session_id: String,
@@ -150,7 +150,7 @@ impl Sweeper {
                 },
                 None => SweepEvent::Stopped {
                     session_id: outcome.session_id.clone(),
-                    minutes: outcome.minutes,
+                    cutoff_minutes: outcome.cutoff_minutes,
                 },
             });
             apply_outcome(&mut self.issued, &mut self.retry_after_ms, outcome, now_ms);
@@ -210,7 +210,7 @@ impl Sweeper {
                 let error = unpeel_core::session_ops::stop_session(&id).err();
                 let _ = outcomes.send(Outcome {
                     session_id: id,
-                    minutes: cutoff,
+                    cutoff_minutes: cutoff,
                     error,
                 });
             })
@@ -356,7 +356,7 @@ mod tests {
             &mut retry_after,
             Outcome {
                 session_id: "s1".into(),
-                minutes: 60,
+                cutoff_minutes: 60,
                 error: Some("temporary host failure".into()),
             },
             1_000,
@@ -381,7 +381,7 @@ mod tests {
             &mut retry_after,
             Outcome {
                 session_id: "s1".into(),
-                minutes: 60,
+                cutoff_minutes: 60,
                 error: None,
             },
             u64::MAX,
