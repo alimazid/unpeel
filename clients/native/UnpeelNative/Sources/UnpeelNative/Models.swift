@@ -1242,6 +1242,15 @@ struct ProjectNode: Codable, Identifiable, Hashable, Sendable {
     var hasAnyContent: Bool { !sessions.isEmpty || !worktrees.isEmpty }
 }
 
+/// Fork-only (#53): the rows a lifted row reorders among, frozen at lift.
+struct SidebarReorderSection: Equatable {
+    let ids: [String]
+    /// Hovering the list's own header opens the gap at the top of `ids`. False
+    /// when pinned rows sit between that header and this section: a top gap
+    /// opening below the pinned block, far from the cursor, reads as noise.
+    let headerAnchorsTop: Bool
+}
+
 /// One row in a project's regular (non-pinned) sidebar section: a session
 /// or a child folder (group / worktree). Custom order interleaves them.
 enum SidebarMixedItem: Identifiable, Equatable {

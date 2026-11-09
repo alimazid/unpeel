@@ -120,8 +120,10 @@ termination output is drained first. Never signal an unverified process group.
   (a folder moved, or a Session dropped above a folder), or the list already
   ranks one; a Session-only drag stays Sessions-only. A list that ranks a folder
   renders new Sessions above the folders and keeps stopped rows at their ranks.
-  An expanded or pinned folder has no reorder gap on a Host-served list, so its
-  drop doesn't move it.
+  An expanded folder collapses as it lifts, drags in the one-slot gap, and comes
+  back open when the drag ends; the collapse is never saved. On a Host-served
+  list a pinned folder reorders among the pinned folders only, and nothing else
+  gets a slot above them, since a row dropped there floats back below them.
 - Each group (project, plain group, worktree, cwd bucket) can instead sort its
   sessions by shared lifecycle recency ("Recently updated" — pinned Sessions
   remain in their separate top section; live rows use the Recent rank, then

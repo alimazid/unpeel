@@ -142,6 +142,22 @@ extension SidebarSessionDragController {
         }
     }
 
+    /// The row whose slot the open reorder gap sits over, where an accepted
+    /// drop's card lands. Moving up, that's the anchor's own. Moving down, the
+    /// anchor rides up one slot with everything in its block, so it's the
+    /// block's last mounted row.
+    nonisolated static func reorderLandingRowID(
+        anchorID: String,
+        movingDown: Bool,
+        in rows: [String: RowRecord]
+    ) -> String {
+        guard movingDown else { return anchorID }
+        return rows
+            .filter { $0.value.owners.contains(.group(anchorID)) }
+            .max { $0.value.frame.maxY < $1.value.frame.maxY }?
+            .key ?? anchorID
+    }
+
     /// The candidate with the smallest frame containing `point`; the first
     /// one wins a tie.
     private nonisolated static func smallest<Candidates: Sequence>(

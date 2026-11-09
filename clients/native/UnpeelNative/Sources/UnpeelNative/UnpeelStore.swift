@@ -8282,9 +8282,13 @@ final class UnpeelStore: ObservableObject {
     ) {
         guard draggedID != targetID, let node = findDisplayNode(projectID) else { return }
         var pinnedIDs = renderedPinnedItems(in: node).map(\.id)
-        guard let from = pinnedIDs.firstIndex(of: draggedID),
-              let to = pinnedIDs.firstIndex(of: targetID)
-        else { return }
+        guard let from = pinnedIDs.firstIndex(of: draggedID) else {
+            // Fork-only (#53): a Host-served list keeps its pinned groups in
+            // the regular section's pinned-first block.
+            previewSessionMove(projectID: projectID, draggedID: draggedID, over: targetID)
+            return
+        }
+        guard let to = pinnedIDs.firstIndex(of: targetID) else { return }
         pinnedIDs.remove(at: from)
         pinnedIDs.insert(draggedID, at: to)
         let regularIDs = renderedDisplayedItems(in: node).map(\.id)
@@ -14851,6 +14855,32 @@ final class UnpeelStore: ObservableObject {
         return pinnedGroupsFirst(unrankedSessions + unrankedFolders + ranked)
     }
 
+    /// Fork-only (#53): the rows a lifted row reorders among. A Host-served list
+    /// keeps its pinned groups in the regular section's pinned-first block, so
+    /// that block is its own section there: a pinned folder moves within it, and
+    /// nothing else gets a slot above it, since a row dropped there floats back
+    /// below it.
+    func sidebarReorderSection(
+        in node: ProjectNode,
+        pinned: Bool,
+        draggedID: String
+    ) -> SidebarReorderSection {
+        let pinnedIDs = renderedPinnedItems(in: node).map(\.id)
+        let regularIDs = renderedDisplayedItems(in: node).map(\.id)
+        let pinnedFolderIDs = regularIDs.filter(isGroupPinned)
+        if pinned {
+            let isFolder = pinnedFolderIDs.contains(draggedID)
+            return SidebarReorderSection(
+                ids: isFolder ? pinnedFolderIDs : pinnedIDs,
+                headerAnchorsTop: !isFolder || pinnedIDs.isEmpty
+            )
+        }
+        return SidebarReorderSection(
+            ids: regularIDs.filter { !pinnedFolderIDs.contains($0) },
+            headerAnchorsTop: pinnedIDs.isEmpty && pinnedFolderIDs.isEmpty
+        )
+    }
+
     /// Flat session rows plus the inactive-only projection used for sidebar
     /// windowing. The array-of-arrays shape remains because this path
     /// historically operated on blocks; each block is one session now.
@@ -15012,6 +15042,34 @@ final class UnpeelStore: ObservableObject {
 
     // MARK: - Live PROJECTS rows (fork-only, #44)
 
+    /// Fork-only (#53): the expanded folder a drag has lifted. Its block is
+    /// taller than the one-slot reorder gap, so the list shows it collapsed
+    /// until the drag ends. `expandedProjectIDs` keeps it, and the expansion
+    /// tracker reads that set, so the block goes and comes back without the
+    /// accordion, and a quit mid-drag restores it open.
+    @Published private(set) var liftCollapsedFolderID: String?
+
+    /// Fork-only (#53): a folder that is already collapsed has nothing to do.
+    func collapseFolderForLift(_ folderID: String) {
+        guard expandedProjectIDs.contains(folderID) else { return }
+        setLiftCollapsedFolder(folderID)
+    }
+
+    /// Fork-only (#53): every drag ends here, dropped or cancelled.
+    func endFolderLift() {
+        guard liftCollapsedFolderID != nil else { return }
+        setLiftCollapsedFolder(nil)
+    }
+
+    /// Fork-only (#53): a row's transition carries its own animation, so a
+    /// fade would outlast the jump and leave the block's rows drawn over the
+    /// rows that came up.
+    private func setLiftCollapsedFolder(_ folderID: String?) {
+        var transaction = Transaction()
+        transaction.disablesAnimations = true
+        withTransaction(transaction) { liftCollapsedFolderID = folderID }
+    }
+
     /// Everything the live PROJECTS rows are built from. Pins, order and
     /// stopped windowing reach it through `listsRevision`.
     private struct SidebarTreeRowsKey: Equatable {
@@ -15037,7 +15095,9 @@ final class UnpeelStore: ObservableObject {
     var sidebarTreeRows: [SidebarTreeRow] {
         let key = SidebarTreeRowsKey(
             topLevelNodes: displayNodes,
-            expandedProjectIDs: expandedProjectIDs,
+            expandedProjectIDs: liftCollapsedFolderID.map {
+                expandedProjectIDs.subtracting([$0])
+            } ?? expandedProjectIDs,
             hiddenSessionIDs: activePaneMemberSessionIDs,
             listsRevision: sidebarListsRevision
         )

@@ -28,12 +28,12 @@ if command == "locked" {
 
 /// What `--only` takes. A name missing here is refused, so a new scenario adds
 /// its name; the scrolled ones, long-list-drop, far-select, cross-project-insert,
-/// session-above-folder and folder-persisted run only when named.
+/// session-above-folder, folder-persisted and pinned-persisted run only when named.
 let knownScenarios: Set<String> = [
     "toggle-project", "toggle", "group-reorder", "list-reorder", "group-drop", "out-and-back",
-    "folder-reorder", "project-reorder",
+    "drop-card", "folder-cancel", "folder-reorder", "folder-pinned", "project-reorder",
     "scrolled-list-reorder", "scrolled-group-drop", "long-list-drop", "scrolled-back-reorder", "far-select",
-    "cross-project-insert", "session-above-folder", "folder-persisted",
+    "scrolled-folder", "cross-project-insert", "session-above-folder", "folder-persisted", "pinned-persisted",
 ]
 let only = option("--only").map { Set($0.split(separator: ",").map(String.init)) }
 if let only {
@@ -234,12 +234,15 @@ func click(_ point: CGPoint) {
     lastClick = (Date(), point, count)
 }
 
-func appWindowNumbers() -> Set<Int> {
+/// This app's windows on screen, front to back, by number.
+func appWindowsFrontToBack() -> [Int] {
     let windows = CGWindowListCopyWindowInfo([.optionOnScreenOnly], kCGNullWindowID) as? [[String: Any]] ?? []
-    return Set(windows.compactMap { window in
+    return windows.compactMap { window in
         (window[kCGWindowOwnerPID as String] as? pid_t) == pid ? window[kCGWindowNumber as String] as? Int : nil
-    })
+    }
 }
+
+func appWindowNumbers() -> Set<Int> { Set(appWindowsFrontToBack()) }
 
 enum DragResult {
     case finished(lifted: Bool)
@@ -251,9 +254,12 @@ enum DragResult {
 ///
 /// Rows part around a drag, so a target moves under it. `aim`, when given, is
 /// asked for the target's current spot after the path, and the pointer follows,
-/// the way a person aims at what they see.
+/// the way a person aims at what they see. `whileHeld` runs with the row in the
+/// air, before the hold. `afterRelease` gets the windows that were there before
+/// the lift, so it can tell the card from them.
 func drag(
-    from: CGPoint, path: [CGPoint], holdMs: Int = 200, aim: (() -> CGPoint?)? = nil, aimWait: Double = 0
+    from: CGPoint, path: [CGPoint], holdMs: Int = 200, aim: (() -> CGPoint?)? = nil, aimWait: Double = 0,
+    whileHeld: (() -> Void)? = nil, afterRelease: ((Set<Int>) -> Void)? = nil
 ) -> DragResult {
     let windowsBefore = appWindowNumbers()
     post(.mouseMoved, from)
@@ -302,6 +308,7 @@ func drag(
             }
         }
     }
+    whileHeld?()
     let holdEnd = Date().addingTimeInterval(Double(holdMs) / 1000)
     while Date() < holdEnd {
         post(.leftMouseDragged, current)
@@ -309,6 +316,7 @@ func drag(
     }
     lifted = lifted || !appWindowNumbers().subtracting(windowsBefore).isEmpty
     post(.leftMouseUp, current)
+    afterRelease?(windowsBefore)
     return .finished(lifted: lifted)
 }
 
@@ -459,6 +467,55 @@ let betaChildren = ["~/w/Big/beta-3", "~/w/Big/beta-2", "~/w/Big/beta-1"]
 let innerChildren = ["~/w/Big/inner-1", "~/w/Big/inner-2"]
 let smallChildren = ["~/w/Big/small-3", "~/w/Big/small-2", "~/w/Big/small-1"]
 
+/// A folder in a list, and the rows that show under it while it's open.
+struct Folder {
+    let label: String
+    let id: String
+    let block: [String]
+}
+let alphaFolder = Folder(label: "Alpha", id: "g-alpha", block: alphaChildren + innerChildren)
+let betaFolder = Folder(label: "Beta", id: "g-beta", block: betaChildren)
+let pinA = Folder(label: "Pin-A", id: "g-pin-a", block: ["~/w/Big/pin-a-1"])
+let pinB = Folder(label: "Pin-B", id: "g-pin-b", block: ["~/w/Big/pin-b-1"])
+let plain = Folder(label: "Plain", id: "g-plain", block: ["~/w/Big/plain-1"])
+let pinsRows = [pinA.label, pinB.label, plain.label]
+let pinnedBlock = [pinA.label, pinB.label] + pinA.block + pinB.block
+let pinsSession = "~/w/Big/pins-1"
+
+/// A folder and its row on screen.
+struct PlacedFolder {
+    let folder: Folder
+    let row: Row
+}
+
+/// Two folders' rows, the upper one first; nil unless both are on screen.
+func placed(_ one: Folder, _ two: Folder, in rows: [Row]) -> (upper: PlacedFolder, lower: PlacedFolder)? {
+    guard let oneRow = rows.first(where: { $0.label == one.label }),
+          let twoRow = rows.first(where: { $0.label == two.label }) else { return nil }
+    let first = PlacedFolder(folder: one, row: oneRow)
+    let second = PlacedFolder(folder: two, row: twoRow)
+    return oneRow.frame.midY < twoRow.frame.midY ? (first, second) : (second, first)
+}
+
+/// Whether the folder's rows all come right after its header.
+func isOpen(_ folder: Folder, in rows: [String]) -> Bool {
+    guard let start = rows.firstIndex(of: folder.label), start + folder.block.count < rows.count else { return false }
+    return Set(rows[(start + 1) ... (start + folder.block.count)]) == Set(folder.block)
+}
+
+/// The rows' positions, to compare two moments of one drag.
+func positions(_ rows: [Row]) -> [String: CGFloat] {
+    Dictionary(rows.map { ($0.label, $0.frame.minY) }, uniquingKeysWith: { first, _ in first })
+}
+
+/// Rows of `before` that sit elsewhere in `now`. A row gone from `now` isn't one.
+func movedRows(_ names: [String], from before: [String: CGFloat], to now: [String: CGFloat]) -> [String] {
+    names.filter { name in
+        guard let was = before[name], let current = now[name] else { return false }
+        return abs(was - current) > 2
+    }
+}
+
 /// Every click on a group header flips it, and its rows all come or all go.
 func runToggles(_ group: String, children: [String], count: Int) {
     let scenario = Scenario("toggle-\(group)")
@@ -517,6 +574,8 @@ func runDrag(
     holdMs: Int = 200,
     aim: (() -> CGPoint?)? = nil,
     aimWait: Double = 0,
+    whileHeld: (() -> Void)? = nil,
+    afterRelease: ((Set<Int>) -> Void)? = nil,
     expected: @escaping () -> Bool,
     drifted: (() -> Bool)? = nil,
     actual: () -> String
@@ -526,7 +585,10 @@ func runDrag(
             scenario.fail("drag \(attempt): the app's window is not on top")
             return
         }
-        switch drag(from: from, path: path, holdMs: holdMs, aim: aim, aimWait: aimWait) {
+        switch drag(
+            from: from, path: path, holdMs: holdMs, aim: aim, aimWait: aimWait,
+            whileHeld: whileHeld, afterRelease: afterRelease
+        ) {
         case .interrupted:
             pauses += 1
             log("  drag \(attempt) interrupted by the user: retrying after quiet")
@@ -690,15 +752,18 @@ func runScrolledReorder(_ name: String, session: String, how: String, count: Int
     }
 }
 
-/// ⌃digit, delivered to the app alone: it never reaches the HID state that
+/// A key, delivered to the app alone: it never reaches the HID state that
 /// `waitForQuiet` watches.
-func pressControl(keyCode: CGKeyCode) {
+func pressKey(keyCode: CGKeyCode, flags: CGEventFlags = []) {
     for isDown in [true, false] {
         guard let event = CGEvent(keyboardEventSource: nil, virtualKey: keyCode, keyDown: isDown) else { return }
-        event.flags = .maskControl
+        event.flags = flags
         event.postToPid(pid)
     }
 }
+
+/// A press counts as keyboard input for `userInterfered` this long.
+let keyInputHold: TimeInterval = 2.1
 
 /// Selecting a far row from the keyboard (#46): ⌃2 goes to Small at the bottom
 /// of the list, and ⌃1 comes back to Big's most recently used row. That row has
@@ -710,8 +775,6 @@ func runFarSelect(count: Int) {
     let smallRow = "~/w/Big/small-3"
     let digit1: CGKeyCode = 18
     let digit2: CGKeyCode = 19
-    // A press counts as keyboard input for `userInterfered` this long.
-    let keyInputHold: TimeInterval = 2.1
 
     /// Presses the key with `label` off screen, and returns its row once the
     /// list holds still.
@@ -726,7 +789,7 @@ func runFarSelect(count: Int) {
             scenario.fail("select \(attempt): the window isn't in front")
             return nil
         }
-        pressControl(keyCode: keyCode)
+        pressKey(keyCode: keyCode, flags: .maskControl)
         Thread.sleep(forTimeInterval: 0.4)
         nudge()
         waitForStillRows()
@@ -943,31 +1006,6 @@ func runProjectReorder(count: Int) {
     }
 }
 
-/// An expanded folder lifts, and a drop leaves it where it was. A drop lands
-/// about 0.3 s after release, so the first look can't see a move; `drifted` can.
-func runExpandedFolderStaysPut(count: Int) {
-    let scenario = Scenario("folder-expanded")
-    scenarios.append(scenario)
-    log("folder-expanded: drag Beta above Alpha x\(count): it stays put")
-    for attempt in 1 ... count {
-        let rows = readRows()
-        guard let beta = rows.first(where: { $0.label == "Beta" }),
-              let alpha = rows.first(where: { $0.label == "Alpha" }) else {
-            scenario.fail("drag \(attempt): the rows are not on screen: \(layout(rows))")
-            continue
-        }
-        let order = labels(rows)
-        runDrag(
-            scenario, attempt: attempt, from: press(beta.frame),
-            path: [CGPoint(x: alpha.frame.minX + 6, y: alpha.frame.minY + 2)],
-            describe: "Beta above Alpha",
-            expected: { labels(readRows()) == order },
-            drifted: { labels(readRows()) != order },
-            actual: { layout(readRows()) }
-        )
-    }
-}
-
 /// One drag of a row onto another's place, where the Host's order and the rows
 /// on screen both have to show `movedID` on the wanted side of `targetID`.
 func dragIntoPlace(
@@ -978,23 +1016,203 @@ func dragIntoPlace(
     movedID: String,
     target: Row,
     targetID: String,
-    aimY: CGFloat
+    aimY: CGFloat,
+    whileHeld: (() -> Void)? = nil,
+    landed: @escaping () -> Bool = { true }
 ) {
     let goAbove = moved.frame.midY > target.frame.midY
     runDrag(
         scenario, attempt: attempt, from: press(moved.frame),
         path: [CGPoint(x: moved.frame.minX + 6, y: aimY)],
         describe: "\(summary([moved.label])) \(goAbove ? "above" : "below") \(summary([target.label]))",
+        whileHeld: whileHeld,
         expected: {
             isAbove(moved.label, target.label, in: labels(readRows())) == goAbove
                 && isAbove(movedID, targetID, in: hostRawOrder(of: list)) == goAbove
+                && landed()
         },
         drifted: { isAbove(moved.label, target.label, in: labels(readRows())) == !goAbove },
         actual: { "the Host has \(hostRawOrder(of: list)); on screen \(layout(readRows()))" }
     )
 }
 
-/// A collapsed folder swaps places with its sibling. Every drag changes the
+/// Two open folders side by side swap places: the one going up, or the other
+/// going down. It closes as it lifts and both are open once it lands.
+func swapOpenFolders(
+    _ scenario: Scenario, attempt: Int, list: String, _ one: Folder, _ two: Folder, goingUp: Bool
+) {
+    let rows = readRows()
+    guard let pair = placed(one, two, in: rows) else {
+        scenario.fail("drag \(attempt): the rows are not on screen: \(layout(rows))")
+        return
+    }
+    let moved = goingUp ? pair.lower : pair.upper
+    let target = goingUp ? pair.upper : pair.lower
+    guard let index = rows.firstIndex(where: { $0.label == moved.folder.label }), index + 1 < rows.count else {
+        scenario.fail("drag \(attempt): nothing below \(moved.folder.label): \(layout(rows))")
+        return
+    }
+    // Going down, the block leaves as it lifts, and the target's header comes up
+    // to the row right under the moved header. That's where a person aims.
+    let aimY = goingUp ? target.row.frame.minY + 2 : rows[index + 1].frame.midY
+    var inTheAir: [String] = []
+    dragIntoPlace(
+        scenario, attempt: attempt, list: list,
+        moved: moved.row, movedID: moved.folder.id,
+        target: target.row, targetID: target.folder.id,
+        aimY: aimY,
+        whileHeld: { inTheAir = labels(readRows()) },
+        landed: {
+            let now = labels(readRows())
+            return isOpen(one, in: now) && isOpen(two, in: now)
+        }
+    )
+    if moved.folder.block.contains(where: inTheAir.contains) {
+        scenario.fail("drag \(attempt): \(moved.folder.label) stayed open in the air: \(summary(inTheAir))")
+    }
+}
+
+/// The card stays in front of the app's window from the release until it lands.
+/// The window orders itself to the front at mouse-up, and a card behind it leaves
+/// an empty slot for the length of the flight home.
+func runDropCard(count: Int) {
+    let scenario = Scenario("drop-card")
+    scenarios.append(scenario)
+    let moved = "~/w/Big/big-05", target = "~/w/Big/big-03"
+    log("drop-card: the card stays in front as \(summary([moved])) lands x\(count)")
+    for attempt in 1 ... count {
+        nudge() // The row under the pointer reads as missing.
+        let rows = readRows()
+        guard let source = rows.first(where: { $0.label == moved }),
+              let goal = rows.first(where: { $0.label == target }) else {
+            scenario.fail("drag \(attempt): the rows are not on screen: \(layout(rows))")
+            continue
+        }
+        let from = press(source.frame)
+        var looks = 0
+        var behind = 0
+        runDrag(
+            scenario, attempt: attempt, from: from, path: [CGPoint(x: from.x, y: goal.frame.midY)],
+            describe: "\(summary([moved])) onto \(summary([target]))",
+            afterRelease: { before in
+                looks = 0
+                behind = 0
+                let end = Date().addingTimeInterval(0.6)
+                while Date() < end {
+                    let now = appWindowsFrontToBack()
+                    if let card = now.first(where: { !before.contains($0) }) {
+                        looks += 1
+                        if now.first != card { behind += 1 }
+                    } else if looks > 0 {
+                        break
+                    }
+                    Thread.sleep(forTimeInterval: 0.02)
+                }
+            },
+            expected: { looks > 0 && behind == 0 },
+            actual: { "the card was behind the app's window in \(behind) of \(looks) looks" }
+        )
+    }
+    nudge()
+}
+
+/// Swaps two open folders, up and down in turn, ending with `two` above.
+func runOpenSwaps(_ scenario: Scenario, list: String, _ one: Folder, _ two: Folder, count: Int) {
+    for attempt in 1 ... count {
+        swapOpenFolders(scenario, attempt: attempt, list: list, one, two, goingUp: attempt % 2 == 1)
+    }
+    if isAbove(two.label, one.label, in: labels(readRows())) != true {
+        swapOpenFolders(scenario, attempt: count + 1, list: list, one, two, goingUp: true)
+    }
+}
+
+/// An open folder drags like a closed one: every drag swaps it with its sibling,
+/// so none can pass by leaving things as they were.
+func runOpenFolderMoves(count: Int) {
+    let scenario = Scenario("folder-expanded")
+    scenarios.append(scenario)
+    log("folder-expanded: swap open Alpha and Beta x\(count), up and down, ending with Beta above")
+    guard let big = hostProjectID(named: "Big") else {
+        scenario.fail("the Host has no project named Big")
+        return
+    }
+    runOpenSwaps(scenario, list: big, alphaFolder, betaFolder, count: count)
+}
+
+/// The run's last word on Big's order comes from open folders, so that's what a
+/// relaunch checks. Each goes up in turn, which needs nothing about what sits
+/// between them, and it ends with Beta above, which isn't the default order.
+func runOpenFolderLastMoves() {
+    let scenario = Scenario("folder-expanded-last")
+    scenarios.append(scenario)
+    log("folder-expanded-last: open Alpha above Beta, then open Beta above Alpha")
+    guard let big = hostProjectID(named: "Big") else {
+        scenario.fail("the Host has no project named Big")
+        return
+    }
+    for attempt in 1 ... 2 {
+        swapOpenFolders(scenario, attempt: attempt, list: big, alphaFolder, betaFolder, goingUp: true)
+    }
+}
+
+/// One drag that has to leave the list as it was, on screen and in the Host's order.
+func dragStaysPut(
+    _ scenario: Scenario,
+    attempt: Int,
+    list: String,
+    rows: [Row],
+    from: CGPoint,
+    to target: CGPoint,
+    describe: String,
+    whileHeld: (() -> Void)? = nil
+) {
+    let order = labels(rows)
+    let raw = hostRawOrder(of: list)
+    runDrag(
+        scenario, attempt: attempt, from: from, path: [target], describe: describe,
+        whileHeld: whileHeld,
+        expected: { labels(readRows()) == order && hostRawOrder(of: list) == raw },
+        drifted: { labels(readRows()) != order },
+        actual: { "the Host has \(hostRawOrder(of: list)); on screen \(layout(readRows()))" }
+    )
+}
+
+/// A cancelled drag changes nothing: released outside the sidebar or with Esc, a
+/// folder comes back in its place, open if it was open and closed if it was
+/// closed, and the Host never hears of it.
+func runFolderCancel(count: Int) {
+    let scenario = Scenario("folder-cancel")
+    scenarios.append(scenario)
+    log("folder-cancel: drag open and closed Beta, cancelling each way, x\(count)")
+    let escape: CGKeyCode = 53
+    guard let big = hostProjectID(named: "Big") else {
+        scenario.fail("the Host has no project named Big")
+        return
+    }
+    func cancelOnce(attempt: Int, state: String, withEscape: Bool) {
+        let rows = readRows()
+        guard let beta = rows.first(where: { $0.label == "Beta" }),
+              let window = mainWindow().flatMap(frame(of:)) else {
+            scenario.fail("drag \(attempt): Beta is not on screen: \(layout(rows))")
+            return
+        }
+        let home = press(beta.frame)
+        dragStaysPut(
+            scenario, attempt: attempt, list: big, rows: rows, from: home,
+            to: withEscape ? CGPoint(x: home.x, y: home.y + 40) : CGPoint(x: window.minX + 700, y: home.y),
+            describe: "\(state) Beta, \(withEscape ? "Esc" : "released outside the sidebar")",
+            whileHeld: withEscape ? { pressKey(keyCode: escape) } : nil
+        )
+        if withEscape { Thread.sleep(forTimeInterval: keyInputHold) }
+    }
+    setExpanded("Beta", children: betaChildren, true)
+    for attempt in 1 ... count { cancelOnce(attempt: attempt, state: "open", withEscape: attempt % 2 == 0) }
+    setExpanded("Beta", children: betaChildren, false)
+    for attempt in 1 ... count { cancelOnce(attempt: attempt, state: "closed", withEscape: attempt % 2 == 0) }
+    setExpanded("Beta", children: betaChildren, true)
+}
+
+/// A closed folder swaps places with its sibling. Every drag changes the
 /// order, so none can pass by leaving things as they were, and the run ends with
 /// Beta above Alpha, which isn't the default order, so a relaunch has something
 /// to lose. It's the dragged row that has to be collapsed: the sibling can be
@@ -1020,7 +1238,11 @@ func runFolderReorder(_ name: String, count: Int) {
             scenario, attempt: attempt, list: big,
             moved: betaIsBelow ? beta : alpha, movedID: betaIsBelow ? "g-beta" : "g-alpha",
             target: target, targetID: betaIsBelow ? "g-alpha" : "g-beta",
-            aimY: target.frame.minY + 2
+            aimY: target.frame.minY + 2,
+            landed: {
+                let now = Set(labels(readRows()))
+                return now.isDisjoint(with: alphaChildren) && now.isDisjoint(with: betaChildren)
+            }
         )
     }
     for attempt in 1 ... count { swapOnce(attempt: attempt) }
@@ -1174,27 +1396,243 @@ func checkFoldersUnranked() {
     }
 }
 
-/// After a relaunch, Beta is still above Alpha. The app's first rows come from
-/// its own disk scan, which reads the order file directly, so only rows read
-/// after the Host's first bootstrap can show a rank that didn't survive it.
+/// Pinned folders on a Host-served list, in project Pins: Pin-A and Pin-B, then
+/// Plain and a Session below them. Big closes for the run, so the rows fit a
+/// laptop screen, and the run ends with Pin-B above, for a relaunch to check.
+func runPinnedFolders(count: Int) {
+    let scenario = Scenario("folder-pinned")
+    scenarios.append(scenario)
+    log("folder-pinned: swap open Pin-A and Pin-B x\(count), up and down, ending with Pin-B above")
+    guard let pins = hostProjectID(named: "Pins") else {
+        scenario.fail("the Host has no project named Pins")
+        return
+    }
+    setExpanded("Big", children: ["Alpha", "Beta"], false)
+    setExpanded("Pins", children: pinsRows, true)
+    runOpenSwaps(scenario, list: pins, pinA, pinB, count: count)
+    let rest = min(count, 6)
+    runPinnedPastUnpinned(pins: pins, count: rest)
+    runUnpinnedAbovePinned(pins: pins, count: rest)
+    runSessionAbovePinned(pins: pins, count: rest)
+    runSessionIntoPinned(pins: pins, trips: max(1, rest / 2))
+    setExpanded("Pins", children: pinsRows, false)
+    setExpanded("Big", children: ["Alpha", "Beta"], true)
+}
+
+/// A pinned folder dropped on an unpinned row is refused and goes home. This
+/// guards a rule #53 didn't change: nothing has turned it red.
+func runPinnedPastUnpinned(pins: String, count: Int) {
+    let scenario = Scenario("pinned-past-unpinned")
+    scenarios.append(scenario)
+    log("pinned-past-unpinned: Pin-B onto the Session below Plain x\(count): it goes home")
+    for attempt in 1 ... count {
+        let rows = readRows()
+        guard let moved = rows.first(where: { $0.label == pinB.label }),
+              let target = rows.firstIndex(where: { $0.label == pinsSession }),
+              target >= pinB.block.count else {
+            scenario.fail("drag \(attempt): the rows are not on screen: \(layout(rows))")
+            continue
+        }
+        // Pin-B's block leaves as it lifts, so the target comes up that many rows.
+        let aimY = rows[target - pinB.block.count].frame.midY
+        dragStaysPut(
+            scenario, attempt: attempt, list: pins, rows: rows, from: press(moved.frame),
+            to: CGPoint(x: moved.frame.minX + 6, y: aimY),
+            describe: "Pin-B onto \(summary([pinsSession]))"
+        )
+    }
+}
+
+/// For `whileHeld`: a gap above a pinned folder pushes the pinned rows down, so
+/// they have to be where they were, once a gap's spring has had time to run.
+func expectNoGapAbovePinned(_ scenario: Scenario, attempt: Int, before rows: [Row]) -> () -> Void {
+    let before = positions(rows)
+    return {
+        Thread.sleep(forTimeInterval: 0.35)
+        let moved = movedRows(pinnedBlock, from: before, to: positions(readRows()))
+        if !moved.isEmpty {
+            scenario.fail("drag \(attempt): a gap opened above a pinned folder: \(summary(moved)) moved")
+        }
+    }
+}
+
+/// An unpinned folder over a pinned one gets no gap, since it would float back
+/// below it, and the drop leaves everything where it was.
+func runUnpinnedAbovePinned(pins: String, count: Int) {
+    let scenario = Scenario("unpinned-above-pinned")
+    scenarios.append(scenario)
+    log("unpinned-above-pinned: Plain over the top pinned folder x\(count): no gap, and it stays put")
+    for attempt in 1 ... count {
+        let rows = readRows()
+        guard let moved = rows.first(where: { $0.label == plain.label }),
+              let top = placed(pinA, pinB, in: rows)?.upper else {
+            scenario.fail("drag \(attempt): the rows are not on screen: \(layout(rows))")
+            continue
+        }
+        dragStaysPut(
+            scenario, attempt: attempt, list: pins, rows: rows, from: press(moved.frame),
+            to: CGPoint(x: top.row.frame.minX + 6, y: top.row.frame.minY + 2),
+            describe: "Plain above \(top.folder.label)",
+            whileHeld: expectNoGapAbovePinned(scenario, attempt: attempt, before: rows)
+        )
+    }
+}
+
+/// A Session over the edge of a pinned folder gets no gap there either, and
+/// isn't filed inside it. It may land above Plain on the way, below the pinned
+/// block.
+func runSessionAbovePinned(pins: String, count: Int) {
+    let scenario = Scenario("session-above-pinned")
+    scenarios.append(scenario)
+    log("session-above-pinned: \(summary([pinsSession])) over the top pinned folder's edge x\(count): no gap")
+    func staysBelowThePinned() -> Bool {
+        let now = labels(readRows())
+        return [pinA.label, pinB.label].allSatisfy { isAbove($0, pinsSession, in: now) == true }
+            && hostProjects()[pinsSession] == pins
+    }
+    for attempt in 1 ... count {
+        let rows = readRows()
+        guard let moved = rows.first(where: { $0.label == pinsSession }),
+              let top = placed(pinA, pinB, in: rows)?.upper else {
+            scenario.fail("drag \(attempt): the rows are not on screen: \(layout(rows))")
+            continue
+        }
+        runDrag(
+            scenario, attempt: attempt, from: press(moved.frame),
+            path: [CGPoint(x: top.row.frame.minX + 6, y: top.row.frame.minY + 2)],
+            describe: "\(summary([pinsSession])) above \(top.folder.label)",
+            whileHeld: expectNoGapAbovePinned(scenario, attempt: attempt, before: rows),
+            expected: staysBelowThePinned,
+            drifted: { !staysBelowThePinned() },
+            actual: { "it's in \(hostProjects()[pinsSession] ?? "nothing"); on screen \(layout(readRows()))" }
+        )
+    }
+}
+
+/// The rule that keeps a gap off a pinned folder's edges leaves its middle alone:
+/// a Session dropped there files inside. Each trip goes in and comes back out over
+/// the project's header.
+func runSessionIntoPinned(pins: String, trips: Int) {
+    let scenario = Scenario("session-into-pinned")
+    scenarios.append(scenario)
+    log("session-into-pinned: \(summary([pinsSession])) into Pin-A and back x\(trips)")
+    for attempt in 1 ... trips * 2 {
+        let rows = readRows()
+        let goingIn = hostProjects()[pinsSession] == pins
+        let goal = goingIn ? (label: pinA.label, id: pinA.id) : (label: "Pins", id: pins)
+        guard let source = rows.first(where: { $0.label == pinsSession }),
+              let header = rows.first(where: { $0.label == goal.label }) else {
+            scenario.fail("drag \(attempt): the rows are not on screen: \(layout(rows))")
+            continue
+        }
+        runDrag(
+            scenario, attempt: attempt, from: press(source.frame), path: [press(header.frame)],
+            describe: "\(summary([pinsSession])) onto \(goal.label)", holdMs: 350,
+            expected: { hostProjects()[pinsSession] == goal.id },
+            actual: { "the Host has it in \(hostProjects()[pinsSession] ?? "nothing"); \(layout(readRows()))" }
+        )
+    }
+}
+
+/// An open folder at the bottom of a scrolled list: closing it shortens the list,
+/// so the list scrolls back under the pointer as the folder lifts. The folder still
+/// lands where it's aimed, and open.
+func runScrolledFolder(count: Int) {
+    let scenario = Scenario("scrolled-folder")
+    scenarios.append(scenario)
+    log("scrolled-folder: swap open Pin-A and Pin-B at the bottom of a scrolled list x\(count)")
+    guard let pins = hostProjectID(named: "Pins") else {
+        scenario.fail("the Host has no project named Pins")
+        return
+    }
+    scrollToBottom()
+    nudge()
+    setExpanded("Pins", children: pinsRows, true)
+    var scrolledBack = 0
+    for attempt in 1 ... count {
+        scrollToBottom()
+        nudge()
+        let rows = readRows()
+        guard let pair = placed(pinA, pinB, in: rows) else {
+            scenario.fail("drag \(attempt): the rows are not on screen: \(layout(rows))")
+            continue
+        }
+        let moved = pair.lower
+        let target = pair.upper
+        let from = press(moved.row.frame)
+        // Aimed once, after the lift: the gap then moves the target from under it.
+        var aimed: CGPoint?
+        runDrag(
+            scenario, attempt: attempt, from: from,
+            path: [CGPoint(x: from.x, y: from.y - 8)],
+            describe: "\(moved.folder.label) above \(target.folder.label)",
+            aim: {
+                if aimed == nil {
+                    Thread.sleep(forTimeInterval: 0.15)
+                    guard let now = readRows().first(where: { $0.label == target.folder.label }) else { return nil }
+                    if abs(now.frame.minY - target.row.frame.minY) > 2 { scrolledBack += 1 }
+                    aimed = CGPoint(x: from.x, y: now.frame.minY + 2)
+                }
+                return aimed
+            },
+            aimWait: 1,
+            expected: {
+                let now = labels(readRows())
+                return isAbove(moved.folder.label, target.folder.label, in: now) == true
+                    && isAbove(moved.folder.id, target.folder.id, in: hostRawOrder(of: pins)) == true
+                    && isOpen(pinA, in: now) && isOpen(pinB, in: now)
+            },
+            drifted: { isAbove(moved.folder.label, target.folder.label, in: labels(readRows())) != true },
+            actual: { "the Host has \(hostRawOrder(of: pins)); on screen \(layout(readRows()))" }
+        )
+    }
+    if scrolledBack == 0 {
+        scenario.fail("the list never scrolled back at a lift, so this proves nothing")
+    }
+}
+
+/// After a relaunch, `upper` is still above `lower` and both are open. The app's
+/// first rows come from its own disk scan, which reads the order file directly, so
+/// only rows read after the Host's first bootstrap can show a rank that didn't
+/// survive it.
+func checkStillAbove(_ scenario: Scenario, list: String, upper: Folder, lower: Folder) {
+    if waitUntil(seconds: 2, {
+        nudge()
+        let now = labels(readRows())
+        return isAbove(upper.label, lower.label, in: now) != true || !isOpen(upper, in: now) || !isOpen(lower, in: now)
+    }) {
+        scenario.fail("the Host has \(hostRawOrder(of: list)); on screen \(layout(readRows()))")
+    } else {
+        scenario.pass()
+    }
+}
+
 func runFolderPersisted() {
     let scenario = Scenario("folder-persisted")
     scenarios.append(scenario)
-    log("folder-persisted: Beta is still above Alpha after a relaunch")
+    log("folder-persisted: Beta is still above Alpha after a relaunch, both open")
     guard let big = hostProjectID(named: "Big"),
-          isAbove("g-beta", "g-alpha", in: hostRawOrder(of: big)) == true else {
+          isAbove(betaFolder.id, alphaFolder.id, in: hostRawOrder(of: big)) == true else {
         scenario.fail("the Host doesn't have Beta above Alpha, so this proves nothing")
         return
     }
     Thread.sleep(forTimeInterval: 8)
-    if waitUntil(seconds: 2, {
-        nudge()
-        return isAbove("Beta", "Alpha", in: labels(readRows())) != true
-    }) {
-        scenario.fail("the Host has \(hostRawOrder(of: big)); on screen \(layout(readRows()))")
-    } else {
-        scenario.pass()
+    checkStillAbove(scenario, list: big, upper: betaFolder, lower: alphaFolder)
+}
+
+func runPinnedPersisted() {
+    let scenario = Scenario("pinned-persisted")
+    scenarios.append(scenario)
+    log("pinned-persisted: Pin-B is still above Pin-A after a relaunch, both open")
+    guard let pins = hostProjectID(named: "Pins"),
+          isAbove(pinB.id, pinA.id, in: hostRawOrder(of: pins)) == true else {
+        scenario.fail("the Host doesn't have Pin-B above Pin-A, so this proves nothing")
+        return
     }
+    Thread.sleep(forTimeInterval: 8)
+    setExpanded("Big", children: ["Alpha", "Beta"], false)
+    setExpanded("Pins", children: pinsRows, true)
+    checkStillAbove(scenario, list: pins, upper: pinB, lower: pinA)
 }
 
 // MARK: - Entry
@@ -1276,6 +1714,7 @@ if only?.contains("scrolled-back-reorder") == true {
     }
 }
 if only?.contains("far-select") == true { runFarSelect(count: min(dragCount, 10)) }
+if only?.contains("scrolled-folder") == true { runScrolledFolder(count: min(dragCount, 10)) }
 if wanted("list-reorder") { runListReorder(count: dragCount) }
 if wanted("group-drop") { runGroupDrop(count: dragCount) }
 if wanted("out-and-back") { runDragOutAndBack(count: dragCount) }
@@ -1288,11 +1727,10 @@ func setExpanded(_ group: String, children: [String], _ expanded: Bool) {
 }
 
 if wanted("list-reorder") { checkFoldersUnranked() }
+if wanted("drop-card") { runDropCard(count: min(dragCount, 6)) }
+if wanted("folder-cancel") { runFolderCancel(count: min(dragCount, 6)) }
 if wanted("folder-reorder") {
-    // An expanded folder gets no reorder map (`SidebarSessionDrag`): its block is
-    // taller than the one-slot gap, so it opens no gap and its drop does nothing.
-    // It still lifts and snaps back; #53 tracks making it move. A fix flips this.
-    runExpandedFolderStaysPut(count: dragCount)
+    runOpenFolderMoves(count: dragCount)
     setExpanded("Alpha", children: alphaChildren, false)
     setExpanded("Beta", children: betaChildren, false)
     runFolderReorder("folder-collapsed", count: dragCount)
@@ -1300,6 +1738,7 @@ if wanted("folder-reorder") {
     setExpanded("Alpha", children: alphaChildren, true)
     runBetaPastExpandedAlpha(count: dragCount)
     setExpanded("Beta", children: betaChildren, true)
+    runOpenFolderLastMoves()
 }
 if only?.contains("cross-project-insert") == true { runCrossProjectInsert(count: min(dragCount, 6)) }
 if only?.contains("session-above-folder") == true {
@@ -1310,6 +1749,8 @@ if only?.contains("session-above-folder") == true {
     setExpanded("Beta", children: betaChildren, true)
 }
 if only?.contains("folder-persisted") == true { runFolderPersisted() }
+if only?.contains("pinned-persisted") == true { runPinnedPersisted() }
+if wanted("folder-pinned") { runPinnedFolders(count: dragCount) }
 if wanted("project-reorder") {
     setExpanded("Small", children: smallChildren, true)
     runProjectReorder(count: dragCount)
