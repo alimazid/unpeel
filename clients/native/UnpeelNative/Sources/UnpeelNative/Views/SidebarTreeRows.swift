@@ -48,7 +48,7 @@ struct SidebarTreeRow: Equatable, Identifiable {
             case .projectHeader(let node, _), .folderHeader(let node, _):
                 return "folder:\(node.id)"
             case .session(let entry):
-                return "session:\(entry.id)"
+                return SidebarTreeRow.sessionRowID(entry.id)
             case .emptyPlaceholder(let owner):
                 return "empty:\(owner.id)"
             }
@@ -105,6 +105,12 @@ struct SidebarTreeRow: Equatable, Identifiable {
 
     var id: String { content.rowID }
     var kind: Kind { content.kind }
+
+    /// A Session row's id, known without the row at hand: a reveal scrolls
+    /// to it before the lazy list has built the row.
+    static func sessionRowID(_ sessionID: String) -> String {
+        "session:\(sessionID)"
+    }
 
     /// The group wash this row draws behind itself: one slice per
     /// wash-bearing ancestor, outermost first. A cluster's header rounds the

@@ -957,7 +957,7 @@ struct SidebarWorkspaceCarousel: ViewModifier {
 }
 
 /// Shared vertical-geometry contract for BOTH carousel pages. The live tree
-/// (SidebarView's `projectTreePanel`) and the pooled page body read the SAME
+/// (`SidebarProjectTreePanel`) and the pooled page body read the SAME
 /// constant, so the two pages cannot diverge on their top inset — if they
 /// did, the incoming page would land with its rows at a different y than
 /// the live page that replaces it at commit, and the swap would visibly
