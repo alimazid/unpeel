@@ -2,7 +2,12 @@
 //! resumable Session once it has sat idle for the workspace's
 //! `auto_stop_archive_minutes` (the key keeps its archive-era name for
 //! compatibility). The Session stays a resumable stopped row; Stop drops
-//! only its scrollback.
+//! only its scrollback (a Run Session keeps even that, ADR 0006).
+//!
+//! A Run Session of a Scheduled Task stops sooner, after [`RUN_MINUTES`]
+//! (#62): otherwise a finished Run keeps its whole agent process alive for
+//! the workspace's cutoff, a day by default. A looping Run restarts its
+//! idle clock on every wake, so one that wakes at least hourly stays live.
 //!
 //! Rules: the idle clock is anchored to the canonical hook lifecycle stamp
 //! (raw repaints never postpone it), pinned rows and rows without resume
@@ -25,7 +30,19 @@ pub const SETTING_KEY: &str = "auto_stop_archive_minutes";
 pub const MINUTE_OPTIONS: [u64; 7] = [0, 30, 60, 120, 240, 480, 1440];
 /// The app's `defaultAutoStopArchiveMinutes` — one day.
 pub const DEFAULT_MINUTES: u64 = 1440;
+/// A Run Session's cutoff whenever the workspace's is longer (#62).
+pub const RUN_MINUTES: u64 = 120;
 const RETRY_DELAY_MS: u64 = 60_000;
+
+/// The cutoff that applies to `row` under the workspace's `minutes`: a Run
+/// Session's never exceeds [`RUN_MINUTES`], and Off (0) stays off for it.
+pub fn cutoff_minutes(row: &SessionRow, minutes: u64) -> u64 {
+    if crate::run_sessions::is_run_session(row) {
+        minutes.min(RUN_MINUTES)
+    } else {
+        minutes
+    }
+}
 
 /// Effective cutoff from the raw app-state document. Junk never silently
 /// *shortens* the cutoff — it reads as off; an absent key is the default.
@@ -48,12 +65,18 @@ pub fn minutes_from_disk() -> u64 {
 #[derive(Debug)]
 pub struct Outcome {
     pub session_id: String,
+    /// The cutoff the Session was stopped under ([`cutoff_minutes`]).
+    pub cutoff_minutes: u64,
     pub error: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SweepEvent {
-    Stopped(String),
+    Stopped {
+        session_id: String,
+        /// The cutoff that applied ([`cutoff_minutes`]).
+        cutoff_minutes: u64,
+    },
     Failed {
         session_id: String,
         error: String,
@@ -125,7 +148,10 @@ impl Sweeper {
                     session_id: outcome.session_id.clone(),
                     error: error.clone(),
                 },
-                None => SweepEvent::Stopped(outcome.session_id.clone()),
+                None => SweepEvent::Stopped {
+                    session_id: outcome.session_id.clone(),
+                    cutoff_minutes: outcome.cutoff_minutes,
+                },
             });
             apply_outcome(&mut self.issued, &mut self.retry_after_ms, outcome, now_ms);
         }
@@ -158,7 +184,7 @@ impl Sweeper {
         if !worker_available(&self.issued) || minutes == 0 {
             return events;
         }
-        let (due, skips) = self.next_due(rows, unread, minutes * 60_000, now_ms);
+        let (due, skips) = self.next_due(rows, unread, minutes, now_ms);
         for (id, reason) in skips {
             if self.skip_reasons.get(&id) != Some(&reason) {
                 self.skip_reasons.insert(id.clone(), reason);
@@ -173,6 +199,10 @@ impl Sweeper {
         };
         self.skip_reasons.remove(&id);
         self.issued.insert(id.clone());
+        let cutoff = rows
+            .iter()
+            .find(|row| row.id == id)
+            .map_or(minutes, |row| cutoff_minutes(row, minutes));
         let outcomes = self.outcomes_tx.clone();
         std::thread::Builder::new()
             .name("unpeel-auto-stop".into())
@@ -180,6 +210,7 @@ impl Sweeper {
                 let error = unpeel_core::session_ops::stop_session(&id).err();
                 let _ = outcomes.send(Outcome {
                     session_id: id,
+                    cutoff_minutes: cutoff,
                     error,
                 });
             })
@@ -195,7 +226,7 @@ impl Sweeper {
         &self,
         rows: &[SessionRow],
         unread: &HashSet<String>,
-        threshold_ms: u64,
+        minutes: u64,
         now_ms: u64,
     ) -> (Option<String>, Vec<(String, &'static str)>) {
         let mut skips = Vec::new();
@@ -218,7 +249,7 @@ impl Sweeper {
             } else if attempt_blocked(&self.issued, &self.retry_after_ms, &row.id, now_ms) {
                 "stop attempt pending or in retry backoff"
             } else if let Some(&idle_since) = self.idle_since_ms.get(&row.id) {
-                if now_ms.saturating_sub(idle_since) < threshold_ms {
+                if now_ms.saturating_sub(idle_since) < cutoff_minutes(row, minutes) * 60_000 {
                     "idle for less than the cutoff"
                 } else {
                     return (Some(row.id.clone()), skips);
@@ -269,7 +300,9 @@ fn apply_outcome(
     outcome: Outcome,
     now_ms: u64,
 ) {
-    let Outcome { session_id, error } = outcome;
+    let Outcome {
+        session_id, error, ..
+    } = outcome;
     issued.remove(&session_id);
     match error {
         Some(_) => {
@@ -323,6 +356,7 @@ mod tests {
             &mut retry_after,
             Outcome {
                 session_id: "s1".into(),
+                cutoff_minutes: 60,
                 error: Some("temporary host failure".into()),
             },
             1_000,
@@ -347,6 +381,7 @@ mod tests {
             &mut retry_after,
             Outcome {
                 session_id: "s1".into(),
+                cutoff_minutes: 60,
                 error: None,
             },
             u64::MAX,
@@ -390,24 +425,14 @@ mod tests {
         sweeper.step(std::slice::from_ref(&row), &HashSet::new(), 60, now);
         assert_eq!(sweeper.idle_since_ms.get("old"), Some(&now));
         assert!(sweeper
-            .next_due(
-                std::slice::from_ref(&row),
-                &HashSet::new(),
-                60 * 60_000,
-                now
-            )
+            .next_due(std::slice::from_ref(&row), &HashSet::new(), 60, now)
             .0
             .is_none());
         // Once the worker has watched it idle for the cutoff, it is due.
         let later = now + 60 * 60_000;
         assert_eq!(
             sweeper
-                .next_due(
-                    std::slice::from_ref(&row),
-                    &HashSet::new(),
-                    60 * 60_000,
-                    later
-                )
+                .next_due(std::slice::from_ref(&row), &HashSet::new(), 60, later)
                 .0,
             Some("old".to_string())
         );
@@ -479,41 +504,168 @@ mod tests {
         let mut sweeper = sweeper;
         // Prime the idle clock, then ask past the cutoff.
         sweeper.step(std::slice::from_ref(&row), &HashSet::new(), 60, started);
-        let (due, skips) = sweeper.next_due(
-            std::slice::from_ref(&row),
-            &HashSet::new(),
-            60 * 60_000,
-            now,
-        );
+        let (due, skips) = sweeper.next_due(std::slice::from_ref(&row), &HashSet::new(), 60, now);
         assert_eq!(due, Some("unseen".to_string()), "skips: {skips:?}");
         // The worker's own unread set is treated the same as the row flag.
         row.unread = false;
         let (due, _) = sweeper.next_due(
             std::slice::from_ref(&row),
             &HashSet::from(["unseen".to_string()]),
-            60 * 60_000,
+            60,
             now,
         );
         assert_eq!(due, Some("unseen".to_string()));
     }
 
-    /// A Scheduled Task's latest Run Session stays live after its Run, and
-    /// auto-stop still applies to it like any other idle Session.
+    fn run_row(id: &str, activity_at: u64) -> SessionRow {
+        SessionRow {
+            spawned_by: Some("schedule:sch_1".into()),
+            ..idle_row(id, activity_at)
+        }
+    }
+
+    /// A finished Run's latest Session stops after two idle hours, while
+    /// an ordinary Session idle just as long keeps the workspace's day.
     #[test]
-    fn an_idle_latest_run_session_stops_after_the_cutoff() {
-        let now = 90_000_000_000;
-        let started = now - 3 * 60 * 60_000;
-        let mut row = idle_row("latest-run", started);
-        row.spawned_by = Some("schedule:sch_1".into());
+    fn a_finished_run_stops_after_two_idle_hours_and_a_session_as_old_does_not() {
+        let started = 90_000_000_000;
+        let rows = [run_row("run", started), idle_row("plain", started)];
         let mut sweeper = Sweeper::starting_at(started);
-        sweeper.step(std::slice::from_ref(&row), &HashSet::new(), 60, started);
+        sweeper.step(&rows, &HashSet::new(), 0, started);
+        let (early, _) = sweeper.next_due(
+            &rows,
+            &HashSet::new(),
+            DEFAULT_MINUTES,
+            started + 119 * 60_000,
+        );
+        assert_eq!(early, None);
         let (due, skips) = sweeper.next_due(
+            &rows,
+            &HashSet::new(),
+            DEFAULT_MINUTES,
+            started + 120 * 60_000,
+        );
+        assert_eq!(due, Some("run".to_string()), "skips: {skips:?}");
+        let without_run = &rows[1..];
+        let (due, skips) = sweeper.next_due(
+            without_run,
+            &HashSet::new(),
+            DEFAULT_MINUTES,
+            started + 120 * 60_000,
+        );
+        assert_eq!(due, None);
+        assert_eq!(
+            skips,
+            [("plain".to_string(), "idle for less than the cutoff")]
+        );
+    }
+
+    /// A looping Run that wakes every hour is never due: each wake moves
+    /// its lifecycle stamp, whether or not a sweep saw the turn busy. Once
+    /// it stops waking, it stops two hours after its last turn.
+    #[test]
+    fn a_looping_run_that_wakes_hourly_stays_live_until_it_stops_waking() {
+        let started = 90_000_000_000;
+        let hour = 60 * 60_000;
+        let mut row = run_row("looping", started);
+        let mut sweeper = Sweeper::starting_at(started);
+        sweeper.step(std::slice::from_ref(&row), &HashSet::new(), 0, started);
+        let mut last_turn = started;
+        for wake in 1..=6 {
+            let woke_at = started + wake * hour;
+            let (due, _) = sweeper.next_due(
+                std::slice::from_ref(&row),
+                &HashSet::new(),
+                DEFAULT_MINUTES,
+                woke_at - 1,
+            );
+            assert_eq!(due, None, "due before wake {wake}");
+            if wake % 2 == 1 {
+                row.status = Status::Busy;
+                sweeper.step(std::slice::from_ref(&row), &HashSet::new(), 0, woke_at);
+            }
+            last_turn = woke_at + 30_000;
+            row.status = Status::Idle;
+            row.activity_at = last_turn;
+            sweeper.step(std::slice::from_ref(&row), &HashSet::new(), 0, last_turn);
+        }
+        let (early, _) = sweeper.next_due(
             std::slice::from_ref(&row),
             &HashSet::new(),
-            60 * 60_000,
-            now,
+            DEFAULT_MINUTES,
+            last_turn + 2 * hour - 1,
         );
-        assert_eq!(due, Some("latest-run".to_string()), "skips: {skips:?}");
+        assert_eq!(early, None);
+        let (due, _) = sweeper.next_due(
+            std::slice::from_ref(&row),
+            &HashSet::new(),
+            DEFAULT_MINUTES,
+            last_turn + 2 * hour,
+        );
+        assert_eq!(due, Some("looping".to_string()));
+    }
+
+    /// Past the Run cutoff, a Run that waits on a question nobody has seen,
+    /// or that the user pinned, is still never stopped.
+    #[test]
+    fn a_run_waiting_on_the_user_or_pinned_is_never_stopped() {
+        let started = 90_000_000_000;
+        let mut asking = run_row("asking", started);
+        asking.status = Status::Attention;
+        asking.unread = true;
+        let mut kept = run_row("kept", started);
+        kept.pinned = true;
+        let rows = [asking, kept];
+        let mut sweeper = Sweeper::starting_at(started);
+        sweeper.step(&rows, &HashSet::new(), 0, started);
+        let (due, skips) = sweeper.next_due(
+            &rows,
+            &HashSet::new(),
+            DEFAULT_MINUTES,
+            started + 3 * 60 * 60_000,
+        );
+        assert_eq!(due, None);
+        assert!(
+            matches!(
+                skips.as_slice(),
+                [(asking, waiting), (kept, "pinned")]
+                    if asking == "asking"
+                        && waiting.starts_with("unread attention")
+                        && kept == "kept"
+            ),
+            "{skips:?}"
+        );
+    }
+
+    /// The Run cutoff only ever shortens the workspace's: under a shorter
+    /// one a Run follows it, and Off stops nothing.
+    #[test]
+    fn a_run_follows_a_shorter_workspace_cutoff_and_off_stays_off() {
+        let started = 90_000_000_000;
+        let row = run_row("run", started);
+        let mut sweeper = Sweeper::starting_at(started);
+        sweeper.step(std::slice::from_ref(&row), &HashSet::new(), 0, started);
+        let (early, _) = sweeper.next_due(
+            std::slice::from_ref(&row),
+            &HashSet::new(),
+            30,
+            started + 29 * 60_000,
+        );
+        assert_eq!(early, None);
+        let (due, _) = sweeper.next_due(
+            std::slice::from_ref(&row),
+            &HashSet::new(),
+            30,
+            started + 30 * 60_000,
+        );
+        assert_eq!(due, Some("run".to_string()));
+        let events = sweeper.step(
+            std::slice::from_ref(&row),
+            &HashSet::new(),
+            0,
+            started + 24 * 60 * 60_000,
+        );
+        assert!(events.is_empty() && sweeper.issued.is_empty(), "{events:?}");
     }
 
     /// Unread ATTENTION still blocks, with its own reason: the Session is
@@ -562,14 +714,14 @@ mod tests {
         let (early, _) = sweeper.next_due(
             std::slice::from_ref(&row),
             &HashSet::new(),
-            60 * 60_000,
+            60,
             started + 59 * 60_000,
         );
         assert_eq!(early, None);
         let (due, _) = sweeper.next_due(
             std::slice::from_ref(&row),
             &HashSet::new(),
-            60 * 60_000,
+            60,
             started + 60 * 60_000,
         );
         assert_eq!(due, Some("seen".to_string()));
@@ -594,24 +746,19 @@ mod tests {
         // archive, so a regression here cannot touch session state.
         sweeper.step(std::slice::from_ref(&row), &HashSet::new(), 0, now);
         assert_eq!(sweeper.idle_since_ms.get("resumed"), Some(&now));
-        let (immediate, _) = sweeper.next_due(
-            std::slice::from_ref(&row),
-            &HashSet::new(),
-            60 * 60_000,
-            now,
-        );
+        let (immediate, _) = sweeper.next_due(std::slice::from_ref(&row), &HashSet::new(), 60, now);
         assert_eq!(immediate, None);
         let (early, _) = sweeper.next_due(
             std::slice::from_ref(&row),
             &HashSet::new(),
-            60 * 60_000,
+            60,
             now + 59 * 60_000,
         );
         assert_eq!(early, None);
         let (due, _) = sweeper.next_due(
             std::slice::from_ref(&row),
             &HashSet::new(),
-            60 * 60_000,
+            60,
             now + 60 * 60_000,
         );
         assert_eq!(due, Some("resumed".to_string()));

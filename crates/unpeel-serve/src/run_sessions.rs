@@ -101,7 +101,8 @@ fn expired_runs_of_task(runs: &[&SessionRow]) -> Vec<String> {
 /// a failed start leaves the previous Run as it is), the task's earlier Run
 /// Sessions that sit idle are stopped (they stay as stopped rows). One
 /// that is busy with a follow-up, waits on the user, is still starting, or
-/// is pinned stays live; auto-stop still applies to it.
+/// is pinned stays live. Auto-stop applies to every Run Session meanwhile,
+/// with its shorter Run cutoff (`auto_stop::RUN_MINUTES`).
 pub fn superseded_run_sessions(
     rows: &[SessionRow],
     task: &str,
