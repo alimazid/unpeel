@@ -1,0 +1,90 @@
+# The Host compacts a full Worker from its transcript
+
+**Status:** accepted (2026-11-09)
+
+## Context
+
+The user asked for Workers to be compacted when they reach 40% of their
+context, "deterministic", as an Unpeel feature (#64). Until now the
+Super Agent read each Worker's status line and sent `/compact` with
+`send_keys` itself, and `CLAUDE_AUTOCOMPACT_PCT_OVERRIDE` in the Worker
+presets' settings file made Claude Code compact itself. That variable is an
+internal Claude Code name (`testPctOverride`) that a release could drop,
+it reaches only processes started after it was set, and Unpeel can neither
+show nor configure it. Large contexts cost tokens on every turn, and a
+compaction run after the prompt cache expired re-reads the whole context
+uncached: about $7.70 across two Workers on 2026-11-08.
+
+The Host had no context figure. Claude Code computes its own (status line
+`context_window.used_percentage`) as the latest request's input, cache
+writes and cache reads over the model's window, and passes it only to the
+status line command, which is the user's. Each assistant line in the
+transcript carries those three counts. The window is not in the
+transcript: Claude Code takes it from its model catalog cache
+(`~/.claude/cache/model-catalog/`), another internal file. A typed
+`/compact` fires no prompt-submit or Stop hook, but it reports 7501
+working, then done, so the Host saw an ordinary turn. Without help that
+turn would reach the Router as a Worker "finished" notice (or a
+`went_quiet` alarm) carrying the previous reply.
+
+## Decision
+
+The Host compacts a running Router's Worker when a turn of the Worker ends
+with its context at or over `supervisor_compact_percent` (default 40,
+`0` = off, nothing between 1 and 24, since the startup context comes back
+after a compaction and a low value would compact every turn).
+
+- **The figure** is Claude Code's own, read from the Worker's transcript:
+  the last main-chain reply's input, cache writes and cache reads, or a
+  later `compact_boundary`'s `postTokens`. The reader is provider code, a
+  `context_usage` callback on the runtime's transcript adapter.
+- **The window** comes from the runtime package (`[context] windows`, by
+  model-id prefix, taken from Claude Code's catalog on 2026-11-09). A model
+  none of them names is never compacted, and the Router hears that once.
+  Guessing would be worse than doing nothing: a 200K guess for a 1M model
+  fires at ~80K, close to the post-compaction baseline, and compacts every
+  turn.
+- **When:** at the Worker's Finished edge, once per turn, within 5 minutes
+  of its end while the cache is warm. A turn end missed for any reason
+  waits for the next one. After a compaction it does not compact again
+  until a reading is under the threshold.
+- **How:** `/compact`, then Enter, as program writes under the PTY core's
+  typing and draft guards (ADR 0011), and only into an Idle Worker with no
+  select menu (it would take the keys), a PTY core that has the draft
+  guard, no Inbox items waiting, and no Router write or Inbox paste in the
+  last 5 s.
+- **Notices:** the Router gets one ride-along `compacted` notice. The
+  compaction's own turn raises nothing for the Router or the user, unless
+  someone wrote to the Worker after the `/compact`, when that turn may also
+  answer them.
+
+## Considered Options
+
+- **Keep `CLAUDE_AUTOCOMPACT_PCT_OVERRIDE`.** It stays where it is for
+  now, but it is internal, Claude-wide and invisible to Unpeel. It also
+  compacts mid-turn, which the Host avoids.
+- **Read Claude Code's model catalog cache for the window.** Rejected:
+  it is an internal cache whose format can change without notice. The
+  runtime package is where Unpeel already records version-dependent
+  provider behavior.
+- **A threshold in tokens.** Rejected: the user thinks in the status
+  line's percent, and the same token count means different things on 200K
+  and 1M windows.
+- **Wrap the user's status line command to capture its JSON.** Rejected:
+  launches are plain and integrations are explicit; the status line
+  belongs to the user.
+- **Compact on a timer or whenever the Worker is idle.** Rejected: a
+  Worker idle past the cache window costs the most to compact, and one
+  about to be stopped needs no compaction.
+
+## Consequences
+
+Only Claude Workers are compacted. Codex and Codewhale need their own
+`context_usage` reader and windows. Scheduled Runs, the Router and the
+user's own Sessions are left to Claude Code. A new Claude model family
+needs a line in `runtimes/claude-code/runtime.toml` before its Workers are
+compacted, and until then the Router is told. A Worker whose transcript the
+Host cannot find (no hooks reporting its path, and a cwd Claude Code
+spells differently) is never compacted. When the Router writes to a Worker
+during its compaction, the compaction's finish can reach the Router as a
+"finished" notice carrying the previous reply.
