@@ -288,7 +288,9 @@ clock uses the same shared lifecycle timestamp as Recently updated; raw
 terminal repaints cannot keep a hook-owned idle agent alive forever. The knob
 is shared state: `auto_stop_archive_minutes` in `app-state.json` (the key
 keeps its archive-era name; absent = on at 1 day, explicit 0 = off); the
-sweep runs in the `unpeel-serve` driver (`auto_stop.rs`).
+sweep runs in the `unpeel-serve` driver (`auto_stop.rs`). A Run Session
+stops after two idle hours when the picker says longer, and never when it
+says Off (#62; detail in [serve.md](serve.md#auto-stop-sweep-why-a-session-was-not-stopped)).
 
 ### Restart Recommendation API
 

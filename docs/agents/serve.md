@@ -257,6 +257,23 @@ auto-stop skips <id>: unread attention (waiting on the user; never
 auto-stopped unseen)` / `no resumable conversation …` / `idle for less than
 the cutoff` / `pinned` / …), so "why did this never stop" is one grep.
 
+A Run Session of a Scheduled Task has a shorter cutoff,
+`auto_stop::RUN_MINUTES` (two hours, #62), whenever the workspace's is
+longer: a task's latest Run otherwise keeps its whole agent process alive
+until the workspace's day runs out or the next Run stops it. It never
+lengthens the workspace's cutoff, and Off is off for Runs too
+(`auto_stop::cutoff_minutes`). Every other rule above still holds, so a Run
+waiting on an unseen question and a pinned Run stay live. A looping Run (an
+agent that schedules its own next turn) restarts its idle clock on every
+wake, because each turn moves its lifecycle stamp, so one that wakes at
+least hourly is never stopped. Stopping a Run costs the user only the live
+process: its output stays readable (ADR 0006, the stopped Run's row shows
+it), and Resume brings the conversation back. Run Sessions take no slot in
+the stopped window below; their own keep limit is five per task
+(`run_sessions::expired_run_sessions`), so stopping Runs sooner never pushes
+the user's stopped rows or stopped Workers out. The trace line names the
+cutoff that applied (`auto-stopped idle session <id> after 120 minutes`).
+
 ### Archive removed (protocol minor 23)
 
 There is no archive: Stop is the only non-destructive end of a Session, and
