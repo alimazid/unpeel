@@ -19,7 +19,8 @@ extension View {
     /// A row's clip and group wash. With an interaction layer, the drag
     /// effects leaf draws them, the per-group observers lighting the wash:
     /// they sit between the drag visuals, so a drag publish re-runs one leaf
-    /// per row. With none, `highlightedFolderIDs` lights it.
+    /// per row. With none, `highlightedFolderIDs` lights it, and this clip
+    /// stands in for the one in `ItemChrome`.
     @ViewBuilder
     fileprivate func sidebarRowChrome(
         _ row: SidebarTreeRow,
@@ -47,9 +48,9 @@ extension View {
 
     /// Applies a part of the live-only layer; with none the row stays as is.
     @ViewBuilder
-    fileprivate func sidebarLiveLayer<Layered: View>(
-        _ interaction: SidebarRowInteraction?,
-        @ViewBuilder _ layer: (Self, SidebarRowInteraction) -> Layered
+    fileprivate func sidebarLiveLayer<Interaction, Layered: View>(
+        _ interaction: Interaction?,
+        @ViewBuilder _ layer: (Self, Interaction) -> Layered
     ) -> some View {
         if let interaction {
             layer(self, interaction)
@@ -112,9 +113,7 @@ struct SidebarFolderHeaderRow: View {
     let node: ProjectNode
     let rowView: ProjectRowView
     var highlightedFolderIDs: Set<String> = []
-    var interaction: SidebarRowInteraction? = nil
-    /// Read by the interaction layer only.
-    var isPinnedGroup = false
+    var interaction: (layer: SidebarRowInteraction, isPinnedGroup: Bool)? = nil
 
     private var parentID: String {
         node.project.parentProjectID ?? row.topLevelProjectID
@@ -126,16 +125,16 @@ struct SidebarFolderHeaderRow: View {
                 row,
                 item: SidebarTreeRowDragItem(id: node.id, listOwnerID: parentID),
                 highlightedFolderIDs: highlightedFolderIDs,
-                interaction: interaction
+                interaction: interaction?.layer
             )
             .sidebarLiveLayer(interaction) { chrome, interaction in
                 chrome
                     .sidebarDragRowFrame(
                         id: node.id,
-                        kind: .folderItem(parentID: parentID, pinned: isPinnedGroup, depth: row.depth),
+                        kind: .folderItem(parentID: parentID, pinned: interaction.isPinnedGroup, depth: row.depth),
                         owners: row.shellOwners
                     )
-                    .sidebarFinderFolderDrop(interaction)
+                    .sidebarFinderFolderDrop(interaction.layer)
             }
     }
 }
@@ -151,14 +150,12 @@ struct SidebarSessionRow: View {
     let sessionID: String
     let rowView: SessionRowView
     var highlightedFolderIDs: Set<String> = []
-    var interaction: SidebarRowInteraction? = nil
-    /// Read by the interaction layer only.
-    var isDraggable = false
+    var interaction: (layer: SidebarRowInteraction, isDraggable: Bool)? = nil
 
     var body: some View {
         rowView.equatable()
-            .sidebarLiveLayer(interaction) { rowView, _ in
-                rowView.background {
+            .sidebarLiveLayer(interaction) { view, _ in
+                view.background {
                     // The scroll target is the row grown by `margin` on both
                     // ends, so a minimal scroll stops with the row clear of the
                     // fades. The id sits on the un-padded Color.clear.
@@ -172,11 +169,11 @@ struct SidebarSessionRow: View {
                 // A row that may not lift (date-sorted or remote) still
                 // draws its wash and rides its folder's shift, but has no
                 // drag slot of its own.
-                item: isDraggable
+                item: interaction?.isDraggable == true
                     ? SidebarTreeRowDragItem(id: sessionID, listOwnerID: row.listOwnerID)
                     : nil,
                 highlightedFolderIDs: highlightedFolderIDs,
-                interaction: interaction
+                interaction: interaction?.layer
             )
             .sidebarLiveLayer(interaction) { chrome, interaction in
                 // The registry the detached drag hit-tests. A row that cannot
@@ -186,10 +183,10 @@ struct SidebarSessionRow: View {
                     id: sessionID,
                     kind: .session(projectID: row.listOwnerID, pinned: row.isPinned, depth: row.depth),
                     owners: row.shellOwners,
-                    isDraggable: isDraggable
+                    isDraggable: interaction.isDraggable
                 )
-                if isDraggable {
-                    framed.sidebarFinderFolderDrop(interaction)
+                if interaction.isDraggable {
+                    framed.sidebarFinderFolderDrop(interaction.layer)
                 } else {
                     framed
                 }

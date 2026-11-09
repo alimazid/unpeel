@@ -176,8 +176,7 @@ struct SidebarLiveTreeList: View {
                 row: row,
                 node: node,
                 rowView: headerRowView(node, row: row, isExpanded: isExpanded, inputs: inputs),
-                interaction: interaction,
-                isPinnedGroup: store.isGroupPinned(node.id)
+                interaction: (interaction, isPinnedGroup: store.isGroupPinned(node.id))
             )
             .transition(motion.transition(for: row))
         case let .session(entry):
@@ -185,12 +184,14 @@ struct SidebarLiveTreeList: View {
                 row: row,
                 sessionID: entry.id,
                 rowView: sessionRowView(entry, ownerID: row.listOwnerID, depth: row.depth),
-                interaction: interaction,
-                // A date-sorted group has no manual order to write, but a
-                // LOCAL Session there still lifts, so it can be dragged out
-                // (a committed reorder flips the group to custom order).
-                isDraggable: !store.isDateSorted(projectID: row.listOwnerID)
-                    || store.canLiftSessionFromDateSortedList(entry.id)
+                interaction: (
+                    interaction,
+                    // A date-sorted group has no manual order to write, but a
+                    // LOCAL Session there still lifts, so it can be dragged out
+                    // (a committed reorder flips the group to custom order).
+                    isDraggable: !store.isDateSorted(projectID: row.listOwnerID)
+                        || store.canLiftSessionFromDateSortedList(entry.id)
+                )
             )
             .transition(motion.transition(for: row))
         case let .emptyPlaceholder(owner):

@@ -1258,9 +1258,8 @@ enum SidebarListContentBuilder {
         row: WorkspaceListRowModel,
         store: UnpeelStore,
         /// The current instance's own Local scope rendered from its worker
-        /// snapshot: expansion lives under the base key, the selection is
-        /// the one the live tree restores on return, and Controller-local
-        /// folder tints apply (they are this Mac's own overlay).
+        /// snapshot: expansion lives under the base key, and the selection is
+        /// the one the live tree restores on return.
         isLocalScope: Bool = false
     ) -> SidebarListContent {
         var projects: [Project] = []
@@ -1505,7 +1504,6 @@ enum SidebarListContentBuilder {
                 ? nodes.reduce(into: [:]) { colors, node in
                     colors[node.id] = projectSummaries[node.id]?.colorID
                         .flatMap(ProjectFolderColor.init(rawValue:))
-                        ?? (isLocalScope ? store.projectFolderColor(for: node.id) : nil)
                 }
                 : [:]
         )
