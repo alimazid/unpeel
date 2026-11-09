@@ -7,9 +7,9 @@ import UnpeelShared
 enum GitHeadReader {
     private static let branchPrefix = "ref: refs/heads/"
 
-    /// The branch HEAD itself names, or nil when it names none: a detached
-    /// checkout, a ref outside refs/heads, or a reftable repo's stub, whose
-    /// real HEAD only `git` can read.
+    /// Fork-only (#57): the branch HEAD itself names, or nil when it names
+    /// none: a detached checkout, a ref outside refs/heads, or a reftable
+    /// repo's stub, whose real HEAD only `git` can read.
     static func checkedOutBranch(repoPath: String) -> String? {
         guard let head = headContents(repoPath: repoPath), head.hasPrefix(branchPrefix) else {
             return nil

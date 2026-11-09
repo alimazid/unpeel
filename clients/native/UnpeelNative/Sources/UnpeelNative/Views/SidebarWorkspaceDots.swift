@@ -1243,7 +1243,7 @@ enum SidebarListContentBuilder {
             folderColors: nodes.reduce(into: [:]) { colors, node in
                 colors[node.id] = store.projectFolderColor(for: node.id)
             },
-            activeBranch: localActiveBranch(store: store)
+            activeBranch: localActiveBranch(selectedSessionID: selectedSessionID, store: store)
         )
         return SidebarListContent(rows: rows, inputs: inputs)
     }
@@ -1509,10 +1509,9 @@ enum SidebarListContentBuilder {
                         .flatMap(ProjectFolderColor.init(rawValue:))
                 }
                 : [:],
-            // The raw selection, not its pane representative: the live label
-            // follows the Session itself.
+            // The representative: the live selection collapses onto it.
             activeBranch: activeBranch(
-                project: selectedSessionID
+                project: displayedSelectedSessionID
                     .flatMap { sessionsByID[$0]?.projectID }
                     .flatMap { projectSummaries[$0] },
                 row: row,
@@ -1526,8 +1525,11 @@ enum SidebarListContentBuilder {
     // the way `refreshTitlebarBranch` splits it. A dictionary lookup at most:
     // this runs in the swipe's path.
 
-    private static func localActiveBranch(store: UnpeelStore) -> SidebarActiveBranch? {
-        guard let project = store.sidebarCarouselLocalSelectedSessionID
+    private static func localActiveBranch(
+        selectedSessionID: String?,
+        store: UnpeelStore
+    ) -> SidebarActiveBranch? {
+        guard let project = selectedSessionID
             .flatMap({ store.sessionsByID[$0]?.projectID })
             .flatMap({ store.projectsByID[$0] }),
             let name = store.workspacePool.checkouts.branch(atPath: project.path)

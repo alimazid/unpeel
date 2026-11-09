@@ -203,6 +203,37 @@ final class SidebarRowPixelParityTests: XCTestCase {
         XCTAssertEqual(swipe.store.titlebarBranchState.presentation.name, "rt-branch")
     }
 
+    /// A pane group can hold another project's Session. The selection collapses
+    /// onto the representative, and the mark follows it on both pages.
+    func testAPaneMembersSelectionMarksTheRepresentativesProject() throws {
+        let swipe = try WorkspaceSwipe(paneGroup: (representative: "alpha-plain", member: WorkspaceSwipe.selected))
+        defer { swipe.finish() }
+        let content = try XCTUnwrap(SidebarListContentBuilder.content(for: swipe.neighbor, store: swipe.store))
+        XCTAssertNil(content.inputs.activeBranch, "the representative's project is no checkout")
+        let pooled = try Pixels.settled(
+            of: Self.page(SidebarListPage(source: .pooled(swipe.neighbor), store: swipe.store))
+        )
+
+        swipe.commit()
+
+        XCTAssertEqual(swipe.store.selectedSessionID, "alpha-plain")
+        Pixels.assertEqual(pooled, try Pixels.settled(of: Self.page(swipe.livePanel())), "pane member's page")
+    }
+
+    /// The page's memo keeps a gesture's scroll events at a dictionary hit, and
+    /// still gives up a name that has changed.
+    func testTheIncomingPageTakesAChangedName() throws {
+        let swipe = try WorkspaceSwipe()
+        defer { swipe.finish() }
+        let before = try XCTUnwrap(SidebarListContentBuilder.content(for: swipe.neighbor, store: swipe.store))
+        XCTAssertEqual(before.inputs.activeBranch?.name, "feature-branch")
+
+        swipe.store.workspacePool.checkouts.noteGitAnswer("moved-on", atPath: WorkspaceSwipe.repo)
+
+        let after = try XCTUnwrap(SidebarListContentBuilder.content(for: swipe.neighbor, store: swipe.store))
+        XCTAssertEqual(after.inputs.activeBranch?.name, "moved-on")
+    }
+
     /// The whole-page test only means something if the mark is really painted.
     func testTheComparisonSeesTheBranchMark() throws {
         let swipe = try WorkspaceSwipe()
@@ -340,7 +371,8 @@ final class SidebarRowPixelParityTests: XCTestCase {
             neighborKind: WorkspaceListRowModel.Kind = .local(
                 record: nil, isDefault: false, isCurrentInstance: false, isRunning: true
             ),
-            repoHead: String = "ref: refs/heads/feature-branch\n"
+            repoHead: String = "ref: refs/heads/feature-branch\n",
+            paneGroup: (representative: String, member: String) = (representative: "pane-main", member: "pane-member")
         ) throws {
             try Self.writeRepo(head: repoHead)
             AppDefaults.shared.set(Self.expanded, forKey: expansionKey)
@@ -349,7 +381,7 @@ final class SidebarRowPixelParityTests: XCTestCase {
             let panes = store.paneLayoutController
             panes.switchScope(to: "workspace:\(Self.home)")
             try panes.mutate {
-                try $0.createGroup(representativeSessionID: "pane-main", adding: "pane-member", at: .right)
+                try $0.createGroup(representativeSessionID: paneGroup.representative, adding: paneGroup.member, at: .right)
             }
             panes.switchScope(to: store.selectedHostScope.paneScopeID)
             let key: String

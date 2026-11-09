@@ -194,10 +194,11 @@ enum WorktreeGit {
     /// Branch checked out at `repoPath` (the base-picker fallback when the
     /// repo has no recognizable mainline); nil on a detached HEAD.
     static func currentBranch(repoPath: String) -> String? {
-        guard case .ok(let out) = runGit(
-            repo: repoPath, ["symbolic-ref", "--quiet", "--short", "HEAD"]
-        ), !out.isEmpty else { return nil }
-        return out
+        // Not `--short`: with a tag of the same name it prints `heads/foo`.
+        guard case .ok(let ref) = runGit(
+            repo: repoPath, ["symbolic-ref", "--quiet", "HEAD"]
+        ), !ref.isEmpty else { return nil }
+        return ref.split(separator: "/", maxSplits: 2).dropFirst(2).first.map(String.init) ?? ref
     }
 
     /// Branches already checked out in some worktree — git refuses to check

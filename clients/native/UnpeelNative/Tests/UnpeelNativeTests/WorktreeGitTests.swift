@@ -24,6 +24,49 @@ final class WorktreeGitTests: XCTestCase {
         XCTAssertTrue(message.contains("noisy-stderr"), message)
     }
 
+    // MARK: - Current branch (#57)
+
+    /// A repo on `branch`, with one commit.
+    private func repo(on branch: String) throws -> URL {
+        let repo = try makeTempDir()
+        git(repo, ["init", "-b", branch])
+        git(repo, ["commit", "--allow-empty", "-m", "one"])
+        return repo
+    }
+
+    func testCurrentBranchNamesASlashBranchWhole() throws {
+        let repo = try repo(on: "feat/some-thing")
+        defer { try? FileManager.default.removeItem(at: repo) }
+
+        XCTAssertEqual(WorktreeGit.currentBranch(repoPath: repo.path), "feat/some-thing")
+    }
+
+    /// `--short` would print `heads/foo` here, where HEAD's own text says `foo`.
+    func testCurrentBranchIgnoresATagOfTheSameName() throws {
+        let repo = try repo(on: "foo")
+        defer { try? FileManager.default.removeItem(at: repo) }
+        git(repo, ["tag", "foo"])
+
+        XCTAssertEqual(WorktreeGit.currentBranch(repoPath: repo.path), "foo")
+    }
+
+    func testCurrentBranchNamesAHeadOutsideRefsHeads() throws {
+        let repo = try repo(on: "main")
+        defer { try? FileManager.default.removeItem(at: repo) }
+        git(repo, ["update-ref", "refs/remotes/origin/main", "HEAD"])
+        git(repo, ["symbolic-ref", "HEAD", "refs/remotes/origin/main"])
+
+        XCTAssertEqual(WorktreeGit.currentBranch(repoPath: repo.path), "origin/main")
+    }
+
+    func testCurrentBranchNamesNothingOnADetachedHead() throws {
+        let repo = try repo(on: "main")
+        defer { try? FileManager.default.removeItem(at: repo) }
+        git(repo, ["checkout", "--detach"])
+
+        XCTAssertNil(WorktreeGit.currentBranch(repoPath: repo.path))
+    }
+
     // MARK: - Default base ref
 
     private func makeTempDir() throws -> URL {

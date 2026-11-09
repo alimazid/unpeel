@@ -197,6 +197,7 @@ final class WorkspacePool: ObservableObject {
         maintenanceIntervalNanoseconds: UInt64 = 30_000_000_000,
         immediateRefreshThrottleSeconds: TimeInterval = 2,
         maxLiveRemoteConnections: Int = 4,
+        // Fork-only (#57)
         readCheckedOutBranch: @escaping @Sendable (String) -> String? = {
             GitHeadReader.checkedOutBranch(repoPath: $0)
         },
@@ -618,7 +619,7 @@ final class WorkspacePool: ObservableObject {
             return
         }
         // Fork-only (#57): `gitBranch` is in the project list, so a checkout
-        // changes it and Session churn doesn't.
+        // HEAD can name changes it and Session churn doesn't.
         if WorkspaceListOrder.isLocalKey(key), snapshots[key]?.projects != snapshot.projects {
             checkouts.refresh(paths: Set(
                 snapshot.projects.filter { $0.worktreeBranch == nil }.map(\.path)

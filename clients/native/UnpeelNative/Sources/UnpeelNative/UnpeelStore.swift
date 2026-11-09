@@ -14600,11 +14600,12 @@ final class UnpeelStore: ObservableObject {
         titlebarBranchState.update(name: nil, isWorktree: false)
     }
 
-    /// Plain git project on this Mac: show what `workspacePool.checkouts` knows
-    /// at once, the same name the incoming pooled page showed, so a swipe's swap
-    /// has no gap and no disk read. `git` then confirms it. Selection ping-pong
-    /// previously launched one git process per click; a short TTL plus one
-    /// in-flight request per path bounds that work.
+    /// Plain git project on this Mac. Fork-only (#57): show what
+    /// `workspacePool.checkouts` knows at once, the same name the incoming
+    /// pooled page showed, so a swipe's swap has no gap and no disk read. `git`
+    /// then confirms it. Selection ping-pong previously launched one git
+    /// process per click; a short TTL plus one in-flight request per path
+    /// bounds that work.
     private func resolveLocalTitlebarBranch(path: String) {
         guard UnpeelStore.isGitRepo(path: path) else {
             titlebarBranchPath = nil

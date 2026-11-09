@@ -264,13 +264,15 @@ private extension String {
 enum WorkspaceListOrder {
     nonisolated static let defaultsKey = "unpeel.native.workspaceOrder"
 
+    private nonisolated static let localPrefix = "local:"
+
     nonisolated static func localKey(home: String) -> String {
-        "local:\(UnpeelWorkspaceRegistry.normalizePath(home))"
+        localPrefix + UnpeelWorkspaceRegistry.normalizePath(home)
     }
 
     // Fork-only (#57)
     nonisolated static func isLocalKey(_ key: String) -> Bool {
-        key.hasPrefix("local:")
+        key.hasPrefix(localPrefix)
     }
 
     nonisolated static func pairedKey(hostID: String) -> String {

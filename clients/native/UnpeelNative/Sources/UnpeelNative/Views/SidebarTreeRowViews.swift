@@ -160,6 +160,7 @@ struct SidebarPooledRowInputs: Equatable {
     /// Projects whose list is date-sorted: their rows show an age.
     let dateSortedProjectIDs: Set<String>
     let folderColors: [String: ProjectFolderColor]
+    // Fork-only (#57)
     let activeBranch: SidebarActiveBranch?
 }
 
