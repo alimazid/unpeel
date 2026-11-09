@@ -9,9 +9,8 @@ import XCTest
 /// takes the path a swipe takes: the neighbor's pooled page first, then the
 /// scope switch, then the live page.
 ///
-/// Not covered, because only the live page has them: a plain git project's
-/// checked-out branch beside its name, and a project's local-site globe. The
-/// fixture's paths are no git repositories and serve no sites.
+/// Not covered, because only the live page has it: a project's local-site
+/// globe. The fixture's paths serve no sites.
 @MainActor
 final class SidebarRowPixelParityTests: XCTestCase {
     /// The live page with its whole interaction layer, at rest: what the user
@@ -131,6 +130,103 @@ final class SidebarRowPixelParityTests: XCTestCase {
         XCTAssertTrue(content.inputs.folderColors.isEmpty)
     }
 
+    // MARK: The branch mark (#57)
+
+    /// A page on this Mac takes the name from the checkout, not from the Host's
+    /// `gitBranch`, because that is what its live label ends up showing.
+    func testALocalPageNamesWhatItsCheckoutHasOut() throws {
+        let swipe = try WorkspaceSwipe()
+        defer { swipe.finish() }
+
+        let content = try XCTUnwrap(SidebarListContentBuilder.content(for: swipe.neighbor, store: swipe.store))
+
+        XCTAssertEqual(content.inputs.activeBranch, SidebarActiveBranch(projectID: "inner", name: "feature-branch"))
+    }
+
+    /// A true remote Host's path means nothing on this Mac, and its live label
+    /// shows what the Host reports.
+    func testARemoteHostsPageNamesWhatItsHostReports() throws {
+        let swipe = try WorkspaceSwipe(neighborKind: .ssh(SSHHostRecord(
+            id: "ssh-parity",
+            name: "Parity",
+            target: "ssh://parity",
+            hostID: WorkspaceSwipe.macID,
+            mode: .command,
+            usesStoredSecret: false
+        )))
+        defer { swipe.finish() }
+
+        let content = try XCTUnwrap(SidebarListContentBuilder.content(for: swipe.neighbor, store: swipe.store))
+
+        XCTAssertEqual(content.inputs.activeBranch, SidebarActiveBranch(projectID: "inner", name: "host-says"))
+    }
+
+    /// The swap can't show a gap: the live label has its name the moment the
+    /// scope lands, before `git symbolic-ref` could have answered.
+    func testTheLiveMarkHasItsNameTheMomentTheSwipeCommits() throws {
+        let swipe = try WorkspaceSwipe()
+        defer { swipe.finish() }
+
+        swipe.commit()
+
+        XCTAssertEqual(swipe.store.titlebarBranchState.presentation.name, "feature-branch")
+    }
+
+    /// On this Mac a detached checkout wears no mark: not on the Host's short
+    /// commit, and not after `git symbolic-ref` has failed.
+    func testADetachedCheckoutHasNoMarkOnEitherPage() throws {
+        let swipe = try WorkspaceSwipe(repoHead: "1976b60d4f0d6c7e8a9b0c1d2e3f405162738495\n")
+        defer { swipe.finish() }
+        let content = try XCTUnwrap(SidebarListContentBuilder.content(for: swipe.neighbor, store: swipe.store))
+        XCTAssertNil(content.inputs.activeBranch)
+        let pooled = try Pixels.settled(
+            of: Self.page(SidebarListPage(source: .pooled(swipe.neighbor), store: swipe.store))
+        )
+
+        swipe.commit()
+
+        XCTAssertNil(swipe.store.titlebarBranchState.presentation.name)
+        Pixels.assertEqual(pooled, try Pixels.settled(of: Self.page(swipe.livePanel())), "detached page")
+    }
+
+    /// A reftable repo's HEAD names nothing, so only `git` can. Once it has, both
+    /// pages show that name.
+    func testANameFromGitIsOnBothPages() throws {
+        let swipe = try WorkspaceSwipe(repoHead: "ref: refs/heads/.invalid\n")
+        defer { swipe.finish() }
+        swipe.store.workspacePool.checkouts.noteGitAnswer("rt-branch", atPath: WorkspaceSwipe.repo)
+
+        let content = try XCTUnwrap(SidebarListContentBuilder.content(for: swipe.neighbor, store: swipe.store))
+        swipe.commit()
+
+        XCTAssertEqual(content.inputs.activeBranch?.name, "rt-branch")
+        XCTAssertEqual(swipe.store.titlebarBranchState.presentation.name, "rt-branch")
+    }
+
+    /// The whole-page test only means something if the mark is really painted.
+    func testTheComparisonSeesTheBranchMark() throws {
+        let swipe = try WorkspaceSwipe()
+        defer { swipe.finish() }
+        let content = try XCTUnwrap(SidebarListContentBuilder.content(for: swipe.neighbor, store: swipe.store))
+        let header = try XCTUnwrap(content.rows.first { $0.id == "folder:inner" })
+        let markless = SidebarPooledRowInputs(
+            selectedSessionID: content.inputs.selectedSessionID,
+            highlightedFolderIDs: content.inputs.highlightedFolderIDs,
+            unreadSessionIDs: content.inputs.unreadSessionIDs,
+            paneItemsByRepresentative: content.inputs.paneItemsByRepresentative,
+            dateSortedProjectIDs: content.inputs.dateSortedProjectIDs,
+            folderColors: content.inputs.folderColors,
+            activeBranch: nil
+        )
+
+        let marked = try Pixels.settled(of: Self.strip(SidebarPooledTreeRow(row: header, inputs: content.inputs)))
+        let bare = try Pixels.settled(of: Self.strip(SidebarPooledTreeRow(row: header, inputs: markless)))
+
+        for (scale, (one, other)) in zip(Pixels.scales, zip(marked, bare)) {
+            XCTAssertNotEqual(one, other, "the mark at \(scale)x")
+        }
+    }
+
     /// The comparison itself has to see what it guards: a 1 pt shift and an
     /// unlit wash, at both scales.
     func testTheComparisonSeesAOnePointShiftAndAnUnlitWash() throws {
@@ -144,7 +240,8 @@ final class SidebarRowPixelParityTests: XCTestCase {
             unreadSessionIDs: content.inputs.unreadSessionIDs,
             paneItemsByRepresentative: content.inputs.paneItemsByRepresentative,
             dateSortedProjectIDs: content.inputs.dateSortedProjectIDs,
-            folderColors: content.inputs.folderColors
+            folderColors: content.inputs.folderColors,
+            activeBranch: content.inputs.activeBranch
         )
 
         func painted(shift: CGFloat = 0, inputs: SidebarPooledRowInputs) throws -> [Pixels] {
@@ -228,6 +325,9 @@ final class SidebarRowPixelParityTests: XCTestCase {
         )
         static let macID = "parity-host"
         static let selected = "group-selected"
+        /// The selected Session's project: a real checkout, so the live label's
+        /// `git symbolic-ref` has something to answer from.
+        static let repo = LaunchConfig.unpeelDir.appendingPathComponent("scope-parity-repo").path
         /// Expansion, keyed the way both pages read it: every folder is open
         /// but the two that show collapsed marks.
         static let expanded = ["alpha", "pinnedGroup", "group", "inner", "emptyGroup", "dated", "topGroup", "empty"]
@@ -239,8 +339,10 @@ final class SidebarRowPixelParityTests: XCTestCase {
         init(
             neighborKind: WorkspaceListRowModel.Kind = .local(
                 record: nil, isDefault: false, isCurrentInstance: false, isRunning: true
-            )
+            ),
+            repoHead: String = "ref: refs/heads/feature-branch\n"
         ) throws {
+            try Self.writeRepo(head: repoHead)
             AppDefaults.shared.set(Self.expanded, forKey: expansionKey)
             store = UnpeelStore.sidebarFixture(snapshot: Self.localTree, expandedProjectIDs: [])
             // The neighbor's pane group, where both pages read it.
@@ -250,18 +352,46 @@ final class SidebarRowPixelParityTests: XCTestCase {
                 try $0.createGroup(representativeSessionID: "pane-main", adding: "pane-member", at: .right)
             }
             panes.switchScope(to: store.selectedHostScope.paneScopeID)
+            let key: String
+            if case let .ssh(host) = neighborKind {
+                key = WorkspaceListOrder.sshKey(id: host.id)
+            } else {
+                key = WorkspaceListOrder.localKey(home: Self.home)
+            }
             neighbor = WorkspaceListRowModel(
-                id: "workspace:parity", name: "Parity", detail: "", icon: "", badge: nil,
+                id: key, name: "Parity", detail: "", icon: "", badge: nil,
                 home: Self.home, tint: .none,
                 kind: neighborKind
             )
-            let key = neighbor.id
             // An excluded key keeps its pooled snapshot and opens no connection.
             // The foreground key keeps the fixture's attention rows from posting
             // a real notification.
             store.workspacePool.start(targetsProvider: { [] }, excludedKeys: { [key] }, foregroundKey: { key })
             store.workspacePool.noteExternalSnapshot(Self.workspaceTree, forKey: key, name: neighbor.name)
+            if WorkspaceListOrder.isLocalKey(key), repoHead.contains("refs/heads/feature-branch") {
+                try awaitTheCheckoutRead()
+            }
             SidebarListContentBuilder.invalidate()
+        }
+
+        /// The smallest thing git calls a repository.
+        private static func writeRepo(head: String) throws {
+            let git = URL(fileURLWithPath: repo).appendingPathComponent(".git")
+            for directory in ["objects", "refs"] {
+                try FileManager.default.createDirectory(
+                    at: git.appendingPathComponent(directory), withIntermediateDirectories: true
+                )
+            }
+            try head.write(to: git.appendingPathComponent("HEAD"), atomically: true, encoding: .utf8)
+        }
+
+        /// The pool reads HEAD off the main thread.
+        private func awaitTheCheckoutRead() throws {
+            let deadline = Date().addingTimeInterval(5)
+            while store.workspacePool.checkouts.branch(atPath: Self.repo) == nil, Date() < deadline {
+                RunLoop.main.run(until: Date().addingTimeInterval(0.005))
+            }
+            XCTAssertEqual(store.workspacePool.checkouts.branch(atPath: Self.repo), "feature-branch")
         }
 
         func commit() {
@@ -336,7 +466,7 @@ final class SidebarRowPixelParityTests: XCTestCase {
                     RemoteProjectSummary(id: "alpha", name: "alpha", path: "/fixture/alpha", colorID: "violet", sortOrder: 0),
                     RemoteProjectSummary(id: "pinnedGroup", name: "pinned group", path: "/fixture/pg", parentProjectID: "alpha", isGroup: true, pinned: true, sortOrder: 1),
                     RemoteProjectSummary(id: "group", name: "group", path: "/fixture/group", parentProjectID: "alpha", isGroup: true, sortOrder: 2),
-                    RemoteProjectSummary(id: "inner", name: "inner", path: "/fixture/inner", parentProjectID: "group", isGroup: true, sortOrder: 3),
+                    RemoteProjectSummary(id: "inner", name: "inner", path: repo, parentProjectID: "group", isGroup: true, gitBranch: "host-says", sortOrder: 3),
                     RemoteProjectSummary(id: "emptyGroup", name: "empty group", path: "/fixture/eg", parentProjectID: "group", isGroup: true, sortOrder: 4),
                     RemoteProjectSummary(id: "worktree", name: "worktree", path: "/fixture/wt", parentProjectID: "alpha", worktreeBranch: "feature", sortOrder: 5),
                     RemoteProjectSummary(id: "attention", name: "attention", path: "/fixture/at", parentProjectID: "alpha", isGroup: true, sortOrder: 6),

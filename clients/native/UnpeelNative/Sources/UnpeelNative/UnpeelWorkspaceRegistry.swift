@@ -268,6 +268,11 @@ enum WorkspaceListOrder {
         "local:\(UnpeelWorkspaceRegistry.normalizePath(home))"
     }
 
+    // Fork-only (#57)
+    nonisolated static func isLocalKey(_ key: String) -> Bool {
+        key.hasPrefix("local:")
+    }
+
     nonisolated static func pairedKey(hostID: String) -> String {
         "host:\(hostID)"
     }

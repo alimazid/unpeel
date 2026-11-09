@@ -5,7 +5,29 @@ import UnpeelShared
 /// (worktree checkouts have a `.git` FILE pointing at the real gitdir —
 /// follow it). Cheap enough to run per project on every bootstrap.
 enum GitHeadReader {
+    private static let branchPrefix = "ref: refs/heads/"
+
+    /// The branch HEAD itself names, or nil when it names none: a detached
+    /// checkout, a ref outside refs/heads, or a reftable repo's stub, whose
+    /// real HEAD only `git` can read.
+    static func checkedOutBranch(repoPath: String) -> String? {
+        guard let head = headContents(repoPath: repoPath), head.hasPrefix(branchPrefix) else {
+            return nil
+        }
+        let branch = String(head.dropFirst(branchPrefix.count))
+        return branch == ".invalid" ? nil : branch
+    }
+
     static func currentBranch(repoPath: String) -> String? {
+        guard let trimmed = headContents(repoPath: repoPath) else { return nil }
+        guard trimmed.hasPrefix(branchPrefix) else {
+            // Detached HEAD: show the short commit instead of nothing.
+            return trimmed.isEmpty ? nil : String(trimmed.prefix(7))
+        }
+        return String(trimmed.dropFirst(branchPrefix.count))
+    }
+
+    private static func headContents(repoPath: String) -> String? {
         let gitEntry = repoPath + "/.git"
         var headPath = gitEntry + "/HEAD"
         var isDirectory: ObjCBool = false
@@ -28,12 +50,7 @@ enum GitHeadReader {
         guard let head = try? String(contentsOfFile: headPath, encoding: .utf8) else {
             return nil
         }
-        let trimmed = head.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard trimmed.hasPrefix("ref: refs/heads/") else {
-            // Detached HEAD: show the short commit instead of nothing.
-            return trimmed.isEmpty ? nil : String(trimmed.prefix(7))
-        }
-        return String(trimmed.dropFirst("ref: refs/heads/".count))
+        return head.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 }
 

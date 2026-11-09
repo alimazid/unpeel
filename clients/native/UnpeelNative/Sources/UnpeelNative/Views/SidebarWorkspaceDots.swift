@@ -1128,6 +1128,8 @@ enum SidebarListContentBuilder {
     ) -> SidebarListContent? {
         let key: String
         let content: SidebarListContent?
+        // Fork-only (#57): a branch mark's name lives outside the snapshot.
+        let branches = store.workspacePool.checkouts.nameGeneration
         if isCurrentInstance(row) {
             // As a Host client, Local truth is the worker's snapshot — the
             // pool mirrors it under this instance's own key while the
@@ -1140,13 +1142,13 @@ enum SidebarListContentBuilder {
                 localHostServed: store.localScopeIsHostServed,
                 pooledSnapshotAvailable: store.workspacePool.snapshot(forKey: row.id) != nil
             ) ? store.workspacePool.snapshot(forKey: row.id) : nil
-            key = "current:\(row.id):\(hostSnapshot?.capturedAtUnixMs ?? 0)"
+            key = "current:\(row.id):\(hostSnapshot?.capturedAtUnixMs ?? 0):\(branches)"
             if cacheKey == key { return cached }
             content = hostSnapshot.map {
                 snapshotContent($0, row: row, store: store, isLocalScope: true)
             } ?? localContent(store: store)
         } else if let snapshot = store.workspacePool.snapshot(forKey: row.id) {
-            key = "\(row.id):\(snapshot.capturedAtUnixMs)"
+            key = "\(row.id):\(snapshot.capturedAtUnixMs):\(branches)"
             if cacheKey == key { return cached }
             content = snapshotContent(snapshot, row: row, store: store)
         } else {
@@ -1240,7 +1242,8 @@ enum SidebarListContentBuilder {
             ).filter { store.isDateSorted(projectID: $0) },
             folderColors: nodes.reduce(into: [:]) { colors, node in
                 colors[node.id] = store.projectFolderColor(for: node.id)
-            }
+            },
+            activeBranch: localActiveBranch(store: store)
         )
         return SidebarListContent(rows: rows, inputs: inputs)
     }
@@ -1505,9 +1508,44 @@ enum SidebarListContentBuilder {
                     colors[node.id] = projectSummaries[node.id]?.colorID
                         .flatMap(ProjectFolderColor.init(rawValue:))
                 }
-                : [:]
+                : [:],
+            // The raw selection, not its pane representative: the live label
+            // follows the Session itself.
+            activeBranch: activeBranch(
+                project: selectedSessionID
+                    .flatMap { sessionsByID[$0]?.projectID }
+                    .flatMap { projectSummaries[$0] },
+                row: row,
+                store: store
+            )
         )
         return SidebarListContent(rows: rows, inputs: inputs)
+    }
+
+    // Fork-only (#57): the name the live page's branch label will show, split
+    // the way `refreshTitlebarBranch` splits it. A dictionary lookup at most:
+    // this runs in the swipe's path.
+
+    private static func localActiveBranch(store: UnpeelStore) -> SidebarActiveBranch? {
+        guard let project = store.sidebarCarouselLocalSelectedSessionID
+            .flatMap({ store.sessionsByID[$0]?.projectID })
+            .flatMap({ store.projectsByID[$0] }),
+            let name = store.workspacePool.checkouts.branch(atPath: project.path)
+        else { return nil }
+        return SidebarActiveBranch(projectID: project.id, name: name)
+    }
+
+    private static func activeBranch(
+        project: RemoteProjectSummary?,
+        row: WorkspaceListRowModel,
+        store: UnpeelStore
+    ) -> SidebarActiveBranch? {
+        guard let project,
+              let name = isLocalMachine(row)
+                  ? store.workspacePool.checkouts.branch(atPath: project.path)
+                  : project.gitBranch
+        else { return nil }
+        return SidebarActiveBranch(projectID: project.id, name: name)
     }
 
     /// Controller pane-scope identity for a workspace-list row. The current

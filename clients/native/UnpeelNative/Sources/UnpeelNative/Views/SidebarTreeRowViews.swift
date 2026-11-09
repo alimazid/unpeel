@@ -138,6 +138,13 @@ struct SidebarFolderRollup: Equatable {
     }
 }
 
+/// Fork-only (#57): the branch mark the live page wears beside the project that
+/// holds the selection.
+struct SidebarActiveBranch: Equatable {
+    let projectID: String
+    let name: String
+}
+
 /// The display state a pooled carousel page paints its rows with, resolved
 /// from the neighbor's snapshot (or the current instance's Local truth)
 /// when the page content is built.
@@ -153,6 +160,7 @@ struct SidebarPooledRowInputs: Equatable {
     /// Projects whose list is date-sorted: their rows show an age.
     let dateSortedProjectIDs: Set<String>
     let folderColors: [String: ProjectFolderColor]
+    let activeBranch: SidebarActiveBranch?
 }
 
 /// A pooled page's row: the REAL row component with inert inputs, in the row
@@ -233,6 +241,7 @@ struct SidebarPooledTreeRow: View {
             quickGroups: [],
             menuPresets: [],
             folderColor: inputs.folderColors[node.id],
+            pooledBranch: inputs.activeBranch?.projectID == node.id ? inputs.activeBranch?.name : nil,
             onToggle: {},
             onLaunchPreset: { _ in },
             isPinned: node.project.acceptsSessionDrop && node.project.pinnedAt != nil

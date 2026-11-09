@@ -14563,7 +14563,7 @@ final class UnpeelStore: ObservableObject {
     /// Guards async branch resolution against stale results after a switch.
     private var titlebarBranchPath: String?
     private var titlebarBranchRequestsInFlight: Set<String> = []
-    private var titlebarBranchCache: [String: (branch: String?, resolvedAt: Date)] = [:]
+    private var titlebarBranchResolvedAt: [String: Date] = [:]
     private static let titlebarBranchCacheTTL: TimeInterval = 5
 
     func refreshTitlebarBranch() {
@@ -14600,10 +14600,11 @@ final class UnpeelStore: ObservableObject {
         titlebarBranchState.update(name: nil, isWorktree: false)
     }
 
-    /// Plain git project on this Mac: immediately reuse a recently resolved
-    /// result. Selection ping-pong previously launched one git process per
-    /// click; a short cache plus one in-flight request per path bounds that
-    /// work.
+    /// Plain git project on this Mac: show what `workspacePool.checkouts` knows
+    /// at once, the same name the incoming pooled page showed, so a swipe's swap
+    /// has no gap and no disk read. `git` then confirms it. Selection ping-pong
+    /// previously launched one git process per click; a short TTL plus one
+    /// in-flight request per path bounds that work.
     private func resolveLocalTitlebarBranch(path: String) {
         guard UnpeelStore.isGitRepo(path: path) else {
             titlebarBranchPath = nil
@@ -14611,21 +14612,22 @@ final class UnpeelStore: ObservableObject {
             return
         }
         titlebarBranchPath = path
-        if let cached = titlebarBranchCache[path] {
-            titlebarBranchState.update(name: cached.branch, isWorktree: false)
-            if Date().timeIntervalSince(cached.resolvedAt) < Self.titlebarBranchCacheTTL {
-                return
-            }
-        } else {
-            titlebarBranchState.update(name: nil, isWorktree: false)
+        titlebarBranchState.update(
+            name: workspacePool.checkouts.branch(atPath: path),
+            isWorktree: false
+        )
+        if let resolvedAt = titlebarBranchResolvedAt[path],
+           Date().timeIntervalSince(resolvedAt) < Self.titlebarBranchCacheTTL {
+            return
         }
         guard titlebarBranchRequestsInFlight.insert(path).inserted else { return }
-        DispatchQueue.global(qos: .userInitiated).async {
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
             let branch = WorktreeGit.currentBranch(repoPath: path)
-            DispatchQueue.main.async { [weak self] in
+            DispatchQueue.main.async {
                 guard let self else { return }
                 self.titlebarBranchRequestsInFlight.remove(path)
-                self.titlebarBranchCache[path] = (branch, Date())
+                self.titlebarBranchResolvedAt[path] = Date()
+                self.workspacePool.checkouts.noteGitAnswer(branch, atPath: path)
                 guard self.titlebarBranchPath == path else { return }
                 self.titlebarBranchState.update(name: branch, isWorktree: false)
             }

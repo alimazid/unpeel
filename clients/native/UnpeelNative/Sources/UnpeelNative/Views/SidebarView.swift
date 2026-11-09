@@ -1294,6 +1294,7 @@ extension ProjectRowView: @MainActor Equatable {
             && lhs.shortcutHint == rhs.shortcutHint
             && lhs.hasLiveSessions == rhs.hasLiveSessions
             && lhs.localSiteURLs == rhs.localSiteURLs
+            && lhs.pooledBranch == rhs.pooledBranch
             && lhs.isPinned == rhs.isPinned
             && lhs.canPin == rhs.canPin
             && lhs.isDateSorted == rhs.isDateSorted
@@ -1426,6 +1427,9 @@ struct ProjectRowView: View {
     /// observed here: the leaf label watches selection + branch state so
     /// a branch update never re-evaluates the row.
     var activeBranchStore: UnpeelStore?
+    /// Fork-only (#57): a pooled page's stand-in for `activeBranchStore`: the
+    /// name that label shows once the page is live.
+    var pooledBranch: String?
     let onToggle: () -> Void
     let onLaunchPreset: (Preset) -> Void
     var onCreateWorktree: () -> Void = {}
@@ -1638,6 +1642,8 @@ struct ProjectRowView: View {
                 SidebarBranchLabel(branch: branch, projectName: node.project.name)
             } else if let store = activeBranchStore {
                 ActiveProjectBranchLabel(store: store, projectID: node.project.id)
+            } else if let pooledBranch {
+                SidebarBranchLabel(branch: pooledBranch, projectName: node.project.name)
             }
 
             Spacer(minLength: 4)

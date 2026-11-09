@@ -55,6 +55,9 @@ final class WorkspacePool: ObservableObject {
         let fingerprint: String
     }
 
+    /// Fork-only (#57): the branches this Mac's workspaces have checked out.
+    let checkouts: LocalCheckoutBranches
+
     typealias BackendFactory = @MainActor (
         RemoteHostTransport
     ) throws -> any NativeRemoteBackendProtocol
@@ -194,6 +197,9 @@ final class WorkspacePool: ObservableObject {
         maintenanceIntervalNanoseconds: UInt64 = 30_000_000_000,
         immediateRefreshThrottleSeconds: TimeInterval = 2,
         maxLiveRemoteConnections: Int = 4,
+        readCheckedOutBranch: @escaping @Sendable (String) -> String? = {
+            GitHeadReader.checkedOutBranch(repoPath: $0)
+        },
         backendFactory: @escaping BackendFactory = { transport in
             try RemoteHostBackendFactory.make(transport)
         },
@@ -212,6 +218,7 @@ final class WorkspacePool: ObservableObject {
         self.maintenanceIntervalNanoseconds = maintenanceIntervalNanoseconds
         self.immediateRefreshThrottleSeconds = immediateRefreshThrottleSeconds
         self.maxLiveRemoteConnections = max(1, maxLiveRemoteConnections)
+        self.checkouts = LocalCheckoutBranches(read: readCheckedOutBranch)
         self.backendFactory = backendFactory
         self.notifyAttention = notifyAttention
     }
@@ -609,6 +616,13 @@ final class WorkspacePool: ObservableObject {
         // bookkeeping below would be a no-op for identical content anyway.
         if let cached = snapshots[key], cached.isEquivalent(to: snapshot) {
             return
+        }
+        // Fork-only (#57): `gitBranch` is in the project list, so a checkout
+        // changes it and Session churn doesn't.
+        if WorkspaceListOrder.isLocalKey(key), snapshots[key]?.projects != snapshot.projects {
+            checkouts.refresh(paths: Set(
+                snapshot.projects.filter { $0.worktreeBranch == nil }.map(\.path)
+            ))
         }
         // Set the derived cache first: @Published emits willChange before the
         // snapshot assignment, and observers must see an aligned pair on the
