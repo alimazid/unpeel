@@ -8229,10 +8229,14 @@ final class UnpeelStore: ObservableObject {
             regularIDs: regularIDs
         )
         if routesProjectVerbThroughHost(projectID) {
+            // Fork-only (#50): the same rule as a drop inside the list.
+            let hostOrder = hostSharedOrder(
+                projectID: projectID, pinnedIDs: pinnedIDs, regularIDs: regularIDs
+            )
             performRemoteVerb("Couldn't reorder the sessions") { runtime in
                 try await runtime.setSessionOrder(
                     projectID: projectID,
-                    orderedSessionIDs: shared
+                    orderedSessionIDs: hostOrder
                 )
             }
             return
@@ -8297,10 +8301,14 @@ final class UnpeelStore: ObservableObject {
             regularIDs: regularIDs
         )
         if routesProjectVerbThroughHost(projectID) {
+            // Fork-only (#50): the same rule as a drop inside the list.
+            let hostOrder = hostSharedOrder(
+                projectID: projectID, pinnedIDs: orderableIDs, regularIDs: regularIDs
+            )
             performRemoteVerb("Couldn't reorder the pinned sessions") { runtime in
                 try await runtime.setSessionOrder(
                     projectID: projectID,
-                    orderedSessionIDs: shared
+                    orderedSessionIDs: hostOrder
                 )
             }
             return
@@ -8440,26 +8448,13 @@ final class UnpeelStore: ObservableObject {
                 sessionOrderPreviews.removeValue(forKey: projectID)
                 return
             }
-            let orderedIDs = (renderedPinnedSessions(in: node)
-                + renderedDisplayedSessions(in: node))
-                .map(\.id)
-            remoteSessionOrderByProject[projectID] = orderedIDs
-            let workspaceKey = workspacePoolForegroundKey()
-            remoteCommittedSessionOrderHolds[projectID] =
-                RemoteCommittedSessionOrderHold(
-                    workspaceKey: workspaceKey,
-                    ids: orderedIDs,
-                    heldAt: Date()
-                )
-            if let workspaceKey {
-                workspacePool.holdSessionOrder(
-                    forKey: workspaceKey,
-                    projectID: projectID,
-                    orderedIDs: orderedIDs
-                )
-            }
-            sessionOrderPreviews.removeValue(forKey: projectID)
-            invalidateSidebarLists()
+            // Fork-only (#50): the order can name folders, and the state half
+            // moved to `holdCommittedSessionOrder` so a test can reach it.
+            let orderedIDs = hostCommitOrder(in: node)
+            let workspaceKey = holdCommittedSessionOrder(
+                projectID: projectID,
+                orderedIDs: orderedIDs
+            )
             performRemoteVerb("Couldn't reorder the sessions", onFailure: { [weak self] in
                 guard let self else { return }
                 self.remoteCommittedSessionOrderHolds.removeValue(forKey: projectID)
@@ -8508,6 +8503,72 @@ final class UnpeelStore: ObservableObject {
             }
             setSessionOrder(projectID: projectID, ids: regularIDs)
         }
+    }
+
+    /// Fork-only (#50): the order a Host-served drop commits. It names the
+    /// list's folders only once `hostListRanksFolders` says the list needs them.
+    func hostCommitOrder(in node: ProjectNode) -> [String] {
+        let regularIDs = renderedDisplayedItems(in: node).map(\.id)
+        guard hostListRanksFolders(in: node, regularIDs: regularIDs) else {
+            return (renderedPinnedSessions(in: node) + renderedDisplayedSessions(in: node))
+                .map(\.id)
+        }
+        return renderedPinnedItems(in: node).map(\.id) + regularIDs
+    }
+
+    /// Fork-only (#50): the combined order a Host-served list writes when a row
+    /// comes in from elsewhere, without its folders while they stay unranked.
+    func hostSharedOrder(
+        projectID: String, pinnedIDs: [String], regularIDs: [String]
+    ) -> [String] {
+        let shared = Self.combinedSessionOrder(pinnedIDs: pinnedIDs, regularIDs: regularIDs)
+        guard let node = findDisplayNode(projectID),
+              !hostListRanksFolders(in: node, regularIDs: regularIDs)
+        else { return shared }
+        let folderIDs = Set(visibleChildFolders(in: node).map(\.id))
+        return shared.filter { !folderIDs.contains($0) }
+    }
+
+    /// Fork-only (#50): whether a Host-served list's order names its folders. A
+    /// list that ranks a folder renders new Sessions above the folders and keeps
+    /// stopped rows at their ranks, so a drop that leaves every folder in its
+    /// default slot doesn't start ranking them. A list that already does keeps on.
+    private func hostListRanksFolders(in node: ProjectNode, regularIDs: [String]) -> Bool {
+        let folders = visibleChildFolders(in: node)
+        guard !folders.isEmpty else { return false }
+        let folderIDs = Set(folders.map(\.id))
+        if remoteSessionOrderByProject[node.id]?.contains(where: folderIDs.contains) == true {
+            return true
+        }
+        let isPinned = { [remoteProjectSummariesByID] (folder: ProjectNode) in
+            remoteProjectSummariesByID[folder.id]?.pinned == true
+        }
+        let defaultSlots = folders.filter(isPinned) + folders.filter { !isPinned($0) }
+        return !regularIDs.starts(with: defaultSlots.map(\.id))
+    }
+
+    /// Fork-only (#50): the state half of a Host-served commit, split from the
+    /// verb so a test can reach it. Returns the workspace the hold belongs to.
+    @discardableResult
+    func holdCommittedSessionOrder(projectID: String, orderedIDs: [String]) -> String? {
+        remoteSessionOrderByProject[projectID] = orderedIDs
+        let workspaceKey = workspacePoolForegroundKey()
+        remoteCommittedSessionOrderHolds[projectID] =
+            RemoteCommittedSessionOrderHold(
+                workspaceKey: workspaceKey,
+                ids: orderedIDs,
+                heldAt: Date()
+            )
+        if let workspaceKey {
+            workspacePool.holdSessionOrder(
+                forKey: workspaceKey,
+                projectID: projectID,
+                orderedIDs: orderedIDs
+            )
+        }
+        sessionOrderPreviews.removeValue(forKey: projectID)
+        invalidateSidebarLists()
+        return workspaceKey
     }
 
     /// Roll back a drag that left the sidebar or otherwise did not produce an
@@ -15871,18 +15932,15 @@ extension UnpeelStore {
                 remoteCommittedSessionOrderHolds.removeValue(forKey: projectID)
                 continue
             }
-            let memberIDs = Set(snapshot.sessions.compactMap { summary in
-                summary.projectID == projectID ? summary.id : nil
-            })
-            let expected = hold.ids.filter { memberIDs.contains($0) }
-            let expectedSet = Set(expected)
-            let natural = (orderByProject[projectID] ?? []).filter {
-                expectedSet.contains($0)
-            }
-            if natural == expected || Date().timeIntervalSince(hold.heldAt) > 15 {
+            // Fork-only (#50): a folder in the hold counts too. A stale
+            // bootstrap may not carry its rank yet, so it joins the base.
+            if snapshot.confirmsSessionOrder(projectID: projectID, orderedIDs: hold.ids)
+                || Date().timeIntervalSince(hold.heldAt) > 15 {
                 remoteCommittedSessionOrderHolds.removeValue(forKey: projectID)
             } else {
-                orderByProject[projectID] = Self.applyingRelativeIDOrder(
+                let memberIDs = snapshot.sessionOrderMemberIDs(projectID: projectID)
+                let expected = hold.ids.filter { memberIDs.contains($0) }
+                orderByProject[projectID] = RemoteBootstrapSnapshot.applyingRanks(
                     expected,
                     to: orderByProject[projectID] ?? []
                 )

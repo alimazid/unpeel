@@ -13,6 +13,11 @@
 #
 #   --big-rows 30 --window-height 760 --only scrolled-list-reorder,scrolled-group-drop,long-list-drop,scrolled-back-reorder
 #
+# Two more run only when named, on a list with no folder ranks yet:
+# --only cross-project-insert,session-above-folder. After folder-reorder the script
+# quits the app, relaunches it against the same Host, and runs folder-persisted
+# (report: FILE.relaunch).
+#
 # --scale puts the window on a display of that backing scale and fails if there
 # is none. A laptop screen at 2x is too short for the default tree; use a smaller
 # one there: --scale 2 --big-rows 7 --window-height 900.
@@ -242,27 +247,65 @@ LS
 chmod +x "$H/ls.sh"
 
 # --- The app.
-(cd "$H" && exec env -i HOME="$H" CFFIXED_USER_HOME="$H" PATH=/usr/bin:/bin:/usr/sbin:/sbin \
-  USER="$ME" LOGNAME="$ME" SHELL=/bin/zsh TMPDIR="$H/tmp" LANG=en_US.UTF-8 \
-  UNPEEL_HOME="$HOME_A" UNPEEL_NATIVE_SERVICE_LAUNCHER=direct \
-  "$MACOS/UnpeelNative" > "$H/app.log" 2>&1 < /dev/null) &
-APP_PID=$!
-sleep 1
-[ "$(ps -o comm= -p "$APP_PID")" = "$MACOS/UnpeelNative" ] || { echo "the app did not start" >&2; exit 1; }
-for _ in $(seq 1 40); do
-  rows="$("$TOOLS/driver" prepare --pid "$APP_PID" --window-height "$WINDOW_HEIGHT" ${SCALE:+--scale "$SCALE"} 2>/dev/null || true)"
-  case "$rows" in *big-*) break ;; esac
-  sleep 0.5
-done
-# Only the seeded suite expands Big, so these rows also prove the app reads it.
-case "$rows" in
-  *big-*) ;;
-  *)
-    echo "the rows never appeared: $rows" >&2
-    echo "if Big is listed but collapsed, the app isn't reading the seeded defaults suite $SUITE: did stableHash in LaunchConfig.swift change?" >&2
+APP_STARTED=""
+launch_app() {
+  (cd "$H" && exec env -i HOME="$H" CFFIXED_USER_HOME="$H" PATH=/usr/bin:/bin:/usr/sbin:/sbin \
+    USER="$ME" LOGNAME="$ME" SHELL=/bin/zsh TMPDIR="$H/tmp" LANG=en_US.UTF-8 \
+    UNPEEL_HOME="$HOME_A" UNPEEL_NATIVE_SERVICE_LAUNCHER=direct \
+    "$MACOS/UnpeelNative" >> "$H/app.log" 2>&1 < /dev/null) &
+  APP_PID=$!
+  sleep 1
+  [ "$(ps -o comm= -p "$APP_PID")" = "$MACOS/UnpeelNative" ] || { echo "the app did not start" >&2; exit 1; }
+  APP_STARTED="$(lstart "$APP_PID")"
+  for _ in $(seq 1 40); do
+    rows="$("$TOOLS/driver" prepare --pid "$APP_PID" --window-height "$WINDOW_HEIGHT" ${SCALE:+--scale "$SCALE"} 2>/dev/null || true)"
+    case "$rows" in *big-*) break ;; esac
+    sleep 0.5
+  done
+  # Only the seeded suite expands Big, so these rows also prove the app reads it.
+  case "$rows" in
+    *big-*) ;;
+    *)
+      echo "the rows never appeared: $rows" >&2
+      echo "if Big is listed but collapsed, the app isn't reading the seeded defaults suite $SUITE: did stableHash in LaunchConfig.swift change?" >&2
+      exit 1
+      ;;
+  esac
+}
+
+# A recycled pid is never signalled: the start time must still match.
+stop_app() {
+  local signal
+  for signal in TERM TERM KILL; do
+    [ "$(lstart "$APP_PID")" = "$APP_STARTED" ] || break
+    kill "-$signal" "$APP_PID" 2>/dev/null || true
+    for _ in $(seq 1 20); do
+      [ "$(lstart "$APP_PID")" = "$APP_STARTED" ] || break
+      sleep 0.25
+    done
+  done
+  if [ "$(lstart "$APP_PID")" = "$APP_STARTED" ]; then
+    echo "the app did not quit" >&2
     exit 1
+  fi
+  wait "$APP_PID" 2>/dev/null || true # It's this shell's child: no "Terminated" line.
+}
+
+driver_run() {
+  "$TOOLS/driver" run --pid "$APP_PID" --ls "$H/ls.sh" --home "$HOME_A" --clicks "$CLICKS" --drags "$DRAGS" --quiet "$QUIET" \
+    ${SCALE:+--scale "$SCALE"} "$@"
+}
+
+launch_app
+status=0
+driver_run ${ONLY:+--only "$ONLY"} ${REPORT:+--report "$REPORT"} || status=$?
+case ",$ONLY," in
+  ,,|*,folder-reorder,*)
+    stop_app
+    launch_app
+    relaunch_status=0
+    driver_run --only folder-persisted ${REPORT:+--report "$REPORT.relaunch"} || relaunch_status=$?
+    [ "$status" -ne 0 ] || status=$relaunch_status
     ;;
 esac
-
-"$TOOLS/driver" run --pid "$APP_PID" --ls "$H/ls.sh" --home "$HOME_A" --clicks "$CLICKS" --drags "$DRAGS" --quiet "$QUIET" \
-  ${ONLY:+--only "$ONLY"} ${REPORT:+--report "$REPORT"} ${SCALE:+--scale "$SCALE"}
+exit "$status"

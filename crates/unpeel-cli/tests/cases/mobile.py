@@ -712,6 +712,43 @@ def body(case):
             order_file = json.load(handle)
     except OSError:
         pass
+    # Fork-only (#50): a folder is a rank like a Session, and the bootstrap
+    # hands the mixed list back. A sessions-only list stays off the wire.
+    mixed_status, _ = mobile_request(
+        port, "/mobile/session-order", token, method="POST",
+        body={"projectID": "proj-1",
+              "orderedSessionIDs": ["group-research", "fixture-1"]},
+    )
+    def bootstrap_project(project_id):
+        # The route answers from the Host's refreshed snapshot, not the file.
+        _, boot_now = mobile_request(port, "/mobile/bootstrap", token)
+        return next(
+            (item for item in boot_now.get("projects", [])
+             if item.get("id") == project_id),
+            {},
+        )
+    driver.wait_for(
+        lambda: bootstrap_project("proj-1").get("sessionOrder") is not None, timeout=10
+    )
+    mixed_projects = {
+        project_id: bootstrap_project(project_id)
+        for project_id in ("proj-1", "group-research")
+    }
+    mobile_request(
+        port, "/mobile/session-order", token, method="POST",
+        body={"projectID": "proj-1", "orderedSessionIDs": []},
+    )
+    driver.wait_for(
+        lambda: bootstrap_project("proj-1").get("sessionOrder") is None, timeout=10
+    )
+    case.check(
+        "a folder id round-trips through session order as a mixed list",
+        mixed_status == 200
+        and mixed_projects.get("proj-1", {}).get("sessionOrder")
+        == ["group-research", "fixture-1"]
+        and "sessionOrder" not in mixed_projects.get("group-research", {}),
+        str((mixed_status, mixed_projects.get("proj-1"))),
+    )
     order_missing_project_status, _ = mobile_request(
         port, "/mobile/session-order", token, method="POST",
         body={"orderedSessionIDs": ["fixture-org"]},

@@ -679,13 +679,8 @@ final class WorkspacePool: ObservableObject {
 
         if let holds = sessionOrderHolds[key] {
             for (projectID, hold) in holds {
-                let memberIDs = Set(incoming.sessions.compactMap { session in
-                    session.projectID == projectID ? session.id : nil
-                })
-                let expected = hold.ids.filter { memberIDs.contains($0) }
-                let expectedSet = Set(expected)
-                let natural = incoming.sessions.map(\.id).filter { expectedSet.contains($0) }
-                if natural == expected
+                // Fork-only (#50): a folder in the hold counts too.
+                if incoming.confirmsSessionOrder(projectID: projectID, orderedIDs: hold.ids)
                     || now.timeIntervalSince(hold.heldAt) > Self.organizationHoldSeconds {
                     clearSessionOrderHold(forKey: key, projectID: projectID)
                 } else {
@@ -759,8 +754,43 @@ extension RemoteBootstrapSnapshot {
         return replacing(projects: reordered, sessions: sessions)
     }
 
+    /// Fork-only (#50): what a committed Session order can rank in this
+    /// snapshot: the project's Sessions and its child folders.
+    func sessionOrderMemberIDs(projectID: String) -> Set<String> {
+        let sessionIDs = sessions.compactMap { session in
+            session.projectID == projectID ? session.id : nil
+        }
+        let childIDs = projects.compactMap { project in
+            project.parentProjectID == projectID ? project.id : nil
+        }
+        return Set(sessionIDs + childIDs)
+    }
+
+    /// Fork-only (#50): whether this snapshot's order for a project already
+    /// matches a committed one. The Host's mixed list is the order when there
+    /// is one; a held folder rank is never confirmed by the Session rows alone.
+    func confirmsSessionOrder(projectID: String, orderedIDs: [String]) -> Bool {
+        let memberIDs = sessionOrderMemberIDs(projectID: projectID)
+        let expected = orderedIDs.filter { memberIDs.contains($0) }
+        let expectedSet = Set(expected)
+        let current = projects.first { $0.id == projectID }?.sessionOrder ?? sessions.map(\.id)
+        return current.filter { expectedSet.contains($0) } == expected
+    }
+
+    /// Fork-only (#50): `base` in the order of `ranked`. A rank a stale list
+    /// doesn't carry yet joins it first; ids `ranked` doesn't name keep their slots.
+    static func applyingRanks(_ ranked: [String], to base: [String]) -> [String] {
+        let present = Set(base)
+        return applyingRelativeOrder(
+            ranked,
+            to: base + ranked.filter { !present.contains($0) },
+            id: { $0 }
+        )
+    }
+
     /// Optimistically reorder one project's Session summaries and its mixed
-    /// `sessionOrder` field (when present), preserving child-folder slots.
+    /// `sessionOrder` field. Child-folder slots hold unless the order ranks them
+    /// (Fork-only, #50), which also starts the field on a list without one.
     func applyingSessionOrder(
         projectID: String,
         orderedIDs: [String]
@@ -772,12 +802,16 @@ extension RemoteBootstrapSnapshot {
         let reorderedSessions = Self.applyingRelativeOrder(
             preferred, to: sessions, id: \.id
         )
+        // Fork-only (#50): whatever it names beyond this project's Sessions is a folder.
+        let rankableIDs = sessionOrderMemberIDs(projectID: projectID)
+        let ranked = orderedIDs.filter { rankableIDs.contains($0) }
+        let ranksFolder = ranked.count > preferred.count
         let reorderedProjects = projects.map { project in
-            guard project.id == projectID, let mixed = project.sessionOrder else {
+            guard project.id == projectID, ranksFolder || project.sessionOrder != nil else {
                 return project
             }
             return project.replacingSessionOrder(
-                Self.applyingRelativeOrder(preferred, to: mixed, id: { $0 })
+                Self.applyingRanks(ranked, to: project.sessionOrder ?? [])
             )
         }
         return replacing(projects: reorderedProjects, sessions: reorderedSessions)

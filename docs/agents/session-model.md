@@ -115,6 +115,13 @@ termination output is drained first. Never signal an unverified process group.
   row movement in memory while dragging, then take the shared lock and persist/broadcast the
   final order once on drop. Cancelling a drag restores the last durable order
   without writing.
+- Fork-only: that list can rank a project's child folders too. A Host-served
+  list names its folders only once a drop leaves one out of its default slot
+  (a folder moved, or a Session dropped above a folder), or the list already
+  ranks one; a Session-only drag stays Sessions-only. A list that ranks a folder
+  renders new Sessions above the folders and keeps stopped rows at their ranks.
+  An expanded or pinned folder has no reorder gap on a Host-served list, so its
+  drop doesn't move it.
 - Each group (project, plain group, worktree, cwd bucket) can instead sort its
   sessions by shared lifecycle recency ("Recently updated" — pinned Sessions
   remain in their separate top section; live rows use the Recent rank, then
