@@ -58,6 +58,9 @@ pub mod direct_path_punch;
 pub mod first_run;
 #[cfg(feature = "native-host")]
 mod ghostty_vt;
+// Fork-only (#59)
+#[cfg(feature = "native-host")]
+pub mod git_head;
 #[cfg(feature = "native-host")]
 #[path = "../../../runtimes/github/adapter/git_settings.rs"]
 pub mod git_settings;
