@@ -77,6 +77,18 @@ final class SidebarFolderLiftTests: XCTestCase {
         XCTAssertTrue(section.headerAnchorsTop)
     }
 
+    func testAPinnedFolderBelowPinnedSessionsLeavesTheHeaderAlone() throws {
+        let store = UnpeelStore.sidebarFixture(
+            snapshot: Self.snapshot(pinnedFolders: ["alpha", "gamma"], pinnedSessions: ["s1"]),
+            expandedProjectIDs: ["project"]
+        )
+
+        let section = try reorderSection(store, draggedID: "gamma", pinned: true)
+
+        XCTAssertEqual(section.ids, ["alpha", "gamma"])
+        XCTAssertFalse(section.headerAnchorsTop, "the pinned Sessions sit between the header and this block")
+    }
+
     func testAnUnpinnedFolderHasNoSlotAboveAPinnedOne() throws {
         let store = makeStore(expanded: ["project"], pinnedFolders: ["gamma"])
 

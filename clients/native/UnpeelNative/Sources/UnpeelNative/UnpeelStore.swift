@@ -14869,9 +14869,10 @@ final class UnpeelStore: ObservableObject {
         let regularIDs = renderedDisplayedItems(in: node).map(\.id)
         let pinnedFolderIDs = regularIDs.filter(isGroupPinned)
         if pinned {
+            let isFolder = pinnedFolderIDs.contains(draggedID)
             return SidebarReorderSection(
-                ids: pinnedFolderIDs.contains(draggedID) ? pinnedFolderIDs : pinnedIDs,
-                headerAnchorsTop: true
+                ids: isFolder ? pinnedFolderIDs : pinnedIDs,
+                headerAnchorsTop: !isFolder || pinnedIDs.isEmpty
             )
         }
         return SidebarReorderSection(

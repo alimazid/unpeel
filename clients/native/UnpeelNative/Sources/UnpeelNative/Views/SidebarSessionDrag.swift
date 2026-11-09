@@ -1142,8 +1142,9 @@ final class SidebarSessionDragController: ObservableObject {
             // order from the store's rendered list (sessions and child
             // folders mixed, or the pinned section), stride from the
             // lifted row itself. During the drag nothing reorders the
-            // tree, so both stay true until drop. An expanded folder
-            // collapses below, so it opens the same one-slot gap.
+            // tree, so both stay true until drop. Fork-only (#53): an
+            // expanded folder collapses below, so it opens the same
+            // one-slot gap.
             if let node = store.findDisplayNode(projectID) {
                 let section = store.sidebarReorderSection(
                     in: node, pinned: pinned, draggedID: sessionID
@@ -2319,7 +2320,8 @@ final class SidebarSessionDragController: ObservableObject {
         }
         // The gap sits exactly over a row's static frame (the in-between rows
         // shifted one slot toward the origin), so that row IS the card's
-        // landing rect.
+        // landing rect. Fork-only (#53): below an expanded anchor's block,
+        // moving down.
         let landingRowID = Self.reorderLandingRowID(
             anchorID: anchorID,
             movingDown: (dragState.sessionReorderIndexByID[anchorID] ?? 0)
@@ -2645,6 +2647,7 @@ final class SidebarSessionDragController: ObservableObject {
         closeCardWindow()
         dragState?.setLiftedSessionRow(nil)
         dragState?.setLiftedProjectRow(nil)
+        // Fork-only (#53): every way a drag ends comes through here.
         store?.endFolderLift()
         projectDropTargetID = nil
         projectDropBelow = false
@@ -2897,7 +2900,8 @@ final class SidebarSessionDragController: ObservableObject {
 
     private func closeCardWindow() {
         if let window = cardWindow {
-            // A child still listed on its parent comes back with it.
+            // Fork-only (#53): a child still listed on its parent comes
+            // back with it.
             window.parent?.removeChildWindow(window)
             window.orderOut(nil)
         }
