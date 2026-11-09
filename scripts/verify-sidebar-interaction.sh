@@ -13,9 +13,10 @@
 #
 #   --big-rows 30 --window-height 760 --only scrolled-list-reorder,scrolled-group-drop,long-list-drop,scrolled-back-reorder
 #
-# session-above-folder also runs only when named, on a list with no folder ranks
-# yet: --only session-above-folder. After folder-reorder the script quits the app,
-# relaunches it against the same Host, and runs folder-persisted (report: FILE.relaunch).
+# Two more run only when named, on a list with no folder ranks yet:
+# --only cross-project-insert,session-above-folder. After folder-reorder the script
+# quits the app, relaunches it against the same Host, and runs folder-persisted
+# (report: FILE.relaunch).
 #
 # --scale puts the window on a display of that backing scale and fails if there
 # is none. A laptop screen at 2x is too short for the default tree; use a smaller
@@ -276,15 +277,18 @@ launch_app() {
 stop_app() {
   local signal
   for signal in TERM TERM KILL; do
-    [ "$(lstart "$APP_PID")" = "$APP_STARTED" ] || return 0
+    [ "$(lstart "$APP_PID")" = "$APP_STARTED" ] || break
     kill "-$signal" "$APP_PID" 2>/dev/null || true
     for _ in $(seq 1 20); do
-      [ "$(lstart "$APP_PID")" = "$APP_STARTED" ] || return 0
+      [ "$(lstart "$APP_PID")" = "$APP_STARTED" ] || break
       sleep 0.25
     done
   done
-  echo "the app did not quit" >&2
-  exit 1
+  if [ "$(lstart "$APP_PID")" = "$APP_STARTED" ]; then
+    echo "the app did not quit" >&2
+    exit 1
+  fi
+  wait "$APP_PID" 2>/dev/null || true # It's this shell's child: no "Terminated" line.
 }
 
 driver_run() {

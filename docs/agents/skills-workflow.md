@@ -105,7 +105,9 @@ any fix.
     `scripts/check-links.sh`.
   - After you touch the sidebar's PROJECTS list, also run
     `scripts/verify-sidebar-interaction.sh --app clients/native/dist/Unpeel.app`
-    on a dev build, then again with the long-list options in its header. It
+    on a dev build, then again with the long-list options in its header, then
+    with `--only cross-project-insert,session-above-folder`, which need a list
+    that ranks no folder yet. It
     clicks and drags with the real pointer on a throwaway home, because xctest
     can't reach those paths. It needs an unlocked screen and pauses on any
     input from the user. When a change can look different at 2x, run it there

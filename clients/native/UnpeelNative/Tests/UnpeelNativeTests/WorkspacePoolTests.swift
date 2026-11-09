@@ -398,7 +398,9 @@ final class WorkspacePoolTests: XCTestCase {
         XCTAssertEqual(pool.snapshot(forKey: "a")?.sessions.map(\.id), ["s1", "s2", "s3"])
     }
 
-    /// Fork-only (#50): a first folder move, on a list with no ranks yet.
+    // MARK: - Fork-only (#50): folder ranks in a hold
+
+    /// A first folder move, on a list with no ranks yet.
     func testAHeldFolderMoveKeepsThePooledPageUntilTheHostRanksIt() {
         makePool()
         let initial = Self.makeFolderOrderSnapshot(order: nil, capturedAtUnixMs: 1_000)

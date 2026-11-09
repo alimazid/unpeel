@@ -48,9 +48,23 @@ final class SidebarHostFolderOrderTests: XCTestCase {
         let store = makeStore()
 
         XCTAssertEqual(
-            store.hostRegularOrder(
+            store.hostSharedOrder(
                 projectID: "project",
-                ids: ["alpha", "beta", "moved", "s1", "s2"]
+                pinnedIDs: ["s2"],
+                regularIDs: ["alpha", "beta", "moved", "s1"]
+            ),
+            ["s2", "moved", "s1"]
+        )
+    }
+
+    func testAnOldPinRecordForAFolderDoesNotStartRankingIt() {
+        let store = makeStore()
+
+        XCTAssertEqual(
+            store.hostSharedOrder(
+                projectID: "project",
+                pinnedIDs: ["beta"],
+                regularIDs: ["alpha", "beta", "moved", "s1", "s2"]
             ),
             ["moved", "s1", "s2"]
         )
@@ -60,7 +74,10 @@ final class SidebarHostFolderOrderTests: XCTestCase {
         let store = makeStore()
         let ids = ["moved", "alpha", "beta", "s1", "s2"]
 
-        XCTAssertEqual(store.hostRegularOrder(projectID: "project", ids: ids), ids)
+        XCTAssertEqual(
+            store.hostSharedOrder(projectID: "project", pinnedIDs: [], regularIDs: ids),
+            ids
+        )
     }
 
     // MARK: Holding the dropped order

@@ -719,7 +719,7 @@ def body(case):
         body={"projectID": "proj-1",
               "orderedSessionIDs": ["group-research", "fixture-1"]},
     )
-    def order_project(project_id):
+    def bootstrap_project(project_id):
         # The route answers from the Host's refreshed snapshot, not the file.
         _, boot_now = mobile_request(port, "/mobile/bootstrap", token)
         return next(
@@ -728,10 +728,10 @@ def body(case):
             {},
         )
     driver.wait_for(
-        lambda: order_project("proj-1").get("sessionOrder") is not None, timeout=10
+        lambda: bootstrap_project("proj-1").get("sessionOrder") is not None, timeout=10
     )
     mixed_projects = {
-        project_id: order_project(project_id)
+        project_id: bootstrap_project(project_id)
         for project_id in ("proj-1", "group-research")
     }
     mobile_request(
@@ -739,7 +739,7 @@ def body(case):
         body={"projectID": "proj-1", "orderedSessionIDs": []},
     )
     driver.wait_for(
-        lambda: order_project("proj-1").get("sessionOrder") is None, timeout=10
+        lambda: bootstrap_project("proj-1").get("sessionOrder") is None, timeout=10
     )
     case.check(
         "a folder id round-trips through session order as a mixed list",

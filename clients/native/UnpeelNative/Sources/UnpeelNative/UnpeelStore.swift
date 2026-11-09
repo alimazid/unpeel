@@ -8230,9 +8230,8 @@ final class UnpeelStore: ObservableObject {
         )
         if routesProjectVerbThroughHost(projectID) {
             // Fork-only (#50): the same rule as a drop inside the list.
-            let hostOrder = Self.combinedSessionOrder(
-                pinnedIDs: pinnedIDs,
-                regularIDs: hostRegularOrder(projectID: projectID, ids: regularIDs)
+            let hostOrder = hostSharedOrder(
+                projectID: projectID, pinnedIDs: pinnedIDs, regularIDs: regularIDs
             )
             performRemoteVerb("Couldn't reorder the sessions") { runtime in
                 try await runtime.setSessionOrder(
@@ -8303,9 +8302,8 @@ final class UnpeelStore: ObservableObject {
         )
         if routesProjectVerbThroughHost(projectID) {
             // Fork-only (#50): the same rule as a drop inside the list.
-            let hostOrder = Self.combinedSessionOrder(
-                pinnedIDs: orderableIDs,
-                regularIDs: hostRegularOrder(projectID: projectID, ids: regularIDs)
+            let hostOrder = hostSharedOrder(
+                projectID: projectID, pinnedIDs: orderableIDs, regularIDs: regularIDs
             )
             performRemoteVerb("Couldn't reorder the pinned sessions") { runtime in
                 try await runtime.setSessionOrder(
@@ -8450,6 +8448,8 @@ final class UnpeelStore: ObservableObject {
                 sessionOrderPreviews.removeValue(forKey: projectID)
                 return
             }
+            // Fork-only (#50): the order can name folders, and the state half
+            // moved to `holdCommittedSessionOrder` so a test can reach it.
             let orderedIDs = hostCommitOrder(in: node)
             let workspaceKey = holdCommittedSessionOrder(
                 projectID: projectID,
@@ -8516,14 +8516,17 @@ final class UnpeelStore: ObservableObject {
         return renderedPinnedItems(in: node).map(\.id) + regularIDs
     }
 
-    /// Fork-only (#50): a regular section as it goes to the Host, without its
-    /// folders while they stay unranked.
-    func hostRegularOrder(projectID: String, ids: [String]) -> [String] {
+    /// Fork-only (#50): the combined order a Host-served list writes when a row
+    /// comes in from elsewhere, without its folders while they stay unranked.
+    func hostSharedOrder(
+        projectID: String, pinnedIDs: [String], regularIDs: [String]
+    ) -> [String] {
+        let shared = Self.combinedSessionOrder(pinnedIDs: pinnedIDs, regularIDs: regularIDs)
         guard let node = findDisplayNode(projectID),
-              !hostListRanksFolders(in: node, regularIDs: ids)
-        else { return ids }
+              !hostListRanksFolders(in: node, regularIDs: regularIDs)
+        else { return shared }
         let folderIDs = Set(visibleChildFolders(in: node).map(\.id))
-        return ids.filter { !folderIDs.contains($0) }
+        return shared.filter { !folderIDs.contains($0) }
     }
 
     /// Fork-only (#50): whether a Host-served list's order names its folders. A
@@ -15937,11 +15940,9 @@ extension UnpeelStore {
             } else {
                 let memberIDs = snapshot.sessionOrderMemberIDs(projectID: projectID)
                 let expected = hold.ids.filter { memberIDs.contains($0) }
-                let base = orderByProject[projectID] ?? []
-                let present = Set(base)
-                orderByProject[projectID] = Self.applyingRelativeIDOrder(
+                orderByProject[projectID] = RemoteBootstrapSnapshot.applyingRanks(
                     expected,
-                    to: base + expected.filter { !present.contains($0) }
+                    to: orderByProject[projectID] ?? []
                 )
             }
         }

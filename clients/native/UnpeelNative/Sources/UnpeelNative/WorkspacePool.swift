@@ -777,6 +777,17 @@ extension RemoteBootstrapSnapshot {
         return current.filter { expectedSet.contains($0) } == expected
     }
 
+    /// Fork-only (#50): `base` in the order of `ranked`. A rank a stale list
+    /// doesn't carry yet joins it first; ids `ranked` doesn't name keep their slots.
+    static func applyingRanks(_ ranked: [String], to base: [String]) -> [String] {
+        let present = Set(base)
+        return applyingRelativeOrder(
+            ranked,
+            to: base + ranked.filter { !present.contains($0) },
+            id: { $0 }
+        )
+    }
+
     /// Optimistically reorder one project's Session summaries and its mixed
     /// `sessionOrder` field. Child-folder slots hold unless the order ranks them
     /// (Fork-only, #50), which also starts the field on a list without one.
@@ -791,21 +802,16 @@ extension RemoteBootstrapSnapshot {
         let reorderedSessions = Self.applyingRelativeOrder(
             preferred, to: sessions, id: \.id
         )
-        let allMemberIDs = sessionOrderMemberIDs(projectID: projectID)
-        let ranked = orderedIDs.filter { allMemberIDs.contains($0) }
+        // Fork-only (#50): whatever it names beyond this project's Sessions is a folder.
+        let rankableIDs = sessionOrderMemberIDs(projectID: projectID)
+        let ranked = orderedIDs.filter { rankableIDs.contains($0) }
         let ranksFolder = ranked.count > preferred.count
         let reorderedProjects = projects.map { project in
             guard project.id == projectID, ranksFolder || project.sessionOrder != nil else {
                 return project
             }
-            let mixed = project.sessionOrder ?? []
-            let present = Set(mixed)
             return project.replacingSessionOrder(
-                Self.applyingRelativeOrder(
-                    ranked,
-                    to: mixed + ranked.filter { !present.contains($0) },
-                    id: { $0 }
-                )
+                Self.applyingRanks(ranked, to: project.sessionOrder ?? [])
             )
         }
         return replacing(projects: reorderedProjects, sessions: reorderedSessions)
