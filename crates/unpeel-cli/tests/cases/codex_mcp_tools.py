@@ -23,7 +23,7 @@ import shlex
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from harness import REPO, run, run_cli  # noqa: E402
+from harness import REPO, McpClient, run, run_cli  # noqa: E402
 from hook_cancellation import control, read_json  # noqa: E402
 
 UUID = r"[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}"
@@ -71,7 +71,7 @@ def start_detached(argv, env):
         os.close(fd)
     return pid, to_server[1], from_server[0]
 
-def converse(pid, write_fd, read_fd):
+def converse(write_fd, read_fd):
     requests = [
         {"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {
             "protocolVersion": "2025-06-18", "capabilities": {},
@@ -117,7 +117,7 @@ argv = [server["command"]] + server.get("args", [])
 env = {name: os.environ[name] for name in DEFAULT_ENV_VARS if name in os.environ}
 pid, write_fd, read_fd = (start_embedded if mode == "embedded" else start_detached)(argv, env)
 parent = parent_of(pid)
-responses = converse(pid, write_fd, read_fd)
+responses = converse(write_fd, read_fd)
 if mode == "embedded":
     os.waitpid(pid, 0)
 result = {
@@ -153,12 +153,7 @@ def output_has(session_dir, needle):
         return False
 
 
-def tool_text(response):
-    content = response.get("result", {}).get("content") or [{}]
-    return content[0].get("text") or ""
-
-
-def check(case):
+def body(case):
     home = case.home
     home.project("p", "Codex", home.root)
     os.makedirs(home.path("bin"), exist_ok=True)
@@ -175,8 +170,9 @@ def check(case):
                suggested.split()[:2] == ["codex", "--no-daemon"], suggested)
     # The login shell rebuilds PATH, so `codex` could resolve to an installed
     # Codex. Run the preset's arguments with the fake's absolute path instead.
-    arguments = suggested.split(" ", 1)[1]
-    home.preset(label="codex", preset_id="codex", command=f"{shlex.quote(fake)} {arguments}")
+    arguments = suggested.split()[1:]
+    home.preset(label="codex", preset_id="codex",
+                command=shlex.join([fake] + arguments))
     service = case.serve(env=environment)
     if not case.check("isolated Host starts", bool(service.ready(timeout=20)), service.log()):
         return
@@ -208,10 +204,11 @@ def check(case):
         case.check("the gate serves the Unpeel tools to the Session's Codex",
                    "sessions" in tools and "agents" in tools, str(tools))
         case.check("the tools act as this Session",
-                   session_id in tool_text(embedded.get("current", {})), str(embedded.get("current")))
+                   session_id in McpClient.text(embedded.get("current", {})), str(embedded.get("current")))
 
         # The same Codex without the flag, as Codex's daemon would start it.
-        control(home, session_id, f"{shlex.quote(fake)} --dangerously-bypass-approvals-and-sandbox\r")
+        without_flag = [word for word in arguments if word != "--no-daemon"]
+        control(home, session_id, shlex.join([fake] + without_flag) + "\r")
         daemon_done = bool(service.wait_for(
             lambda: output_has(session_dir, b"FAKE_CODEX_DONE daemon"), timeout=60))
         daemon = read_json(home.path("fake-codex", "daemon.json"))
@@ -232,4 +229,4 @@ def check(case):
         run_cli(home, ["rm", session_id], env=environment, timeout=45)
 
 
-run("codex_mcp_tools", check)
+run("codex_mcp_tools", body)
