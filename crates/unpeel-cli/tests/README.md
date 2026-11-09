@@ -59,7 +59,9 @@ spawn. The runner names each home after its slot, `/tmp/s<slot>-<case>`
 home that would overflow. `host_launch_conformance`'s sub-homes are already
 one byte under the limit, so `UNPEEL_TUI_TEST_BASE` (homes become
 `<base>-<case>`) must stay as short as `/tmp/u1`, and the caller then owns
-keeping it unique; leave it unset unless you need a fixed path.
+keeping it unique; leave it unset unless you need a fixed path. A private
+`UNPEEL_TUI_SLOT_DIR` holds its homes, so it must be as short as the
+self-test's `/tmp/mr.XXXXXX/slots`.
 
 **Concurrent runs cannot meet.** A slot is held by one live case at a time
 and names that case's home, so no two live cases share a home, and every

@@ -47,16 +47,6 @@ done
 slots="${UNPEEL_TUI_SLOTS:-4}"
 machine_slot_dir=/tmp/unpeel-pty-matrix.slots
 slot_dir="${UNPEEL_TUI_SLOT_DIR:-$machine_slot_dir}"
-# A run holding slot N clears every home named for slot N (clear_slot_homes),
-# so a slot directory and its homes go together: the machine's slots name
-# /tmp/s<slot>-<case>, and a private slot directory (the runner's self-test)
-# keeps its homes inside itself, where no run on the machine's slots looks.
-# Keep a private one short: the harness refuses a home that would overflow.
-if [[ "$slot_dir" == "$machine_slot_dir" ]]; then
-  home_prefix=/tmp/s
-else
-  home_prefix="$slot_dir/s"
-fi
 # One digit keeps /tmp/s<slot>-<case> as short as the old /tmp/ut-<case>:
 # a hosted session binds <home>/app-sessions/<uuid>/session.sock, and
 # host_launch_conformance's sub-homes already sit 1 byte under the limit.
@@ -79,6 +69,19 @@ for lock_file in "$slot_dir/queue" "$slot_dir"/{1..9}; do
     exit 1
   fi
 done
+# A run holding slot N clears every home named for slot N (clear_slot_homes),
+# so a slot directory and its homes go together: the machine's slots name
+# /tmp/s<slot>-<case>, and a private slot directory (the runner's self-test)
+# keeps its homes inside itself, where no run on the machine's slots looks.
+# Keep a private one short: the harness refuses a home that would overflow.
+# Compare the directories themselves, so a trailing slash or /private/tmp
+# still names the machine's; a relative one still gives absolute homes.
+slot_dir="$(cd "$slot_dir" && pwd)" || exit 1
+if [[ "$(cd "$slot_dir" && pwd -P)" == "$(cd "$machine_slot_dir" 2>/dev/null && pwd -P)" ]]; then
+  home_prefix=/tmp/s
+else
+  home_prefix="$slot_dir/s"
+fi
 
 binary="${UNPEEL_TUI_BINARY:-$crates/target/debug/unpeel}"
 if [[ -z "${UNPEEL_TUI_SKIP_BUILD:-}" ]]; then

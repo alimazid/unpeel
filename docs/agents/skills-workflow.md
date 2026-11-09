@@ -99,10 +99,10 @@ any fix.
   - "the full suite at the end" means the "Tests to run" list in
     [AGENTS.md](../../AGENTS.md), plus the fork's
     `scripts/verify-matrix-runner.sh` (`run.sh` itself: isolation, slots,
-    `-j`, interrupt; fake cases, ~40 s, safe beside a real `run.sh`). Run the
+    `-j`, interrupt; fake cases, ~50 s, safe beside a real `run.sh`). Run the
     whole PTY matrix after you touch the CLI, `unpeel serve` or anything they
-    share with the clients, and the client suites after you touch `clients/`. A change to `docs/` still runs
-    `scripts/check-links.sh`.
+    share with the clients, and the client suites after you touch `clients/`.
+    A change to `docs/` still runs `scripts/check-links.sh`.
   - After you touch the sidebar's PROJECTS list, also run
     `scripts/verify-sidebar-interaction.sh --app clients/native/dist/Unpeel.app`
     on a dev build, then again with the long-list options in its header, then

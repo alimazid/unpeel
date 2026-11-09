@@ -7,8 +7,9 @@
 # Verifies:
 #   0. isolation — a run on a private slot directory keeps its homes inside
 #                  it, and a live home in the machine's /tmp/s<slot>-*
-#                  survives; checked first, since a failure means the
-#                  sections below would remove a real run's homes
+#                  survives the whole self-test; checked first, since a
+#                  failure means the sections below would remove a real
+#                  run's homes
 #   1. serial    — the default runs one case at a time, in name order
 #   2. jobs      — -j N runs a run's cases at once, still printed in order
 #   3. slots     — two runs at once never hold more cases than there are
@@ -22,7 +23,7 @@
 #   7. queue     — a run that arrives while another holds the only slot
 #                  gets it after that run's current case, not its last
 #
-# Usage: scripts/verify-matrix-runner.sh   (about 30 s; touches no real case,
+# Usage: scripts/verify-matrix-runner.sh   (about 50 s; touches no real case,
 #        so it may run beside a real matrix)
 # Exit:  0 = all checks pass; non-zero with FAIL lines otherwise.
 
@@ -35,23 +36,25 @@ TESTS="$REPO_ROOT/crates/unpeel-cli/tests"
 # the harness refuses a home too long for a hosted session's socket.
 sandbox="$(mktemp -d /tmp/mr.XXXXXX)"
 # Every run in here shares one private slot directory: a stand-in for the
-# machine's, so these checks never take a slot from a real matrix.
+# machine's, so these checks take no slot a real matrix uses at the default
+# 4 (section 0 holds the machine's slot 9 for the whole self-test).
 export UNPEEL_TUI_SLOT_DIR="$sandbox/slots"
 export UNPEEL_TUI_SKIP_BUILD=1
 export UNPEEL_TUI_BINARY=/usr/bin/true
-# The machine's slots (run.sh's default), and the home on its slot 9 that
-# section 0 owns while it holds that slot.
-machine_slots=/tmp/unpeel-pty-matrix.slots
-decoy=/tmp/s9-runner_selftest
-holder=""
-owner=""
+# Section 0's machine slot 9 holder and the live home it owns on that slot.
+slot9_holder=""
+private_holder=""
+decoy=""
 owns_decoy=0
+holder=""
+stop() { [[ -n "$1" ]] && { kill -9 "$1"; wait "$1"; } 2>/dev/null; }
 cleanup() {
-  [[ -n "$holder" ]] && kill -9 "$holder" 2>/dev/null
+  stop "$holder"
+  stop "$private_holder"
   # Only while the machine's slot 9 is still held: once it is free, a home
   # there belongs to whoever holds the slot next.
   (( owns_decoy )) && rm -rf "$decoy"
-  [[ -n "$owner" ]] && kill -9 "$owner" 2>/dev/null
+  stop "$slot9_holder"
   rm -rf "$sandbox"
 }
 trap cleanup EXIT
@@ -111,6 +114,31 @@ PY
   done
 }
 
+# Flock the slot files $2... from a background python (its pid is $!) that
+# creates $1 once it holds them all, and lets go once this script is gone,
+# even after a kill -9.
+hold_slots() {
+  python3 -c 'import fcntl, os, sys, time
+parent, ready = int(sys.argv[1]), sys.argv[2]
+held = [open(path, "a") for path in sys.argv[3:]]
+for handle in held:
+    fcntl.flock(handle, fcntl.LOCK_EX)
+open(ready, "w").close()
+while os.getppid() == parent:
+    time.sleep(0.5)' "$$" "$@" &
+}
+
+# Wait up to $3 half-seconds for file $1 while pid $2 lives.
+await_file() {
+  local tries="$3"
+  while (( tries-- > 0 )); do
+    [[ -e "$1" ]] && return 0
+    kill -0 "$2" 2>/dev/null || break
+    sleep 0.5
+  done
+  [[ -e "$1" ]]
+}
+
 # The case names a run printed, in the order it printed them.
 case_order() { grep -oE '^rt_[a-z]+' <<<"$1" | tr '\n' ' '; }
 
@@ -124,43 +152,47 @@ max_overlap() {
 # 0. isolation: a run holding slot N clears every home named for slot N, so a
 # run on the private slots must never name its homes like the machine's. This
 # holds the machine's slot 9 (no run polls it at the default 4 slots), which
-# makes /tmp/s9-* this script's to touch, and keeps a live home there while a
-# run takes its private slot 9: one slot left free past 1-8, which it holds.
-make_runner "$sandbox/iso" rt_iso
-mkdir -p "$machine_slots" "$UNPEEL_TUI_SLOT_DIR"
-python3 -c 'import fcntl, sys, time
-machine, private, ready = sys.argv[1:]
-held = [open(f"{machine}/9", "a")] + [open(f"{private}/{i}", "a") for i in range(1, 9)]
-for handle in held:
-    fcntl.flock(handle, fcntl.LOCK_EX)
-open(ready, "w").close()
-time.sleep(600)' "$machine_slots" "$UNPEEL_TUI_SLOT_DIR" "$sandbox/owner.ready" &
-owner=$!
-# A real run with 9 slots may hold slot 9 for one case: wait that out.
-for _ in $(seq 600); do
-  [[ -e "$sandbox/owner.ready" ]] || ! kill -0 "$owner" 2>/dev/null && break
-  sleep 0.5
-done
-if [[ ! -e "$sandbox/owner.ready" ]]; then
-  check "isolation: hold the machine's slot 9" 0 "its holder exited, or 300s passed"
+# makes its homes this script's to touch, keeps a live home there until the
+# end, and has a run take its private slot 9 (1-8 held). The machine's slots
+# and homes are read from run.sh, so moving them can't leave this guarding a
+# path no run uses.
+machine_slots="$(sed -n 's|^machine_slot_dir=\(/.*\)$|\1|p' "$TESTS/run.sh" | head -1)"
+machine_prefix="$(sed -n 's|^  home_prefix=\(/[^"]*\)$|\1|p' "$TESTS/run.sh" | head -1)"
+if [[ -z "$machine_slots" || -z "$machine_prefix" ]]; then
+  check "isolation: run.sh names the machine's slots and homes" 0 \
+    "slots '$machine_slots', home prefix '$machine_prefix'"
   exit 1
 fi
+make_runner "$sandbox/iso" rt_iso
+mkdir -p "$machine_slots" "$UNPEEL_TUI_SLOT_DIR"
+hold_slots "$sandbox/slot9.ready" "$machine_slots/9"
+slot9_holder=$!
+# A real run with 9 slots may hold slot 9 for one case: wait that out.
+if ! await_file "$sandbox/slot9.ready" "$slot9_holder" 600; then
+  check "isolation: hold the machine's slot 9" 0 "its holder exited (see above), or 300s passed"
+  exit 1
+fi
+decoy="${machine_prefix}9-runner_selftest"
 owns_decoy=1
 rm -rf "$decoy"
 mkdir -p "$decoy"
 echo '{}' >"$decoy/app-state.json"
+hold_slots "$sandbox/private.ready" "$UNPEEL_TUI_SLOT_DIR"/{1..8}
+private_holder=$!
+if ! await_file "$sandbox/private.ready" "$private_holder" 20; then
+  check "isolation: hold private slots 1-8" 0 "its holder exited (see above), or 10s passed"
+  exit 1
+fi
 log="$sandbox/iso.log"
 out="$(RUNNER_LOG="$log" RUNNER_SLEEP=0.2 UNPEEL_TUI_SLOTS=9 "$sandbox/iso/run.sh" 2>&1)"
 status=$?
+stop "$private_holder"; private_holder=""
 check "isolation: the run passes" "$(( status == 0 ))" "exit $status: $out"
 iso_home="$(awk '$1 == "start" { print $4 }' "$log" 2>/dev/null)"
 check "isolation: the run's home is inside its slot directory" \
   "$(holds test "$iso_home" = "$UNPEEL_TUI_SLOT_DIR/s9-rt_iso")" "$iso_home"
-check "isolation: a live home outside the sandbox survives" \
+check "isolation: a live home outside the sandbox survives a run" \
   "$(holds test -e "$decoy/app-state.json")" "$decoy was removed"
-rm -rf "$decoy"
-owns_decoy=0
-{ kill -9 "$owner"; wait "$owner"; } 2>/dev/null; owner=""
 if (( failures )); then
   echo "isolation failed: the sections below would remove a real run's homes"
   exit 1
@@ -258,20 +290,16 @@ check "interrupt: no new case started" "$(( $(grep -c '^start' "$log") == 2 ))" 
 
 # 6. crash: a holder killed -9 frees its slot
 make_runner "$sandbox/crash" rt_l
-mkdir -p "$UNPEEL_TUI_SLOT_DIR"
-python3 -c 'import fcntl, sys, time
-handle = open(sys.argv[1], "a")
-fcntl.flock(handle, fcntl.LOCK_EX)
-time.sleep(60)' "$UNPEEL_TUI_SLOT_DIR/1" &
+hold_slots "$sandbox/crash.ready" "$UNPEEL_TUI_SLOT_DIR/1"
 holder=$!
-sleep 0.5
+await_file "$sandbox/crash.ready" "$holder" 20
 log="$sandbox/crash.log"
 RUNNER_LOG="$log" RUNNER_SLEEP=0.2 UNPEEL_TUI_SLOTS=1 \
   "$sandbox/crash/run.sh" >"$sandbox/crash.out" 2>&1 &
 runner=$!
 sleep 2
 check "crash: a held slot keeps the case waiting" "$(holds test ! -s "$log")" "$(cat "$log" 2>/dev/null)"
-{ kill -9 "$holder"; wait "$holder"; } 2>/dev/null; holder=""
+stop "$holder"; holder=""
 for _ in $(seq 50); do kill -0 "$runner" 2>/dev/null || break; sleep 0.2; done
 if kill -0 "$runner" 2>/dev/null; then
   kill -TERM "$runner"
@@ -305,6 +333,9 @@ before="$(awk -v t="$(awk '$1 == "start" { print $3 }' "$short_log")" \
   '$1 == "start" && $3 < t { n++ } END { print n + 0 }' "$long_log")"
 check "queue: the later run's case goes next, after the first run's current case" \
   "$(( long_starts == 4 && before == 1 ))" "$(sort -k3,3n "$long_log" "$short_log")"
+
+check "isolation: the live home outside the sandbox survives the self-test" \
+  "$(holds test -e "$decoy/app-state.json")" "$decoy was removed"
 
 echo
 if (( failures )); then
