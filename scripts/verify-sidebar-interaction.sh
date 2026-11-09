@@ -149,7 +149,7 @@ d = "0123456789abcdefghijklmnopqrstuvwxyz"; o = ""
 while x: o = d[x % 36] + o; x //= 36
 print(o)' "$HOME_A")"
 
-swiftc -O -o "$TOOLS/driver" "$ROOT/scripts/verify-sidebar-interaction.swift"
+swiftc -O -o "$TOOLS/driver" "$ROOT"/scripts/sidebar-driver/*.swift
 "$TOOLS/driver" check ${ONLY:+--only "$ONLY"} # Refuse a typo before the slow part.
 if "$TOOLS/driver" locked; then
   echo "the screen is locked: a locked screen has no windows to drive" >&2
