@@ -1885,14 +1885,6 @@ pub(crate) fn mobile_snapshot_with_runs(
     fn spinner_hex(command: &str) -> Option<u32> {
         crate::runtime_presentation::spinner_tint_hex(command)
     }
-    fn git_branch(path: &str) -> Option<String> {
-        let head = std::fs::read_to_string(std::path::Path::new(path).join(".git/HEAD")).ok()?;
-        let head = head.trim();
-        Some(match head.strip_prefix("ref: refs/heads/") {
-            Some(branch) => branch.to_string(),
-            None => head.chars().take(7).collect(),
-        })
-    }
     fn effective_project_id(row: &SessionRow) -> &str {
         if row.group_id.is_empty() {
             &row.project_id
@@ -2113,7 +2105,7 @@ pub(crate) fn mobile_snapshot_with_runs(
             if let Some(color_id) = color_id {
                 obj.insert("colorID".into(), color_id.into());
             }
-            if let Some(branch) = git_branch(path) {
+            if let Some(branch) = unpeel_core::git_head::branch(path) {
                 obj.insert("gitBranch".into(), branch.into());
             }
         }
@@ -3899,6 +3891,96 @@ mod tests {
             ),
             "an empty project still offers a way in, got {:?}",
             model.items[1]
+        );
+    }
+
+    fn git(dir: &std::path::Path, args: &[&str]) {
+        let output = std::process::Command::new("git")
+            .arg("-C")
+            .arg(dir)
+            .args([
+                "-c",
+                "user.name=t",
+                "-c",
+                "user.email=t@t",
+                "-c",
+                "commit.gpgsign=false",
+                // `submodule add` clones from a local path.
+                "-c",
+                "protocol.file.allow=always",
+            ])
+            .args(args)
+            .output()
+            .expect("git runs");
+        assert!(
+            output.status.success(),
+            "git {args:?}: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
+    /// Fork-only (#59): a linked worktree's and a submodule's `.git` is a
+    /// file, and the bootstrap still names the branch each one checked out.
+    #[test]
+    fn bootstrap_names_the_branch_of_a_checkout_whose_git_is_a_file() {
+        let root = tempfile::tempdir().unwrap();
+        let repo = root.path().join("repo");
+        let source = root.path().join("source");
+        for (dir, branch) in [(&repo, "main"), (&source, "sub-branch")] {
+            std::fs::create_dir_all(dir).unwrap();
+            git(dir, &["init", "-q", "-b", branch]);
+            git(dir, &["commit", "-q", "--allow-empty", "-m", "one"]);
+        }
+        let linked = root.path().join("linked");
+        git(
+            &repo,
+            &[
+                "worktree",
+                "add",
+                "-q",
+                "-b",
+                "linked-branch",
+                linked.to_str().unwrap(),
+            ],
+        );
+        git(
+            &repo,
+            &["submodule", "add", "-q", source.to_str().unwrap(), "sub"],
+        );
+        let projects = [("linked", linked.clone()), ("sub", repo.join("sub"))];
+        let overlay = NativeOverlay {
+            projects: projects
+                .iter()
+                .map(|(id, _)| (id.to_string(), id.to_string()))
+                .collect(),
+            project_paths: projects
+                .iter()
+                .map(|(id, path)| (id.to_string(), path.to_str().unwrap().to_owned()))
+                .collect(),
+            ..NativeOverlay::default()
+        };
+        let model = SidebarModel {
+            rows: Vec::new(),
+            items: Vec::new(),
+            expired: Vec::new(),
+        };
+        let snapshot = mobile_snapshot(
+            &model,
+            Some(&overlay),
+            &std::collections::HashSet::new(),
+            None,
+        );
+        let branch = |id: &str| {
+            snapshot.bootstrap["projects"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|project| project["id"] == id)
+                .and_then(|project| project.get("gitBranch").cloned())
+        };
+        assert_eq!(
+            (branch("linked"), branch("sub")),
+            (Some("linked-branch".into()), Some("sub-branch".into()))
         );
     }
 }
