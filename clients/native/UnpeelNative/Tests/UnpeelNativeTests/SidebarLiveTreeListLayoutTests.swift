@@ -24,17 +24,17 @@ final class SidebarLiveTreeListLayoutTests: XCTestCase {
         // Selection lights the nested groups' washes through their own
         // observers; the list body itself never observes selection.
         store.selectedSessionID = "nested-3"
-        flush(host)
+        Self.flushHostedView(host)
         // Collapse and expand a group, then a whole project.
         store.toggleProjectExpanded("group")
-        flush(host)
+        Self.flushHostedView(host)
         store.toggleProjectExpanded("group")
-        flush(host)
+        Self.flushHostedView(host)
         store.toggleProjectExpanded("big")
-        flush(host)
+        Self.flushHostedView(host)
         store.toggleProjectExpanded("big")
         store.selectedSessionID = "second-29"
-        flush(host)
+        Self.flushHostedView(host)
 
         XCTAssertEqual(store.sidebarTreeRows.count, rows.count, "the round trip restores every row")
     }
@@ -44,45 +44,17 @@ final class SidebarLiveTreeListLayoutTests: XCTestCase {
     /// alone never reports it again: the row would look fine and refuse every
     /// press and drop until something moved it.
     func testARowScrolledAwayAndBackIsADragTargetAgain() throws {
-        let store = UnpeelStore.sidebarFixture(
-            snapshot: Self.largeTree,
-            expandedProjectIDs: ["big", "group", "nested", "wt", "second", "topGroup", "empty"]
-        )
-        let controller = SidebarSessionDragController()
-        let dragState = SidebarDragState()
-        let list = ScrollView {
-            SidebarLiveTreeList(store: store, dragState: dragState)
-                .padding(.horizontal, 8)
-                .coordinateSpace(name: SidebarSessionDragController.contentSpace)
-        }
-        .environment(\.sidebarSessionDragController, controller)
-        let window = NSWindow(
-            contentRect: NSRect(x: -4000, y: -4000, width: 260, height: 600),
-            styleMask: [.borderless],
-            backing: .buffered,
-            defer: false
-        )
-        let host = NSHostingView(rootView: list.frame(width: 260, height: 600))
-        window.contentView = host
-        window.orderBack(nil)
-        defer { window.orderOut(nil) }
-        flush(host)
-        let scrollView = try XCTUnwrap(Self.firstScrollView(in: host))
+        let panel = try HostedPanel()
+        defer { panel.close() }
 
         let header = "group"
-        let registered = try XCTUnwrap(controller.registeredRowFrame(id: header), "mounted at the top")
+        let registered = try XCTUnwrap(panel.controller.registeredRowFrame(id: header), "mounted at the top")
 
-        scrollView.contentView.scroll(to: NSPoint(x: 0, y: 3000))
-        scrollView.reflectScrolledClipView(scrollView.contentView)
-        flush(host)
-        flush(host)
-        XCTAssertNil(controller.registeredRowFrame(id: header), "the lazy list unmounted it")
+        panel.scroll(toY: 3000)
+        XCTAssertNil(panel.controller.registeredRowFrame(id: header), "the lazy list unmounted it")
 
-        scrollView.contentView.scroll(to: .zero)
-        scrollView.reflectScrolledClipView(scrollView.contentView)
-        flush(host)
-        flush(host)
-        let frame = try XCTUnwrap(controller.registeredRowFrame(id: header), "back on screen, back in the registry")
+        panel.scroll(toY: 0)
+        let frame = try XCTUnwrap(panel.controller.registeredRowFrame(id: header), "back on screen, back in the registry")
         XCTAssertEqual(frame.minY, registered.minY, accuracy: 1)
     }
 
@@ -230,7 +202,7 @@ final class SidebarLiveTreeListLayoutTests: XCTestCase {
             host = NSHostingView(rootView: panel.frame(width: 260, height: 600))
             window.contentView = host
             window.orderBack(nil)
-            Self.flush(host)
+            flushHostedView(host)
             scrollView = try XCTUnwrap(firstScrollView(in: host))
         }
 
@@ -284,13 +256,7 @@ final class SidebarLiveTreeListLayoutTests: XCTestCase {
         }
 
         func flush() {
-            Self.flush(host)
-        }
-
-        private static func flush(_ host: NSView) {
-            RunLoop.main.run(until: Date().addingTimeInterval(0.05))
-            host.layoutSubtreeIfNeeded()
-            host.display()
+            flushHostedView(host)
         }
     }
 
@@ -316,13 +282,13 @@ final class SidebarLiveTreeListLayoutTests: XCTestCase {
         }
         let host = NSHostingView(rootView: list.frame(width: 260, height: 600))
         host.frame = NSRect(x: 0, y: 0, width: 260, height: 600)
-        flush(host)
+        Self.flushHostedView(host)
         return host
     }
 
     /// Lets a store change reach the hosted view, then lays it out and
     /// renders it.
-    private func flush(_ host: NSView) {
+    private static func flushHostedView(_ host: NSView) {
         RunLoop.main.run(until: Date().addingTimeInterval(0.05))
         host.layoutSubtreeIfNeeded()
         host.display()
