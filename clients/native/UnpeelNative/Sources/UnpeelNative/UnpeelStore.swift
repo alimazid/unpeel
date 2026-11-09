@@ -3570,6 +3570,8 @@ final class UnpeelStore: ObservableObject {
     /// idle sessions stop directly.
     @Published private(set) var confirmingStopSessionID: String? {
         didSet {
+            // Fork-only (#48): this row stays past the stopped window.
+            if confirmingStopSessionID != oldValue { invalidateSidebarLists() }
             if confirmingStopSessionID == nil {
                 scheduleDeferredRemoteProjectionFlush()
             }
@@ -8618,6 +8620,8 @@ final class UnpeelStore: ObservableObject {
     /// (one at a time, like `editingSessionId` in ProjectItem.svelte:146).
     @Published var editingSessionID: String? {
         didSet {
+            // Fork-only (#48): this row stays past the stopped window.
+            if editingSessionID != oldValue { invalidateSidebarLists() }
             if editingSessionID == nil {
                 editingSessionSurface = .sidebar
                 scheduleDeferredRemoteProjectionFlush()
@@ -9210,6 +9214,8 @@ final class UnpeelStore: ObservableObject {
     /// instead of just the button).
     @Published var confirmingRemoveSessionID: String? {
         didSet {
+            // Fork-only (#48): this row stays past the stopped window.
+            if confirmingRemoveSessionID != oldValue { invalidateSidebarLists() }
             if confirmingRemoveSessionID == nil {
                 scheduleDeferredRemoteProjectionFlush()
             }
@@ -9217,7 +9223,10 @@ final class UnpeelStore: ObservableObject {
     }
 
     /// Sessions whose kill/cleanup is in flight; rows render disabled.
-    @Published private(set) var removingSessionIDs: Set<String> = []
+    @Published private(set) var removingSessionIDs: Set<String> = [] {
+        // Fork-only (#48): these rows stay past the stopped window.
+        didSet { if removingSessionIDs != oldValue { invalidateSidebarLists() } }
+    }
 
     /// Session dirs deleted by an explicit close/restart, keyed by session id.
     /// A host from an older build writes its final exited manifest up to a
