@@ -268,4 +268,41 @@ final class SidebarDropShellTests: XCTestCase {
         )
         XCTAssertNil(block(1.5 * Self.row, in: rows), "a top-level group's rows are not a project block")
     }
+
+    // MARK: Where a reorder's card lands (#53)
+
+    /// beta (expanded, with nested group inner) above s1, in project big.
+    private var expandedSibling: [String: Controller.RowRecord] {
+        let beta: [Controller.ShellOwner] = [.project("big"), .group("beta")]
+        let inner = beta + [.group("inner")]
+        return [
+            "beta": record(folder(in: "big", depth: 1), frame(y: 0), owners: beta),
+            "b1": record(session(in: "beta", depth: 1), frame(y: Self.row), owners: beta),
+            "inner": record(folder(in: "beta", depth: 2), frame(y: 2 * Self.row), owners: inner),
+            "i1": record(session(in: "inner", depth: 2), frame(y: 3 * Self.row), owners: inner),
+            "s1": record(session(in: "big", depth: 0), frame(y: 4 * Self.row), owners: [.project("big")]),
+        ]
+    }
+
+    func testMovingUpLandsOnTheAnchorsOwnSlot() {
+        XCTAssertEqual(
+            Controller.reorderLandingRowID(anchorID: "beta", movingDown: false, in: expandedSibling),
+            "beta"
+        )
+    }
+
+    func testMovingDownPastAnExpandedFolderLandsBelowItsWholeBlock() {
+        // The block rides up one slot, so the gap is its last row's slot.
+        XCTAssertEqual(
+            Controller.reorderLandingRowID(anchorID: "beta", movingDown: true, in: expandedSibling),
+            "i1"
+        )
+    }
+
+    func testMovingDownPastASessionLandsOnItsSlot() {
+        XCTAssertEqual(
+            Controller.reorderLandingRowID(anchorID: "s1", movingDown: true, in: expandedSibling),
+            "s1"
+        )
+    }
 }

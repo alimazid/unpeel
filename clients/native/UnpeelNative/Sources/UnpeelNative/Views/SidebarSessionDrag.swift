@@ -1141,36 +1141,18 @@ final class SidebarSessionDragController: ObservableObject {
             // Freeze the origin section for the transform-gap reorder:
             // order from the store's rendered list (sessions and child
             // folders mixed, or the pinned section), stride from the
-            // registered static row frames. During the drag nothing
-            // reorders the tree, so both stay true until drop. An EXPANDED
-            // folder as the drag source gets no map: its visible block is
-            // taller than the one-slot stride, so the transform gap can't
-            // represent its move — collapsed folders reorder normally, and
-            // cross-project drops still work without a gap.
-            let expandedFolderSource: Bool = {
-                if case .folderItem = kind {
-                    return store.expandedProjectIDs.contains(sessionID)
-                }
-                return false
-            }()
-            if !expandedFolderSource, let node = store.findDisplayNode(projectID) {
-                let pinnedIDs = store.renderedPinnedItems(in: node).map(\.id)
-                // The pinned partition freezes as ONE mixed list (pinned
-                // Sessions and pinned child groups), so either row kind
-                // opens its gap against any pinned sibling.
-                let ids = pinned
-                    ? pinnedIDs
-                    : store.renderedDisplayedItems(in: node).map(\.id)
+            // lifted row itself. During the drag nothing reorders the
+            // tree, so both stay true until drop. An expanded folder
+            // collapses below, so it opens the same one-slot gap.
+            if let node = store.findDisplayNode(projectID) {
+                let section = store.sidebarReorderSection(
+                    in: node, pinned: pinned, draggedID: sessionID
+                )
                 dragState.beginSessionReorderMap(
-                    ids: ids,
+                    ids: section.ids,
                     draggedID: sessionID,
-                    shiftDistance: reorderStride(
-                        ids: ids, draggedID: sessionID, frame: record.frame
-                    ),
-                    // The header-hover top anchor only when the header is
-                    // ADJACENT to the dragged row's section: a pinned drag,
-                    // or a regular drag with no pinned rows in between.
-                    headerAnchorsTop: pinned || pinnedIDs.isEmpty
+                    shiftDistance: record.frame.height,
+                    headerAnchorsTop: section.headerAnchorsTop
                 )
             }
         }
@@ -1191,6 +1173,11 @@ final class SidebarSessionDragController: ObservableObject {
         presentCardWindow(card: newCard, over: parent, rowRectInWindow: rowRect)
         card = newCard
         phase = .dragging
+        // Fork-only (#53): last, so the frames the lift read stay the
+        // pre-collapse ones and `isDragging` already holds any reveal scroll.
+        // The header doesn't move; the hit test reads the rows below it from
+        // the live registry as they report in.
+        if case .folderItem = kind { store.collapseFolderForLift(sessionID) }
         hoveredTargetProjectID = nil
         hoveredInsertion = nil
         reorderAnchorID = nil
@@ -1200,23 +1187,6 @@ final class SidebarSessionDragController: ObservableObject {
         startDragTimer()
         trackCursor(in: view)
         return true
-    }
-
-    /// One slot's layout stride — the dragged row's height plus the list
-    /// spacing to a section neighbor, measured from the registered frames.
-    /// This is exactly how far the rows between the origin slot and the
-    /// hovered target shift to open the gap.
-    private func reorderStride(
-        ids: [String], draggedID: String, frame: CGRect
-    ) -> CGFloat {
-        guard let index = ids.firstIndex(of: draggedID) else { return frame.height }
-        if index + 1 < ids.count, let next = rows[ids[index + 1]] {
-            return next.frame.minY - frame.minY
-        }
-        if index > 0, let prev = rows[ids[index - 1]] {
-            return frame.minY - prev.frame.minY
-        }
-        return frame.height
     }
 
     // MARK: Cursor-lock timer
@@ -2131,9 +2101,9 @@ final class SidebarSessionDragController: ObservableObject {
         // project's header or the 1pt stack gaps must not flutter the slot
         // closed) — the same retention rule `projectDropTargetID` uses.
         // Only leaving the sidebar (trackCursor) or landing clears it.
-        // Anchors must resolve in the frozen map: a drag with no map (an
-        // expanded folder as the source) or a row that appeared mid-drag
-        // must not commit a reorder that no gap ever showed.
+        // Anchors must resolve in the frozen map: a row outside the dragged
+        // row's section (a pinned folder under a regular drag) or a row that
+        // appeared mid-drag must not commit a reorder that no gap ever showed.
         if let anchor = newReorderAnchor, anchor != reorderAnchorID,
            let index = dragState.sessionReorderIndexByID[anchor] {
             reorderAnchorID = anchor
@@ -2347,10 +2317,16 @@ final class SidebarSessionDragController: ObservableObject {
         if let state = cardState {
             withAnimation(Self.settleAnimation) { state.lifted = false }
         }
-        // The gap sits exactly over the anchor row's static frame (the
-        // in-between rows shifted one slot toward the origin), so the
-        // anchor IS the card's landing rect.
-        if let window = cardWindow, let dest = cardWindowOrigin(overRow: anchorID) {
+        // The gap sits exactly over a row's static frame (the in-between rows
+        // shifted one slot toward the origin), so that row IS the card's
+        // landing rect.
+        let landingRowID = Self.reorderLandingRowID(
+            anchorID: anchorID,
+            movingDown: (dragState.sessionReorderIndexByID[anchorID] ?? 0)
+                > dragState.sessionReorderDraggedIndex,
+            in: rows
+        )
+        if let window = cardWindow, let dest = cardWindowOrigin(overRow: landingRowID) {
             NSAnimationContext.runAnimationGroup { context in
                 context.duration = Self.settleDelay
                 context.timingFunction = Self.settleTimingFunction()
@@ -2669,6 +2645,7 @@ final class SidebarSessionDragController: ObservableObject {
         closeCardWindow()
         dragState?.setLiftedSessionRow(nil)
         dragState?.setLiftedProjectRow(nil)
+        store?.endFolderLift()
         projectDropTargetID = nil
         projectDropBelow = false
         phase = .idle
