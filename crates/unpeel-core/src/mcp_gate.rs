@@ -34,9 +34,9 @@ const PROTOCOL_VERSION_FALLBACK: &str = "2025-06-18";
 const LAUNCH_WAIT: std::time::Duration = std::time::Duration::from_secs(5);
 
 pub fn run_stdio(kind: &str) -> Result<(), String> {
-    // The gate decides once, at startup, whether to serve tools; a Session
-    // still in its launch window has no pid to check yet, so ask until it
-    // does rather than settle on "unknown" for the gate's whole life.
+    // Fork-only (#71): the gate decides once, at startup, whether to serve
+    // tools; a Session still in its launch window has no pid to check yet,
+    // so ask until it does rather than settle on "unknown" for good.
     let caller = crate::session_identity::current_waiting(LAUNCH_WAIT)
         .session_id()
         .map(str::to_owned);

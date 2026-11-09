@@ -21,6 +21,9 @@ A fake Codex runs in Session A with the installed Codex integration:
   scan, so a refused POST alone would not keep A's activity unchanged;
 * after a Host restart the adopted Session's own processes still pass.
 
+The Host itself runs with the test switch that trusts an exported id: the
+Session must not inherit it, or the detached runner would pass.
+
 The real Codex is never run here.
 """
 
@@ -31,7 +34,7 @@ import shlex
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from harness import BINARY, run, run_cli  # noqa: E402
+from harness import BINARY, TRUST_SESSION_ENV, run, run_cli  # noqa: E402
 from hook_cancellation import control, fixture_started, read_json  # noqa: E402
 
 UUID = r"[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}"
@@ -140,11 +143,11 @@ def detached(work):
         os.setsid()
         if os.fork() == 0:
             for _ in range(100):
-                if os.getppid() != os.getpid() and os.getppid() not in (FAKE_PID, middle):
+                if os.getppid() not in (FAKE_PID, middle):
                     break
                 time.sleep(0.05)
             try:
-                work()
+                work(middle)
             finally:
                 os._exit(0)
         os._exit(0)
@@ -161,10 +164,11 @@ def setsid_probe():
 
 
 def detached_run(event):
-    def work():
+    def work(middle):
+        parent = os.getppid()
         hook(event)
         write("detached-" + event, dict(
-            gate(), cli=cli(), parent=os.getppid(), fake=FAKE_PID,
+            gate(), cli=cli(), parent=parent, fake=FAKE_PID, middle=middle,
             env={key: os.environ.get(key) for key in (
                 "UNPEEL_SESSION_ID", "UNPEEL_SESSION_DIR", "UNPEEL_HOST_BIN",
                 "UNPEEL_HOME", "UNPEEL_APP_PORT_REGISTRY_FILE")}))
@@ -219,7 +223,7 @@ def body(case):
     with open(fake, "w") as handle:
         handle.write(f"#!{sys.executable}\n" + FAKE_CODEX.replace("@UNPEEL@", BINARY))
     os.chmod(fake, 0o755)
-    environment = {"SHELL": "/bin/bash"}
+    environment = {"SHELL": "/bin/bash", **TRUST_SESSION_ENV}
     # The login shell rebuilds PATH, so launch the fake by its absolute path.
     home.preset(label="codex", preset_id="codex", command=shlex.quote(fake))
     service = case.serve(env=environment)
@@ -305,7 +309,8 @@ def body(case):
         case.check("the Session has a durable hook marker", seed is not None)
         opening = act("d", "detached-UserPromptSubmit")
         case.check("the detached runner's parent is outside the Session",
-                   opening.get("parent") not in (None, opening.get("fake")), str(opening))
+                   opening.get("parent") not in (None, opening.get("fake"), opening.get("middle")),
+                   str({key: opening.get(key) for key in ("parent", "fake", "middle")}))
         env = opening.get("env", {})
         case.check("the detached runner keeps the Session's exported environment",
                    env.get("UNPEEL_SESSION_ID") == session_id
@@ -332,11 +337,17 @@ def body(case):
         control(home, session_id, "s")
         expect("the Session's own Stop completes the turn", "idle", True)
 
+        before = home.manifests().get(session_id, {})
         service.close()
         service = case.serve(env=environment)
-        case.check("the Host restarts with the same running Session",
-                   bool(service.ready(timeout=25))
-                   and home.manifests().get(session_id, {}).get("state") == "running")
+        ready = bool(service.ready(timeout=25))
+        after = home.manifests().get(session_id, {})
+        case.check("the Host restarts and adopts the same running Session",
+                   ready and after.get("state") == "running"
+                   and bool(before.get("pid")) and after.get("pid") == before.get("pid")
+                   and after.get("pid_started_at") == before.get("pid_started_at"),
+                   str({key: (before.get(key), after.get(key))
+                        for key in ("state", "pid", "pid_started_at")}))
         own_processes_pass("after a Host restart")
     finally:
         run_cli(home, ["rm", session_id], env=environment, timeout=45)

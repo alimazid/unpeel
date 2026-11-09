@@ -4143,9 +4143,10 @@ fn send_initial_text_to_session(session_id: &str, text: &str, submit: bool) -> R
     }
 }
 
-/// The Session this process speaks for: the exported `UNPEEL_SESSION_ID`
-/// once process ancestry backs it, or the verified Session ancestor when the
-/// launcher stripped the environment (`session_identity`, #71).
+/// Fork-only (#71): the Session this process speaks for: the exported
+/// `UNPEEL_SESSION_ID` once process ancestry backs it, or the verified
+/// Session ancestor when the launcher stripped the environment
+/// (`session_identity`).
 pub fn self_session_id() -> Option<String> {
     crate::session_identity::current_session_id()
 }

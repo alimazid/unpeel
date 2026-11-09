@@ -556,6 +556,7 @@ fn fake_identity_checker(label: &str, exit_code: i32) -> (PathBuf, PathBuf) {
 
 #[test]
 fn every_owned_hook_reporter_drops_a_refused_poster_before_any_marker_or_post() {
+    use crate::session_identity::{REFUSED_EXIT_CODE, UNDECIDED_EXIT_CODE};
     for case in reporter_cases() {
         assert_eq!(
             case.script
@@ -565,9 +566,14 @@ fn every_owned_hook_reporter_drops_a_refused_poster_before_any_marker_or_post() 
             "{} names the identity checker once, for the installer to fill in",
             case.label
         );
-        // 3 is a definite refusal; a verified caller (0), an undecided one
-        // (4) and a checker that fails (1) all keep the old behavior.
-        for (exit_code, delivered) in [(3, false), (0, true), (4, true), (1, true)] {
+        // A definite refusal drops the event; a verified caller, an
+        // undecided one and a checker that fails (1) keep the old behavior.
+        for (exit_code, delivered) in [
+            (REFUSED_EXIT_CODE, false),
+            (0, true),
+            (UNDECIDED_EXIT_CODE, true),
+            (1, true),
+        ] {
             let capture = CaptureServer::start();
             let session_dir = temp_path(&format!("{}-identity-{exit_code}", case.label));
             let trace = hook_trace_file(&format!("{}-identity-{exit_code}", case.label));
@@ -639,6 +645,68 @@ fn installed_reporters_name_the_installing_host_binary() {
         "_unpeel_identity_bin={}",
         crate::integrations::shared::shell_quote(&host.to_string_lossy())
     )));
+}
+
+#[test]
+fn every_shell_reporter_that_posts_carries_the_identity_check() {
+    let runtimes = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../runtimes");
+    let mut checked = 0;
+    for runtime in fs::read_dir(&runtimes).expect("runtimes").flatten() {
+        let Ok(assets) = fs::read_dir(runtime.path().join("assets").join("hooks")) else {
+            continue;
+        };
+        for asset in assets.flatten() {
+            let path = asset.path();
+            let Ok(script) = fs::read_to_string(&path) else {
+                continue;
+            };
+            if path.extension().is_some_and(|ext| ext == "sh") && script.contains("/hook/") {
+                assert_eq!(
+                    script.matches(super::REPORTER_HOST_BIN_PLACEHOLDER).count(),
+                    1,
+                    "{} posts hooks, so it runs the identity check first (ADR 0013)",
+                    path.display()
+                );
+                checked += 1;
+            }
+        }
+    }
+    assert!(checked >= 10, "found only {checked} shell reporters");
+}
+
+#[test]
+fn every_installer_fills_in_the_identity_check() {
+    // A reporter written without `reporter_script` keeps the placeholder,
+    // which never names an executable, so its check silently never runs.
+    let runtimes = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../runtimes");
+    for runtime in fs::read_dir(&runtimes).expect("runtimes").flatten() {
+        let setup = runtime.path().join("adapter").join("setup.rs");
+        let Ok(source) = fs::read_to_string(&setup) else {
+            continue;
+        };
+        for call in source.split("write_executable_script(").skip(1) {
+            let mut depth = 1;
+            let end = call
+                .char_indices()
+                .find(|(_, c)| {
+                    depth += match c {
+                        '(' => 1,
+                        ')' => -1,
+                        _ => 0,
+                    };
+                    depth == 0
+                })
+                .map_or(call.len(), |(end, _)| end);
+            let arguments = &call[..end];
+            if arguments.contains("_HOOK_SCRIPT") {
+                assert!(
+                    arguments.contains("reporter_script("),
+                    "{} writes a reporter without reporter_script: {arguments}",
+                    setup.display()
+                );
+            }
+        }
+    }
 }
 
 #[test]

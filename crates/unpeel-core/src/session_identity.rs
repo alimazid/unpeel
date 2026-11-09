@@ -1,4 +1,4 @@
-//! Which Session a process speaks for (#70, #71).
+//! Fork-only (#70, #71, ADR 0013): which Session a process speaks for.
 //!
 //! An exported `UNPEEL_SESSION_ID` is a claim, not an identity. A long-lived
 //! process that inherited a Session's environment keeps the id after it has
@@ -24,7 +24,7 @@
 //! a new POSIX session (#74).
 
 use crate::session_host::{self, HostedSessionManifest, HostedSessionState, PidIdentity};
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
@@ -36,10 +36,7 @@ pub const CHECK_ARG: &str = "__session_identity__";
 pub const REFUSED_EXIT_CODE: i32 = 3;
 pub const UNDECIDED_EXIT_CODE: i32 = 4;
 
-/// Test-only: trust an exported id without the ancestry check, for PTY cases
-/// that act as a Session from the harness. Honored only with `UNPEEL_TEST=1`
-/// and an `UNPEEL_HOME` that is not the user's real Unpeel home.
-pub const TRUST_EXPORTED_ID_ENV: &str = "UNPEEL_TEST_TRUST_SESSION_ENV";
+pub use trust::TRUST_EXPORTED_ID_ENV;
 
 /// How far up the parent chain a match may sit: agent → wrapper shells →
 /// hook runner → reporter stays well inside it.
@@ -55,8 +52,10 @@ const MEMO_TTL: Duration = Duration::from_secs(1);
 pub enum Identity {
     /// The process descends from this Session's verified pid.
     Verified(String),
-    /// The process provably does not speak for the claimed Session (or for
-    /// any Session, without a claim).
+    /// The process does not speak for the claimed Session (or for any
+    /// Session, without a claim). The hook check refuses only for
+    /// [`Refusal::NotAnAncestor`] and [`Refusal::UnverifiedPid`]; see
+    /// [`run_check`].
     Refused(Refusal),
     /// The claimed Session is still launching: its manifest has no pid yet
     /// while its Host is alive. Ask again shortly.
@@ -154,11 +153,13 @@ pub fn current_waiting(budget: Duration) -> Identity {
     }
 }
 
-/// This process's identity, uncached.
+/// This process's identity, worked out afresh except that, without a claim,
+/// it re-verifies the Session an earlier scan found instead of scanning
+/// every manifest again.
 pub fn current() -> Identity {
     let pid = std::process::id();
     if let Some(claim) = exported_session_id() {
-        if exported_id_is_trusted() {
+        if trust::exported_id_is_trusted() {
             return Identity::Verified(claim);
         }
         let manifests: Vec<_> = claimed_manifest(&claim).into_iter().collect();
@@ -203,72 +204,6 @@ pub fn exported_session_id() -> Option<String> {
         return None;
     }
     Some(trimmed.to_string())
-}
-
-fn exported_id_is_trusted() -> bool {
-    let home = crate::app_paths::unpeel_home();
-    trust_switch_applies(
-        std::env::var("UNPEEL_TEST").ok().as_deref(),
-        std::env::var(TRUST_EXPORTED_ID_ENV).ok().as_deref(),
-        std::env::var_os("UNPEEL_HOME")
-            .is_some()
-            .then_some(home.as_path()),
-        &real_homes(),
-    )
-}
-
-/// The user's real Unpeel homes: `~/.unpeel` under both the account's
-/// password-database home and `$HOME`, which a test may have repointed.
-fn real_homes() -> Vec<PathBuf> {
-    let mut homes = vec![crate::app_paths::real_unpeel_home()];
-    if let Some(account_home) = account_home_dir() {
-        homes.push(account_home.join(".unpeel"));
-    }
-    homes
-}
-
-#[cfg(unix)]
-fn account_home_dir() -> Option<PathBuf> {
-    use std::ffi::CStr;
-    use std::os::unix::ffi::OsStrExt;
-    let entry = unsafe { libc::getpwuid(libc::geteuid()) };
-    if entry.is_null() {
-        return None;
-    }
-    let dir = unsafe { CStr::from_ptr((*entry).pw_dir) };
-    let dir = std::ffi::OsStr::from_bytes(dir.to_bytes());
-    (!dir.is_empty()).then(|| PathBuf::from(dir))
-}
-
-#[cfg(not(unix))]
-fn account_home_dir() -> Option<PathBuf> {
-    dirs::home_dir()
-}
-
-/// Whether the test-only trust switch may apply: `UNPEEL_TEST=1`, the switch
-/// set to `1`, and an explicit `UNPEEL_HOME` that is neither a real Unpeel
-/// home nor inside one (a workspace home there is just as real).
-fn trust_switch_applies(
-    test_host: Option<&str>,
-    switch: Option<&str>,
-    explicit_home: Option<&Path>,
-    real_homes: &[PathBuf],
-) -> bool {
-    if test_host != Some("1") || switch != Some("1") {
-        return false;
-    }
-    let Some(home) = explicit_home else {
-        return false;
-    };
-    let home = normalized(home);
-    !real_homes
-        .iter()
-        .map(|real| normalized(real))
-        .any(|real| home.starts_with(&real))
-}
-
-fn normalized(path: &Path) -> PathBuf {
-    std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf())
 }
 
 /// Raw manifest scan without the health-refresh pass `list_manifests` runs:
@@ -346,6 +281,8 @@ fn ancestry<'a>(
 fn parent_pid(pid: u32) -> Option<u32> {
     let mut info = std::mem::MaybeUninit::<libc::proc_bsdinfo>::uninit();
     let size = std::mem::size_of::<libc::proc_bsdinfo>() as libc::c_int;
+    // SAFETY: proc_pidinfo writes at most `size` bytes into `info`, and the
+    // record is read only when it reports writing all of them.
     let returned = unsafe {
         libc::proc_pidinfo(
             pid as libc::c_int,
@@ -375,6 +312,8 @@ fn parent_pid(pid: u32) -> Option<u32> {
 fn parent_pid(_pid: u32) -> Option<u32> {
     None
 }
+
+mod trust;
 
 #[cfg(test)]
 mod tests;

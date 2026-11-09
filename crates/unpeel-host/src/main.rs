@@ -65,8 +65,8 @@ fn main() {
         return;
     }
 
-    // Hook reporters ask this before they write a marker or post (#70): is
-    // this process inside the Session its environment names?
+    // Fork-only (#70): hook reporters ask this before they write a marker or
+    // post: is this process inside the Session its environment names?
     if args.as_slice() == [unpeel_core::session_identity::CHECK_ARG] {
         std::process::exit(unpeel_core::session_identity::run_check());
     }

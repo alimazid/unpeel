@@ -6338,6 +6338,9 @@ pub(crate) fn start_host(
         // Generation provenance belongs only to the managed provider child,
         // never to this persistent shell or a blank terminal.
         cmd.env_remove("UNPEEL_RUNTIME_GENERATION");
+        // Fork-only (#71): the switch that trusts an exported Session id is
+        // for a test's own callers; every process in a Session is checked.
+        cmd.env_remove(crate::session_identity::TRUST_EXPORTED_ID_ENV);
         cmd.env_remove("NO_COLOR");
         cmd.env("TERM", "xterm-256color");
         cmd.env("COLORTERM", "truecolor");
