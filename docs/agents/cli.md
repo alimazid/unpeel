@@ -291,7 +291,7 @@ unpeel browser open <url> | snapshot | click <target> | fill <target> <text>
               | screenshot [--full] [--annotate] | scroll <dir> | wait [ms=…|selector=…]
 unpeel artifacts publish <image>             # artifacts add_to_gallery
 unpeel current                               # sessions current: you + pane neighbors
-unpeel report <summary> [--status update|done|blocked] [--details TEXT]
+unpeel report <summary> --to <id|super_agent> [--status update|done|blocked] [--details TEXT]
 unpeel worktree create <name> [--branch B] [--base REF] [--project ID]
 unpeel agents <action> [key=value ...]       # occupants, transcripts, wait
 unpeel skills <action> [key=value ...]
