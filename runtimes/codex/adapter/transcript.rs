@@ -15,7 +15,7 @@ pub(super) const ADAPTER: TranscriptAdapter = TranscriptAdapter {
     find_best,
     title_candidate: None,
     model_from_value: None,
-    context_usage: None,
+    context_usage: Some(context_usage),
 };
 
 fn resume_id_from_command(command: &str) -> Option<String> {
@@ -230,4 +230,51 @@ fn push_patch_apply_end(entries: &mut Vec<TranscriptEntry>, payload: &Value) {
             metadata,
         );
     }
+}
+
+/// Fork-only (#68): Codex's own context figure, the one its footer shows
+/// ("NN% context left", less the runtime package's `baseline_tokens`): the
+/// latest response's `last_token_usage.total_tokens` from its `token_count`
+/// event, which the rollout keeps in every history mode. A compaction writes
+/// one more `token_count` after its `compacted` line, holding Codex's
+/// estimate of what is left, so the newest one is current either way; a
+/// `compacted` line newer than every `token_count` is a compaction whose
+/// result is not written yet: the context is unknown, not empty.
+/// `token_usage_record` lines are billing and `info: null` lines rate limits
+/// only. The model is the latest `turn_context`'s. (rust-v0.167.0)
+fn context_usage(lines: &[&str]) -> Option<ContextUsage> {
+    let mut tokens = None;
+    let mut model = None;
+    for line in lines.iter().rev() {
+        let Ok(value) = serde_json::from_str::<Value>(line) else {
+            continue;
+        };
+        let payload = value.get("payload");
+        match value.get("type").and_then(Value::as_str) {
+            Some("compacted") if tokens.is_none() => return None,
+            Some("event_msg") if tokens.is_none() => {
+                tokens = payload
+                    .filter(|payload| {
+                        payload.get("type").and_then(Value::as_str) == Some("token_count")
+                    })
+                    .and_then(|payload| payload.pointer("/info/last_token_usage/total_tokens"))
+                    .and_then(Value::as_u64);
+            }
+            Some("turn_context") if model.is_none() => {
+                model = payload
+                    .and_then(|payload| payload.get("model"))
+                    .and_then(Value::as_str)
+                    .filter(|model| !model.is_empty())
+                    .map(str::to_owned);
+            }
+            _ => {}
+        }
+        if tokens.is_some() && model.is_some() {
+            break;
+        }
+    }
+    Some(ContextUsage {
+        tokens: tokens?,
+        model,
+    })
 }

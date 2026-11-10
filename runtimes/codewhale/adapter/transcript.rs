@@ -12,7 +12,7 @@ pub(super) const ADAPTER: TranscriptAdapter = TranscriptAdapter {
     find_best,
     title_candidate: None,
     model_from_value: None,
-    context_usage: None,
+    context_usage: Some(context_usage),
 };
 
 /// Codewhale appends this block to every user message for the model; it is
@@ -195,6 +195,101 @@ fn collect_document(value: &Value, include_tools: bool) -> Vec<TranscriptEntry> 
 
 /// Saved sessions are single JSON documents; a line never holds a message.
 fn collect_line(_value: &Value, _include_tools: bool, _state: &mut TranscriptParseState) {}
+
+/// Fork-only (#68): Codewhale's own local estimate of its context, from the
+/// saved session (handed over whole, as the one line). Its footer shows
+/// `max(estimate, last billed prompt)`, but the billed half lives only in
+/// memory and the saved session keeps no per-request usage, so this reads at
+/// or under the footer, and equals it right after a compaction. The rules
+/// are v0.10.2's (`estimated_context_tokens`, `crates/tui/src/tui/ui/frame.rs`,
+/// and `estimate_tokens_for_message`, `crates/tui/src/compaction.rs`, at
+/// ff466b2): every block's estimate, the system prompt's conservative one,
+/// and 12 tokens per message plus 48 of framing. The model is `metadata.model`,
+/// or the auto router's last pick.
+fn context_usage(lines: &[&str]) -> Option<ContextUsage> {
+    let document = serde_json::from_str::<Value>(lines.last()?).ok()?;
+    let messages = document
+        .get("messages")
+        .and_then(Value::as_array)
+        .filter(|messages| !messages.is_empty())?;
+    let message_tokens: u64 = messages
+        .iter()
+        .filter_map(|message| message.get("content").and_then(Value::as_array))
+        .flatten()
+        .map(block_tokens)
+        .sum();
+    let framing = 12 * messages.len() as u64 + 48;
+    let model = document
+        .pointer("/metadata/model")
+        .and_then(Value::as_str)
+        .filter(|model| *model != "auto")
+        .or_else(|| {
+            document
+                .pointer("/last_auto_route/model")
+                .and_then(Value::as_str)
+        })
+        .filter(|model| !model.is_empty())
+        .map(str::to_owned);
+    Some(ContextUsage {
+        tokens: message_tokens + system_prompt_tokens(document.get("system_prompt")) + framing,
+        model,
+    })
+}
+
+/// Images Codewhale counts at a flat 1,000 tokens each.
+const IMAGE_TOKENS: u64 = 1_000;
+/// How a saved session joins a block-structured system prompt.
+const SYSTEM_BLOCK_SEPARATOR: &str = "\n\n---\n\n";
+
+fn block_tokens(block: &Value) -> u64 {
+    let quarter_bytes = |text: Option<&str>| text.map_or(0, str::len) as u64 / 4;
+    let quarter_json = |value: Option<&Value>| {
+        serde_json::to_string(value.unwrap_or(&Value::Null)).map_or(0, |json| json.len()) as u64
+            / 4
+    };
+    match block.get("type").and_then(Value::as_str) {
+        Some("text") => quarter_bytes(typed_text(block)),
+        Some("thinking") => quarter_bytes(block.get("thinking").and_then(Value::as_str)),
+        Some("tool_use") => quarter_json(block.get("input")),
+        Some("tool_result") => {
+            let images = block
+                .get("content_blocks")
+                .and_then(Value::as_array)
+                .map_or(0, |blocks| {
+                    blocks
+                        .iter()
+                        .filter(|inner| inner.get("type").and_then(Value::as_str) == Some("image"))
+                        .count()
+                });
+            quarter_bytes(block.get("content").and_then(Value::as_str))
+                + images as u64 * IMAGE_TOKENS
+        }
+        Some("image_url") => IMAGE_TOKENS,
+        Some("server_tool_use") => quarter_json(block.get("input")),
+        Some("tool_search_tool_result" | "code_execution_tool_result") => {
+            quarter_json(block.get("content"))
+        }
+        _ => 0,
+    }
+}
+
+/// The conservative estimate of each system prompt block: a third of its
+/// characters, never under a quarter of its bytes. A saved session joins
+/// the blocks into one string, so it is split again.
+fn system_prompt_tokens(prompt: Option<&Value>) -> u64 {
+    let conservative = |text: &str| {
+        (text.chars().count().div_ceil(3)).max(text.len().div_ceil(4)) as u64
+    };
+    match prompt {
+        Some(Value::String(text)) => text.split(SYSTEM_BLOCK_SEPARATOR).map(conservative).sum(),
+        Some(Value::Array(blocks)) => blocks
+            .iter()
+            .filter_map(typed_text)
+            .map(conservative)
+            .sum(),
+        _ => 0,
+    }
+}
 
 #[cfg(test)]
 mod tests {

@@ -11,8 +11,8 @@ use std::time::{SystemTime, UNIX_EPOCH};
 /// Fork-only (#64).
 mod context;
 pub use context::{
-    compact_command, context_usage_in_lines, context_window, read_context, ContextReading,
-    ContextUsage,
+    compact_command, context_baseline, context_usage_in_lines, context_window, read_context,
+    ContextReading, ContextUsage,
 };
 
 const DEFAULT_TRANSCRIPT_TAIL_BYTES: u64 = 1024 * 1024;
@@ -22,7 +22,8 @@ const PROVIDER_TRANSCRIPT_SEARCH_LIMIT: usize = 1_200;
 
 type CollectDocument = fn(&Value, bool) -> Vec<TranscriptEntry>;
 type CollectLine = fn(&Value, bool, &mut TranscriptParseState);
-/// Fork-only (#64): JSONL lines, oldest first.
+/// Fork-only (#64): JSONL lines, oldest first, or a JSON document's whole
+/// text as the one line.
 type ReadContextUsage = fn(&[&str]) -> Option<ContextUsage>;
 
 /// Provider-owned transcript behavior compiled from one runtime package.

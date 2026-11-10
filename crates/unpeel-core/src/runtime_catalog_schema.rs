@@ -279,6 +279,11 @@ pub struct RuntimeContext {
     /// Typed as keys, then Enter, into an idle prompt (`/compact`).
     #[serde(default)]
     pub compact_command: Option<String>,
+    /// Fork-only (#68): tokens the agent's own percent leaves out of both
+    /// the count and the window (Codex's footer: 12,000), so the Host's
+    /// percent is the one the agent shows. Below every window.
+    #[serde(default)]
+    pub baseline_tokens: u64,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -1126,6 +1131,12 @@ pub fn validate_runtime_descriptors(
             if window.tokens == 0 {
                 errors.push(format!(
                     "{prefix}: context window for '{model_prefix}' must be at least 1 token"
+                ));
+            }
+            if window.tokens <= descriptor.context.baseline_tokens {
+                errors.push(format!(
+                    "{prefix}: context window for '{model_prefix}' must be larger than \
+                     context.baseline_tokens"
                 ));
             }
         }
@@ -2198,10 +2209,31 @@ attention_reliable = true
         }
     }
 
+    /// Fork-only (#68).
+    #[test]
+    fn a_baseline_is_below_every_window() {
+        let mut runtime = parsed("alpha", "com.example.alpha");
+        runtime.descriptor.context.windows = vec![RuntimeContextWindow {
+            model_prefix: "model-5".into(),
+            tokens: 12_001,
+        }];
+        runtime.descriptor.context.baseline_tokens = 12_000;
+        assert!(validate_runtime_descriptors(vec![runtime.clone()]).is_ok());
+        runtime.descriptor.context.windows[0].tokens = 12_000;
+        let error = validate_runtime_descriptors(vec![runtime])
+            .unwrap_err()
+            .to_string();
+        assert!(
+            error.contains("larger than context.baseline_tokens"),
+            "{error}"
+        );
+    }
+
     #[test]
     fn a_models_context_window_is_its_longest_matching_prefix() {
         let context = RuntimeContext {
             compact_command: None,
+            baseline_tokens: 0,
             windows: vec![
                 RuntimeContextWindow {
                     model_prefix: "model".into(),

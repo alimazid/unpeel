@@ -53,6 +53,33 @@ idle_prompt = ["›"]
 [approvals]
 bypass_flags = ["--dangerously-bypass-approvals-and-sandbox", "--yolo"]
 
+# Fork-only (#68): context windows by model id prefix (the longest match
+# wins), the usable windows Codex reports in its rollout's token_count
+# events: models-manager/models.json `context_window` at its default
+# effective_context_window_percent of 95, from rust-v0.167.0 on 2026-11-09.
+# Codex's footer ("NN% context left") leaves a 12,000-token baseline out of
+# both the count and the window, and so does the Host. A model none of them
+# names is never compacted, and neither is a window a user raised with
+# `model_context_window` in config.toml. `/compact` runs only while Codex is
+# idle; it reports 7501 working, then done (no Stop hook or notify fires).
+[context]
+compact_command = "/compact"
+baseline_tokens = 12000
+windows = [
+  { model_prefix = "gpt-6-astra", tokens = 258400 },
+  { model_prefix = "gpt-6-sol", tokens = 258400 },
+  { model_prefix = "gpt-6-luna", tokens = 258400 },
+  { model_prefix = "gpt-6.1-sol", tokens = 258400 },
+  { model_prefix = "gpt-6.1-terra", tokens = 475000 },
+  { model_prefix = "gpt-5.6-sol", tokens = 258400 },
+  { model_prefix = "gpt-5.6-terra", tokens = 258400 },
+  { model_prefix = "gpt-5.6-luna", tokens = 258400 },
+  { model_prefix = "gpt-5.5", tokens = 258400 },
+  { model_prefix = "gpt-daybreak-blue-latest", tokens = 258400 },
+  { model_prefix = "gpt-daybreak-red-latest", tokens = 353400 },
+  { model_prefix = "codex-auto-review", tokens = 258400 },
+]
+
 [integration]
 summary = "Registers native hooks in ~/.codex/hooks.json, the notify reporter and [mcp_servers.unpeel] in ~/.codex/config.toml."
 legacy_evidence = ["hooks/codex-notify-hook.sh"]

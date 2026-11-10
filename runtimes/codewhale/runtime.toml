@@ -57,6 +57,31 @@ attention_reliable = true
 working = ["Esc to interrupt", "Type a follow-up"]
 idle_prompt = ["│❯"]
 
+# Fork-only (#68): the 1,000,000-token window Codewhale v0.10.2 gives the
+# official DeepSeek ids (by model id prefix; ids it does not know, such as a
+# dated `deepseek-v4-pro-20260423`, get 128K there, so a dated id that shares
+# a prefix here reads low and is left to Codewhale). The Host's figure is
+# Codewhale's local estimate from the saved session: its footer shows the
+# larger of that and the last billed prompt, which no file keeps, so a
+# Worker can be compacted somewhat after its footer passes the setting
+# (Codewhale's own auto-compaction at 80% stays the backstop). A compaction
+# reports no busy (no `session_busy` hook; its `turn_end` is
+# `model_backed: false`, which the reporter settles as Idle), so the Host
+# never sees it start and the Router hears no `compacted` notice.
+[context]
+compact_command = "/compact"
+windows = [
+  { model_prefix = "deepseek-flash", tokens = 1000000 },
+  { model_prefix = "deepseek-v4-flash", tokens = 1000000 },
+  { model_prefix = "deepseek-v4flash", tokens = 1000000 },
+  { model_prefix = "deepseek-v4-pro", tokens = 1000000 },
+  { model_prefix = "deepseek-v4pro", tokens = 1000000 },
+  { model_prefix = "deepseek-chat", tokens = 1000000 },
+  { model_prefix = "deepseek-reasoner", tokens = 1000000 },
+  { model_prefix = "deepseek-ai/deepseek-v4-flash", tokens = 1000000 },
+  { model_prefix = "deepseek-ai/deepseek-v4-pro", tokens = 1000000 },
+]
+
 [integration]
 summary = "Adds Unpeel-managed [[hooks.hooks]] entries to Codewhale's config.toml and the unpeel MCP server to ~/.codewhale/mcp.json."
 manual_command = "codewhale mcp add unpeel --command {shim}"
