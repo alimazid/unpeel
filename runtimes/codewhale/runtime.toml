@@ -49,6 +49,14 @@ fallback = "screen"
 completion_reliable = true
 attention_reliable = true
 
+# Fork-only (#78): v0.10.2 (ff466b2) submits a bracketed paste on the first
+# Enter. A second Enter reaches the empty composer with the sent message's
+# cell focused and opens its pager (`open_focused_cell_pager` in
+# crates/tui/src/tui/ui/event_loop.rs), which then takes the keys meant for
+# the composer.
+[input]
+enters_after_paste = 1
+
 # Screen fallback (integration not installed): the footer reads
 # "Esc to interrupt" and the composer placeholder becomes "Type a follow-up…"
 # while a turn runs. The "│❯" composer line is visible in both states, so the

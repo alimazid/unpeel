@@ -10,10 +10,11 @@ mod schema;
 
 pub use schema::{
     RuntimeCapability, RuntimeCatalogError, RuntimeContext, RuntimeContextWindow,
-    RuntimeDescriptor, RuntimeDetection, RuntimeDisplay, RuntimeInstall, RuntimeIntegrationInfo,
-    RuntimeKind, RuntimeLifecycle, RuntimeLifecycleAuthority, RuntimeLifecycleFallback,
-    RuntimeLifecycleSource, RuntimePlatform, RuntimeScreenRules, RuntimeScriptPathSignature,
-    RuntimeSuggestedPreset, RuntimeUpdates, RUNTIME_DESCRIPTOR_SCHEMA_VERSION,
+    RuntimeDescriptor, RuntimeDetection, RuntimeDisplay, RuntimeInput, RuntimeInstall,
+    RuntimeIntegrationInfo, RuntimeKind, RuntimeLifecycle, RuntimeLifecycleAuthority,
+    RuntimeLifecycleFallback, RuntimeLifecycleSource, RuntimePlatform, RuntimeScreenRules,
+    RuntimeScriptPathSignature, RuntimeSuggestedPreset, RuntimeUpdates, DEFAULT_ENTERS_AFTER_PASTE,
+    RUNTIME_DESCRIPTOR_SCHEMA_VERSION,
 };
 
 use std::path::Path;
@@ -268,6 +269,27 @@ mod tests {
                 .map(|runtime| runtime.legacy_slug.as_str()),
             Some("codex")
         );
+    }
+
+    /// Fork-only (#78): Codewhale submits a paste on its first Enter, and a
+    /// second on its empty composer opens the sent message's pager. Claude
+    /// Code and Codex are why the second Enter exists.
+    #[test]
+    fn only_codewhale_takes_one_enter_after_a_paste() {
+        let catalog = builtin_runtime_catalog();
+        let enters = |slug| {
+            catalog
+                .by_legacy_slug(slug)
+                .map(|runtime| runtime.input.enters_after_paste)
+        };
+        assert_eq!(enters("codewhale"), Some(1));
+        assert_eq!(enters("claude"), Some(2));
+        assert_eq!(enters("codex"), Some(2));
+        for runtime in catalog.descriptors() {
+            if runtime.legacy_slug != "codewhale" {
+                assert_eq!(runtime.input.enters_after_paste, 2, "{}", runtime.slug);
+            }
+        }
     }
 
     #[test]
