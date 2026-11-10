@@ -15,6 +15,9 @@ wraps, continues on a row of its own, or has output streaming above it
 still refuses. Since #66 `sessions report` with no Host worker running (it
 pastes at once, `delivery: immediate_legacy`) takes the same guard: an empty
 box takes it, typing or a draft refuses it at once with nothing written.
+Since #72 a menu counts only below a shown cursor: output that quotes a
+menu's footer above the line disarms no draft, typed before or after it,
+while a menu that hides the cursor under its footer still takes keys.
 """
 
 import json
@@ -44,7 +47,10 @@ def write_fixture(path, log, submitted):
     line is redrawn; Ctrl+Y asks a one-key question below the line, which
     takes the next key without Enter and prompts again; Ctrl+B draws the line
     as a TUI does (rows of 40, continued indented) or as typed; Ctrl+P
-    streams output above the line, each output row in two writes."""
+    streams output above the line, each output row in two writes. For #72:
+    Ctrl+T prints output above the line that quotes a menu; Ctrl+K opens a
+    select menu that hides the cursor under its footer, where Codex leaves
+    it, on a row that Down redraws."""
     with open(path, "w") as handle:
         handle.write(f"#!{sys.executable}\n" + f'''
 import os, time, tty
@@ -81,7 +87,9 @@ while True:
         if b"\\r" in data:
             menu = False
             log({submitted!r}, b"CHOSE\\n")
-            os.write(1, b"\\x1b7\\r\\n\\x1b[J\\x1b8")
+            os.write(1, b"\\x1b8\\x1b[?25h\\x1b7\\r\\n\\x1b[J\\x1b8")
+        elif menu == "hidden" and data == b"\\x1b[B":
+            os.write(1, b"\\r\\x1b[Kselected 2")
         continue
     if one_key:
         one_key, rows_drawn = False, 0
@@ -90,9 +98,17 @@ while True:
     elif data == b"\\x1d":
         ghost = True
     elif data == b"\\x0e":
-        menu = True
+        menu = "under"
         os.write(1, "\\x1b7\\r\\n  1. Yes\\r\\n  2. No\\r\\n\\u2191/\\u2193 to navigate \\u00b7 Enter to select\\x1b8".encode())
         continue
+    elif data == b"\\x0b":
+        menu = "hidden"
+        os.write(1, "\\x1b7\\x1b[?25l\\r\\n\\u276f 1. Yes\\r\\n  2. No\\r\\nPress enter to confirm or esc to cancel\\r\\nselected 1".encode())
+        continue
+    elif data == b"\\x14":
+        os.write(1, (back_to_line() + "\\x1b[J\\u23fa It printed:\\r\\n\\u276f 1. Yes\\r\\n  2. No\\r\\n"
+                     + "Enter to select \\u00b7 \\u2191/\\u2193 to navigate \\u00b7 Esc to cancel\\r\\n").encode())
+        rows_drawn = 0
     elif data == b"\\x0f":
         slow_enter = True
         continue
@@ -410,6 +426,55 @@ def body(case):
                    read(log)[-200:])
         case.check("the streamed-over draft is submitted", submit_the_line("streamed-over"),
                    read(submitted)[-300:])
+
+        # 11. Output quoting a menu above the line is no menu (#72): the
+        # cursor is shown on the line, under its footer. A draft the quote is
+        # printed above keeps refusing, and so does every send onto a draft
+        # typed with the quote already on screen.
+        def quote():
+            shown = screen().count("Esc to cancel")
+            program("\x14")
+            return until(lambda: screen().count("Esc to cancel") > shown, timeout=5)
+
+        typed_on_attach(b"quoted-over")
+        case.check("the quote is drawn above a draft", quote(), screen()[-300:])
+        time.sleep(QUIET)
+        done = send_text("onto-a-draft-under-a-new-quote")
+        case.check("a send onto a draft a quote is printed above is refused",
+                   refused_as_draft(done), said(done))
+        case.check("the quoted-over draft is submitted", submit_the_line("quoted-over"),
+                   read(submitted)[-300:])
+        case.check("the quote is drawn above the empty line", quote(), screen()[-300:])
+        typed_on_attach(b"typed-under-a-quote")
+        time.sleep(QUIET)
+        for name, done in (("send_text", send_text("onto-a-quoted-draft")),
+                           ("`unpeel send`", cli_send("cli-onto-a-quoted-draft")),
+                           ("a report", report("report-onto-a-quoted-draft"))):
+            case.check(f"{name} onto a draft typed under a quoted menu is refused",
+                       refused_as_draft(done), said(done))
+        done = send_keys("x")
+        case.check("send_keys onto it is refused too",
+                   done.returncode != 0 and "Not sent (draft)" in done.stderr, said(done))
+        case.check("none of them was written",
+                   "onto-a-quoted-draft" not in read(log) and not read(log).endswith("x"),
+                   read(log)[-200:])
+        case.check("the draft typed under a quote is submitted",
+                   submit_the_line("typed-under-a-quote"), read(submitted)[-300:])
+
+        # 12. A menu that hides the cursor under its footer still takes
+        # keys (#72): Down there starts no draft, so the agent's Enter
+        # answers it.
+        program("\x0b")
+        case.check("the menu with a hidden cursor is drawn",
+                   until(lambda: "selected 1" in screen(), timeout=5), screen()[-300:])
+        typed_on_attach(b"\x1b[B")
+        case.check("Down moves its selection",
+                   until(lambda: "selected 2" in screen(), timeout=5), screen()[-300:])
+        time.sleep(QUIET)
+        done = send_keys("enter")
+        case.check("the agent's Enter answers a menu whose cursor is hidden",
+                   done.returncode == 0
+                   and until(lambda: read(submitted).count("CHOSE") == 2), said(done))
     finally:
         for session_id in (agent, caller):
             if session_id:

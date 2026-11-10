@@ -86,11 +86,26 @@ const INTERACTIVE_QUALIFIERS: &[&str] = &[
 /// Cancel + amend, or an Enter hint alone, also qualifies beside a selected
 /// numbered choice list.
 pub fn viewport_has_menu_prompt(screen_text: &str) -> bool {
+    has_menu_footer_from(screen_text, 0)
+}
+
+/// Fork-only (#72): [`viewport_has_menu_prompt`] for a footer on a row below
+/// `row` (0-based, in `screen_text`): the draft guard's read, with `row` the
+/// shown cursor's. Every runtime surveyed draws a menu it waits on under the
+/// cursor or hides the cursor, so a footer at or above the cursor's row is
+/// output that quotes one, or the user's own line. The choices a picker
+/// footer needs still count above it: Claude parks its cursor on the
+/// selected one. The attention badge and the phone keep the whole screen.
+pub fn viewport_has_menu_prompt_below(screen_text: &str, row: usize) -> bool {
+    has_menu_footer_from(screen_text, row + 1)
+}
+
+fn has_menu_footer_from(screen_text: &str, first_row: usize) -> bool {
     let lines: Vec<String> = screen_text
         .lines()
         .map(|line| line.to_lowercase())
         .collect();
-    for (index, line) in lines.iter().enumerate() {
+    for (index, line) in lines.iter().enumerate().skip(first_row) {
         let window = match lines.get(index + 1) {
             Some(next) => format!("{line}\n{next}"),
             None => line.clone(),
@@ -329,6 +344,52 @@ mod tests {
              (compiling)\n(compiling)\n(compiling)\n\
              Press Enter to submit your prompt.";
         assert!(!viewport_has_menu_prompt(screen));
+    }
+
+    #[test]
+    fn below_a_row_only_a_footer_under_it_counts() {
+        // #72: output quoting a footer above the prompt the cursor is on.
+        let quoted = "\u{23fa} Its footer reads:\n\
+             \x20 \u{2191}/\u{2193} to navigate \u{b7} Enter to select\n\n\
+             \u{276f} my draft\n\u{2500}\u{2500}\u{2500}\n  \u{23f5}\u{23f5} bypass permissions on";
+        assert!(viewport_has_menu_prompt(quoted));
+        assert!(!viewport_has_menu_prompt_below(quoted, 3));
+        assert!(
+            !viewport_has_menu_prompt_below(
+                "> Enter to select \u{b7} \u{2191}/\u{2193} to navigate",
+                0
+            ),
+            "the cursor's own row"
+        );
+        let under = format!(
+            "{quoted}\n  1. Yes\n  2. No\n\u{2191}/\u{2193} to navigate \u{b7} Enter to select"
+        );
+        assert!(viewport_has_menu_prompt_below(&under, 3));
+        assert!(
+            !viewport_has_menu_prompt_below(&under, 9),
+            "past the last row"
+        );
+    }
+
+    #[test]
+    fn below_a_row_a_picker_still_counts_its_choices_above_it() {
+        // Claude parks its cursor on the selected option, here the last.
+        let approval = APPROVAL
+            .replace("\u{276f} 1.", "  1.")
+            .replace("  3.", "\u{276f} 3.");
+        let row = approval
+            .lines()
+            .position(|line| line.starts_with("\u{276f} 3."))
+            .unwrap();
+        assert!(viewport_has_menu_prompt_below(&approval, row));
+        let update = CODEX_UPDATE
+            .replace("\u{203a} 1.", "  1.")
+            .replace("  3.", "\u{203a} 3.");
+        let row = update
+            .lines()
+            .position(|line| line.starts_with("\u{203a} 3."))
+            .unwrap();
+        assert!(viewport_has_menu_prompt_below(&update, row));
     }
 
     #[test]
