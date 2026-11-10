@@ -408,7 +408,8 @@ its Run Sessions by itself.
 `crate::health` runs in the workspace worker once per rescan when due:
 every 5 minutes on the wall clock (`CHECK_INTERVAL_MS`; a restart or a sleep
 keeps the pace), after the scheduler's sweep and the supervisor's step, so a
-Trigger that fired this tick has already moved its next run. No LLM. It
+Trigger that fired this tick has already moved its next run. No LLM
+([ADR 0015](../adr/0015-the-host-health-check-alerts-once-per-episode.md)). It
 reads the task definitions, each task's `clock.json` and `runs.jsonl`, the
 rows of the last rescan, the Router mark and its Inbox
 (`health/host.rs`), and the rules are pure (`health/check.rs`, injected
