@@ -1801,7 +1801,7 @@ fn base_sessions_tool_definition() -> Value {
                 "keys": { "type": "array", "items": { "type": "string" }, "description": "send_keys: keys in order, e.g. [\"down\",\"enter\"] (max 40)" },
                 "delay_ms": { "type": "integer", "description": "send_keys: ms between keys (max 1000)" },
                 "timeout_ms": { "type": "integer", "description": "wait_for_text budget (default 30000, max 120000)" },
-                "status": { "type": "string", "description": "report: update|done|blocked" },
+                "status": { "type": "string", "description": "report: update|progress|done|blocked" },
                 "rows": { "type": "integer", "description": "read_screen: rows (max 500)" },
                 "scroll_offset_rows": { "type": "integer", "description": "read_screen: scroll up into scrollback (default 0)" },
                 "tail_bytes": { "type": "integer", "description": "read_output: trailing bytes (default 16384, max 262144)" },
@@ -2284,7 +2284,8 @@ pub(crate) fn legacy_sessions_tool_definitions() -> Vec<Value> {
         the Super Agent's row \"super_agent\": true. \
         While a Host runs the report queues in the target's Inbox (see inbox): an update or \
         progress report rides along with the next batch, or goes out by itself after 15 \
-        minutes. \
+        minutes. A Worker's progress report is a mid-turn note: unlike update, it is not the \
+        turn's result, so the Super Agent still gets the Worker's Finished notice. \
         With no Host running the report is typed at once, and it fails like \
         send_text with 'Not sent (typing)' or 'Not sent (draft)' while the user is typing there \
         or has unsent input on its line: nothing was written, so report again once they are \
@@ -2295,7 +2296,7 @@ pub(crate) fn legacy_sessions_tool_definitions() -> Vec<Value> {
                     "session_id": { "type": "string", "description": "Target session id from list_sessions, or \"super_agent\" for the workspace's Super Agent." },
                     "status": {
                         "type": "string",
-                        "enum": ["update", "done", "blocked"],
+                        "enum": ["update", "progress", "done", "blocked"],
                         "description": "Report status (default update)."
                     },
                     "summary": { "type": "string", "description": "Concise result or status summary." },
@@ -3671,9 +3672,8 @@ fn build_session_report(
 ) -> Result<String, String> {
     let summary = required_str(args, "summary")?.trim();
     let status = optional_trimmed_str(args, "status").unwrap_or("update");
-    if !matches!(status, "update" | "done" | "blocked") {
-        return Err("report status must be one of: update, done, blocked".into());
-    }
+    // Fork-only (#86): the Inbox path's statuses, `progress` included.
+    crate::supervision_mcp::check_report_status(status)?;
 
     let proof = optional_string_list(args, "proof")?;
     let changed_paths = optional_string_list(args, "changed_paths")?;
@@ -4820,6 +4820,25 @@ mod tests {
         }
     }
 
+    /// Fork-only (#86): both schemas list exactly the statuses report accepts.
+    #[test]
+    fn report_advertises_every_status_it_accepts() {
+        let accepted = crate::supervision_mcp::REPORT_STATUSES;
+        let unified = sessions_tool_definition();
+        assert_eq!(
+            unified["inputSchema"]["properties"]["status"]["description"],
+            format!("report: {}", accepted.join("|"))
+        );
+        let legacy = legacy_sessions_tool_definitions()
+            .into_iter()
+            .find(|tool| tool["name"] == "report_to_group")
+            .expect("report_to_group");
+        assert_eq!(
+            legacy["inputSchema"]["properties"]["status"]["enum"],
+            json!(accepted)
+        );
+    }
+
     #[test]
     fn advertised_schema_stays_within_the_context_budget() {
         // The point of the unified surface: the whole advertised schema must
@@ -5234,6 +5253,23 @@ mod tests {
         assert!(report.contains("Task: Check the implementation"));
         assert!(report.contains("Summary:"));
         assert!(report.contains("cargo test -p unpeel-core mcp_host"));
+    }
+
+    /// Fork-only (#86): with no Host, report takes the Inbox path's statuses.
+    #[test]
+    fn session_report_takes_every_advertised_status() {
+        let caller = test_manifest("caller", "p", Path::new("/tmp/p"), "codex");
+        let target = test_manifest("target", "p", Path::new("/tmp/p"), "claude");
+        for status in crate::supervision_mcp::REPORT_STATUSES {
+            let args = json!({ "status": status, "summary": "s" });
+            let report = build_session_report(&args, &caller, &target).expect(status);
+            assert!(report.contains(&format!("Status: {status}")), "{report}");
+        }
+        let args = json!({ "status": "shipped", "summary": "s" });
+        assert_eq!(
+            build_session_report(&args, &caller, &target).unwrap_err(),
+            "report status must be one of: update, progress, done, blocked"
+        );
     }
 
     #[test]
