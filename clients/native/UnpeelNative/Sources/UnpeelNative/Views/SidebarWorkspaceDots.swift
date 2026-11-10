@@ -1244,7 +1244,7 @@ enum SidebarListContentBuilder {
                 colors[node.id] = store.projectFolderColor(for: node.id)
             },
             activeBranch: localActiveBranch(selectedSessionID: selectedSessionID, store: store),
-            localSites: localSites(on: store.nodes, store: store)
+            localSites: localSites(on: store.nodes, in: store.localSites, store: store)
         )
         return SidebarListContent(rows: rows, inputs: inputs)
     }
@@ -1518,7 +1518,15 @@ enum SidebarListContentBuilder {
                 row: row,
                 store: store
             ),
-            localSites: isLocalScope ? localSites(on: rootNodes, store: store) : [:]
+            // Fork-only (#73): from the snapshot the rows come from, which
+            // knows a site that started while another workspace was selected.
+            localSites: isLocalScope
+                ? localSites(
+                    on: rootNodes,
+                    in: .fromHost(sessions: snapshot.sessions, projects: snapshot.projects),
+                    store: store
+                )
+                : [:]
         )
         return SidebarListContent(rows: rows, inputs: inputs)
     }
@@ -1554,11 +1562,15 @@ enum SidebarListContentBuilder {
 
     // Fork-only (#57): the globes the current instance's live page wears, on
     // top-level projects only, as there.
-    private static func localSites(on nodes: [ProjectNode], store: UnpeelStore) -> [String: [String]] {
-        guard !store.localSites.isEmpty else { return [:] }
+    private static func localSites(
+        on nodes: [ProjectNode],
+        in index: LocalSiteIndex,
+        store: UnpeelStore
+    ) -> [String: [String]] {
+        guard !index.isEmpty else { return [:] }
         return nodes.reduce(into: [:]) { sites, node in
             guard node.project.parentProjectID == nil else { return }
-            let urls = store.knownLocalSiteURLs(forProjectFamilyOf: node.id)
+            let urls = store.knownLocalSiteURLs(forProjectFamilyOf: node.id, in: index)
             if !urls.isEmpty { sites[node.id] = urls }
         }
     }

@@ -4,6 +4,8 @@ import UnpeelShared
 
 /// Fork-only (#63): the Local site index the project globe and the title
 /// strip's site chip read, and the Local Host projection that fills it.
+/// Fork-only (#73): a scoped local workspace's chip, from that workspace's
+/// own snapshots.
 final class LocalSiteIndexTests: XCTestCase {
     private typealias Server = LocalSiteIndex.Server
 
@@ -97,20 +99,45 @@ final class LocalSiteIndexTests: XCTestCase {
             expandedProjectIDs: ["site"]
         )
         store.noteLocalURLVerdictForTesting(url: url, probePassed: true)
-        XCTAssertEqual(store.knownLocalSiteURLs(forProjectFamilyOf: "site"), [])
+        XCTAssertEqual(store.knownLocalSiteURLs(forProjectFamilyOf: "site", in: store.localSites), [])
 
         store.projectRemoteScope(snapshot: Self.snapshot(sessions: [
             Self.session("shell", project: "site", createdAt: 1, urls: []),
             Self.session("server", project: "site", createdAt: 2, urls: [url]),
         ]))
-        XCTAssertEqual(store.knownLocalSiteURLs(forProjectFamilyOf: "site"), [url])
+        XCTAssertEqual(store.knownLocalSiteURLs(forProjectFamilyOf: "site", in: store.localSites), [url])
 
         // The server stops: the Host drops it from the row.
         store.projectRemoteScope(snapshot: Self.snapshot(sessions: [
             Self.session("shell", project: "site", createdAt: 1, urls: []),
             Self.session("server", project: "site", createdAt: 2, urls: []),
         ]))
-        XCTAssertEqual(store.knownLocalSiteURLs(forProjectFamilyOf: "site"), [])
+        XCTAssertEqual(store.knownLocalSiteURLs(forProjectFamilyOf: "site", in: store.localSites), [])
+    }
+
+    /// A scoped local workspace's Sessions run on this Mac too, so its chip
+    /// opens their sites. Local's own index never takes them: the Local
+    /// pooled page reads it while this scope is selected.
+    @MainActor
+    func testAScopedLocalWorkspacesChipKnowsItsOwnSites() {
+        let url = "http://127.0.0.1:18764/"
+        let store = UnpeelStore.sidebarFixture(snapshot: Self.snapshot(sessions: []), expandedProjectIDs: [])
+        store.noteLocalURLVerdictForTesting(url: url, probePassed: true)
+        let scoped = Self.snapshot(sessions: [Self.session("server", project: "site", createdAt: 2, urls: [url])])
+        store.selectLocalWorkspace(
+            home: LaunchConfig.unpeelDir.appendingPathComponent("chip-scope").path, name: "Chip"
+        )
+        store.remoteHostRuntime.holdSnapshotForTesting(scoped)
+        store.projectRemoteScope(snapshot: scoped)
+
+        XCTAssertEqual(store.localSiteURLs(forProjectFamilyOf: "site"), [url])
+        XCTAssertTrue(store.localSites.isEmpty, "Local's own index never takes them")
+
+        // The server stops: the workspace's Host drops it from the row.
+        let stopped = Self.snapshot(sessions: [Self.session("server", project: "site", createdAt: 2, urls: [])])
+        store.remoteHostRuntime.holdSnapshotForTesting(stopped)
+        store.projectRemoteScope(snapshot: stopped)
+        XCTAssertEqual(store.localSiteURLs(forProjectFamilyOf: "site"), [])
     }
 
     private static func diskProject(_ id: String, parent: String?) -> Project {
