@@ -97,7 +97,10 @@ Important fields:
   only to rank an existing user's agents during first-run preset seeding.
 - `context` (fork-only, #64): optional `windows`, `{ model_prefix, tokens }`
   context windows (a model id takes its longest matching prefix's), and
-  `compact_command`, typed as keys and then Enter to compact an idle prompt.
+  `compact_command`, typed as keys and then Enter to compact an idle prompt,
+  and `baseline_tokens` (default 0, #68): fixed overhead the agent leaves
+  out of its own percent, which the Host takes off both the reading and the
+  window (every window must be larger).
   The Host compacts a Super Agent Worker by them, together with the
   transcript adapter's `context_usage` reader, and never compacts a model
   none of the windows names or a runtime with no command. Not generated into

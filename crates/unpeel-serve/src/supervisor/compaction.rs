@@ -1,6 +1,7 @@
 //! Fork-only (#64, ADR 0012): the Host compacts a Worker whose context is
 //! `supervisor_compact_percent` full when one of its turns ends. The figure
-//! is the one Claude Code's status line shows, read from the Worker's
+//! is the agent's own (what Claude Code's status line or Codex's footer
+//! shows, or Codewhale's local estimate, #68), read from the Worker's
 //! transcript against its model's window from the runtime package; a model
 //! the package names no window for is never compacted. It types the
 //! package's compact command while the prompt cache is still warm, at most
@@ -13,7 +14,9 @@
 //! The compaction is a turn of its own (7501 working, then done), which the
 //! Worker alerts would report as a finish or a quiet end; they ask
 //! [`CompactionView`] and stay silent for it. The Router hears one
-//! ride-along notice instead, once the compaction has started.
+//! ride-along notice instead, once the compaction has started. A Codewhale
+//! compaction reports no busy, so it is never seen to start and nobody
+//! hears of it.
 
 use std::collections::{HashMap, HashSet};
 use std::sync::mpsc::{self, Receiver, Sender};

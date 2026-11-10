@@ -85,9 +85,20 @@ Runs are never compacted.
 
 ## Consequences
 
-Only Claude Workers are compacted. Codex and Codewhale need their own
-`context_usage` reader and windows. Scheduled Runs, the Router and the
-user's own Sessions are left to Claude Code. A new Claude model family
+Claude, Codex and Codewhale Workers are compacted (Codex and Codewhale
+since #68, each with its own `context_usage` reader and windows); other
+runtimes are not. Scheduled Runs, the Router and the user's own Sessions
+are left to the agent itself. Codex's figure leaves out its 12,000-token
+baseline, as its footer does (`[context] baseline_tokens`), and a
+`model_context_window` set in Codex's config is not followed. Codewhale's
+figure is its own local estimate of the saved session. Its footer shows
+the larger of that and the last billed prompt, which only its memory
+holds, so a Codewhale Worker can be compacted somewhat after its footer
+passes the setting; Codewhale's own auto-compaction at 80% is the
+backstop. A Codewhale compaction never reports busy, so the Host never
+sees it start: the Router gets no `compacted` notice and the Worker is not
+disarmed (a real Codewhale 0.10.2 run in a Host confirmed it on
+2026-11-09). A new Claude model family
 needs a line in `runtimes/claude-code/runtime.toml` before its Workers are
 compacted, and until then the Router is told. A Worker whose transcript the
 Host cannot find (no hooks reporting its path, and a cwd Claude Code
