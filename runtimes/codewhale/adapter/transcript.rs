@@ -218,7 +218,7 @@ fn context_usage(lines: &[&str]) -> Option<ContextUsage> {
         .flatten()
         .map(block_tokens)
         .sum();
-    let framing = 12 * messages.len() as u64 + 48;
+    let framing = MESSAGE_FRAMING_TOKENS * messages.len() as u64 + REQUEST_FRAMING_TOKENS;
     let model = document
         .pointer("/metadata/model")
         .and_then(Value::as_str)
@@ -236,21 +236,28 @@ fn context_usage(lines: &[&str]) -> Option<ContextUsage> {
     })
 }
 
+/// Codewhale's rough rule: a token per 4 bytes of text or JSON.
+const BYTES_PER_TOKEN: u64 = 4;
+/// The system prompt's conservative rule also counts a token per 3 chars.
+const CHARS_PER_TOKEN_CONSERVATIVE: usize = 3;
+/// Framing Codewhale adds per message and once per request.
+const MESSAGE_FRAMING_TOKENS: u64 = 12;
+const REQUEST_FRAMING_TOKENS: u64 = 48;
 /// Images Codewhale counts at a flat 1,000 tokens each.
 const IMAGE_TOKENS: u64 = 1_000;
 /// How a saved session joins a block-structured system prompt.
 const SYSTEM_BLOCK_SEPARATOR: &str = "\n\n---\n\n";
 
 fn block_tokens(block: &Value) -> u64 {
-    let quarter_bytes = |text: Option<&str>| text.map_or(0, str::len) as u64 / 4;
+    let quarter_bytes = |text: Option<&str>| text.map_or(0, str::len) as u64 / BYTES_PER_TOKEN;
     let quarter_json = |value: Option<&Value>| {
         serde_json::to_string(value.unwrap_or(&Value::Null)).map_or(0, |json| json.len()) as u64
-            / 4
+            / BYTES_PER_TOKEN
     };
     match block.get("type").and_then(Value::as_str) {
         Some("text") => quarter_bytes(typed_text(block)),
         Some("thinking") => quarter_bytes(block.get("thinking").and_then(Value::as_str)),
-        Some("tool_use") => quarter_json(block.get("input")),
+        Some("tool_use" | "server_tool_use") => quarter_json(block.get("input")),
         Some("tool_result") => {
             let images = block
                 .get("content_blocks")
@@ -265,7 +272,6 @@ fn block_tokens(block: &Value) -> u64 {
                 + images as u64 * IMAGE_TOKENS
         }
         Some("image_url") => IMAGE_TOKENS,
-        Some("server_tool_use") => quarter_json(block.get("input")),
         Some("tool_search_tool_result" | "code_execution_tool_result") => {
             quarter_json(block.get("content"))
         }
@@ -278,7 +284,8 @@ fn block_tokens(block: &Value) -> u64 {
 /// the blocks into one string, so it is split again.
 fn system_prompt_tokens(prompt: Option<&Value>) -> u64 {
     let conservative = |text: &str| {
-        (text.chars().count().div_ceil(3)).max(text.len().div_ceil(4)) as u64
+        let bytes = text.len().div_ceil(BYTES_PER_TOKEN as usize);
+        text.chars().count().div_ceil(CHARS_PER_TOKEN_CONSERVATIVE).max(bytes) as u64
     };
     match prompt {
         Some(Value::String(text)) => text.split(SYSTEM_BLOCK_SEPARATOR).map(conservative).sum(),

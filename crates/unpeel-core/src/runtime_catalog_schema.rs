@@ -280,7 +280,7 @@ pub struct RuntimeContext {
     #[serde(default)]
     pub compact_command: Option<String>,
     /// Fork-only (#68): tokens the agent's own percent leaves out of both
-    /// the count and the window (Codex's footer: 12,000), so the Host's
+    /// the count and the window (Codex's footer has one), so the Host's
     /// percent is the one the agent shows. Below every window.
     #[serde(default)]
     pub baseline_tokens: u64,
@@ -1132,8 +1132,7 @@ pub fn validate_runtime_descriptors(
                 errors.push(format!(
                     "{prefix}: context window for '{model_prefix}' must be at least 1 token"
                 ));
-            }
-            if window.tokens <= descriptor.context.baseline_tokens {
+            } else if window.tokens <= descriptor.context.baseline_tokens {
                 errors.push(format!(
                     "{prefix}: context window for '{model_prefix}' must be larger than \
                      context.baseline_tokens"

@@ -1478,7 +1478,7 @@ fn codex_context_during_a_compaction_is_unknown() {
 fn codex_context_reads_a_constructed_rollout() {
     let raw = std::fs::read_to_string(concat!(
         env!("CARGO_MANIFEST_DIR"),
-        "/../../runtimes/codex/fixtures/context-compaction.jsonl"
+        "/../../runtimes/codex/fixtures/context-compaction-constructed.jsonl"
     ))
     .expect("fixture");
     let lines: Vec<String> = raw.lines().map(str::to_owned).collect();

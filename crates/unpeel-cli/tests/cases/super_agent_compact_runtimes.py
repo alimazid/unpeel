@@ -37,6 +37,9 @@ from hook_cancellation import control, fixture_started, read_json  # noqa: E402
 from super_agent_alerts import FakeAdapter, write_fixture  # noqa: E402
 
 COMPACT = "/compact\r"
+# A compaction that has not gone busy this long after the command never
+# started (compaction.rs START_MS), plus a few rescans.
+START_SECONDS = 36
 
 FAKE_CODEX = '''
 import datetime, json, os, select, sys, time, tty, uuid
@@ -533,11 +536,6 @@ def body(case):
                 run_cli(home, ["rm", session_id], env=environment, timeout=45)
         if stub:
             stub.shutdown()
-
-
-# A compaction that has not gone busy this long after the command never
-# started (compaction.rs START_MS), plus a few rescans.
-START_SECONDS = 36
 
 
 if __name__ == "__main__":
