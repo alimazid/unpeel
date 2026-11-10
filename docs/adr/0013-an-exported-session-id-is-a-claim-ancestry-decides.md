@@ -57,7 +57,8 @@ reporters:
   Session on the next scan.
 - **Require the caller's POSIX session to match the Session's.** Rejected:
   Claude Code starts every hook and every Bash-tool command with `setsid`,
-  so its own processes would be cut off. A narrower form is #74.
+  so its own processes would be cut off. A narrower form, for the MCP gate
+  only, is ADR 0014 (#74).
 - **A launcher file beside the reporters.** Rejected: one more installed
   file to keep in step with the Host; baking the path into the reporter at
   install needs nothing new, and the post-upgrade refresh rewrites it.
@@ -70,7 +71,8 @@ tools, makes no CLI call as that Session, and moves none of its activity.
 
 While the `codex` that started a shared daemon still runs, the daemon is
 its descendant, so the daemon's hooks and servers still pass as that
-Session. `--no-daemon` (#54) avoids the daemon; #74 tracks closing the gap.
+Session. `--no-daemon` (#54) avoids the daemon. ADR 0014 closes the gap
+for the MCP gate; the daemon's hooks and CLI calls still pass.
 The omp extension posts from inside its process, without the reporter.
 Until #75 it skipped the check; since #75 it spawns the same checker, baked
 into the module at install as a string literal, before every event. It

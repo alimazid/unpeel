@@ -17,11 +17,12 @@
 //! and the hook reporters' guard (`unpeel-host __session_identity__`) all
 //! ask this module, so the rule holds whichever path an agent uses.
 //!
-//! Known gap: a daemon started with `setsid` but no double fork stays the
-//! child of the process that started it, so while that process lives the
-//! daemon's ancestry still reaches its Session. A same-POSIX-session rule
-//! would close it, but Claude Code runs every hook and Bash-tool command in
-//! a new POSIX session (#74).
+//! A daemon started with `setsid` but no double fork stays the child of the
+//! process that started it, so while that process lives the daemon's
+//! ancestry still reaches its Session. The gate closes that gap with a
+//! POSIX-session rule on top (`posix_session`, #74, ADR 0014). The CLI and
+//! the hook reporters cannot use it: Claude Code runs every hook and
+//! Bash-tool command in a new POSIX session.
 
 use crate::session_host::{self, HostedSessionManifest, HostedSessionState, PidIdentity};
 use std::path::Path;
@@ -55,7 +56,8 @@ pub enum Identity {
     /// The process does not speak for the claimed Session (or for any
     /// Session, without a claim). The hook check refuses only for
     /// [`Refusal::NotAnAncestor`] and [`Refusal::UnverifiedPid`]; see
-    /// [`run_check`].
+    /// [`run_check`]. Only the gate's [`current_for_gate`] gives
+    /// [`Refusal::OtherPosixSession`].
     Refused(Refusal),
     /// The claimed Session is still launching: its manifest has no pid yet
     /// while its Host is alive. Ask again shortly.
@@ -73,6 +75,9 @@ pub enum Refusal {
     UnverifiedPid,
     /// The claimed Session's pid is not this process or an ancestor.
     NotAnAncestor,
+    /// Gate only: a process between this one and the Session's pid left
+    /// the Session's POSIX session (see [`current_for_gate`]).
+    OtherPosixSession,
 }
 
 impl Refusal {
@@ -82,6 +87,7 @@ impl Refusal {
             Refusal::NotRunning => "not-running",
             Refusal::UnverifiedPid => "unverified-pid",
             Refusal::NotAnAncestor => "not-an-ancestor",
+            Refusal::OtherPosixSession => "other-posix-session",
         }
     }
 }
@@ -106,7 +112,12 @@ pub fn run_check() -> i32 {
             println!("{id}");
             0
         }
-        Identity::Refused(refusal @ (Refusal::NotAnAncestor | Refusal::UnverifiedPid)) => {
+        // `current` never gives `OtherPosixSession`; it sits here because
+        // it, too, would mean the process provably is not the Session's.
+        Identity::Refused(
+            refusal
+            @ (Refusal::NotAnAncestor | Refusal::UnverifiedPid | Refusal::OtherPosixSession),
+        ) => {
             println!("{}", refusal.reason());
             REFUSED_EXIT_CODE
         }
@@ -138,11 +149,41 @@ pub fn current_session_id() -> Option<String> {
     id
 }
 
-/// [`current`], asked again while the claimed Session is still launching,
-/// for at most `budget`. The MCP gate decides once at startup whether to
+/// The MCP gate's identity: [`current`], asked again while the claimed
+/// Session is still launching (the gate decides once at startup whether to
 /// serve tools, so a gate that starts in the launch window must not settle
-/// on "unknown".
-pub fn current_waiting(budget: Duration) -> Identity {
+/// on "unknown"), and then held to the POSIX-session rule: every process
+/// between the gate and the Session's pid must share that pid's POSIX
+/// session, the gate excepted when it leads its own (#74, ADR 0014).
+pub fn current_for_gate(budget: Duration) -> Identity {
+    let identity = current_waiting(budget);
+    let Identity::Verified(id) = &identity else {
+        return identity;
+    };
+    // The test switch trusts the claim without any process check.
+    if exported_session_id().as_deref() == Some(id.as_str()) && trust::exported_id_is_trusted() {
+        return identity;
+    }
+    let pid = std::process::id();
+    // Read again rather than threaded out of `current`: the walk passes only
+    // if the pid it reaches is still on this process's ancestry, which a
+    // Session relaunched in between can never give, so a stale read refuses.
+    let Some(session_pid) = claimed_manifest(id).and_then(|manifest| manifest.pid) else {
+        return Identity::Refused(Refusal::NotRunning);
+    };
+    if posix_session::stays_in_session(pid, session_pid, parent_pid, posix_session::sid_of) {
+        return identity;
+    }
+    crate::mcp_host::trace(&format!(
+        "mcp gate refused session={id} reason={} pid={pid}",
+        Refusal::OtherPosixSession.reason()
+    ));
+    Identity::Refused(Refusal::OtherPosixSession)
+}
+
+/// [`current`], asked again while the claimed Session is still launching,
+/// for at most `budget`.
+fn current_waiting(budget: Duration) -> Identity {
     let started = Instant::now();
     loop {
         let identity = current();
@@ -313,6 +354,7 @@ fn parent_pid(_pid: u32) -> Option<u32> {
     None
 }
 
+mod posix_session;
 mod trust;
 
 #[cfg(test)]
