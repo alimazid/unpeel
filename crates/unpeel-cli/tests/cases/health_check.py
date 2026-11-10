@@ -15,6 +15,8 @@ stand-in platform adapter records every Mac notification. Covered:
   still queues for the Super Agent, and a stopped Super Agent alerts the Mac
   only (nothing in its Inbox about itself); when an app connects, both kept
   notices are shown, once;
+* a kept alert whose problem cleared before an app connects is dropped, not
+  shown (the check runs before the kept notices go out);
 * a Host restart alerts nothing again: the problems still stand, and the
   state is on disk.
 """
@@ -181,7 +183,7 @@ def body(case):
                    json.dumps(history(three)))
         stopped = cli("stop", router)
         case.check("the Super Agent is stopped", stopped.returncode == 0, stopped.stderr)
-        down = f"super_agent_down:{router}"
+        down = f"router_down:{router}"
         kept = service.wait_for(lambda: (
             health_state().get("problems", {}).get(down, {}).get("alerted")
             and len(health_state().get("kept", [])) == 2 and health_state().get("kept")),
@@ -212,8 +214,39 @@ def body(case):
         case.check("and nothing repeats while the problems last", len(alerts(connected)) == 2,
                    json.dumps(alerts(connected)))
 
-        # 5. A Host restart alerts nothing again.
+        # 5. A kept alert whose problem cleared is dropped, even when an app
+        #    connects before the next check would have seen it clear.
         connected.close()
+
+        def mark(session_id):
+            state = home.state()
+            state.pop("super_agent", None)
+            if session_id:
+                state["super_agent"] = {"session_id": session_id,
+                                        "since": int(time.time() * 1000)}
+            home.write_state(state)
+
+        mark(None)
+        case.check("unmarking the stopped Super Agent clears its problem",
+                   bool(service.wait_for(lambda: down not in health_state().get("problems", {}),
+                                         timeout=3 * INTERVAL_S)), json.dumps(health_state()))
+        mark(router)
+        kept = service.wait_for(lambda: [n for n in health_state().get("kept", [])
+                                         if n.get("problem") == down], timeout=3 * INTERVAL_S)
+        case.check("marked again while down, it alerts again, kept for an app", bool(kept),
+                   json.dumps(health_state()))
+        mark(None)
+        cleared = case.track(Adapter())
+        code, _ = cleared.register(service.status().get("localSocket", ""))
+        case.check("an app connects right after the problem cleared", code == 200)
+        service.read_for(2 * INTERVAL_S + 2)
+        case.check("the cleared problem's alert is dropped, not shown", not alerts(cleared),
+                   json.dumps(alerts(cleared)))
+        case.check("and nothing is kept", not health_state().get("kept"),
+                   json.dumps(health_state()))
+
+        # 6. A Host restart alerts nothing again.
+        cleared.close()
         service.close()
         service = case.serve(env=environment)
         status = service.ready(timeout=25)

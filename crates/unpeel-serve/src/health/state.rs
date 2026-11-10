@@ -1,7 +1,7 @@
 //! Fork-only (#84): what the health check remembers across checks and Host
 //! restarts, in `<UNPEEL_HOME>/health/state.json`: when it last ran, every
 //! problem it saw then (so a problem alerts once, and again only after it
-//! cleared and came back), when it first saw the Super Agent running, and
+//! cleared and came back), when it first saw the Router running, and
 //! the Mac notifications no app was connected to show. Only this
 //! workspace's worker writes it (one per home, by its lease), so a temp
 //! file and a rename are the whole write.
@@ -27,10 +27,10 @@ pub struct HealthState {
     /// limit.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub problems: BTreeMap<String, Tracked>,
-    /// When a check first saw the Super Agent running, since it last saw it
+    /// When a check first saw the Router running, since it last saw it
     /// down: its Inbox is not late before then.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub super_agent_running: Option<RunningSince>,
+    pub router_running: Option<RunningSince>,
     /// Mac notifications no app was connected to show, oldest first.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub kept: Vec<KeptNotice>,
@@ -75,23 +75,20 @@ impl HealthState {
     /// read starts over too (traced), which can repeat a lasting problem's
     /// alert once but never hides one.
     pub fn load(path: &Path) -> Self {
-        match std::fs::read(path) {
-            Ok(raw) => serde_json::from_slice(&raw).unwrap_or_else(|error| {
-                crate::tracelog::trace(
-                    "health",
-                    &format!("{} unreadable, starting over: {error}", path.display()),
-                );
-                Self::default()
-            }),
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Self::default(),
-            Err(error) => {
-                crate::tracelog::trace(
-                    "health",
-                    &format!("{} unreadable, starting over: {error}", path.display()),
-                );
-                Self::default()
-            }
-        }
+        let raw = match std::fs::read(path) {
+            Ok(raw) => raw,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Self::default(),
+            Err(error) => return Self::starting_over(path, &error),
+        };
+        serde_json::from_slice(&raw).unwrap_or_else(|error| Self::starting_over(path, &error))
+    }
+
+    fn starting_over(path: &Path, error: &dyn std::fmt::Display) -> Self {
+        crate::tracelog::trace(
+            "health",
+            &format!("{} unreadable, starting over: {error}", path.display()),
+        );
+        Self::default()
     }
 
     pub fn save(&self, path: &Path) -> Result<(), String> {
@@ -168,14 +165,14 @@ mod tests {
         let state = HealthState {
             last_check_ms: Some(10),
             problems: BTreeMap::from([(
-                "super_agent_down:r".into(),
+                "router_down:r".into(),
                 Tracked {
                     since: 5,
                     alerted: true,
                 },
             )]),
-            super_agent_running: None,
-            kept: vec![notice(Some("super_agent_down:r"), 5)],
+            router_running: None,
+            kept: vec![notice(Some("router_down:r"), 5)],
             ..HealthState::default()
         };
         state.save(&path).unwrap();
@@ -214,7 +211,7 @@ mod tests {
             )]),
             kept: vec![
                 notice(Some("missed:sch_1"), 1),
-                notice(Some("super_agent_down:r"), 2),
+                notice(Some("router_down:r"), 2),
                 notice(None, 3),
             ],
             ..HealthState::default()

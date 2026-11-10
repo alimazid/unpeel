@@ -8,12 +8,12 @@
 //!    reported `blocked` (#81), for [`RUN_WAITING_MS`];
 //! 3. an enabled task whose next run passed [`MISSED_FIRE_MS`] ago without
 //!    a Run starting;
-//! 4. the workspace's Super Agent Session not running (only when one is
+//! 4. the workspace's Router Session not running (only when one is
 //!    marked);
-//! 5. a delivery due in the Super Agent's Inbox for [`INBOX_UNDELIVERED_MS`].
+//! 5. a delivery due in the Router's Inbox for [`INBOX_UNDELIVERED_MS`].
 //!
-//! A new problem goes to the Super Agent's Inbox as one Host report
-//! (status `blocked`) and to the Mac as a notification (`Check::to_super_agent`,
+//! A new problem goes to the Router's Inbox as one Host report
+//! (status `blocked`) and to the Mac as a notification (`Check::to_router`,
 //! `Check::to_mac` say which); a notification no app is connected to show
 //! is kept and shown when one connects. A problem alerts once, and again only
 //! after it cleared and came back; the state is on disk (`state.rs`), so a
@@ -39,12 +39,12 @@ pub const CHECK_INTERVAL_MS: u64 = 5 * MINUTE_MS;
 pub const RUN_WAITING_MS: u64 = 30 * MINUTE_MS;
 /// How long after its next run a task alerts when no Run started.
 pub const MISSED_FIRE_MS: u64 = 10 * MINUTE_MS;
-/// How long a delivery may be due in the Super Agent's Inbox.
+/// How long a delivery may be due in the Router's Inbox.
 pub const INBOX_UNDELIVERED_MS: u64 = 15 * MINUTE_MS;
 /// Test Hosts (`UNPEEL_TEST=1`) with this set to `1` read every minute
 /// above as a second, like `UNPEEL_SUPERVISOR_SECONDS`.
 const SECONDS_ENV: &str = "UNPEEL_HEALTH_SECONDS";
-/// The status of every health report, so it wakes the Super Agent.
+/// The status of every health report, so it wakes the Router.
 pub const REPORT_STATUS: &str = "blocked";
 
 /// The check's interval and limits.
@@ -62,7 +62,7 @@ impl Limits {
     /// This Host's: the constants, or seconds for minutes on a test Host.
     pub fn for_host() -> Self {
         Self::new(
-            seconds_mode_from(
+            unpeel_core::supervision::seconds_mode_from(
                 std::env::var("UNPEEL_TEST").ok().as_deref(),
                 std::env::var(SECONDS_ENV).ok().as_deref(),
             ),
@@ -80,10 +80,6 @@ impl Limits {
             ride_along_promote_ms,
         }
     }
-}
-
-fn seconds_mode_from(test_host: Option<&str>, seconds: Option<&str>) -> bool {
-    test_host == Some("1") && seconds.map(str::trim) == Some("1")
 }
 
 /// The worker's health check: its limits and its state, saved on every
@@ -170,7 +166,7 @@ impl Alert {
         }
     }
 
-    /// The alert as a Host report in the Super Agent's Inbox: one item per
+    /// The alert as a Host report in the Router's Inbox: one item per
     /// episode of the problem, `about` its task or Session.
     pub fn report(&self) -> NewItem {
         NewItem {
@@ -196,11 +192,7 @@ mod tests {
     }
 
     #[test]
-    fn only_a_test_host_counts_minutes_as_seconds() {
-        assert!(seconds_mode_from(Some("1"), Some("1")));
-        assert!(!seconds_mode_from(None, Some("1")));
-        assert!(!seconds_mode_from(Some("1"), None));
-        assert!(!seconds_mode_from(Some("1"), Some("60")));
+    fn seconds_mode_counts_minute_limits_as_seconds() {
         let seconds = Limits::new(true, 6_000);
         assert_eq!(
             (
@@ -256,7 +248,7 @@ mod tests {
     }
 
     #[test]
-    fn a_report_wakes_the_super_agent_once_per_episode() {
+    fn a_report_wakes_the_router_once_per_episode() {
         let alert = Alert {
             key: "waiting:run_1".into(),
             check: Check::RunWaiting,
@@ -274,7 +266,7 @@ mod tests {
         assert_eq!(item.about.as_deref(), Some("sch_1"));
         assert_eq!(item.dedupe_key.as_deref(), Some("health:waiting:run_1:42"));
         let down = Alert {
-            key: "super_agent_down:r".into(),
+            key: "router_down:r".into(),
             schedule_id: None,
             session_id: Some("r".into()),
             ..alert

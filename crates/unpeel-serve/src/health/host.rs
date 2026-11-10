@@ -1,12 +1,12 @@
 //! Fork-only (#84): what the health check reads from the real home — task
-//! definitions, clocks and Run logs, the Super Agent mark, its Inbox — and
-//! how its reports reach the Super Agent's Inbox.
+//! definitions, clocks and Run logs, the Router mark, its Inbox — and
+//! how its reports reach the Router's Inbox.
 
 use jiff::Zoned;
 use unpeel_core::schedule_store::TaskStore;
 use unpeel_core::session_inbox::Store;
 
-use super::check::{Facts, SuperAgentFacts, TaskFacts};
+use super::check::{Facts, RouterFacts, TaskFacts};
 use super::Alert;
 use crate::schedules::trigger;
 use crate::sessions::{SessionRow, Status};
@@ -15,7 +15,7 @@ use crate::sessions::{SessionRow, Status};
 pub fn facts(rows: &[SessionRow], now: &Zoned) -> Facts {
     Facts {
         tasks: tasks(now),
-        super_agent: unpeel_core::supervision::router_id().map(|id| super_agent(rows, id)),
+        router: unpeel_core::supervision::router_id().map(|id| router(rows, id)),
         asking: rows
             .iter()
             .filter(|row| row.running && row.status == Status::Attention)
@@ -50,9 +50,9 @@ fn tasks(now: &Zoned) -> Vec<TaskFacts> {
         .collect()
 }
 
-fn super_agent(rows: &[SessionRow], session_id: String) -> SuperAgentFacts {
+fn router(rows: &[SessionRow], session_id: String) -> RouterFacts {
     let store = Store::home();
-    SuperAgentFacts {
+    RouterFacts {
         running: rows.iter().any(|row| row.id == session_id && row.running),
         inbox: store.pending_stats(&session_id),
         hold: store.hold(&session_id).map(|hold| hold.reason),
@@ -60,10 +60,10 @@ fn super_agent(rows: &[SessionRow], session_id: String) -> SuperAgentFacts {
     }
 }
 
-/// Queue `alert` in the Super Agent's Inbox and announce it, as the
+/// Queue `alert` in the Router's Inbox and announce it, as the
 /// supervisor's own notices are.
-pub fn queue_report(super_agent: &str, alert: &Alert, now_ms: u64) -> Result<(), String> {
-    Store::home().enqueue(super_agent, alert.report(), now_ms)?;
+pub fn queue_report(router: &str, alert: &Alert, now_ms: u64) -> Result<(), String> {
+    Store::home().enqueue(router, alert.report(), now_ms)?;
     unpeel_core::supervision::announce_markers();
     Ok(())
 }

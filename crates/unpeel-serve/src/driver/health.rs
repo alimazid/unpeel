@@ -1,8 +1,8 @@
 //! Fork-only (#84): the worker's side of the health check
 //! (`crate::health`), kept out of `driver.rs`, which calls it from one-line
 //! `// Fork-only` hunks: once per rescan after the scheduler's sweep and
-//! the supervisor's step, and for a failed Run's own notice no app was
-//! connected to show.
+//! the supervisor's step, and for a failed Run's own notice no app could
+//! show.
 
 use super::{now_ms, HostRuntime, Notice, WhenDone};
 use crate::health::state::KeptNotice;
@@ -13,40 +13,42 @@ use crate::notifications::NotificationKind;
 const NOTIFY_CAPABILITY: &str = "notification.deliver";
 
 impl HostRuntime {
-    /// Show the notifications kept for an app, then run the check when it
-    /// is due and deliver its alerts.
+    /// Run the check when it is due, or when an app can show the kept
+    /// notifications (so one whose problem cleared since is dropped first);
+    /// then show the kept ones, oldest first, and deliver the new alerts.
     pub(super) fn check_health(&mut self) {
         let now = now_ms();
-        self.show_kept_notices(now);
-        if !self.health.due(now) {
+        let showing = self.health.has_kept() && self.can_notify();
+        if !showing && !self.health.due(now) {
             return;
         }
         let facts = crate::health::host::facts(&self.model.rows, &crate::schedules::clock::now());
-        let super_agent = facts
-            .super_agent
-            .as_ref()
-            .map(|agent| agent.session_id.clone());
-        for alert in self.health.run(&facts, now) {
-            crate::tracelog::trace("health", &alert.text);
-            if let Some(super_agent) = super_agent
-                .as_deref()
-                .filter(|_| alert.check.to_super_agent())
-            {
-                if let Err(error) = crate::health::host::queue_report(super_agent, &alert, now) {
-                    crate::tracelog::trace(
-                        "health",
-                        &format!("report for {super_agent} not queued: {error}"),
-                    );
-                }
-            }
-            if alert.check.to_mac() {
-                self.notify_health(&alert, now);
-            }
+        let router = facts.router.as_ref().map(|agent| agent.session_id.clone());
+        let alerts = self.health.run(&facts, now);
+        self.show_kept_notices(now);
+        for alert in alerts {
+            self.deliver_alert(router.as_deref(), &alert, now);
         }
     }
 
-    /// A failed Run's own notice (`notify_run`) when no app can show it: it
-    /// waits for one.
+    fn deliver_alert(&mut self, router: Option<&str>, alert: &Alert, now: u64) {
+        crate::tracelog::trace("health", &alert.text);
+        if let Some(router) = router.filter(|_| alert.check.to_router()) {
+            if let Err(error) = crate::health::host::queue_report(router, alert, now) {
+                crate::tracelog::trace(
+                    "health",
+                    &format!("report for {router} not queued: {error}"),
+                );
+            }
+        }
+        if alert.check.to_mac() {
+            self.show_or_keep(alert.notice(now), now);
+        }
+    }
+
+    /// A failed Run's own notice (`notify_run`, after its delivery) when no
+    /// app could show it: none was connected, or it went away delivering
+    /// it. It waits for one.
     pub(super) fn keep_run_failure(
         &mut self,
         schedule_id: &str,
@@ -67,13 +69,17 @@ impl HostRuntime {
         });
     }
 
-    fn notify_health(&mut self, alert: &Alert, now: u64) {
-        let notice = alert.notice(now);
+    /// Show `notice`, or keep it while no app can: none is connected, or
+    /// the app went away delivering it (the hub drops an adapter whose call
+    /// fails), so it may show twice but is never lost.
+    fn show_or_keep(&mut self, notice: KeptNotice, now: u64) {
         if self.can_notify() {
             self.show(&notice, now);
-        } else {
-            self.health.keep(notice);
+            if self.can_notify() {
+                return;
+            }
         }
+        self.health.keep(notice);
     }
 
     fn show_kept_notices(&mut self, now: u64) {
@@ -81,7 +87,7 @@ impl HostRuntime {
             return;
         }
         for notice in self.health.take_kept() {
-            self.show(&notice, now);
+            self.show_or_keep(notice, now);
         }
     }
 

@@ -82,9 +82,9 @@ fn due_at(due_ms: u64) -> Facts {
     }
 }
 
-fn super_agent(running: bool, inbox: PendingStats) -> Facts {
+fn router(running: bool, inbox: PendingStats) -> Facts {
     Facts {
-        super_agent: Some(SuperAgentFacts {
+        router: Some(RouterFacts {
             session_id: "router-1".into(),
             running,
             inbox,
@@ -134,7 +134,7 @@ fn a_run_failed_since_the_last_check_alerts_once() {
          Run of the task is done."
     );
     // The Run's own notice already reached the Mac.
-    assert!(alert.check.to_super_agent() && !alert.check.to_mac());
+    assert!(alert.check.to_router() && !alert.check.to_mac());
 }
 
 #[test]
@@ -188,6 +188,21 @@ fn a_tasks_failures_alert_again_only_after_a_run_of_it_is_done() {
 }
 
 #[test]
+fn an_older_runs_later_turn_does_not_end_a_newer_failure() {
+    // A done agent Run's line moves its end on with every later turn (#81).
+    let followed = run(
+        "run_1",
+        RunStatus::Done,
+        Some(T0 - 60 * MIN),
+        Some(T0 + 3 * MIN),
+    );
+    let facts = with_runs(vec![followed, failed("run_2", T0 + MIN, "exit 3")]);
+    let (_, raised) = checks(&facts, checked_at(T0), &[T0 + 5 * MIN]);
+    assert_eq!(raised.len(), 1, "{raised:?}");
+    assert!(raised[0].1.text.contains("run_2"), "{}", raised[0].1.text);
+}
+
+#[test]
 fn a_run_that_failed_to_start_counts_as_failed() {
     let run = ScheduleRun {
         status: RunStatus::FailedToStart,
@@ -234,7 +249,7 @@ fn a_skipped_run_alerts_once_naming_the_run_in_its_way() {
          still in progress (needs_you) in Session id:s-run_1. It alerts again only after a Run \
          of the task starts."
     );
-    assert!(alert.check.to_super_agent() && alert.check.to_mac());
+    assert!(alert.check.to_router() && alert.check.to_mac());
     // Later skips behind the same Run stay one alert.
     let more = with_runs(vec![
         blocker.clone(),
@@ -409,6 +424,49 @@ fn a_blocked_run_alerts_thirty_minutes_after_its_report() {
         .all(|(_, alert)| alert.check != Check::RunBlocked));
 }
 
+fn blocked_report(at_ms: u64) -> RunReport {
+    RunReport {
+        status: "blocked".into(),
+        summary: "Waiting on a signing key".into(),
+        at_ms,
+    }
+}
+
+#[test]
+fn a_blocked_run_still_alerts_after_a_later_run_takes_over() {
+    let blocked = ScheduleRun {
+        report: Some(blocked_report(T0 - 20 * MIN)),
+        ..run(
+            "run_1",
+            RunStatus::Done,
+            Some(T0 - 60 * MIN),
+            Some(T0 - 30 * MIN),
+        )
+    };
+    let facts = with_runs(vec![
+        blocked,
+        run("run_2", RunStatus::Running, Some(T0 - MIN), None),
+    ]);
+    let times = [T0, T0 + 5 * MIN, T0 + 10 * MIN, T0 + 15 * MIN];
+    let (_, raised) = checks(&facts, HealthState::default(), &times);
+    assert_eq!(raised.len(), 1, "{raised:?}");
+    assert_eq!(raised[0].0, T0 + 10 * MIN);
+    assert_eq!(raised[0].1.check, Check::RunBlocked);
+    assert!(raised[0].1.text.contains("run_1"), "{}", raised[0].1.text);
+}
+
+#[test]
+fn a_waiting_run_that_reported_blocked_alerts_once() {
+    let both = ScheduleRun {
+        report: Some(blocked_report(T0 - 40 * MIN)),
+        ..run("run_1", RunStatus::NeedsYou, Some(T0 - 60 * MIN), None)
+    };
+    let times: Vec<u64> = (0..=7).map(|n| T0 + n * 5 * MIN).collect();
+    let (_, raised) = checks(&with_runs(vec![both]), HealthState::default(), &times);
+    assert_eq!(raised.len(), 1, "{raised:?}");
+    assert_eq!(raised[0].1.check, Check::RunBlocked);
+}
+
 // Check 3: a missed fire.
 
 #[test]
@@ -428,7 +486,7 @@ fn a_next_run_passed_ten_minutes_ago_is_a_missed_fire() {
          2026-11-10T09:00 (10 min ago), and no Run of it started. The Host's warnings for it \
          say why."
     );
-    assert!(alert.check.to_super_agent() && alert.check.to_mac());
+    assert!(alert.check.to_router() && alert.check.to_mac());
     // The scheduler fires it: the next run moves on, the problem clears.
     let (state, _) = checks(&due_at(T0 + 24 * 60 * MIN), state, &[T0 + 20 * MIN]);
     assert!(state.problems.is_empty(), "{:?}", state.problems);
@@ -447,16 +505,16 @@ fn a_run_log_that_will_not_read_still_shows_the_missed_fire() {
     assert_eq!(raised.len(), 1, "{raised:?}");
 }
 
-// Check 4: the Super Agent is down.
+// Check 4: the Router is down.
 
 #[test]
-fn a_super_agent_that_is_not_running_alerts_the_mac_once() {
-    let down = super_agent(false, PendingStats::default());
+fn a_router_that_is_not_running_alerts_the_mac_once() {
+    let down = router(false, PendingStats::default());
     let (state, raised) = checks(&down, HealthState::default(), &[T0, T0 + 5 * MIN]);
     assert_eq!(raised.len(), 1, "{raised:?}");
     let (at, alert) = &raised[0];
     assert_eq!(*at, T0);
-    assert_eq!(alert.check, Check::SuperAgentDown);
+    assert_eq!(alert.check, Check::RouterDown);
     assert_eq!(alert.session_id.as_deref(), Some("router-1"));
     assert_eq!(alert.title, "Super Agent");
     assert_eq!(
@@ -464,19 +522,19 @@ fn a_super_agent_that_is_not_running_alerts_the_mac_once() {
         "Health check: the Super Agent Session id:router-1 is not running. Worker reports and \
          Host alerts wait in its Inbox until it runs again."
     );
-    assert!(!alert.check.to_super_agent() && alert.check.to_mac());
+    assert!(!alert.check.to_router() && alert.check.to_mac());
     // Running again clears it; down again alerts again.
-    let up = super_agent(true, PendingStats::default());
+    let up = router(true, PendingStats::default());
     let (state, raised) = checks(&up, state, &[T0 + 10 * MIN]);
     assert!(raised.is_empty());
     let (_, raised) = checks(&down, state, &[T0 + 15 * MIN]);
     assert_eq!(raised.len(), 1, "{raised:?}");
-    // No Super Agent marked: nothing to check.
+    // No Router marked: nothing to check.
     let (_, raised) = checks(&Facts::default(), HealthState::default(), &[T0]);
     assert!(raised.is_empty());
 }
 
-// Check 5: the Super Agent's Inbox.
+// Check 5: the Router's Inbox.
 
 fn pending(oldest_at: u64, oldest_wake_at: Option<u64>) -> PendingStats {
     PendingStats {
@@ -490,10 +548,10 @@ fn pending(oldest_at: u64, oldest_wake_at: Option<u64>) -> PendingStats {
 
 #[test]
 fn a_wake_item_undelivered_for_fifteen_minutes_alerts_the_mac() {
-    let facts = super_agent(true, pending(T0, Some(T0)));
-    // The check has watched the Super Agent run since before the item.
+    let facts = router(true, pending(T0, Some(T0)));
+    // The check has watched the Router run since before the item.
     let state = checks(
-        &super_agent(true, PendingStats::default()),
+        &router(true, PendingStats::default()),
         HealthState::default(),
         &[T0 - MIN],
     )
@@ -510,27 +568,27 @@ fn a_wake_item_undelivered_for_fifteen_minutes_alerts_the_mac() {
         "Health check: the Super Agent's Inbox (Session id:router-1) has had items due for \
          delivery for 15 min (the Host holds them: busy)."
     );
-    assert!(!alert.check.to_super_agent() && alert.check.to_mac());
+    assert!(!alert.check.to_router() && alert.check.to_mac());
 }
 
 #[test]
 fn ride_along_items_are_due_once_promoted() {
     let running = checks(
-        &super_agent(true, PendingStats::default()),
+        &router(true, PendingStats::default()),
         HealthState::default(),
         &[T0 - MIN],
     )
     .0;
-    let facts = super_agent(true, pending(T0, None));
+    let facts = router(true, pending(T0, None));
     // Promoted at 15 min, late 15 min after that.
     let (state, raised) = checks(&facts, running, &[T0 + 15 * MIN, T0 + 25 * MIN]);
     assert!(raised.is_empty(), "{raised:?}");
     let (_, raised) = checks(&facts, state, &[T0 + 30 * MIN]);
     assert_eq!(raised.len(), 1, "{raised:?}");
     // A wake item queued after an old ride-along one is due from its own time.
-    let mixed = super_agent(true, pending(T0, Some(T0 + 5 * MIN)));
+    let mixed = router(true, pending(T0, Some(T0 + 5 * MIN)));
     let running = checks(
-        &super_agent(true, PendingStats::default()),
+        &router(true, PendingStats::default()),
         HealthState::default(),
         &[T0 - MIN],
     )
@@ -540,11 +598,11 @@ fn ride_along_items_are_due_once_promoted() {
 }
 
 #[test]
-fn the_inbox_is_not_late_while_the_super_agent_is_down_or_just_back() {
+fn the_inbox_is_not_late_while_the_router_is_down_or_just_back() {
     let stuck = pending(T0, Some(T0));
     // Down: check 4 speaks, not check 5.
     let (state, raised) = checks(
-        &super_agent(false, stuck),
+        &router(false, stuck),
         HealthState::default(),
         &[T0 + 30 * MIN],
     );
@@ -553,10 +611,10 @@ fn the_inbox_is_not_late_while_the_super_agent_is_down_or_just_back() {
             .iter()
             .map(|(_, alert)| alert.check)
             .collect::<Vec<_>>(),
-        vec![Check::SuperAgentDown]
+        vec![Check::RouterDown]
     );
     // Back at T0 + 35: its Inbox counts from then.
-    let back = super_agent(true, stuck);
+    let back = router(true, stuck);
     let (state, raised) = checks(&back, state, &[T0 + 35 * MIN, T0 + 45 * MIN]);
     assert!(raised.is_empty(), "{raised:?}");
     let (_, raised) = checks(&back, state, &[T0 + 50 * MIN]);
@@ -575,7 +633,7 @@ fn the_inbox_is_not_late_while_the_super_agent_is_down_or_just_back() {
 fn a_restart_alerts_nothing_again() {
     let facts = Facts {
         tasks: due_at(T0).tasks,
-        ..super_agent(false, PendingStats::default())
+        ..router(false, PendingStats::default())
     };
     let (state, raised) = checks(&facts, HealthState::default(), &[T0 + 10 * MIN]);
     assert_eq!(raised.len(), 2, "{raised:?}");
@@ -588,7 +646,7 @@ fn a_restart_alerts_nothing_again() {
 
 #[test]
 fn a_check_drops_the_kept_notices_of_problems_that_cleared() {
-    let facts = super_agent(false, PendingStats::default());
+    let facts = router(false, PendingStats::default());
     let (state, raised) = checks(&facts, HealthState::default(), &[T0]);
     let state = state.keeping(raised[0].1.notice(T0)).keeping(KeptNotice {
         problem: None,
@@ -601,7 +659,7 @@ fn a_check_drops_the_kept_notices_of_problems_that_cleared() {
     let (state, _) = checks(&facts, state, &[T0 + 5 * MIN]);
     assert_eq!(state.kept.len(), 2, "still down: still kept");
     let (state, _) = checks(
-        &super_agent(true, PendingStats::default()),
+        &router(true, PendingStats::default()),
         state,
         &[T0 + 10 * MIN],
     );

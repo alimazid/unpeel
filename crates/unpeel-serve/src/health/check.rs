@@ -20,15 +20,15 @@ use crate::supervisor::duration;
 
 /// A quoted report summary stays one short line.
 const MAX_QUOTED_CHARS: usize = 300;
-/// The banner title of a Super Agent problem.
+/// The banner title of a Router problem: the app's name for the Router.
 pub const SUPER_AGENT_TITLE: &str = "Super Agent";
 
 /// What the Host sees at a check.
 #[derive(Debug, Clone, Default)]
 pub struct Facts {
     pub tasks: Vec<TaskFacts>,
-    /// The workspace's Super Agent, when one is marked.
-    pub super_agent: Option<SuperAgentFacts>,
+    /// The workspace's Router, when one is marked.
+    pub router: Option<RouterFacts>,
     /// Running Sessions whose row asks the user something.
     pub asking: HashSet<String>,
 }
@@ -46,7 +46,7 @@ pub struct TaskFacts {
 }
 
 #[derive(Debug, Clone)]
-pub struct SuperAgentFacts {
+pub struct RouterFacts {
     pub session_id: String,
     pub running: bool,
     pub inbox: PendingStats,
@@ -64,15 +64,15 @@ pub enum Check {
     /// A Run's own Session reported `blocked` (#81).
     RunBlocked,
     MissedFire,
-    SuperAgentDown,
+    RouterDown,
     InboxUndelivered,
 }
 
 impl Check {
-    /// Whether the alert goes to the Super Agent's Inbox. Not its own being
+    /// Whether the alert goes to the Router's Inbox. Not its own being
     /// down, and not its stuck Inbox, where the report would sit too.
-    pub fn to_super_agent(self) -> bool {
-        !matches!(self, Self::SuperAgentDown | Self::InboxUndelivered)
+    pub fn to_router(self) -> bool {
+        !matches!(self, Self::RouterDown | Self::InboxUndelivered)
     }
 
     /// Whether the alert is a Mac notification. A failed Run's own notice
@@ -104,7 +104,7 @@ pub fn check(
     limits: &Limits,
     now: u64,
 ) -> (HealthState, Vec<Alert>) {
-    let running = super_agent_running(facts, prior, now);
+    let running = router_running(facts, prior, now);
     let findings = findings(facts, running.as_ref(), limits, now);
     let news_after = prior.last_check_ms.unwrap_or(now);
     let mut problems = BTreeMap::new();
@@ -144,23 +144,23 @@ pub fn check(
     let state = HealthState {
         last_check_ms: Some(now),
         problems,
-        super_agent_running: running,
+        router_running: running,
         ..prior.clone()
     };
     (state.without_cleared_notices(), alerts)
 }
 
-/// When a check first saw the Super Agent running, since it was last seen
+/// When a check first saw the Router running, since it was last seen
 /// down (or another Session became it); `None` while it is down.
-fn super_agent_running(facts: &Facts, prior: &HealthState, now: u64) -> Option<RunningSince> {
-    let super_agent = facts.super_agent.as_ref().filter(|agent| agent.running)?;
+fn router_running(facts: &Facts, prior: &HealthState, now: u64) -> Option<RunningSince> {
+    let router = facts.router.as_ref().filter(|agent| agent.running)?;
     let since = prior
-        .super_agent_running
+        .router_running
         .as_ref()
-        .filter(|seen| seen.session_id == super_agent.session_id)
+        .filter(|seen| seen.session_id == router.session_id)
         .map_or(now, |seen| seen.since);
     Some(RunningSince {
-        session_id: super_agent.session_id.clone(),
+        session_id: router.session_id.clone(),
         since,
     })
 }
@@ -199,24 +199,24 @@ fn findings<'a>(
         found.extend(waiting(task, runs, &facts.asking, limits));
         found.extend(blocked(task, runs, limits));
     }
-    if let Some(super_agent) = &facts.super_agent {
-        found.extend(super_agent_down(super_agent));
-        found.extend(inbox_undelivered(super_agent, running, limits, now));
+    if let Some(router) = &facts.router {
+        found.extend(router_down(router));
+        found.extend(inbox_undelivered(router, running, limits, now));
     }
     found
 }
 
 /// Check 1: the task's newest finished Run failed (or failed to start). A
 /// task's failures alert once, and again only after a Run of it is done.
+/// Newest in log order, not by end: a done agent Run's end moves on with
+/// each later turn of its Session (#81).
 fn failed<'a>(task: &'a TaskFacts, runs: &'a [ScheduleRun]) -> Option<Finding<'a>> {
-    let finished = runs.iter().filter(|run| {
+    let run = runs.iter().rev().find(|run| {
         matches!(
             run.status,
             RunStatus::Done | RunStatus::Failed | RunStatus::FailedToStart
         )
-    });
-    // The last of equals: the later line on a tie.
-    let run = finished.max_by_key(|run| run.ended_at_ms.unwrap_or(0))?;
+    })?;
     if run.status == RunStatus::Done {
         return None;
     }
@@ -237,7 +237,7 @@ fn failed<'a>(task: &'a TaskFacts, runs: &'a [ScheduleRun]) -> Option<Finding<'a
                 run.run_id,
                 named(&task.schedule),
                 reason(run),
-                in_session(run, " Its Session is id:{}."),
+                in_session(run, |id| format!(" Its Session is id:{id}.")),
             )
         }),
         ..task_finding(
@@ -282,7 +282,7 @@ fn skipped<'a>(task: &'a TaskFacts, runs: &'a [ScheduleRun]) -> Option<Finding<'
                     " Run {} is still in progress ({}){}.",
                     run.run_id,
                     run.status.word(),
-                    in_session(run, " in Session id:{}")
+                    in_session(run, |id| format!(" in Session id:{id}"))
                 )
             });
             format!(
@@ -301,14 +301,16 @@ fn skipped<'a>(task: &'a TaskFacts, runs: &'a [ScheduleRun]) -> Option<Finding<'
 }
 
 /// Check 2: the task's Run in progress waits on a prompt (`needs_you`, or
-/// its Session asks), counted from when a check first saw it so.
+/// its Session asks), counted from when a check first saw it so. Not one
+/// that reported `blocked`: its report is the one alert (`blocked`).
 fn waiting<'a>(
     task: &'a TaskFacts,
     runs: &'a [ScheduleRun],
     asking: &HashSet<String>,
     limits: &Limits,
 ) -> Option<Finding<'a>> {
-    let run = schedules::current_run(runs).filter(|run| run.status.is_in_progress())?;
+    let run = schedules::current_run(runs)
+        .filter(|run| run.status.is_in_progress() && !run.needs_attention())?;
     let asks = run
         .session_id
         .as_ref()
@@ -341,18 +343,29 @@ fn waiting<'a>(
     })
 }
 
-/// Check 2, #81: the task's Run reported `blocked` and still needs
-/// attention, counted from the report.
+/// Check 2, #81: each Run of the task that reported `blocked` and still
+/// needs attention, counted from the report. A later Run does not clear it
+/// (a done Run holds back no occurrence); a new report or a failure does.
 fn blocked<'a>(
     task: &'a TaskFacts,
     runs: &'a [ScheduleRun],
     limits: &Limits,
+) -> impl Iterator<Item = Finding<'a>> + 'a {
+    let limit_ms = limits.run_waiting_ms;
+    runs.iter()
+        .filter(|run| run.needs_attention())
+        .filter_map(move |run| blocked_run(task, run, limit_ms))
+}
+
+fn blocked_run<'a>(
+    task: &'a TaskFacts,
+    run: &'a ScheduleRun,
+    limit_ms: u64,
 ) -> Option<Finding<'a>> {
-    let run = schedules::current_run(runs).filter(|run| run.needs_attention())?;
     let report = run.report.as_ref()?;
     Some(Finding {
         began_at: Some(report.at_ms),
-        limit_ms: limits.run_waiting_ms,
+        limit_ms,
         session_id: run.session_id.clone(),
         text: Box::new(move |lasted| {
             format!(
@@ -362,7 +375,7 @@ fn blocked<'a>(
                 named(&task.schedule),
                 duration(lasted),
                 quoted(&report.summary),
-                in_session(run, " in its Session id:{}"),
+                in_session(run, |id| format!(" in its Session id:{id}")),
             )
         }),
         ..task_finding(
@@ -396,40 +409,40 @@ fn missed_fire<'a>(task: &'a TaskFacts, limits: &Limits, now: u64) -> Option<Fin
     })
 }
 
-/// Check 4: the Super Agent's Session is not running.
-fn super_agent_down(super_agent: &SuperAgentFacts) -> Option<Finding<'_>> {
-    (!super_agent.running).then(|| Finding {
+/// Check 4: the Router's Session is not running.
+fn router_down(router: &RouterFacts) -> Option<Finding<'_>> {
+    (!router.running).then(|| Finding {
         text: Box::new(move |_| {
             format!(
                 "Health check: the Super Agent Session id:{} is not running. Worker reports and \
                  Host alerts wait in its Inbox until it runs again.",
-                super_agent.session_id
+                router.session_id
             )
         }),
-        ..super_agent_finding(
-            super_agent,
-            Check::SuperAgentDown,
-            format!("super_agent_down:{}", super_agent.session_id),
+        ..router_finding(
+            router,
+            Check::RouterDown,
+            format!("router_down:{}", router.session_id),
         )
     })
 }
 
-/// Check 5: the Super Agent's Inbox has had a delivery due for too long.
+/// Check 5: the Router's Inbox has had a delivery due for too long.
 /// A delivery is due from a wake item's queue time, or once the oldest item
 /// is old enough for ride-along items to be promoted (#83); never before
-/// a check saw the Super Agent running, so its being down is check 4's.
+/// a check saw the Router running, so its being down is check 4's.
 fn inbox_undelivered<'a>(
-    super_agent: &'a SuperAgentFacts,
+    router: &'a RouterFacts,
     running: Option<&RunningSince>,
     limits: &Limits,
     now: u64,
 ) -> Option<Finding<'a>> {
     let running_since = running?.since;
-    let promoted_at = super_agent
+    let promoted_at = router
         .inbox
         .oldest_at
         .map(|at| at.saturating_add(limits.ride_along_promote_ms));
-    let due = [super_agent.inbox.oldest_wake_at, promoted_at]
+    let due = [router.inbox.oldest_wake_at, promoted_at]
         .into_iter()
         .flatten()
         .min()
@@ -438,20 +451,20 @@ fn inbox_undelivered<'a>(
         began_at: Some(due.max(running_since)),
         limit_ms: limits.inbox_undelivered_ms,
         text: Box::new(move |lasted| {
-            let held = super_agent.hold.as_deref().map_or(String::new(), |reason| {
+            let held = router.hold.as_deref().map_or(String::new(), |reason| {
                 format!(" (the Host holds them: {reason})")
             });
             format!(
                 "Health check: the Super Agent's Inbox (Session id:{}) has had items due for \
                  delivery for {}{held}.",
-                super_agent.session_id,
+                router.session_id,
                 duration(lasted),
             )
         }),
-        ..super_agent_finding(
-            super_agent,
+        ..router_finding(
+            router,
             Check::InboxUndelivered,
-            format!("inbox:{}", super_agent.session_id),
+            format!("inbox:{}", router.session_id),
         )
     })
 }
@@ -470,11 +483,7 @@ fn task_finding<'a>(task: &TaskFacts, check: Check, key: String) -> Finding<'a> 
     }
 }
 
-fn super_agent_finding<'a>(
-    super_agent: &SuperAgentFacts,
-    check: Check,
-    key: String,
-) -> Finding<'a> {
+fn router_finding<'a>(router: &RouterFacts, check: Check, key: String) -> Finding<'a> {
     Finding {
         key,
         check,
@@ -482,7 +491,7 @@ fn super_agent_finding<'a>(
         recorded_at: None,
         limit_ms: 0,
         schedule_id: None,
-        session_id: Some(super_agent.session_id.clone()),
+        session_id: Some(router.session_id.clone()),
         title: SUPER_AGENT_TITLE.to_owned(),
         text: Box::new(|_| String::new()),
     }
@@ -504,13 +513,9 @@ fn reason(run: &ScheduleRun) -> String {
         .map_or(String::new(), |reason| format!(": {reason}"))
 }
 
-/// `pattern` with the Run's Session id in place of `{}`, or nothing.
-fn in_session(run: &ScheduleRun, pattern: &str) -> String {
-    run.session_id
-        .as_deref()
-        .map_or(String::new(), |session_id| {
-            pattern.replace("{}", session_id)
-        })
+/// `words` for the Run's Session id, or nothing.
+fn in_session(run: &ScheduleRun, words: impl FnOnce(&str) -> String) -> String {
+    run.session_id.as_deref().map_or(String::new(), words)
 }
 
 /// One line, at most [`MAX_QUOTED_CHARS`].

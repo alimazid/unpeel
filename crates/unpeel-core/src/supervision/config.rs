@@ -233,7 +233,7 @@ pub fn config_from_state(state: &Value, seconds_mode: bool) -> SupervisorConfig 
 }
 
 /// `UNPEEL_TEST=1` plus `UNPEEL_SUPERVISOR_SECONDS=1`, both exactly.
-pub(crate) fn seconds_mode_from(test: Option<&str>, seconds: Option<&str>) -> bool {
+pub fn seconds_mode_from(test: Option<&str>, seconds: Option<&str>) -> bool {
     test == Some("1") && seconds == Some("1")
 }
 

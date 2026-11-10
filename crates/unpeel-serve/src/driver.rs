@@ -2207,8 +2207,8 @@ impl HostRuntime {
         else {
             return;
         };
-        self.keep_run_failure(&schedule.id, session_id, &notice, now); // Fork-only (#84)
         let observed = self.deliver_run_notice(&schedule.id, session_id, &notice, now);
+        self.keep_run_failure(&schedule.id, session_id, &notice, now); // Fork-only (#84)
         let Some(session_id) = session_id.filter(|_| notice.marks_unread()) else {
             return;
         };
