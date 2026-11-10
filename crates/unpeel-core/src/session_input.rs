@@ -147,6 +147,22 @@ pub fn paste_unless_typed(
     deliver_sanitized_text_with_timeout(session_id, sanitized, true, terms)
 }
 
+/// Fork-only (#69): the Inbox's paste when only the PTY core can tell a
+/// draft: [`paste_unless_typed`], also refused while the user has a draft
+/// on the line.
+pub fn paste_unless_typed_or_draft(
+    session_id: &str,
+    sanitized: &str,
+    since: u64,
+    timeout: Duration,
+) -> Result<GuardedPaste, String> {
+    let terms = WriteTerms {
+        timeout: Some(timeout),
+        ..WriteTerms::guarded(since)
+    };
+    deliver_sanitized_text_with_timeout(session_id, sanitized, true, terms)
+}
+
 /// Fork-only (#61): an agent's `send_text` (`crate::agent_send`). The PTY
 /// core refuses it, with nothing written, while the user typed at or after
 /// `since` or has a draft on the line. A host that predates a guard writes

@@ -11,7 +11,7 @@ use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::Arc;
 
 use unpeel_core::session_inbox::{Batch, Hold, PendingStats, Store};
-use unpeel_core::session_input::GuardedPaste;
+use unpeel_core::session_input::{GuardedPaste, Refusal};
 use unpeel_core::supervision::SupervisorConfig;
 
 use super::inbox_rules::{self, DraftFacts, DraftGuard, Facts, HoldReason, Readiness, Timing};
@@ -44,8 +44,15 @@ pub trait HostIo: Send + Sync {
     /// The line the cursor is on, from a quick viewport snapshot.
     fn cursor(&self, session_id: &str) -> Option<CursorLine>;
     /// Paste already-sanitized text and submit it, unless the user types
-    /// at or after `since` (`session_input::paste_unless_typed`).
-    fn paste(&self, session_id: &str, text: &str, since: u64) -> Result<GuardedPaste, String>;
+    /// at or after `since` (`session_input::paste_unless_typed`) or, with
+    /// `unless_draft` (#69), has a draft on the line.
+    fn paste(
+        &self,
+        session_id: &str,
+        text: &str,
+        since: u64,
+        unless_draft: bool,
+    ) -> Result<GuardedPaste, String>;
     /// Session ids that still have a manifest (Inbox GC).
     fn live_session_ids(&self) -> HashSet<String>;
     /// The supervisor's settings and the app-wide write policy, from one
@@ -64,6 +71,9 @@ pub struct TerminalFacts {
     /// When the user last typed into the session; `None` from a session
     /// host that does not stamp it, or before anyone typed.
     pub last_input_at: Option<u64>,
+    /// The PTY core refuses `unless_draft` writes over the user's draft
+    /// (manifest `draft_guard`, ADR 0011). An older core writes them anyway.
+    pub draft_guard: bool,
 }
 
 /// The draft guard's view of the input line.
@@ -106,8 +116,9 @@ struct Target {
     /// The last baseline taken with nobody typing since the turn began:
     /// the agent's own empty prompt, kept across episodes.
     known_empty: Option<CursorLine>,
-    /// The line read against `known_empty` after the latest typing; read
-    /// again only once the user types again.
+    /// The line read against `known_empty` after the latest typing, or the
+    /// PTY core's refusal over a draft (#69); asked again only once the user
+    /// types again.
     checked: Option<EmptyCheck>,
 }
 
@@ -121,8 +132,8 @@ struct Episode {
     notified: bool,
 }
 
-/// Whether the input line was the known-empty prompt after the typing
-/// stamped at `typed_at`.
+/// Whether the input line was empty after the typing stamped at
+/// `typed_at`: the known-empty prompt, or no draft to the PTY core.
 #[derive(Debug, Clone, Copy)]
 struct EmptyCheck {
     typed_at: u64,
@@ -156,7 +167,13 @@ enum Outcome {
         pasted_at: u64,
         delivered: bool,
     },
+    /// The line changed since the step looked, or the user typed.
     Draft,
+    /// The PTY core refused the paste over a draft of the typing stamped
+    /// at `typed_at` (#69).
+    CoreDraft {
+        typed_at: u64,
+    },
     Failed(String),
     /// Nothing was left to claim.
     Empty,
@@ -311,7 +328,7 @@ impl Drain {
             Ok(ready) => ready,
             Err(hold) => return Some(hold),
         };
-        if !self.spawn_delivery(id, ready.baseline, ready.confident, now) {
+        if !self.spawn_delivery(id, ready.guarded, ready.confident, now) {
             return Some(HoldReason::Retry);
         }
         if let Some(target) = self.targets.get_mut(id) {
@@ -353,7 +370,7 @@ impl Drain {
         Some(Some(HoldReason::Unconfirmed))
     }
 
-    fn spawn_delivery(&self, id: &str, baseline: CursorLine, confident: bool, now: u64) -> bool {
+    fn spawn_delivery(&self, id: &str, guarded: Guarded, confident: bool, now: u64) -> bool {
         let (store, io, outcomes) = (
             self.store.clone(),
             self.io.clone(),
@@ -363,7 +380,7 @@ impl Drain {
         std::thread::Builder::new()
             .name("unpeel-inbox-drain".into())
             .spawn(move || {
-                let outcome = deliver(&store, io.as_ref(), &session_id, &baseline, confident, now);
+                let outcome = deliver(&store, io.as_ref(), &session_id, &guarded, confident, now);
                 let _ = outcomes.send((session_id, outcome));
             })
             .is_ok()
@@ -389,12 +406,13 @@ impl Drain {
                     });
                 }
             }
-            Outcome::Draft => {
-                target.checked = None;
-                if let Some(episode) = target.episode.as_mut() {
-                    episode.line_changed = true;
-                    episode.draft_since.get_or_insert(now);
-                }
+            Outcome::Draft => target.held_for_draft(None, now),
+            Outcome::CoreDraft { typed_at } => {
+                let found = EmptyCheck {
+                    typed_at,
+                    empty: false,
+                };
+                target.held_for_draft(Some(found), now);
             }
             Outcome::Failed(error) => {
                 target.retry_at = now + RETRY_MS;
@@ -486,6 +504,18 @@ impl super::worker_alerts::DrainView for Drain {
     }
 }
 
+impl Target {
+    /// A paste held for a draft. What the core found is kept until the user
+    /// types again; without it, the next step looks at the line again.
+    fn held_for_draft(&mut self, checked: Option<EmptyCheck>, now: u64) {
+        self.checked = checked;
+        if let Some(episode) = self.episode.as_mut() {
+            episode.line_changed = true;
+            episode.draft_since.get_or_insert(now);
+        }
+    }
+}
+
 /// Settings read once per step, only when some Inbox has pending items.
 #[derive(Debug, Clone, Copy)]
 pub struct Settings {
@@ -512,8 +542,18 @@ struct Candidate<'a> {
 
 /// Everything a paste needs once nothing holds it.
 struct Ready {
-    baseline: CursorLine,
+    guarded: Guarded,
     confident: bool,
+}
+
+/// How a paste is kept off the user's draft.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct Guarded {
+    /// The input line the paste must still find.
+    line: CursorLine,
+    /// The PTY core decides whether the line holds a draft of the typing
+    /// stamped then (#69): the paste carries `unless_draft`.
+    ask_core: Option<u64>,
 }
 
 /// The gates before a paste, in order: the target's readiness, its quiet
@@ -536,31 +576,31 @@ fn ready_to_paste(
         turn_began_at: candidate.turn_began_at,
         last_input_at: terminal.and_then(|terminal| terminal.last_input_at),
     };
-    let line = guarded_line(target, io, candidate.id, &facts);
+    let core_guard = terminal.is_some_and(|terminal| terminal.draft_guard);
+    let line = guarded_line(target, io, candidate.id, &facts, core_guard);
     if line == Err(HoldReason::Snapshot) {
         return Err(HoldReason::Snapshot);
     }
     if !candidate.stats.wake {
         return Err(HoldReason::RideAlong);
     }
-    let baseline = line.map_err(|hold| draft_hold(target, candidate, hold, notices))?;
+    let guarded = line.map_err(|hold| draft_hold(target, candidate, hold, notices))?;
     pacing(target, candidate)?;
-    Ok(Ready {
-        baseline,
-        confident,
-    })
+    Ok(Ready { guarded, confident })
 }
 
 /// The line a paste must find (`Ok`), or why the line may be a draft.
 /// With nobody typing since the turn began, the episode's baseline is the
 /// agent's own prompt and becomes the known-empty one; after typing, only
-/// the known-empty prompt is not a draft.
+/// the known-empty prompt is not a draft. With none known yet, a PTY core
+/// with the draft guard (`core_guard`) decides (#69).
 fn guarded_line(
     target: &mut Target,
     io: &dyn HostIo,
     id: &str,
     facts: &DraftFacts,
-) -> Result<CursorLine, HoldReason> {
+    core_guard: bool,
+) -> Result<Guarded, HoldReason> {
     let episode = target.episode.get_or_insert_with(Episode::default);
     match inbox_rules::draft_guard(facts)? {
         DraftGuard::Baseline => {
@@ -572,21 +612,54 @@ fn guarded_line(
             }
             let baseline = episode.baseline.clone().ok_or(HoldReason::Snapshot)?;
             target.known_empty = Some(baseline.clone());
-            Ok(baseline)
+            Ok(Guarded {
+                line: baseline,
+                ask_core: None,
+            })
         }
-        DraftGuard::KnownEmpty { typed_at } => {
-            let known_empty = target.known_empty.clone().ok_or(HoldReason::Draft)?;
-            let empty = match target.checked {
-                Some(check) if check.typed_at == typed_at => check.empty,
-                _ => {
-                    let empty = io.cursor(id).ok_or(HoldReason::Snapshot)? == known_empty;
-                    target.checked = Some(EmptyCheck { typed_at, empty });
-                    empty
-                }
-            };
-            empty.then_some(known_empty).ok_or(HoldReason::Draft)
-        }
+        DraftGuard::KnownEmpty { typed_at } => typed_line(target, io, id, typed_at, core_guard),
     }
+}
+
+/// After the user typed at `typed_at`: the known-empty prompt, read once
+/// per typing. With none known yet, as when a person answers a Worker's
+/// startup menu, only the PTY core can tell a draft (#69). Once it refuses
+/// one, it is asked again only after the user types again. An older core
+/// cannot tell, so that holds.
+fn typed_line(
+    target: &mut Target,
+    io: &dyn HostIo,
+    id: &str,
+    typed_at: u64,
+    core_guard: bool,
+) -> Result<Guarded, HoldReason> {
+    let checked = target
+        .checked
+        .filter(|check| check.typed_at == typed_at)
+        .map(|check| check.empty);
+    let Some(known_empty) = target.known_empty.clone() else {
+        if !core_guard || checked == Some(false) {
+            return Err(HoldReason::Draft);
+        }
+        let line = io.cursor(id).ok_or(HoldReason::Snapshot)?;
+        return Ok(Guarded {
+            line,
+            ask_core: Some(typed_at),
+        });
+    };
+    let empty = match checked {
+        Some(empty) => empty,
+        None => {
+            let empty = io.cursor(id).ok_or(HoldReason::Snapshot)? == known_empty;
+            target.checked = Some(EmptyCheck { typed_at, empty });
+            empty
+        }
+    };
+    let guarded = Guarded {
+        line: known_empty,
+        ask_core: None,
+    };
+    empty.then_some(guarded).ok_or(HoldReason::Draft)
 }
 
 /// A suspected draft holds the paste, telling the user once it has held
@@ -704,13 +777,13 @@ fn deliver(
     store: &Store,
     io: &dyn HostIo,
     id: &str,
-    baseline: &CursorLine,
+    guarded: &Guarded,
     confident: bool,
     now: u64,
 ) -> Outcome {
     match io.cursor(id) {
         None => return Outcome::Failed("the screen could not be read".into()),
-        Some(cursor) if cursor != *baseline => return Outcome::Draft,
+        Some(cursor) if cursor != guarded.line => return Outcome::Draft,
         Some(_) => {}
     }
     let batch = match store.claim_batch(id, now) {
@@ -719,12 +792,15 @@ fn deliver(
         Err(error) => return Outcome::Failed(error.to_string()),
     };
     let text = unpeel_core::session_inbox::render_batch(&batch);
-    let submitted = match io.paste(id, &text, now) {
+    let submitted = match io.paste(id, &text, now, guarded.ask_core.is_some()) {
         Ok(GuardedPaste::Submitted) => true,
         Ok(GuardedPaste::NotSubmitted) => false,
-        Ok(GuardedPaste::NotPasted(_)) => {
+        Ok(GuardedPaste::NotPasted(refusal)) => {
             release_claim(store, io, id, &batch.batch_id);
-            return Outcome::Draft;
+            return match (refusal, guarded.ask_core) {
+                (Refusal::Draft, Some(typed_at)) => Outcome::CoreDraft { typed_at },
+                _ => Outcome::Draft,
+            };
         }
         Err(error) => {
             release_claim(store, io, id, &batch.batch_id);

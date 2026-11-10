@@ -17,6 +17,11 @@ struct World {
     /// `since` each paste was given.
     paste_result: Option<GuardedPaste>,
     paste_since: Vec<u64>,
+    /// Whether each paste carried `unless_draft` (#69).
+    paste_unless_draft: Vec<bool>,
+    /// The PTY core holds a draft of the user's: it refuses a paste with
+    /// `unless_draft`.
+    core_draft: bool,
     deny: bool,
     config: unpeel_core::supervision::SupervisorConfig,
     live: HashSet<String>,
@@ -42,13 +47,24 @@ impl HostIo for FakeIo {
     fn cursor(&self, _session_id: &str) -> Option<CursorLine> {
         self.with(|world| world.cursor.clone())
     }
-    fn paste(&self, session_id: &str, text: &str, since: u64) -> Result<GuardedPaste, String> {
+    fn paste(
+        &self,
+        session_id: &str,
+        text: &str,
+        since: u64,
+        unless_draft: bool,
+    ) -> Result<GuardedPaste, String> {
         self.with(|world| {
             world.paste_since.push(since);
+            world.paste_unless_draft.push(unless_draft);
             if let Some(error) = world.paste_error.clone() {
                 return Err(error);
             }
-            let result = world.paste_result.unwrap_or(GuardedPaste::Submitted);
+            let result = if unless_draft && world.core_draft {
+                GuardedPaste::NotPasted(Refusal::Draft)
+            } else {
+                world.paste_result.unwrap_or(GuardedPaste::Submitted)
+            };
             if !matches!(result, GuardedPaste::NotPasted(_)) {
                 world.pastes.push((session_id.into(), text.into()));
             }
@@ -89,6 +105,7 @@ fn fixture() -> Fixture {
             screen_changed_at: Some(T0 - 60_000),
             menu_prompt: false,
             last_input_at: None,
+            draft_guard: true,
         };
         world.cursor = Some(prompt(""));
         world.live = HashSet::from(["router".to_string()]);
@@ -494,6 +511,7 @@ fn typing_after_a_long_idle(fx: &mut Fixture, last_input_at: Option<u64>) {
         world.cursor = Some(prompt("can yo"));
         world.terminal.screen_changed_at = Some(T0 - 5_000);
         world.terminal.last_input_at = last_input_at;
+        world.core_draft = true;
     });
     report(fx, "result", T0 - 4_000);
 }
@@ -503,9 +521,103 @@ fn a_draft_already_on_the_line_when_an_item_comes_due_is_never_pasted_over() {
     let mut fx = fixture();
     typing_after_a_long_idle(&mut fx, Some(T0 - 5_000));
     // Quiet for 5 s and the item 4 s old: only the draft guard can hold it.
-    fx.step(&router(Status::Idle), T0);
+    // No empty prompt is known yet, so the PTY core refuses the paste.
+    fx.step_and_settle(&router(Status::Idle), T0);
+    fx.step(&router(Status::Idle), T0 + 1_000);
     assert_eq!(fx.hold().as_deref(), Some("draft"));
     assert!(fx.pastes().is_empty(), "never paste over a draft");
+}
+
+#[test]
+fn an_older_core_holds_typing_with_no_known_empty_prompt_as_a_draft() {
+    let mut fx = fixture();
+    typing_after_a_long_idle(&mut fx, Some(T0 - 5_000));
+    fx.io.with(|world| world.terminal.draft_guard = false);
+    fx.step(&router(Status::Idle), T0);
+    assert_eq!(fx.hold().as_deref(), Some("draft"));
+    assert!(
+        fx.io.with(|world| world.paste_since.is_empty()),
+        "nothing asked"
+    );
+}
+
+/// A Worker started with its first task opens on a startup menu, and a
+/// person answers it at T0 + 5 s: their key is typing, and the drain has
+/// not seen the Worker's empty prompt yet (#69).
+fn a_person_answers_a_startup_menu(fx: &mut Fixture) -> SessionRow {
+    report(fx, "first task", T0 - 10_000);
+    fx.step(&router(Status::Starting), T0);
+    fx.step(&router(Status::Attention), T0 + 1_000);
+    fx.io
+        .with(|world| world.terminal.last_input_at = Some(T0 + 5_000));
+    let idle = router(Status::Idle);
+    fx.step(&idle, T0 + 6_000);
+    assert_eq!(fx.hold().as_deref(), Some("draft"), "a key 1 s ago");
+    idle
+}
+
+#[test]
+fn a_core_with_the_draft_guard_decides_after_a_person_answers_a_startup_menu() {
+    let mut fx = fixture();
+    let idle = a_person_answers_a_startup_menu(&mut fx);
+    fx.step_and_settle(&idle, T0 + 8_000);
+    assert_eq!(fx.pastes().len(), 1, "the menu's key started no draft");
+    assert_eq!(fx.io.with(|world| world.paste_unless_draft.clone()), [true]);
+}
+
+#[test]
+fn an_older_core_keeps_the_task_held_after_a_person_answers_a_startup_menu() {
+    let mut fx = fixture();
+    fx.io.with(|world| world.terminal.draft_guard = false);
+    let idle = a_person_answers_a_startup_menu(&mut fx);
+    fx.step(&idle, T0 + 8_000);
+    fx.step(&idle, T0 + 60_000);
+    assert_eq!(fx.hold().as_deref(), Some("draft"));
+    assert!(
+        fx.io.with(|world| world.paste_since.is_empty()),
+        "nothing asked"
+    );
+}
+
+#[test]
+fn a_draft_the_core_refuses_is_asked_about_again_only_after_the_user_types() {
+    let mut fx = fixture();
+    let idle = a_person_answers_a_startup_menu(&mut fx);
+    fx.io.with(|world| world.core_draft = true);
+    fx.step_and_settle(&idle, T0 + 8_000);
+    let announced = fx.announced();
+    for at in [T0 + 9_000, T0 + 10_000, T0 + 60_000] {
+        fx.step(&idle, at);
+        assert_eq!(fx.hold().as_deref(), Some("draft"));
+    }
+    assert_eq!(fx.io.with(|world| world.paste_since.len()), 1, "asked once");
+    assert_eq!(fx.announced(), announced + 1, "only the draft hold");
+    assert!(fx.pastes().is_empty());
+
+    // The user erases the draft: once typing has been quiet, the core is
+    // asked again and takes the paste.
+    fx.io.with(|world| {
+        world.core_draft = false;
+        world.terminal.last_input_at = Some(T0 + 61_000);
+    });
+    fx.step(&idle, T0 + 63_999);
+    assert_eq!(fx.hold().as_deref(), Some("draft"), "still typing");
+    fx.step_and_settle(&idle, T0 + 64_000);
+    assert_eq!(fx.pastes().len(), 1);
+}
+
+#[test]
+fn a_draft_held_by_the_core_tells_the_user_once_it_has_held_long_enough() {
+    let mut fx = fixture();
+    let idle = a_person_answers_a_startup_menu(&mut fx);
+    fx.io.with(|world| world.core_draft = true);
+    fx.step_and_settle(&idle, T0 + 8_000);
+    // Held since the step that saw the menu's key.
+    assert!(fx.step(&idle, T0 + 6_000 + DRAFT_NOTIFY_MS - 1).is_empty());
+    assert_eq!(fx.step(&idle, T0 + 6_000 + DRAFT_NOTIFY_MS).len(), 1);
+    assert!(fx
+        .step(&idle, T0 + 6_000 + DRAFT_NOTIFY_MS + 1_000)
+        .is_empty());
 }
 
 #[test]
