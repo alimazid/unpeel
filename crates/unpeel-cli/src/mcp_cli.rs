@@ -31,7 +31,8 @@ Family verbs over the same dispatcher:
                  | wait [selector=… | load=… | ms=…] | <action> [key=value ...]
   unpeel artifacts publish <image-path>
   unpeel current                      you and your pane neighbors (App context)
-  unpeel report <summary> [--status update|done|blocked] [--details TEXT]
+  unpeel report <summary> --to <session id|super_agent>
+                 [--status update|done|blocked] [--details TEXT]
   unpeel worktree create <name> [--branch B] [--base REF] [--project ID]
   unpeel agents <action> [key=value ...]
   unpeel skills <action> [key=value ...]
@@ -245,13 +246,30 @@ pub fn current(args: &[String]) -> i32 {
     call("sessions", arguments, Some("current"))
 }
 
-/// `unpeel report <summary> [--status S] [--details D] [--no-submit]`
+/// `unpeel report <summary> --to <id|super_agent> [--status S] [--details D] [--no-submit]`
 pub fn report(args: &[String]) -> i32 {
+    let Some(arguments) = report_arguments(args) else {
+        eprintln!(
+            "usage: unpeel report <summary> --to <session id|super_agent> \
+[--status update|done|blocked] [--details TEXT]"
+        );
+        return 1;
+    };
+    call("sessions", arguments, Some("report"))
+}
+
+/// The `report` arguments in `args`; `None` without a summary.
+fn report_arguments(args: &[String]) -> Option<Map<String, Value>> {
     let mut arguments = Map::new();
     let mut summary: Vec<String> = Vec::new();
     let mut iter = args.iter();
     while let Some(word) = iter.next() {
         match word.as_str() {
+            // Fork-only (#82): the target, `super_agent` included.
+            "--to" => {
+                let Some(value) = iter.next() else { break };
+                arguments.insert("session_id".into(), Value::String(value.clone()));
+            }
             "--status" => {
                 let Some(value) = iter.next() else { break };
                 arguments.insert("status".into(), Value::String(value.clone()));
@@ -273,13 +291,12 @@ pub fn report(args: &[String]) -> i32 {
         }
     }
     if summary.is_empty() && !arguments.contains_key("summary") {
-        eprintln!("usage: unpeel report <summary> [--status update|done|blocked] [--details TEXT]");
-        return 1;
+        return None;
     }
     if !summary.is_empty() {
         arguments.insert("summary".into(), Value::String(summary.join(" ")));
     }
-    call("sessions", arguments, Some("report"))
+    Some(arguments)
 }
 
 /// `unpeel worktree create <name> [--branch B] [--base REF] [--project ID]`
@@ -404,5 +421,28 @@ mod tests {
         assert_eq!(arguments["note"], "quoted");
         assert!(parse_args(&["--json".to_string()]).is_err());
         assert!(parse_args(&["--json".to_string(), "[1]".to_string()]).is_err());
+    }
+
+    #[test]
+    fn report_takes_its_target_with_to() {
+        let words = [
+            "No",
+            "new",
+            "commits",
+            "--to",
+            "super_agent",
+            "--status",
+            "done",
+        ]
+        .map(String::from);
+        let arguments = report_arguments(&words).unwrap();
+        assert_eq!(arguments["session_id"], "super_agent");
+        assert_eq!(arguments["summary"], "No new commits");
+        assert_eq!(arguments["status"], "done");
+        // --json still names any argument, the target included.
+        let words = ["hi", "--json", "{\"session_id\":\"abc\"}"].map(String::from);
+        assert_eq!(report_arguments(&words).unwrap()["session_id"], "abc");
+        // A summary is still required.
+        assert!(report_arguments(&["--to".to_string(), "abc".to_string()]).is_none());
     }
 }

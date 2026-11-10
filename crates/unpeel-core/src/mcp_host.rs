@@ -2075,9 +2075,11 @@ pub(crate) fn legacy_sessions_tool_definitions() -> Vec<Value> {
         }),
         json!({
             "name": "list_sessions",
+            // Fork-only (#82): the Super Agent's mark.
             "description": "List running Unpeel terminal sessions (agents and shells). \
         Use this only to choose a target, then call inspect_session before deeper reads. \
-        The calling session is marked with \"self\": true and cannot be written to.",
+        The calling session is marked with \"self\": true and cannot be written to. \
+        The workspace's Super Agent is marked with \"super_agent\": true.",
             "inputSchema": {
                 "type": "object",
                 "properties": {},
@@ -2268,18 +2270,22 @@ pub(crate) fn legacy_sessions_tool_definitions() -> Vec<Value> {
         }),
         json!({
             "name": "report_to_group",
-            // Fork-only: a Worker's or a Run's report to the Super Agent (ADR 0010).
+            // Fork-only: a Worker's or a Run's report to the Super Agent (ADR 0010),
+            // and its address (#82).
             "description": "Send a structured update or final result to another session. \
         The ordinary write policy applies, regardless of sidebar group, except that while a \
         Host runs a report to the Super Agent from its Worker or a Scheduled Task's Run needs no \
-        approval. With no Host running the report is typed at once, and it fails like \
+        approval. session_id \"super_agent\" reaches the workspace's Super Agent, whatever its \
+        id is when the report is sent (it changes on every Resume), through the same policy as \
+        its id; with no Super Agent the report fails at once and nothing is sent. \
+        With no Host running the report is typed at once, and it fails like \
         send_text with 'Not sent (typing)' or 'Not sent (draft)' while the user is typing there \
         or has unsent input on its line: nothing was written, so report again once they are \
         done.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
-                    "session_id": { "type": "string", "description": "Target session id from list_sessions." },
+                    "session_id": { "type": "string", "description": "Target session id from list_sessions, or \"super_agent\" for the workspace's Super Agent." },
                     "status": {
                         "type": "string",
                         "enum": ["update", "done", "blocked"],
@@ -2843,6 +2849,7 @@ fn tool_list_sessions(_args: &Value) -> Result<String, String> {
     let caller_group = caller
         .as_ref()
         .map(|manifest| effective_group_id(manifest, &known_projects));
+    let router_id = crate::supervision::router_id(); // Fork-only (#82): one read for the mark
     let mut manifests = session_host::list_manifests();
     // Show every running session to an enabled, known caller. Write access is
     // reported separately per target and never inferred from sidebar groups.
@@ -2887,6 +2894,8 @@ fn tool_list_sessions(_args: &Value) -> Result<String, String> {
                 "self": self_id.as_deref() == Some(session.id.as_str()),
             })
         })
+        // Fork-only (#82)
+        .map(|row| crate::supervision_mcp::mark_super_agent(row, router_id.as_deref()))
         .collect();
 
     serde_json::to_string_pretty(&json!({ "sessions": sessions }))
@@ -3450,6 +3459,8 @@ fn tool_report(args: &Value) -> Result<String, String> {
     let caller = caller_manifest()
         .ok_or_else(|| "report requires the calling session to have a manifest.".to_string())?;
     let target_session_id = required_str(args, "session_id")?;
+    // Fork-only (#82): `super_agent` is the Super Agent marked at send time.
+    let target_session_id = &crate::supervision_mcp::resolve_report_target(target_session_id)?;
     let target = load_manifest(target_session_id)
         .ok_or_else(|| format!("Session '{target_session_id}' is no longer available."))?;
     // Fork-only: with a Host worker the report is queued in the target's
@@ -4972,6 +4983,13 @@ mod tests {
         .expect("scoped sessions help");
         assert!(one.contains("send_keys"));
         assert!(!one.contains("### report"));
+
+        // Fork-only (#82): the Super Agent's address and its mark.
+        for action in ["report", "list"] {
+            let one = run_tool("sessions", &json!({ "action": "help", "help_for": action }))
+                .expect("scoped sessions help");
+            assert!(one.contains("super_agent"), "{action} help: {one}");
+        }
 
         let agents_help_text =
             run_tool("agents", &json!({ "action": "help" })).expect("agents help");

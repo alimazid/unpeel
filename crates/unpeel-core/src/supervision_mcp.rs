@@ -159,6 +159,42 @@ pub(crate) fn immediate_report_result(message: String) -> String {
     inbox::immediate_report_result(message)
 }
 
+/// The `report` address of this workspace's Super Agent (#82). Its id
+/// changes on every Resume, and a Run is told nothing about it.
+const SUPER_AGENT_ADDRESS: &str = "super_agent";
+
+/// The Session a `report` to `session_id` goes to: the `super_agent`
+/// address is the Router marked now, read at send time; anything else is
+/// the id as given. With no Super Agent the report fails here, before any
+/// write gate, so it never waits on an approval prompt.
+pub(crate) fn resolve_report_target(session_id: &str) -> Result<String, String> {
+    report_target(session_id, crate::supervision::router_id)
+}
+
+fn report_target(
+    session_id: &str,
+    router_id: impl FnOnce() -> Option<String>,
+) -> Result<String, String> {
+    if session_id.trim() != SUPER_AGENT_ADDRESS {
+        return Ok(session_id.to_owned());
+    }
+    router_id().ok_or_else(|| {
+        "No Super Agent in this workspace, so nothing was sent: session_id \"super_agent\" \
+reaches the Session the user made Super Agent. Report to a session id from list instead."
+            .to_string()
+    })
+}
+
+/// A `sessions list` row with `super_agent: true` when it is this
+/// workspace's Super Agent (#82); every other row is left as it was.
+pub(crate) fn mark_super_agent(row: Value, router_id: Option<&str>) -> Value {
+    let is_router = router_id.is_some() && row.get("id").and_then(Value::as_str) == router_id;
+    merge_extras(
+        row,
+        is_router.then(|| serde_json::json!({ "super_agent": true })),
+    )
+}
+
 /// `send_text` to `target_id`, taken over before the write gate, as
 /// `route_report`: a Worker's message to its Router goes through the Inbox.
 /// `None`: upstream's paste path.
@@ -432,6 +468,45 @@ mod tests {
         let merged = merge_extras(base, Some(json!({ "inbox": { "pending": 2 } })));
         assert_eq!(merged["current_session"]["id"], "s");
         assert_eq!(merged["inbox"]["pending"], 2);
+    }
+
+    #[test]
+    fn the_super_agent_address_is_the_router_marked_now() {
+        let marked = || Some("router-2".to_string());
+        assert_eq!(
+            report_target("super_agent", marked).as_deref(),
+            Ok("router-2")
+        );
+        assert_eq!(
+            report_target(" super_agent ", marked).as_deref(),
+            Ok("router-2")
+        );
+        // Any other target is the id as given, without reading the mark.
+        let unread = || -> Option<String> { panic!("the mark is read only for the address") };
+        assert_eq!(report_target("4f0c", unread).as_deref(), Ok("4f0c"));
+        assert_eq!(
+            report_target("Super_Agent", unread).as_deref(),
+            Ok("Super_Agent")
+        );
+    }
+
+    #[test]
+    fn the_super_agent_address_fails_clearly_without_a_super_agent() {
+        let refused = report_target("super_agent", || None).unwrap_err();
+        assert!(refused.contains("No Super Agent"), "{refused}");
+        assert!(refused.contains("nothing was sent"), "{refused}");
+    }
+
+    #[test]
+    fn only_the_super_agents_row_wears_the_mark() {
+        let row = |id: &str| json!({ "id": id, "label": "x" });
+        let marked = mark_super_agent(row("router"), Some("router"));
+        assert_eq!(marked["super_agent"], true);
+        assert_eq!(marked["id"], "router");
+        // Every other row, and every row with no Super Agent, is left out.
+        assert_eq!(mark_super_agent(row("other"), Some("router")), row("other"));
+        assert_eq!(mark_super_agent(row("router"), None), row("router"));
+        assert_eq!(mark_super_agent(json!({}), Some("router")), json!({}));
     }
 
     #[test]
