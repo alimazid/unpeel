@@ -29,6 +29,16 @@ look and the write:
   program leaves there later is never taken for the user's. A select menu
   takes the keys, so it neither starts nor refuses a draft, and the one
   under it survives. A new program in the foreground drops the draft.
+- **Which menu (#72).** The menu detector scans the whole screen for a
+  footer's hints, so output that quotes a menu, or the user's own line,
+  read as one. For the guard a menu counts only when its footer is on a row
+  below a shown cursor; with the cursor hidden it counts anywhere on screen,
+  as before. The attention badge and the phone's menu bar keep the whole
+  screen. Where the cursor sits while a runtime's menu waits decided it:
+  Claude Code hides it and parks it on the selected option, under it on
+  the "Type something." option, and Codex hides it wherever it last drew,
+  or shows it in a picker's search field, above the options. Both show it
+  on the input line at an idle prompt. See the survey below.
 - **What the keys left (#65).** While only text and Backspace typed the
   draft, the core also keeps that text: text adds to it, Backspace takes
   off its last character. Any other key (arrows, Tab, Escape, control
@@ -78,6 +88,37 @@ paste carries `unless_draft` as well, and a `draft` refusal holds the task
 would no longer give cannot strand a Worker nobody types into. An older
 core holds it until a clean turn, as before.
 
+### Where the cursor sits at a menu (#72)
+
+Real journals (`output.bin`, 60 Sessions on this machine and its backups)
+replayed through the core's `TerminalViewportState` at 400×100, sampled at
+the end of each update. The Sessions ran Claude Code 2.1 (2.1.312 at the
+time of the survey) at 120 to 352 columns; its alternate-screen renderer
+places every row itself, so the rows below are as drawn and only wrapping
+differs. Rows and columns count from the top left of the screen, from 0.
+The replay helper was not kept: it fed a journal in pieces split at each
+update's end and ran the menu detector on every piece.
+
+- Claude Code's question menu (AskUserQuestion), four Sessions: each update
+  ends by moving the cursor to the bottom row, then to column 0 of the
+  selected `❯ N.` row, without `?25h`, so the cursor stays hidden. For
+  example options on rows 68–76 and the footer on 78, the cursor on 68; after
+  Down, on 70 with `❯ 2.`. Footers sat 6 to 14 rows below it.
+- Its permission prompt (`Esc to cancel · Tab to amend`): hidden, column 1
+  of ` ❯ 1. Yes` on row 76; options 76–77, footer 79.
+- Its "Type something." option, while the user typed an answer: shown and
+  blinking, at column 128 in the typed text on that option's row 72;
+  options 64–74, footer 76.
+- Its idle prompt: every update ends on the input row, column 2, and shows
+  the cursor (`CUP rows-3;3`, 1-based, then `?25h`).
+- Codex: no journal holds a Codex menu (the one Codex Session ran with
+  approvals bypassed, and the real `codex` is not run here). Its source
+  (`codex-rs/tui`, `custom_terminal.rs` `draw_with_size`) hides the cursor
+  when a frame sets no position, leaving it at the last cell drawn; the
+  update picker, the approval overlay and the list pickers set none, and a
+  picker's on-demand search sets it on its `Search ›` row, above the
+  options and footer. At an idle composer it is shown on the input row.
+
 ## Considered Options
 
 - **Hold the send and deliver it when the box is clear.** Rejected: the
@@ -95,6 +136,14 @@ core holds it until a clean turn, as before.
 - **Take a Worker's first idle line after its menu as its empty prompt
   (#69).** Rejected: the person who answered the menu may have typed there
   already, the paused draft #38 fixed.
+- **Scope the menu to the cursor's row and below, shown or hidden (#72).**
+  Rejected: a hidden cursor is wherever the program last drew, below the
+  footer as easily as above it. A menu above it would read as none, a key
+  there would start a draft, and the agent's answer to the menu would be
+  refused as `draft`.
+- **Count a footer on the cursor's own row (#72).** Rejected: that row is
+  the user's line, which can say "enter to confirm or esc to cancel". No
+  runtime surveyed waits at a menu with the cursor on its footer.
 - **Ask the core again every 10 s while a draft holds the Inbox (#69).**
   Rejected: a draft can sit for hours, and each ask claims the batch,
   writes, releases it and announces on the state bus.
@@ -120,10 +169,17 @@ zero, a picker the menu detector misses taking a Backspace, a masked
 secret drawn with a glyph not on the list, an Enter that does not send (a
 completion accepted, a backslash continuation) until the next key, and a
 draft hidden for 500 ms behind something that is no menu, with the cursor
-shown elsewhere, that comes back while the screen is still busy. Menu-like text anywhere on screen reads as a menu, so a draft under
-it does not refuse (#72).
+shown elsewhere, that comes back while the screen is still busy.
+Menu-like text anywhere on screen still reads as a menu while the cursor
+is hidden, so a draft under it does not refuse then: a program that keeps
+the cursor hidden, or a read caught mid-redraw (#72). Footer-like text
+below a shown cursor (a status line) reads as a menu too. A program whose
+menu waits with the cursor shown on or under its footer would have its
+keys start a draft; none surveyed does.
 
 The Inbox keeps ADR 0008's guard and asks this one only while it knows no
-empty prompt (#69), so that paste inherits the early ends above, menu-like
-text on screen included (#72). `report` without a Host worker takes this
+empty prompt (#69), so that paste inherits the early ends above. While
+the whole-screen scan sees a menu the drain holds `attention` and does not
+paste at all; a draft typed under quoted menu text (#72) still holds it
+`draft` once that text goes. `report` without a Host worker takes this
 one (#66).
