@@ -117,7 +117,7 @@ struct ScheduledSectionModelTests {
     // MARK: Order
 
     @Test
-    func tasksListSoonestNextRunFirstThenUnscheduledThenPaused() {
+    func tasksListSoonestNextRunFirstThenNotScheduledThenPaused() {
         let items = ScheduledSectionRows.resolve(
             tasks: [
                 task("sch_off", "Archive", enabled: false),
@@ -144,7 +144,7 @@ struct ScheduledSectionModelTests {
     }
 
     @Test
-    func tasksDueAtTheSameTimeKeepTheirPlaceByNameThenID() {
+    func tiedTasksKeepTheirPlaceByShownNameThenID() {
         let tasks = [
             task("sch_u", " ", next: at(7, 9, 0)),
             task("sch_2", "Briefing", next: at(7, 9, 0)),
@@ -155,12 +155,6 @@ struct ScheduledSectionModelTests {
             task("sch_p2", "Paused", enabled: false),
             task("sch_p1", "Paused", enabled: false),
         ]
-        let order = { (tasks: [RemoteScheduledTask]) in
-            ScheduledSectionRows.resolve(
-                tasks: tasks, runs: [:], expanded: [], keptSessionIDs: [],
-                now: at(6, 22, 10), calendar: calendar
-            ).map(\.id)
-        }
         // Names compare as shown: trimmed, any case, a blank one as "Untitled task".
         let expected = [
             "task:sch_b", "task:sch_1", "task:sch_2", "task:sch_u",
@@ -193,12 +187,6 @@ struct ScheduledSectionModelTests {
 
     @Test
     func theOrderFollowsAFiredPausedOrResumedTask() {
-        let order = { (tasks: [RemoteScheduledTask]) in
-            ScheduledSectionRows.resolve(
-                tasks: tasks, runs: [:], expanded: [], keptSessionIDs: [],
-                now: at(7, 9, 50), calendar: calendar
-            ).map(\.id)
-        }
         let other = task("sch_b", "Backup", next: at(7, 18, 0))
         #expect(order([other, task("sch_a", "Briefing", next: at(7, 9, 43))]) == ["task:sch_a", "task:sch_b"])
         // It fired; the Host moved its next run to tomorrow.
@@ -452,6 +440,13 @@ struct ScheduledSectionModelTests {
     }
 
     private func ms(_ date: Date) -> Int64 { Int64(date.timeIntervalSince1970 * 1000) }
+
+    /// The ids of the collapsed rows `tasks` resolve to.
+    private func order(_ tasks: [RemoteScheduledTask]) -> [String] {
+        ScheduledSectionRows.resolve(
+            tasks: tasks, runs: [:], expanded: [], keptSessionIDs: [], now: at(6, 22, 10), calendar: calendar
+        ).map(\.id)
+    }
 
     private func task(
         _ id: String,

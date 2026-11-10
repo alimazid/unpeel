@@ -122,29 +122,29 @@ enum ScheduledSectionRows {
         }
     }
 
-    /// Display only; the Host's list keeps its own order. Enabled tasks
-    /// with a next run come first, soonest first (one whose time can't be
-    /// read last among them), then enabled ones with none ("Not
-    /// scheduled"), then paused ones ("Off"). Ties go by the shown name,
-    /// then id, so rows sharing a time keep their places between refreshes.
+    /// Display only; the Host's list keeps its own order. Ties go by the
+    /// shown name, then id, so rows sharing a time keep their places
+    /// between refreshes.
     private static func displayOrder(_ tasks: [RemoteScheduledTask], calendar: Calendar) -> [RemoteScheduledTask] {
         tasks
-            .map { task in (task: task, key: OrderKey(task, calendar: calendar)) }
+            .map { task in (task: task, key: SortKey(task, calendar: calendar)) }
             .sorted { $0.key.precedes($1.key) }
             .map(\.task)
     }
 
-    private struct OrderKey {
-        enum Group: Int { case due, unreadable, notScheduled, paused }
+    private struct SortKey {
+        /// In list order. A dated next run sorts soonest first; one whose
+        /// time can't be read here comes after those.
+        enum Group: Comparable { case dated, unreadable, notScheduled, paused }
 
         let group: Group
-        let due: Date?
+        let date: Date?
         let name: String
         let id: String
 
         init(_ task: RemoteScheduledTask, calendar: Calendar) {
-            let due = task.enabled ? task.nextRun.flatMap { nextRunDate($0, calendar: calendar) } : nil
-            self.due = due
+            let date = task.enabled ? task.nextRun.flatMap { nextRunDate($0, calendar: calendar) } : nil
+            self.date = date
             self.name = title(task)
             self.id = task.id
             if !task.enabled {
@@ -152,13 +152,13 @@ enum ScheduledSectionRows {
             } else if task.nextRun == nil {
                 group = .notScheduled
             } else {
-                group = due == nil ? .unreadable : .due
+                group = date == nil ? .unreadable : .dated
             }
         }
 
-        func precedes(_ other: OrderKey) -> Bool {
-            if group != other.group { return group.rawValue < other.group.rawValue }
-            if let due, let otherDue = other.due, due != otherDue { return due < otherDue }
+        func precedes(_ other: SortKey) -> Bool {
+            if group != other.group { return group < other.group }
+            if let date, let otherDate = other.date, date != otherDate { return date < otherDate }
             let order = name.localizedCaseInsensitiveCompare(other.name)
             return order == .orderedSame ? id < other.id : order == .orderedAscending
         }
