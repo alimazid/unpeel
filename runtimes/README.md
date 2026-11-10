@@ -213,8 +213,8 @@ transcript roots and format, and version-dependent behavior.
   leaving its process tree moves nothing. An in-process module runs the
   same binary itself, named by the string literal `"{{UNPEEL_HOST_BIN}}"`,
   and asks again for every event (`runtimes/omp/assets/extensions/`).
-  `runtimes/hook_reporter_tests.rs` holds every asset that posts `/hook/`
-  to it.
+  `runtimes/hook_reporter_tests.rs` checks that every asset that posts
+  `/hook/` carries it.
   Finish bounded delivery before returning; provider-level asynchronous
   hooks can reorder opening and closing events even when the script waits
   for its own HTTP requests. An adapter may opt into

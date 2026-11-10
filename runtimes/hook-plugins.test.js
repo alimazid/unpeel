@@ -343,7 +343,7 @@ for (const [exitCode, delivered] of [[3, false], [0, true], [4, true], [1, true]
       capture.close();
       fake.cleanup();
       installed.cleanup();
-      rmSync(trace, { force: true });
+      rmSync(join(trace, ".."), { recursive: true, force: true });
       omp.cleanup();
     }
   });
@@ -399,7 +399,7 @@ test("OMP asks the identity checker again for every event", async () => {
     capture.close();
     fake.cleanup();
     installed.cleanup();
-    rmSync(trace, { force: true });
+    rmSync(join(trace, ".."), { recursive: true, force: true });
     omp.cleanup();
   }
 });

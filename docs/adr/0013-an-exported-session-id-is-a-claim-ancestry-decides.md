@@ -75,6 +75,7 @@ The omp extension posts from inside its process, without the reporter.
 Until #75 it skipped the check; since #75 it spawns the same checker, baked
 into the module at install as a string literal, before every event. It
 never reuses a yes: a process whose parent exits is reparented out of the
-Session's tree and keeps the environment. App Kit Apps post from the
-Session's own program and skip the check. Reporters installed by an older
+Session's tree and keeps the environment. App Kit Apps
+(`post_hook_event`) still post without the check: an App is the Session's
+own program, so #75 left them as they are. Reporters installed by an older
 build carry no check until the post-upgrade refresh rewrites them.

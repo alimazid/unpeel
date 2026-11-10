@@ -17,7 +17,7 @@ the installed extension with Bun, the way OMP does, once per event:
   busy, the durable marker stays as it was, the trace records each refusal,
   and the checker says no.
 
-The real OMP is never run. Without Bun the case is skipped with a NOTE.
+The real OMP is never run. Without Bun the case is SKIPPED with a NOTE.
 """
 
 import json
@@ -132,7 +132,7 @@ def bun():
 def body(case):
     runtime = bun()
     if not runtime:
-        case.note("Bun unavailable — skipped the omp extension identity check")
+        case.note("omp_hook_identity SKIPPED: Bun unavailable")
         return
     home = case.home
     home.project("p", "OMP", home.root)
