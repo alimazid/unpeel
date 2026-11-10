@@ -5,7 +5,8 @@ age (15 minutes, shortened here through the test-only
 `UNPEEL_INBOX_RIDE_ALONG_PROMOTE_MS`) it starts a delivery as if it were a
 wake item: never before that age, then as one paste. A promoted item waits
 on a busy agent like a wake item, and the age counts from its stored queue
-time, so a Host restart does not hold it as ride-along again.
+time, so a Host restart does not hold it as ride-along again. A report
+queued beside a promoted item is told it goes out `when_idle` (#85).
 """
 
 import json
@@ -155,9 +156,16 @@ def body(case):
         case.check("a young item on a busy agent is held as ride-along",
                    bool(service.wait_for(lambda: hold().get("reason") == "ride_along", timeout=5)),
                    str(hold()))
+        queued, done = progress("young too")
+        case.check("a report beside a young item is told it rides along",
+                   queued.get("delivery") == "held:ride_along", (done.stdout + done.stderr)[:300])
         case.check("once promoted it is held for the busy agent",
                    bool(service.wait_for(lambda: hold().get("reason") == "busy",
                                          timeout=PROMOTE_MS / 1000 + 10)), str(hold()))
+        # A report queued beside the promoted item goes out with it (#85).
+        queued, done = progress("after promotion")
+        case.check("a report beside a promoted item is told it goes out when idle",
+                   queued.get("delivery") == "when_idle", (done.stdout + done.stderr)[:300])
         # A hold's `since` is when the drain first held for that reason.
         promoted_after = (hold().get("since") or 0) - stored_at
         case.check("promoted no earlier than its age",
@@ -188,8 +196,10 @@ def body(case):
         case.check("idle again, the promoted item is pasted",
                    bool(service.wait_for(lambda: pasted().count(HEADER) == 2, timeout=20)),
                    pasted()[-300:])
-        case.check("it carries the item", "still going" in pasted().split(HEADER)[-1],
-                   pasted()[-600:])
+        last = pasted().split(HEADER)[-1]
+        case.check("it carries the promoted batch",
+                   all(summary in last for summary in ["still going", "young too",
+                                                       "after promotion"]), pasted()[-900:])
         case.check("and its turn confirms it",
                    bool(service.wait_for(lambda: inbox().get("pending") == [], timeout=15)),
                    str(inbox())[:400])

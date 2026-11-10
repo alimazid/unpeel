@@ -2274,7 +2274,7 @@ pub(crate) fn legacy_sessions_tool_definitions() -> Vec<Value> {
         json!({
             "name": "report_to_group",
             // Fork-only: a Worker's or a Run's report to the Super Agent (ADR 0010),
-            // and its address (#82).
+            // and its address (#82); ride-along promotion (#83, #85).
             "description": "Send a structured update or final result to another session. \
         The ordinary write policy applies, regardless of sidebar group, except that while a \
         Host runs a report to the Super Agent from its Worker or a Scheduled Task's Run needs no \
@@ -2282,6 +2282,9 @@ pub(crate) fn legacy_sessions_tool_definitions() -> Vec<Value> {
         id is when the report is sent (it changes on every Resume), through the same policy as \
         its id; with no Super Agent the report fails at once and nothing is sent. list marks \
         the Super Agent's row \"super_agent\": true. \
+        While a Host runs the report queues in the target's Inbox (see inbox): an update or \
+        progress report rides along with the next batch, or goes out by itself after 15 \
+        minutes. \
         With no Host running the report is typed at once, and it fails like \
         send_text with 'Not sent (typing)' or 'Not sent (draft)' while the user is typing there \
         or has unsent input on its line: nothing was written, so report again once they are \
@@ -4992,6 +4995,13 @@ mod tests {
                 .expect("scoped sessions help");
             assert!(one.contains("super_agent"), "{action} help: {one}");
         }
+        // Fork-only (#85): ride-along promotion is told in report's help.
+        let report = run_tool(
+            "sessions",
+            &json!({ "action": "help", "help_for": "report" }),
+        )
+        .expect("scoped sessions help");
+        assert!(report.contains("15 minutes"), "{report}");
 
         let agents_help_text =
             run_tool("agents", &json!({ "action": "help" })).expect("agents help");
