@@ -969,11 +969,10 @@ final class UnpeelStore: ObservableObject {
     /// one that started while away has its verdict before the next swipe.
     /// Fork-only (#77): the same for every other workspace on this Mac, whose
     /// pages wear globes too. The shown one's live rows probe their own, and
-    /// a remote Host's loopback URLs name ports on that machine, so the
-    /// caller passes only local keys.
-    private func probeSitesOfPooledLocalSnapshots(_ snapshots: [String: RemoteBootstrapSnapshot]) {
+    /// a remote Host's loopback URLs name ports on that machine.
+    private func probeSitesOfLandedPooledSnapshots(_ landed: [String: RemoteBootstrapSnapshot]) {
         let shownKey = currentScopeWorkspaceKey
-        for (key, snapshot) in snapshots where key != shownKey {
+        for (key, snapshot) in landed where WorkspaceListOrder.isLocalKey(key) && key != shownKey {
             let index = LocalSiteIndex.fromHost(sessions: snapshot.sessions, projects: snapshot.projects)
             for url in index.candidatesOfEveryFamily {
                 _ = localURLVerdict(url)
@@ -1911,15 +1910,15 @@ final class UnpeelStore: ObservableObject {
                 )
             }
             .store(in: &remoteScopeCancellables)
-        // Fork-only (#73): the pool's snapshots of workspaces on this Mac, for
-        // their sites. Fork-only (#77): every one, not just this instance's
-        // own Local.
+        // Fork-only (#73, #77): each pooled snapshot as it lands, for the
+        // sites of the workspace on this Mac it belongs to.
         workspacePool.$snapshots
-            .map { $0.filter { WorkspaceListOrder.isLocalKey($0.key) } }
-            .removeDuplicates()
+            .scan(([String: RemoteBootstrapSnapshot](), [String: RemoteBootstrapSnapshot]())) { ($0.1, $1) }
+            .map { previous, current in current.filter { previous[$0.key] != $0.value } }
+            .filter { !$0.isEmpty }
             .receive(on: DispatchQueue.main)
-            .sink { [weak self] snapshots in
-                self?.probeSitesOfPooledLocalSnapshots(snapshots)
+            .sink { [weak self] landed in
+                self?.probeSitesOfLandedPooledSnapshots(landed)
             }
             .store(in: &remoteScopeCancellables)
         // The pool itself starts later — ~2s after the first window paint

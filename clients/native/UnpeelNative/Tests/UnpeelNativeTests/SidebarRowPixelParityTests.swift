@@ -255,20 +255,8 @@ final class SidebarRowPixelParityTests: XCTestCase {
     }
 
     /// Another local workspace's Sessions run on this Mac too, so its page
-    /// wears the globe its live page will (#77).
-    func testALocalWorkspacesPageWearsItsSite() throws {
-        let swipe = try WorkspaceSwipe(servedSite: Self.site, probe: { _ in true })
-        defer { swipe.finish() }
-        swipe.store.noteLocalURLVerdictForTesting(url: Self.site, probePassed: true)
-        SidebarListContentBuilder.invalidate()
-
-        let content = try XCTUnwrap(SidebarListContentBuilder.content(for: swipe.neighbor, store: swipe.store))
-
-        XCTAssertEqual(content.inputs.localSites, ["alpha": [Self.site]])
-    }
-
-    /// So the swap shows no globe appearing: the incoming page wears the one
-    /// the live page it becomes does.
+    /// wears the globe its live page will (#77), and the swap shows no globe
+    /// appearing.
     func testALocalWorkspacesGlobedPageIsPixelIdenticalToTheLivePageItBecomes() throws {
         let swipe = try WorkspaceSwipe(servedSite: Self.site, probe: { _ in true })
         defer { swipe.finish() }

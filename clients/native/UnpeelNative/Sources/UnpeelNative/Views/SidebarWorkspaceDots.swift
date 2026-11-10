@@ -1130,9 +1130,9 @@ enum SidebarListContentBuilder {
         let content: SidebarListContent?
         // Fork-only (#57): a branch mark's name lives outside the snapshot.
         let branches = store.workspacePool.checkouts.nameGeneration
-        // Fork-only (#73, #77): so does a site's verdict, on any page on this
+        // Fork-only (#73, #77): so does a site's verdict, on a page on this
         // Mac.
-        let verdicts = store.localSiteVerdictGeneration
+        let verdicts = isLocalMachine(row) ? store.localSiteVerdictGeneration : 0
         if isCurrentInstance(row) {
             // As a Host client, Local truth is the worker's snapshot — the
             // pool mirrors it under this instance's own key while the
