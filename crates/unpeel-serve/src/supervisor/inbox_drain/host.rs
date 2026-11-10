@@ -6,10 +6,30 @@ use std::time::Duration;
 
 use unpeel_core::session_input::GuardedPaste;
 
+use super::inbox_rules::RIDE_ALONG_PROMOTE_MS;
 use super::{CursorLine, HostIo, Settings, TerminalFacts};
 
 const SNAPSHOT_TIMEOUT: Duration = Duration::from_millis(100);
 const PASTE_TIMEOUT: Duration = Duration::from_secs(5);
+/// Test Hosts (`UNPEEL_TEST=1`) may shorten [`RIDE_ALONG_PROMOTE_MS`].
+const RIDE_ALONG_PROMOTE_OVERRIDE_ENV: &str = "UNPEEL_INBOX_RIDE_ALONG_PROMOTE_MS";
+
+/// How long ride-along items wait before they start a delivery on this Host.
+fn ride_along_promote_ms() -> u64 {
+    ride_along_promote_from(
+        std::env::var("UNPEEL_TEST").ok().as_deref(),
+        std::env::var(RIDE_ALONG_PROMOTE_OVERRIDE_ENV)
+            .ok()
+            .as_deref(),
+    )
+}
+
+pub(super) fn ride_along_promote_from(test_host: Option<&str>, override_ms: Option<&str>) -> u64 {
+    override_ms
+        .filter(|_| test_host == Some("1"))
+        .and_then(|value| value.trim().parse().ok())
+        .unwrap_or(RIDE_ALONG_PROMOTE_MS)
+}
 
 /// The draft guard's view of `snapshot`'s input line. Suggested input (a
 /// reply the program proposes, drawn faint at the cursor) is left out: it
@@ -91,6 +111,7 @@ impl HostIo for HostTerminal {
         Settings {
             config,
             policy_deny,
+            ride_along_promote_ms: ride_along_promote_ms(),
         }
     }
 

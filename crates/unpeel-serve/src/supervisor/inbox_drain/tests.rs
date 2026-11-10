@@ -2,10 +2,12 @@
 
 use super::*;
 use crate::sessions::{SessionRow, Status, StatusSource};
+use crate::supervisor::inbox_rules::RIDE_ALONG_PROMOTE_MS;
 use std::sync::Mutex;
 use unpeel_core::session_inbox::{ItemKind, NewItem, Priority, Sender};
 
 const T0: u64 = 1_800_000_000_000;
+const MINUTE: u64 = 60_000;
 
 #[derive(Default)]
 struct World {
@@ -24,6 +26,7 @@ struct World {
     core_draft: bool,
     deny: bool,
     config: unpeel_core::supervision::SupervisorConfig,
+    ride_along_promote_ms: u64,
     live: HashSet<String>,
     /// State-bus announcements so far.
     announced: usize,
@@ -80,6 +83,7 @@ impl HostIo for FakeIo {
             Settings {
                 config: world.config,
                 policy_deny: world.deny,
+                ride_along_promote_ms: world.ride_along_promote_ms,
             }
         })
     }
@@ -109,6 +113,7 @@ fn fixture() -> Fixture {
         };
         world.cursor = Some(prompt(""));
         world.live = HashSet::from(["router".to_string()]);
+        world.ride_along_promote_ms = RIDE_ALONG_PROMOTE_MS;
     });
     let drain = Drain::new(store.clone(), io.clone());
     Fixture {
@@ -145,6 +150,12 @@ fn report(fx: &Fixture, summary: &str, at: u64) -> String {
         .enqueue("router", item(summary, "done", Priority::Wake), at)
         .unwrap()
         .item_id
+}
+
+fn progress(fx: &Fixture, summary: &str, at: u64) {
+    fx.store
+        .enqueue("router", item(summary, "progress", Priority::RideAlong), at)
+        .unwrap();
 }
 
 /// The Router, at its prompt per its hooks, with Claude in front.
@@ -343,15 +354,9 @@ fn a_batch_that_is_never_confirmed_stops_at_its_last_attempt() {
 }
 
 #[test]
-fn a_ride_along_item_alone_never_pastes_but_goes_with_the_next_wake_item() {
+fn a_ride_along_item_alone_waits_and_goes_with_the_next_wake_item() {
     let mut fx = fixture();
-    fx.store
-        .enqueue(
-            "router",
-            item("halfway", "progress", Priority::RideAlong),
-            T0 - 60_000,
-        )
-        .unwrap();
+    progress(&fx, "halfway", T0 - 60_000);
     let idle = router(Status::Idle);
     for second in 0..5 {
         fx.step(&idle, T0 + second * 1_000);
@@ -364,6 +369,78 @@ fn a_ride_along_item_alone_never_pastes_but_goes_with_the_next_wake_item() {
     let pastes = fx.pastes();
     assert_eq!(pastes.len(), 1);
     assert!(pastes[0].contains("halfway") && pastes[0].contains("finished"));
+}
+
+#[test]
+fn a_ride_along_item_waits_fourteen_minutes_and_starts_a_delivery_at_fifteen() {
+    let mut fx = fixture();
+    progress(&fx, "halfway", T0);
+    let idle = router(Status::Idle);
+    fx.step(&idle, T0 + 14 * MINUTE);
+    assert!(fx.pastes().is_empty());
+    assert_eq!(fx.hold().as_deref(), Some("ride_along"));
+
+    progress(&fx, "nearly there", T0 + 14 * MINUTE);
+    fx.step_and_settle(&idle, T0 + 15 * MINUTE);
+    let pastes = fx.pastes();
+    assert_eq!(pastes.len(), 1, "{pastes:?}");
+    assert!(pastes[0].contains("halfway") && pastes[0].contains("nearly there"));
+}
+
+#[test]
+fn a_restarted_drain_counts_a_ride_along_item_from_its_stored_queue_time() {
+    let mut fx = fixture();
+    progress(&fx, "halfway", T0);
+    let idle = router(Status::Idle);
+    fx.step(&idle, T0 + 14 * MINUTE);
+    assert_eq!(fx.hold().as_deref(), Some("ride_along"));
+
+    // A Host restart: a new drain over the same Inbox.
+    fx.drain = Drain::new(fx.store.clone(), fx.io.clone());
+    fx.step_and_settle(&idle, T0 + 15 * MINUTE);
+    assert_eq!(fx.pastes().len(), 1, "the clock did not start over");
+}
+
+#[test]
+fn a_promoted_item_waits_on_a_busy_target_a_menu_and_a_draft_like_a_wake_item() {
+    let mut fx = fixture();
+    progress(&fx, "halfway", T0);
+    let due = T0 + 15 * MINUTE;
+    fx.step(&router(Status::Busy), due);
+    assert_eq!(fx.hold().as_deref(), Some("busy"));
+
+    let idle = router(Status::Idle);
+    fx.io.with(|world| world.terminal.menu_prompt = true);
+    fx.step(&idle, due + 1_000);
+    assert_eq!(fx.hold().as_deref(), Some("attention"));
+
+    fx.io.with(|world| world.terminal.menu_prompt = false);
+    typed(&fx, prompt("next"), due + 9_000);
+    fx.step(&idle, due + 10_000);
+    assert_eq!(fx.hold().as_deref(), Some("draft"));
+    assert!(fx.pastes().is_empty());
+
+    typed(&fx, prompt(""), due + 11_000);
+    fx.step_and_settle(&idle, due + 20_000);
+    assert_eq!(fx.pastes().len(), 1);
+}
+
+#[test]
+fn only_a_test_host_shortens_the_ride_along_promotion() {
+    assert_eq!(ride_along_promote_from(None, None), RIDE_ALONG_PROMOTE_MS);
+    assert_eq!(
+        ride_along_promote_from(None, Some("5000")),
+        RIDE_ALONG_PROMOTE_MS
+    );
+    assert_eq!(
+        ride_along_promote_from(Some("0"), Some("5000")),
+        RIDE_ALONG_PROMOTE_MS
+    );
+    assert_eq!(ride_along_promote_from(Some("1"), Some(" 5000 ")), 5_000);
+    assert_eq!(
+        ride_along_promote_from(Some("1"), Some("soon")),
+        RIDE_ALONG_PROMOTE_MS
+    );
 }
 
 #[test]

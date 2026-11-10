@@ -20,9 +20,9 @@ use crate::sessions::{SessionRow, Status};
 mod draft_guard;
 mod host;
 use draft_guard::{guarded_line, CoreRefusal, EmptyCheck, GuardFacts, Guarded};
-#[cfg(test)]
-use host::cursor_line;
 pub use host::HostTerminal;
+#[cfg(test)]
+use host::{cursor_line, ride_along_promote_from};
 
 /// A paste with no prompt submit or Busy edge this long after it is pasted
 /// again, as a redelivery of the same batch.
@@ -58,7 +58,7 @@ pub trait HostIo: Send + Sync {
     /// Session ids that still have a manifest (Inbox GC).
     fn live_session_ids(&self) -> HashSet<String>;
     /// The supervisor's settings and the app-wide write policy, from one
-    /// app-state read.
+    /// app-state read, plus this Host's ride-along promotion age.
     fn settings(&self) -> Settings;
     /// Shared Inbox state changed (items delivered, a hold published, an
     /// Inbox collected): announce `SessionMarkers` on the state bus.
@@ -316,6 +316,8 @@ impl Drain {
             id,
             row,
             stats,
+            starts_delivery: stats.wake
+                || inbox_rules::promoted(stats.oldest_at, now, settings.ride_along_promote_ms),
             settings,
             now,
             turn_began_at,
@@ -504,6 +506,8 @@ pub struct Settings {
     pub config: SupervisorConfig,
     /// App-wide "Writing to other sessions: Deny".
     pub policy_deny: bool,
+    /// [`inbox_rules::RIDE_ALONG_PROMOTE_MS`], shortened on test Hosts.
+    pub ride_along_promote_ms: u64,
 }
 
 impl Settings {
@@ -517,6 +521,9 @@ struct Candidate<'a> {
     id: &'a str,
     row: &'a SessionRow,
     stats: PendingStats,
+    /// A wake item is pending, or ride-along items were promoted (#83):
+    /// only then does a delivery start.
+    starts_delivery: bool,
     settings: &'a Settings,
     now: u64,
     turn_began_at: u64,
@@ -558,7 +565,7 @@ fn ready_to_paste(
     if line == Err(HoldReason::Snapshot) {
         return Err(HoldReason::Snapshot);
     }
-    if !candidate.stats.wake {
+    if !candidate.starts_delivery {
         return Err(HoldReason::RideAlong);
     }
     let guarded = line.map_err(|hold| draft_hold(target, candidate, hold, notices))?;
@@ -587,8 +594,8 @@ fn draft_hold(
 }
 
 /// Whether the target may take a paste now (`Ok(confident)`); a hold that
-/// ends the idle episode drops its baseline. Ride-along items alone never
-/// report the target's own hold.
+/// ends the idle episode drops its baseline. Ride-along items alone report
+/// the target's own hold only once promoted.
 fn readiness(
     target: &mut Target,
     candidate: &Candidate,
@@ -600,7 +607,7 @@ fn readiness(
             if reason.ends_idle_episode() {
                 target.episode = None;
             }
-            Err(if candidate.stats.wake {
+            Err(if candidate.starts_delivery {
                 reason
             } else {
                 HoldReason::RideAlong
