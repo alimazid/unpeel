@@ -57,12 +57,13 @@ const WAITS_FOR_IDLE: &[&str] = &[
     "unconfirmed",
     "ride_along",
 ];
-/// Holds that say nothing about whether ride-along items were promoted
-/// (#83): the drain publishes `ride_along` for young items, and `quiet`,
-/// `snapshot`, `in_flight` and `unconfirmed` before it asks
-/// (`unpeel-serve` `inbox_drain::ready_to_paste`, `settle_paste`); a new
-/// item does not join a batch already in flight either.
-const SILENT_ON_RIDE_ALONG: &[&str] = &[
+/// Holds that do not show the drain promoted ride-along items (#83): it
+/// publishes `ride_along` for young items, and `quiet`, `snapshot`,
+/// `in_flight` and `unconfirmed` before it asks (`unpeel-serve`
+/// `inbox_drain::ready_to_paste`, `settle_paste`); a new item does not join
+/// a batch already in flight either. Every other hold comes only once the
+/// items start a delivery.
+const PROMOTION_NOT_SHOWN: &[&str] = &[
     "ride_along",
     "quiet",
     "snapshot",
@@ -152,12 +153,13 @@ fn string_list(args: &Value, key: &str) -> Result<Vec<String>, String> {
 /// When a queued report goes out: `when_idle`, or `held:<reason>` while the
 /// supervisor holds the target's Inbox for something that does not clear
 /// by itself. With no wake item pending, the published hold says whether
-/// the drain promoted the ride-along items (#85): until it shows a hold of
-/// the target's own, they wait as `held:ride_along`. An `exited` hold goes
-/// through either way, since nothing is pasted to that target.
+/// the drain promoted the ride-along items (#85): until it shows a hold
+/// outside [`PROMOTION_NOT_SHOWN`], they wait as `held:ride_along`. An
+/// `exited` hold goes through either way, since nothing is pasted to that
+/// target.
 pub(super) fn delivery(wake_pending: bool, hold: Option<&Hold>) -> String {
     let reason = hold.map(|hold| hold.reason.as_str());
-    let promoted = reason.is_some_and(|reason| !SILENT_ON_RIDE_ALONG.contains(&reason));
+    let promoted = reason.is_some_and(|reason| !PROMOTION_NOT_SHOWN.contains(&reason));
     if !wake_pending && !promoted {
         return "held:ride_along".into();
     }
@@ -545,9 +547,10 @@ mod tests {
             "held:policy_deny"
         );
         // Nothing pending wakes the target and the drain has not promoted the
-        // ride-along items: they wait for the next wake batch.
-        for silent in [None, hold("ride_along")] {
-            assert_eq!(delivery(false, silent.as_ref()), "held:ride_along");
+        // ride-along items: they wait for the next wake batch, or until they
+        // are promoted.
+        for young in [None, hold("ride_along")] {
+            assert_eq!(delivery(false, young.as_ref()), "held:ride_along");
         }
         // Holds the drain publishes before it asks about ride-along items, or
         // for a batch already claimed, which a new item does not join.

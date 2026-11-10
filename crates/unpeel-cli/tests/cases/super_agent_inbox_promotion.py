@@ -162,7 +162,7 @@ def body(case):
         case.check("once promoted it is held for the busy agent",
                    bool(service.wait_for(lambda: hold().get("reason") == "busy",
                                          timeout=PROMOTE_MS / 1000 + 10)), str(hold()))
-        # #85: a report queued into the promoted batch goes out with it.
+        # A report queued beside the promoted item goes out with it (#85).
         queued, done = progress("after promotion")
         case.check("a report beside a promoted item is told it goes out when idle",
                    queued.get("delivery") == "when_idle", (done.stdout + done.stderr)[:300])
