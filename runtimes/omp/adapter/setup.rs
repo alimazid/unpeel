@@ -90,7 +90,8 @@ pub(crate) fn install_lifecycle_extension_at(path: &Path) -> Result<(), String> 
             )
         })?;
     }
-    write_file_atomic(path, OMP_LIFECYCLE_EXTENSION, "OMP lifecycle extension")
+    let extension = crate::hook_assets::reporter_module(OMP_LIFECYCLE_EXTENSION);
+    write_file_atomic(path, &extension, "OMP lifecycle extension")
 }
 
 /// Merge one `unpeel` entry into OMP's own MCP config. OMP starts every
