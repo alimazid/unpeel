@@ -6,8 +6,8 @@ import UnpeelShared
 /// until the Local Host answers, then every Local Host snapshot. Never from
 /// the selected scope's maps, because the Local pooled page can read it while
 /// another workspace is selected (#57). A scoped local workspace keeps its
-/// own (`scopedLocalSites`), and the Local pooled page builds one from the
-/// snapshot it renders (#73).
+/// own (`scopedLocalSites`), and each pooled page on this Mac builds one from
+/// the snapshot it renders (#73, #77).
 struct LocalSiteIndex: Equatable {
     struct Server: Equatable {
         let sessionID: String

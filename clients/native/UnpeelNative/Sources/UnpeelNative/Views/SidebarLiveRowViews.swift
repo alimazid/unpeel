@@ -46,8 +46,9 @@ extension SidebarLiveTreeList {
             shortcutHint: store.projectShortcutHintIndex(forProject: node.id),
             hasLiveSessions: node.sessions.contains(where: \.isLive),
             // Host-probed live URLs are family-wide, so only the top-level
-            // project row wears the globe.
-            localSiteURLs: inputs.isLocalScope && isTopLevel
+            // project row wears the globe. A scoped local workspace's
+            // Sessions run on this Mac too, so its sites open (#77).
+            localSiteURLs: inputs.isLocalMachine && isTopLevel
                 ? store.localSiteURLs(forProjectFamilyOf: node.id)
                 : [],
             // Plain git projects (worktree children already carry their
