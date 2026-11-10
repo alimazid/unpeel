@@ -165,7 +165,10 @@ pub fn apply_activation(
 }
 
 fn command_plugin<'a>(command: &str, apps: &'a [crate::apps_mcp::CatalogApp]) -> Option<&'a str> {
-    let head = command.split_whitespace().next()?.trim_matches(['\'', '"']);
+    let head = crate::integrations::shared::without_env_assignments(command)
+        .split_whitespace()
+        .next()?
+        .trim_matches(['\'', '"']);
     let executable = std::path::Path::new(head).file_name()?.to_str()?;
     if let Some(app) = apps.iter().find(|app| app.binary == executable) {
         return Some(&app.id);
@@ -370,6 +373,18 @@ mod tests {
                 {"id":"unpeel.app.markdown","name":"Markdown","command":"unpeel-markdown","installed":true}
             ]),
         )
+    }
+
+    #[test]
+    fn command_plugin_skips_leading_environment_assignments() {
+        assert_eq!(
+            command_plugin("CLINE_SESSION_BACKEND_MODE=local cline", &[]),
+            Some("bot.cline.cli")
+        );
+        assert_eq!(
+            command_plugin("CLINE_SESSION_BACKEND_MODE=local", &[]),
+            None
+        );
     }
 
     #[test]

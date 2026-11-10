@@ -48,8 +48,14 @@ root = ".cline/data/sessions"
 extensions = ["json"]
 file_name_suffix = ".messages.json"
 
+# `CLINE_SESSION_BACKEND_MODE=local` keeps Cline's runtime inside the Session.
+# Without it, Cline 3.x (checked in the 3.0.74 bundle) runs the session in its
+# shared hub daemon when one is running, and otherwise starts one, which runs
+# MCP servers and hooks outside the Session with the starter's environment,
+# so the Unpeel tools and hooks can't tell which Session they belong to
+# (docs/agents/providers.md). The preset runs as typed; nothing is appended.
 [[suggested_presets]]
 id = "cline"
-label = "cline"
-command = "cline"
+label = "CLINE_SESSION_BACKEND_MODE=local cline"
+command = "CLINE_SESSION_BACKEND_MODE=local cline"
 quick_launch = false

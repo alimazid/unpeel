@@ -470,6 +470,7 @@ mod tests {
                 for command in [
                     alias.clone(),
                     format!("/opt/unpeel/bin/{alias} --test-flag"),
+                    format!("UNPEEL_TEST_MODE=local {alias}"),
                 ] {
                     let actual = integration_for_command(&command)
                         .unwrap_or_else(|| panic!("missing dispatch for {command}"));
@@ -494,6 +495,30 @@ mod tests {
         assert!(integration_for_command("/opt/unpeel/bin/not-an-agent --flag").is_none());
         assert!(!has_integration_installer("/opt/unpeel/bin/not-an-agent"));
         assert!(run_integration_installer("/opt/unpeel/bin/not-an-agent").is_err());
+    }
+
+    /// The preset a runtime suggests names that runtime, including a preset
+    /// that sets the provider's environment first (Cline's
+    /// `CLINE_SESSION_BACKEND_MODE=local cline`, #79).
+    #[test]
+    fn every_suggested_preset_dispatches_to_its_own_runtime() {
+        let catalog = crate::runtime_catalog::builtin_runtime_catalog();
+        for runtime in catalog.current_platform_descriptors() {
+            for preset in &runtime.suggested_presets {
+                assert_eq!(
+                    runtime_for_command(&preset.command).map(|value| value.id.as_str()),
+                    Some(runtime.id.as_str()),
+                    "{}",
+                    preset.command
+                );
+            }
+        }
+        assert_eq!(
+            runtime_for_command("CLINE_SESSION_BACKEND_MODE=local cline")
+                .map(|value| value.legacy_slug.as_str()),
+            Some("cline")
+        );
+        assert!(runtime_for_command("CLINE_SESSION_BACKEND_MODE=local").is_none());
     }
 
     /// A launch grant is never registration evidence on its own: the

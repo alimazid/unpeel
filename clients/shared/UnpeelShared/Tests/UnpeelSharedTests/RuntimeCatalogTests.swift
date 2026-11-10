@@ -90,6 +90,36 @@ final class RuntimeCatalogTests: XCTestCase {
         XCTAssertNil(UnpeelRuntimeCatalog.runtime(command: "npm run dev"))
     }
 
+    /// The shell reads leading `NAME=value` words as the command's
+    /// environment, so they never name the runtime (#79).
+    func testCommandLookupSkipsLeadingEnvironmentAssignments() {
+        XCTAssertEqual(
+            UnpeelRuntimeCatalog.runtime(command: "CLINE_SESSION_BACKEND_MODE=local cline")?.stableID,
+            "bot.cline.cli"
+        )
+        XCTAssertEqual(
+            UnpeelRuntimeCatalog.runtime(command: " A=1 _B= /opt/homebrew/bin/codex --no-daemon")?.stableID,
+            "com.openai.codex"
+        )
+        XCTAssertEqual(
+            UnpeelRuntimeCatalog.runtime(command: "A='x y' B=\"1 2\" cline --plan")?.stableID,
+            "bot.cline.cli"
+        )
+        XCTAssertNil(UnpeelRuntimeCatalog.runtime(command: "'A=1 cline'"))
+        XCTAssertNil(UnpeelRuntimeCatalog.runtime(command: "CLINE_SESSION_BACKEND_MODE=local"))
+        XCTAssertNil(UnpeelRuntimeCatalog.runtime(command: "1A=x cline"))
+        XCTAssertNil(UnpeelRuntimeCatalog.runtime(command: "A-B=x cline"))
+        for runtime in UnpeelRuntimeCatalog.runtimes {
+            for preset in runtime.suggestedPresets {
+                XCTAssertEqual(
+                    UnpeelRuntimeCatalog.runtime(command: preset.command)?.stableID,
+                    runtime.stableID,
+                    preset.command
+                )
+            }
+        }
+    }
+
     func testPlatformFilteringUsesMacOSAndLinuxDescriptorFixtures() {
         let macOS = runtimeFixture(slug: "macos-only", platform: .macos)
         let linux = runtimeFixture(slug: "linux-only", platform: .linux)

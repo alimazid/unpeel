@@ -234,7 +234,7 @@ pub fn provider_label_for_command(command: &str) -> String {
     if let Some(provider) = transcript_provider_for_command(command) {
         return provider.as_str().to_string();
     }
-    let Some(head) = shell_words(command).first().cloned() else {
+    let Some(head) = command_words(command).into_iter().next() else {
         return "shell".to_string();
     };
     Path::new(&head)
@@ -280,7 +280,7 @@ pub fn transcript_status_hint(manifest: &HostedSessionManifest) -> &'static str 
 }
 
 pub fn transcript_provider_for_command(command: &str) -> Option<TranscriptProvider> {
-    let words = shell_words(command);
+    let words = command_words(command);
     let head = words.first()?.as_str();
     let head = Path::new(head)
         .file_name()
@@ -1786,6 +1786,17 @@ fn read_head_utf8(path: &Path, max_bytes: u64) -> Result<String, String> {
         .read_to_end(&mut buf)
         .map_err(|e| format!("Failed to read {}: {e}", path.display()))?;
     Ok(String::from_utf8_lossy(&buf).into_owned())
+}
+
+/// The shell words of `command` from the executable on: leading
+/// `NAME=value` environment assignments are dropped (#79).
+fn command_words(command: &str) -> Vec<String> {
+    let words = shell_words(command);
+    let skip = words
+        .iter()
+        .take_while(|word| crate::integrations::shared::is_env_assignment(word))
+        .count();
+    words.into_iter().skip(skip).collect()
 }
 
 fn shell_words(command: &str) -> Vec<String> {

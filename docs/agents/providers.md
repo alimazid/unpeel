@@ -191,10 +191,28 @@ Cline (`cline` CLI):
 - Merges the MCP shim as `unpeel` into Cline's own user MCP settings
   (`CLINE_MCP_SETTINGS_PATH`, else `<CLINE_DATA_DIR>/settings/`, else
   `~/.cline/data/settings/cline_mcp_settings.json`); other entries are kept
-- Cline runs exactly as typed, including its shared detached hub. The hook
-  and the shim's gate resolve the calling Session from the hosted
-  environment or process ancestry, so concurrent sessions stay distinct
-  without per-session hubs.
+- **Cline runs in a Session with `CLINE_SESSION_BACKEND_MODE=local`**, so the
+  suggested preset is `CLINE_SESSION_BACKEND_MODE=local cline`. Without it,
+  Cline 3.x (read from the published 3.0.74 bundle, not run here) starts its
+  TUI runtime with `backendMode: "auto"`, preferring its shared hub daemon:
+  if a hub is running, the session runs in it, and so do its MCP servers and
+  hooks. If none is running, the launch keeps the session local and also
+  starts a hub in the background for later launches. Node spawns the hub
+  `detached` (so it calls `setsid` and leads a POSIX session of its own) and
+  `unref`'d, with the environment of the `cline` that started it. Its MCP
+  servers get no tools, because the gate refuses an ancestry match across a
+  `setsid` helper (ADR 0014, #74). Its hooks carry the starter's
+  `UNPEEL_SESSION_ID`. While the starting `cline` still runs, they trace up
+  to that Session through it, so another Session's Cline turns move the
+  starter's activity (the #70 shape). Once the starter has exited, they are
+  refused. `CLINE_SESSION_BACKEND_MODE=local` keeps the runtime in the TUI's
+  process, inside the Session, and Resume keeps the assignment in front
+  (`... cline --id <id>`). `--yolo` and sandbox mode force the local backend
+  too. Nothing adds the variable at launch, so a preset made before this
+  change, or a `cline` typed by hand, still uses the hub. The Host's runtime
+  lookups (`integrations::command_head`, transcripts, plugins, the
+  observer's `sh -c` path), Resume, and the apps' runtime catalog skip
+  leading `NAME=value` words, so the preset still reads as Cline.
 - Does not use Cline 3.0.44's advertised `--hooks-dir`: current source assigns
   `CLINE_HOOKS_DIR` but never reads it when resolving hook paths
 - Cline exposes no approval-request hook, so custom `--auto-approve false`

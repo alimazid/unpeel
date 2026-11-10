@@ -237,8 +237,8 @@ public enum UnpeelRuntimeCatalog {
             suggestedPresets: [
                 UnpeelRuntimeSuggestedPreset(
                     id: "cline",
-                    label: "cline",
-                    command: "cline",
+                    label: "CLINE_SESSION_BACKEND_MODE=local cline",
+                    command: "CLINE_SESSION_BACKEND_MODE=local cline",
                     quickLaunch: false
                 ),
             ]
@@ -949,16 +949,45 @@ public enum UnpeelRuntimeCatalog {
         return runtimes[index]
     }
 
+    /// The runtime a command runs. Leading `NAME=value` words are the
+    /// command's environment, as the shell reads them, so
+    /// `CLINE_SESSION_BACKEND_MODE=local cline` names Cline (#79).
     public static func runtime(command: String) -> UnpeelRuntimeMetadata? {
-        let token = command
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-            .split(whereSeparator: { $0.isWhitespace })
-            .first
+        let token = shellWords(command)
+            .first(where: { !isEnvironmentAssignment($0) })
             .map(String.init)
         guard let token else { return nil }
         let head = (token as NSString).lastPathComponent.lowercased()
         guard let index = commandIndex[head] else { return nil }
         return runtimes[index]
+    }
+
+    /// Whitespace-separated words, quotes kept; a quoted space stays inside its word.
+    static func shellWords(_ command: String) -> [Substring] {
+        var words: [Substring] = []
+        var start: String.Index?
+        var quote: Character?
+        for index in command.indices {
+            let character = command[index]
+            if let open = quote {
+                if character == open { quote = nil }
+            } else if character.isWhitespace {
+                if let wordStart = start { words.append(command[wordStart..<index]) }
+                start = nil
+            } else {
+                if start == nil { start = index }
+                if character == "'" || character == "\"" { quote = character }
+            }
+        }
+        if let wordStart = start { words.append(command[wordStart...]) }
+        return words
+    }
+
+    /// A shell name (a letter or `_`, then letters, digits or `_`) and `=`.
+    static func isEnvironmentAssignment(_ word: Substring) -> Bool {
+        guard let equals = word.firstIndex(of: "="), let first = word.first,
+              first == "_" || (first.isASCII && first.isLetter) else { return false }
+        return word[..<equals].allSatisfy { $0 == "_" || ($0.isASCII && ($0.isLetter || $0.isNumber)) }
     }
 
     public static func runtimes(for platform: UnpeelRuntimePlatform) -> [UnpeelRuntimeMetadata] {
