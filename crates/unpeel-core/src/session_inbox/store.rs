@@ -91,11 +91,19 @@ impl Store {
         read_items(&dir.join(PENDING_DIR))
             .iter()
             .filter(|item| !dir.join(DELIVERED_DIR).join(file_name(&item.id)).exists())
-            .fold(PendingStats::default(), |stats, item| PendingStats {
-                items: stats.items + 1,
-                wake: stats.wake || item.priority == Priority::Wake,
-                oldest_at: Some(stats.oldest_at.map_or(item.at, |at| at.min(item.at))),
-                newest_at: Some(stats.newest_at.map_or(item.at, |at| at.max(item.at))),
+            .fold(PendingStats::default(), |stats, item| {
+                let wake = item.priority == Priority::Wake;
+                PendingStats {
+                    items: stats.items + 1,
+                    wake: stats.wake || wake,
+                    oldest_at: Some(stats.oldest_at.map_or(item.at, |at| at.min(item.at))),
+                    oldest_wake_at: match stats.oldest_wake_at {
+                        Some(at) if wake => Some(at.min(item.at)),
+                        None if wake => Some(item.at),
+                        kept => kept,
+                    },
+                    newest_at: Some(stats.newest_at.map_or(item.at, |at| at.max(item.at))),
+                }
             })
     }
 

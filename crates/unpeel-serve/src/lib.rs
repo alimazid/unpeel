@@ -23,6 +23,7 @@ pub mod computer;
 pub mod control;
 pub mod direct_path;
 pub mod driver;
+pub mod health; // Fork-only
 pub mod hook_listener;
 pub mod local_gateway;
 pub mod mobile;

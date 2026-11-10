@@ -184,6 +184,9 @@ pub struct PendingStats {
     /// promotes ride-along items by `oldest_at` (#83).
     pub wake: bool,
     pub oldest_at: Option<u64>,
+    /// When the oldest wake item was queued: with `oldest_at`, when a
+    /// delivery became due, for the Host's health check (#84).
+    pub oldest_wake_at: Option<u64>,
     pub newest_at: Option<u64>,
 }
 

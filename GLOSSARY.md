@@ -145,3 +145,11 @@ alerts about them. They arrive together as one batch when the Session is
 idle and nobody is typing into it. A Worker reaches its Router only through
 the Router's Inbox; so does a Run's report, with no approval prompt.
 _Avoid_: queue, mailbox, message buffer
+
+**Health Check**:
+The Host's look, every five minutes, for Scheduled Tasks and a Router that
+went wrong without anyone being told: a failed or skipped Run, a Run left
+waiting or blocked, a missed fire, a stopped Router, an Inbox that is not
+delivering. Each problem is told once, to the Router's Inbox and as a Mac
+notification, and again only after it cleared and came back.
+_Avoid_: watchdog (that is the Worker rules), monitor, heartbeat

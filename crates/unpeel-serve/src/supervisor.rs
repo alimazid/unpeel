@@ -20,7 +20,11 @@ mod watchdog;
 mod worker_alerts;
 mod worker_host;
 
+/// For the health check (#84): durations in its words, and when the drain
+/// promotes ride-along items.
+pub(crate) use inbox_drain::ride_along_promote_ms;
 pub use inbox_drain::{Notice, NoticeKind};
+pub(crate) use notices::duration;
 
 #[derive(Debug, Default)]
 pub struct Supervisor {

@@ -16,7 +16,8 @@ use serde_json::{Map, Value};
 
 mod config;
 pub use config::{
-    config_from_state, load_config, SupervisorConfig, SupervisorSetting, SUPERVISOR_SETTINGS,
+    config_from_state, load_config, seconds_mode_from, SupervisorConfig, SupervisorSetting,
+    SUPERVISOR_SETTINGS,
 };
 mod controller;
 pub use controller::{

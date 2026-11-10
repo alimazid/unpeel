@@ -27,6 +27,8 @@ use crate::platform_adapter::PlatformAdapterHub;
 use crate::relay::RelayUplink;
 use crate::sessions::{scan_sidebar, ScanCache, SessionRow, SidebarItem, SidebarModel, Status};
 
+// Fork-only: the health check's delivery (`driver/health.rs`, #84).
+mod health;
 // Fork-only: the Super Agent plumbing (`driver/super_agent.rs`).
 mod super_agent;
 
@@ -626,6 +628,8 @@ pub struct HostRuntime {
     schedules: crate::schedules::Scheduler,
     /// Fork-only: the Super Agent supervisor (`supervisor.rs`).
     supervisor: crate::supervisor::Supervisor,
+    /// Fork-only: the health check (`health/`, #84).
+    health: crate::health::HealthCheck,
     /// Last Host-wide sweep of abandoned resumable uploads.
     last_upload_sweep: Option<Instant>,
     last_activity_state_signature: Option<crate::activity_snapshot::ActivityStateSignature>,
@@ -789,6 +793,7 @@ impl HostRuntime {
             retention: crate::retention::Retention::default(),
             schedules: crate::schedules::Scheduler::default(),
             supervisor: Default::default(), // Fork-only
+            health: Default::default(),     // Fork-only
             last_upload_sweep: None,
             browser_engine_rx: if browser_engine_install_enabled() {
                 Some(spawn_browser_engine_install(&home))
@@ -951,6 +956,7 @@ impl HostRuntime {
             for notice in self.supervisor.step(&self.model, now_ms()) {
                 self.deliver_supervisor_notice(notice);
             }
+            self.check_health(); // Fork-only (#84)
             self.sweep_incomplete_uploads();
         } else if self.schedules.has_pending() {
             // Run now starts on the tick after it is accepted, not a rescan
@@ -2202,6 +2208,7 @@ impl HostRuntime {
             return;
         };
         let observed = self.deliver_run_notice(&schedule.id, session_id, &notice, now);
+        self.keep_run_failure(&schedule.id, session_id, &notice, now); // Fork-only (#84)
         let Some(session_id) = session_id.filter(|_| notice.marks_unread()) else {
             return;
         };
