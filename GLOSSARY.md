@@ -105,7 +105,9 @@ _Avoid_: AI preset, agent command
 One time a Scheduled Task came due and what came of it: done, needs you,
 failed to start, failed, or skipped, and "late" when it started well after
 its time. Most Runs have a Session; a skipped or failed-before-launch Run
-does not.
+does not. An agent Run is done at its first idle, then keeps following its
+Session: its end and reply move with each later turn, and the Session's
+last report rides on it (a blocked one needs you; a done one is final).
 _Avoid_: execution, job, instance, invocation
 
 **Superseded Run**:

@@ -17,7 +17,8 @@
 //! edge, is `needs_you`: no timeout and no kill, and a later done edge still
 //! makes it `done`. The agent exiting first is `failed` with its exit code.
 //! A task without instructions types nothing and is `done` once its agent
-//! is ready, its Session left to the user.
+//! is ready, its Session left to the user. A `done` Run with instructions
+//! keeps following its Session's later turns and reports (`follow`, #81).
 //!
 //! A Session's default "idle" (a source that has said nothing) is never an
 //! edge: only a status from a tier that spoke counts.
@@ -57,6 +58,9 @@ pub struct AgentObservation {
     pub activity: AgentActivity,
     /// [`WORKING_TIMEOUT_MS`], shortened on test Hosts.
     pub working_timeout_ms: u64,
+    /// A followed Run (`follow`): the Host saw its agent working or asking
+    /// since the Run's last line. Always false while the Run is in progress.
+    pub seen_working: bool,
 }
 
 /// The helper's progress typing the instructions.
@@ -257,12 +261,13 @@ fn follow(run: &ScheduleRun, agent: &AgentObservation, now_ms: u64) -> Option<Sc
 }
 
 /// The turn's reply: the program's own summary, else the Stop hook's final
-/// reply, either only from after the paste.
-fn reply_since(activity: &AgentActivity, prompted_at: u64) -> Option<String> {
+/// reply, either only from `since` on (the paste, or a followed Run's last
+/// line).
+pub(super) fn reply_since(activity: &AgentActivity, since: u64) -> Option<String> {
     let after = |reply: &Option<(String, u64)>| {
         reply
             .as_ref()
-            .filter(|(_, at)| *at >= prompted_at)
+            .filter(|(_, at)| *at >= since)
             .map(|(text, _)| text.clone())
     };
     crate::completion_snippet::finished_body(

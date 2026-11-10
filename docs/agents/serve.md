@@ -316,15 +316,17 @@ progress if there is one, else the newest outcome, `schedules::current_run`,
 the same Run the worker follows, so an occurrence skipped behind a live Run
 never hides it) and `GET
 /mobile/schedules/runs?scheduleID=<id>[&limit=<n>]` (`schedule.runs`: the
-history, newest first). Both read the disk, never the scheduler: definitions
-from `app-state.json`, the next run from the `clock.json` the worker
-publishes and the Runs from `runs.jsonl`. Bootstrap's `schedulesRevision`
-moves whenever either route would answer differently, and the worker pings
-the state bus (`schedules`) when a sweep starts or records a Run or saves a
-task's clock (its next run moved: a new task, an edit, a resume;
-`SweepEvent::Published`), so Controllers reread on the refresh they already
-have instead of polling, and a list read between a write and that sweep is
-corrected.
+history, newest first; a Run carries `report: {status, summary, atMs}`
+once its own Session reported and `needsAttention: true` while that report
+is blocked and the Run has not failed, #81, additive). Both read the disk,
+never the scheduler: definitions from `app-state.json`, the next run from
+the `clock.json` the worker publishes and the Runs from `runs.jsonl`.
+Bootstrap's `schedulesRevision` moves whenever either route would answer
+differently, and the worker pings the state bus (`schedules`) when a sweep
+starts or records a Run or saves a task's clock (its next run moved: a new
+task, an edit, a resume; `SweepEvent::Published`), so Controllers reread on
+the refresh they already have instead of polling, and a list read between a
+write and that sweep is corrected.
 `protocol/schedules-samples-v1.json` pins both bodies for the Host and the
 Swift DTOs. The Mac app's SCHEDULED section (`ScheduledSectionModel`) is the
 reader. The list route keeps the Host's order; the section shows the

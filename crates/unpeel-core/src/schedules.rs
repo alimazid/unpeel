@@ -13,6 +13,8 @@
 
 use serde::{Deserialize, Deserializer, Serialize};
 
+#[cfg(feature = "native-host")]
+pub mod run_report;
 pub mod run_sessions;
 #[cfg(feature = "native-host")]
 pub mod save;
@@ -319,9 +321,58 @@ pub struct ScheduleRun {
     /// When an agent Run's instructions were typed.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub prompted_at_ms: Option<u64>,
+    /// The Run Session's last `sessions report` during the Run (#81);
+    /// absent until it sends one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub report: Option<RunReport>,
+    /// A done agent Run whose Session ended (exited, stopped, or went away):
+    /// the Host follows it no more, even if the Session is resumed (#81).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub session_ended: bool,
+}
+
+/// What a Run's own agent said came of it, from its Session's last
+/// `sessions report` (#81). `status` is the report's, as it was sent:
+/// `done`, `blocked`, `update` or `progress` today, and a reader passes on
+/// one it does not know. A `blocked` report makes the Run need attention
+/// ([`ScheduleRun::needs_attention`]); a `done` one is the final word.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RunReport {
+    #[serde(default)]
+    pub status: String,
+    #[serde(default)]
+    pub summary: String,
+    /// When the Session sent it.
+    #[serde(default)]
+    pub at_ms: u64,
+}
+
+impl RunReport {
+    pub const DONE: &'static str = "done";
+    pub const BLOCKED: &'static str = "blocked";
+
+    pub fn is_done(&self) -> bool {
+        self.status == Self::DONE
+    }
+
+    pub fn is_blocked(&self) -> bool {
+        self.status == Self::BLOCKED
+    }
 }
 
 impl ScheduleRun {
+    /// The Run's own Session reported `blocked` and the Run has not failed
+    /// or been skipped: Controllers show it as needing attention whatever
+    /// its status (#81), which stays as it was so the Run never holds back
+    /// the next occurrence.
+    pub fn needs_attention(&self) -> bool {
+        self.report.as_ref().is_some_and(RunReport::is_blocked)
+            && matches!(
+                self.status,
+                RunStatus::Running | RunStatus::NeedsYou | RunStatus::Done
+            )
+    }
+
     /// An agent Run (a task on an Agent Preset): it follows its agent's
     /// lifecycle, which its `phase` records, instead of a command's exit.
     pub fn is_agent_run(&self) -> bool {
@@ -684,6 +735,8 @@ mod tests {
             snippet: None,
             phase: None,
             prompted_at_ms: None,
+            report: None,
+            session_ended: false,
         }
     }
 
@@ -743,6 +796,8 @@ mod tests {
             snippet: None,
             phase: None,
             prompted_at_ms: None,
+            report: None,
+            session_ended: false,
         };
         let folded = fold_runs([
             line("run_a", RunStatus::Running),
@@ -798,6 +853,43 @@ mod tests {
         )
         .unwrap();
         assert_eq!(newer.phase, Some(RunPhase::Unknown));
+    }
+
+    #[test]
+    fn a_blocked_report_needs_attention_unless_the_run_failed() {
+        let report = |status: &str| RunReport {
+            status: status.into(),
+            summary: "Waiting on a key".into(),
+            at_ms: 5,
+        };
+        let reported = |status, report| ScheduleRun {
+            report,
+            ..run_at("run_a", status, Some(1), Some(9))
+        };
+        for status in [RunStatus::Running, RunStatus::NeedsYou, RunStatus::Done] {
+            assert!(reported(status, Some(report("blocked"))).needs_attention());
+        }
+        for status in [
+            RunStatus::Failed,
+            RunStatus::FailedToStart,
+            RunStatus::Unknown,
+        ] {
+            assert!(!reported(status, Some(report("blocked"))).needs_attention());
+        }
+        for other in ["done", "update", "Blocked"] {
+            assert!(!reported(RunStatus::Done, Some(report(other))).needs_attention());
+        }
+        assert!(!reported(RunStatus::Done, None).needs_attention());
+
+        // Both #81 fields are additive: absent from a line without them.
+        let written = serde_json::to_value(reported(RunStatus::Done, None)).unwrap();
+        assert!(written.get("report").is_none() && written.get("session_ended").is_none());
+        let line: ScheduleRun = serde_json::from_value(serde_json::json!({
+            "run_id": "run_a", "status": "done", "session_ended": true,
+            "report": {"status": "blocked", "summary": "stuck", "at_ms": 5}
+        }))
+        .unwrap();
+        assert!(line.session_ended && line.needs_attention());
     }
 
     #[test]
