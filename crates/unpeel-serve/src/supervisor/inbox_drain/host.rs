@@ -15,7 +15,7 @@ const PASTE_TIMEOUT: Duration = Duration::from_secs(5);
 const RIDE_ALONG_PROMOTE_OVERRIDE_ENV: &str = "UNPEEL_INBOX_RIDE_ALONG_PROMOTE_MS";
 
 /// How long ride-along items wait before they start a delivery on this Host.
-fn ride_along_promote_ms() -> u64 {
+pub(crate) fn ride_along_promote_ms() -> u64 {
     ride_along_promote_from(
         std::env::var("UNPEEL_TEST").ok().as_deref(),
         std::env::var(RIDE_ALONG_PROMOTE_OVERRIDE_ENV)

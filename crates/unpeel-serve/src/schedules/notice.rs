@@ -106,8 +106,9 @@ pub fn for_recorded(
     })
 }
 
-/// The task's name as one short line; its id when it has none.
-fn title(schedule: &Schedule) -> String {
+/// The task's name as one short line; its id when it has none. Also the
+/// title of the health check's alerts about the task (#84).
+pub(crate) fn title(schedule: &Schedule) -> String {
     let name = schedule.name.trim();
     let name = if name.is_empty() {
         schedule.id.as_str()

@@ -20,6 +20,7 @@ use crate::sessions::{SessionRow, Status};
 mod draft_guard;
 mod host;
 use draft_guard::{guarded_line, CoreRefusal, EmptyCheck, GuardFacts, Guarded};
+pub(crate) use host::ride_along_promote_ms;
 pub use host::HostTerminal;
 #[cfg(test)]
 use host::{cursor_line, ride_along_promote_from};

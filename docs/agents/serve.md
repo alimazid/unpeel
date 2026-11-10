@@ -403,6 +403,62 @@ task left (`Scheduler::needs_sweep`), so that outcome is handled on the next
 rescan, never when some later task is created. Deleting a task stops none of
 its Run Sessions by itself.
 
+### Health check (fork-only, #84)
+
+`crate::health` runs in the workspace worker once per rescan when due:
+every 5 minutes on the wall clock (`CHECK_INTERVAL_MS`; a restart or a sleep
+keeps the pace), after the scheduler's sweep and the supervisor's step, so a
+Trigger that fired this tick has already moved its next run. No LLM. It
+reads the task definitions, each task's `clock.json` and `runs.jsonl`, the
+rows of the last rescan, the Super Agent mark and its Inbox
+(`health/host.rs`), and the rules are pure (`health/check.rs`, injected
+time):
+
+1. **Failed or skipped.** A task whose newest finished Run is `failed` or
+   `failed_to_start`, or whose newest Run is a `skipped` one with no Run
+   started since. Only a line recorded after the last check is news, so
+   history never alerts. One alert per task episode: again only after a Run
+   of it is done (failed) or starts (skipped).
+2. **Waiting.** The task's Run in progress is `needs_you` or its Session
+   row asks, for `RUN_WAITING_MS` (30 minutes) counted from when a check
+   first saw it so (the Run line has no such time); or its Run reported
+   `blocked` (#81, `needs_attention`) that long ago. The words say what to
+   do: answer the prompt in that Run's Session, or read its blocked report.
+3. **Missed fire.** An enabled task whose published next run
+   (`trigger::published_next_run`) passed `MISSED_FIRE_MS` (10 minutes) ago:
+   the scheduler moves it on whenever it fires or skips an occurrence, so a
+   next run that stays in the past means nothing started (a Run log that
+   will not read, a clock that will not save).
+4. **Super Agent down.** A Router mark whose Session is not running.
+5. **Inbox undelivered.** A delivery due in the Super Agent's Inbox for
+   `INBOX_UNDELIVERED_MS` (15 minutes): due from the oldest wake item's queue
+   time, or once the oldest item is old enough for ride-along promotion (#83,
+   `PendingStats::oldest_wake_at`, `oldest_at`), and never counted from
+   before a check saw the Super Agent running. The words name the hold.
+
+A new problem goes to the Super Agent's Inbox as one Host `report` (status
+`blocked`, wake, `about` the task or Session, label the task's name,
+deduped per episode) and to the Mac as an `alert` through
+`notification.deliver` (title the task's name or "Super Agent";
+`scheduleID` for a task, so a task without a Session is still a valid
+callback). Checks 4 and 5 are notification only, since the report would sit
+in the same Inbox; check 1's failures are report only, since the Run's own
+failure notice (`schedules::notice`) is already the Mac's. While the Super
+Agent is down the other reports still queue: the Inbox is durable and moves
+with Resume. A notification no app is connected to show (no adapter with
+`notification.deliver`), the Run failure notice included, is kept and shown
+in order once one connects; at most 20 are kept, and a kept health alert
+whose problem cleared before then is dropped.
+
+The state lives in `<UNPEEL_HOME>/health/state.json` (only this worker
+writes it: temp file + rename): the last check's time, every problem it saw
+with when its clock started and whether it alerted, when it first saw the
+Super Agent running, and the kept notifications. A problem alerts once, and
+again only after a check saw it gone and a later one saw it back, across
+restarts; a state file that will not read starts over (traced). Every alert
+is a `health` trace line. `UNPEEL_HEALTH_SECONDS=1` (tests only, with
+`UNPEEL_TEST`) reads the interval and every limit's minutes as seconds.
+
 ### Local sites on session rows (fork-only)
 
 A running Session that serves a local site carries `detectedLocalURLs`

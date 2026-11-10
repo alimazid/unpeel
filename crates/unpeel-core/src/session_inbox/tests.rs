@@ -723,6 +723,7 @@ fn pending_stats_count_items_and_spot_a_wake_item() {
             items: 2,
             wake: false,
             oldest_at: Some(100),
+            oldest_wake_at: None,
             newest_at: Some(250),
         }
     );
@@ -730,6 +731,11 @@ fn pending_stats_count_items_and_spot_a_wake_item() {
     let stats = store.pending_stats("router");
     assert!(stats.wake);
     assert_eq!((stats.items, stats.newest_at), (3, Some(400)));
+    // The health check's Inbox clock (#84): when the oldest wake item came.
+    assert_eq!(
+        (stats.oldest_at, stats.oldest_wake_at),
+        (Some(100), Some(400))
+    );
     store.ack_through("router", &done.item_id, 500).unwrap();
     assert_eq!(store.pending_stats("router"), PendingStats::default());
 }
