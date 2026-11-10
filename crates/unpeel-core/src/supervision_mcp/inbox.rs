@@ -57,6 +57,18 @@ const WAITS_FOR_IDLE: &[&str] = &[
     "unconfirmed",
     "ride_along",
 ];
+/// Holds that say nothing about whether ride-along items were promoted
+/// (#83): the drain publishes `ride_along` for young items, and `quiet`,
+/// `snapshot`, `in_flight` and `unconfirmed` before it asks
+/// (`unpeel-serve` `inbox_drain::ready_to_paste`, `settle_paste`); a new
+/// item does not join a batch already in flight either.
+const SILENT_ON_RIDE_ALONG: &[&str] = &[
+    "ride_along",
+    "quiet",
+    "snapshot",
+    "in_flight",
+    "unconfirmed",
+];
 
 /// A report as an Inbox item. The sender is always the calling Session: an
 /// MCP call can never speak as the Host. The summary leads the paste; the
@@ -139,12 +151,17 @@ fn string_list(args: &Value, key: &str) -> Result<Vec<String>, String> {
 
 /// When a queued report goes out: `when_idle`, or `held:<reason>` while the
 /// supervisor holds the target's Inbox for something that does not clear
-/// by itself (or nothing pending wakes the target yet).
+/// by itself. With no wake item pending, the published hold says whether
+/// the drain promoted the ride-along items (#85): until it shows a hold of
+/// the target's own, they wait as `held:ride_along`. An `exited` hold goes
+/// through either way, since nothing is pasted to that target.
 pub(super) fn delivery(wake_pending: bool, hold: Option<&Hold>) -> String {
-    if !wake_pending {
+    let reason = hold.map(|hold| hold.reason.as_str());
+    let promoted = reason.is_some_and(|reason| !SILENT_ON_RIDE_ALONG.contains(&reason));
+    if !wake_pending && !promoted {
         return "held:ride_along".into();
     }
-    match hold.map(|hold| hold.reason.as_str()) {
+    match reason {
         Some(reason) if !WAITS_FOR_IDLE.contains(&reason) => format!("held:{reason}"),
         _ => "when_idle".into(),
     }
@@ -403,7 +420,8 @@ pub(super) fn help_doc() -> Vec<(String, Value)> {
             busy or no_agent_authority). While a Host runs, report queues into the target's \
             Inbox instead of typing, and its result says queued, item_id, pending and delivery \
             (when_idle or held:<reason>); status done or blocked, or questions, wakes the \
-            target, while update and progress ride along with the next batch (submit is \
+            target, while update and progress ride along with the next batch, or go out by \
+            themselves once the oldest has waited 15 minutes (submit is \
             ignored). A report to the Super Agent from its Worker, or from a Scheduled Task's \
             Run, needs no approval.",
             "inputSchema": {
@@ -526,8 +544,34 @@ mod tests {
             delivery(true, hold("policy_deny").as_ref()),
             "held:policy_deny"
         );
-        // Nothing pending wakes the target: it waits for the next wake batch.
-        assert_eq!(delivery(false, hold("busy").as_ref()), "held:ride_along");
+        // Nothing pending wakes the target and the drain has not promoted the
+        // ride-along items: they wait for the next wake batch.
+        for silent in [None, hold("ride_along")] {
+            assert_eq!(delivery(false, silent.as_ref()), "held:ride_along");
+        }
+        // Holds the drain publishes before it asks about ride-along items, or
+        // for a batch already claimed, which a new item does not join.
+        for reason in ["quiet", "snapshot", "in_flight", "unconfirmed"] {
+            assert_eq!(
+                delivery(false, hold(reason).as_ref()),
+                "held:ride_along",
+                "{reason}"
+            );
+        }
+        // Promoted (#83, #85): the target's own hold, as for a wake item.
+        assert_eq!(delivery(false, hold("busy").as_ref()), "when_idle");
+        assert_eq!(delivery(false, hold("debounce").as_ref()), "when_idle");
+        assert_eq!(delivery(false, hold("draft").as_ref()), "held:draft");
+        assert_eq!(
+            delivery(false, hold("no_agent_authority").as_ref()),
+            "held:no_agent_authority"
+        );
+        assert_eq!(
+            delivery(false, hold("policy_deny").as_ref()),
+            "held:policy_deny"
+        );
+        // No row for the target: never pasted either way.
+        assert_eq!(delivery(false, hold("exited").as_ref()), "held:exited");
     }
 
     fn store() -> (tempfile::TempDir, Store) {
@@ -710,6 +754,10 @@ mod tests {
         let run = stamped("run-1", "schedule:sch_1");
         let queued = report_as(&home, &run, ROUTER, "update").unwrap();
         assert_eq!(queued["delivery"], "held:ride_along");
+        // The drain promoted them and holds them for the busy target (#85).
+        home.inbox.set_hold(ROUTER, hold("busy").as_ref()).unwrap();
+        let queued = report_as(&home, &run, ROUTER, "progress").unwrap();
+        assert_eq!(queued["delivery"], "when_idle");
         report_as(&home, &run, ROUTER, "blocked").unwrap();
         let pending = home.inbox.list(ROUTER).unwrap().pending;
         let kinds: Vec<(ItemKind, Priority)> = pending
@@ -719,6 +767,7 @@ mod tests {
         assert_eq!(
             kinds,
             [
+                (ItemKind::Report, Priority::RideAlong),
                 (ItemKind::Report, Priority::RideAlong),
                 (ItemKind::Report, Priority::Wake),
             ]
@@ -831,5 +880,8 @@ mod tests {
         assert_eq!(action, "inbox");
         let params = doc["inputSchema"]["properties"].as_object().unwrap();
         assert!(params.contains_key("item_id") && params.contains_key("ack_through"));
+        // Ride-along promotion (#83) is told here, not in the report result.
+        let description = doc["description"].as_str().unwrap();
+        assert!(description.contains("15 minutes"), "{description}");
     }
 }
