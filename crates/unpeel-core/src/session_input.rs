@@ -3,7 +3,9 @@
 //! This is the single implementation of the bracketed-paste + settle +
 //! double-Enter recipe used by Sessions MCP, secure remote input, and typed
 //! Host actions such as screenshot requests. UI clients send semantic actions;
-//! they never construct terminal escape sequences themselves.
+//! they never construct terminal escape sequences themselves. Fork-only
+//! (#78): a runtime package may declare one Enter instead
+//! (`[input] enters_after_paste`), read from the Session's recognized runtime.
 
 use crate::session_host::{self, SessionHostCommand, WriteOrigin};
 // Fork-only (#61)
@@ -17,7 +19,9 @@ pub const TEXT_SETTLE_DELAY_MS: u64 = 250;
 /// Longer settle when pasted text contains file paths, which some TUIs attach
 /// asynchronously before the prompt can be submitted.
 pub const TEXT_SETTLE_DELAY_PATH_MS: u64 = 900;
-/// Some full-screen agent TUIs swallow the first Enter after a paste.
+/// Some full-screen agent TUIs swallow the first Enter after a paste, so
+/// the recipe presses a second one this long after it. Fork-only (#78):
+/// unless the Session's runtime declares one Enter.
 pub const ENTER_FOLLOWUP_DELAY_MS: u64 = 80;
 
 /// Provider-neutral request used by every Host implementation.
@@ -208,16 +212,38 @@ fn deliver_sanitized_text_with_timeout(
     submit: bool,
     terms: WriteTerms,
 ) -> Result<GuardedPaste, String> {
-    paste_recipe(sanitized, submit, |data| {
+    let enters = enters_after_paste(session_id);
+    paste_recipe(sanitized, submit, enters, |data| {
         write_to_session(session_id, data, terms)
     })
 }
 
-/// The bracketed paste, a settle, then Enter twice. Fork-only (#38):
-/// `write` answers `Ok(Some(_))` when the session host refused it.
+/// Fork-only (#78): the Enters the Session's recognized runtime declares.
+fn enters_after_paste(session_id: &str) -> u8 {
+    let manifest = session_host::load_manifest(session_id);
+    enters_after_paste_for(manifest.as_ref().and_then(session_host::active_runtime_id))
+}
+
+/// Fork-only (#78): two with no recognized runtime, or one the built-in
+/// catalog does not know.
+fn enters_after_paste_for(runtime_id: Option<&str>) -> u8 {
+    runtime_id
+        .and_then(|runtime_id| {
+            crate::runtime_catalog::builtin_runtime_catalog().by_legacy_slug(runtime_id)
+        })
+        .map_or(
+            crate::runtime_catalog::DEFAULT_ENTERS_AFTER_PASTE,
+            |runtime| runtime.input.enters_after_paste,
+        )
+}
+
+/// The bracketed paste, a settle, then `enters` Enters (two, or one for a
+/// runtime that declares it, #78). Fork-only (#38): `write` answers
+/// `Ok(Some(_))` when the session host refused it.
 fn paste_recipe(
     sanitized: &str,
     submit: bool,
+    enters: u8,
     mut write: impl FnMut(&str) -> Result<Option<Refusal>, String>,
 ) -> Result<GuardedPaste, String> {
     if !sanitized.is_empty() {
@@ -239,10 +265,12 @@ fn paste_recipe(
                 GuardedPaste::NotSubmitted
             });
         }
-        thread::sleep(Duration::from_millis(ENTER_FOLLOWUP_DELAY_MS));
-        // The first Enter submitted the paste; a refused second one only
-        // keeps the user's new keys from being submitted too.
-        write("\r")?;
+        for _ in 1..enters {
+            thread::sleep(Duration::from_millis(ENTER_FOLLOWUP_DELAY_MS));
+            // The first Enter submitted the paste; a refused later one only
+            // keeps the user's new keys from being submitted too.
+            write("\r")?;
+        }
     }
     Ok(GuardedPaste::Submitted)
 }
@@ -305,8 +333,18 @@ mod tests {
         allowed: usize,
         refusal: Refusal,
     ) -> (Result<GuardedPaste, String>, Vec<String>) {
+        let enters = crate::runtime_catalog::DEFAULT_ENTERS_AFTER_PASTE;
+        enters_with_refusals_after(text, enters, allowed, refusal)
+    }
+
+    fn enters_with_refusals_after(
+        text: &str,
+        enters: u8,
+        allowed: usize,
+        refusal: Refusal,
+    ) -> (Result<GuardedPaste, String>, Vec<String>) {
         let mut written = Vec::new();
-        let result = paste_recipe(text, true, |data| {
+        let result = paste_recipe(text, true, enters, |data| {
             if written.len() >= allowed {
                 return Ok(Some(refusal));
             }
@@ -346,6 +384,32 @@ mod tests {
         let (result, written) = paste_with_refusals_after(3);
         assert_eq!(result, Ok(GuardedPaste::Submitted));
         assert_eq!(written.len(), 3);
+    }
+
+    /// Fork-only (#78): the Enters a runtime declares follow the paste.
+    #[test]
+    fn the_paste_is_followed_by_the_declared_enters() {
+        let (result, written) = enters_with_refusals_after("batch", 2, usize::MAX, Refusal::Typing);
+        assert_eq!(result, Ok(GuardedPaste::Submitted));
+        assert_eq!(written, ["\x1b[200~batch\x1b[201~", "\r", "\r"]);
+        let (result, written) = enters_with_refusals_after("batch", 1, usize::MAX, Refusal::Typing);
+        assert_eq!(result, Ok(GuardedPaste::Submitted));
+        assert_eq!(written, ["\x1b[200~batch\x1b[201~", "\r"]);
+        // Its one Enter refused: pasted, never submitted.
+        let (result, written) = enters_with_refusals_after("batch", 1, 1, Refusal::Typing);
+        assert_eq!(result, Ok(GuardedPaste::NotSubmitted));
+        assert_eq!(written.len(), 1);
+    }
+
+    /// Fork-only (#78): the count comes from the Session's recognized
+    /// runtime; with none, or one the catalog does not know, it is two.
+    #[test]
+    fn the_recognized_runtime_decides_the_enters() {
+        assert_eq!(enters_after_paste_for(Some("codewhale")), 1);
+        assert_eq!(enters_after_paste_for(Some("claude")), 2);
+        assert_eq!(enters_after_paste_for(Some("codex")), 2);
+        assert_eq!(enters_after_paste_for(Some("not-a-runtime")), 2);
+        assert_eq!(enters_after_paste_for(None), 2);
     }
 
     #[test]

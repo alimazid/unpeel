@@ -431,6 +431,11 @@ is its default provider):
 - Screen fallback: the footer reads `Esc to interrupt` and the composer
   placeholder becomes `Type a follow-up…` while a turn runs; the `│❯` composer
   line is visible in both states, so the working markers decide.
+- One Enter after a paste (fork-only, #78): Codewhale submits a bracketed
+  paste on the first Enter, and a second one on the empty composer opens the
+  sent message's pager (`q/Esc close …`), which then takes the keys meant
+  for the composer. `[input] enters_after_paste = 1` makes the Host's paste
+  recipe (the Inbox, `send_text`, typed Host actions) press one.
 - Verified with Codewhale 0.10.2 (`UNPEEL_CODEWHALE_TEST_BINARY=… run.sh
   codewhale_lifecycle`, an OpenAI-compatible stub as the model, isolated HOME
   and `UNPEEL_HOME`): install, busy → done, shell approval → attention →
@@ -438,7 +443,8 @@ is its default provider):
   MCP tools inside the hosted Session, and Resume Agent relaunching
   `codewhale --resume '<id>'` in the same PTY. Without the binary the case
   drives a fake Codewhale through the installed hook commands, including the
-  out-of-order delivery above.
+  out-of-order delivery above. `paste_enters` with the same variable checks
+  that a `send_text` and an Inbox paste are answered with no pager.
 
 ## Adding a built-in agent runtime
 

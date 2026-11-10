@@ -115,6 +115,13 @@ Advertised ownership (old mixed `sessions` spellings remain decode-only):
     guard (no `draft_guard` in its manifest) is written unchecked, and the
     result ends `(unguarded: …)`.
     PTY proof: `send_text_draft_guard`.
+  - Submission (fork-only, #78): a submitted `send_text`, a pasted
+    `report` and the Inbox's batch are one bracketed paste, a settle, then
+    Enter twice (`session_input`), because some full-screen agent TUIs
+    swallow the first. A runtime package that submits on the first declares
+    `[input] enters_after_paste = 1` (Codewhale, whose second Enter opens
+    the sent message's pager); the count comes from the target's recognized
+    runtime, two with none. PTY proof: `paste_enters`.
 - `agents`: `list`, `get`, `read_transcript`, `wait`. Every action targets one
   explicit recognized occurrence; the unreleased group-wide wait and summary
   actions were removed. `list` returns an occurrence-bound `agent_ref`
