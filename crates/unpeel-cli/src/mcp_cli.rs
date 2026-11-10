@@ -32,7 +32,7 @@ Family verbs over the same dispatcher:
   unpeel artifacts publish <image-path>
   unpeel current                      you and your pane neighbors (App context)
   unpeel report <summary> --to <id|super_agent>
-                 [--status update|done|blocked] [--details TEXT]
+                 [--status update|progress|done|blocked] [--details TEXT]
   unpeel worktree create <name> [--branch B] [--base REF] [--project ID]
   unpeel agents <action> [key=value ...]
   unpeel skills <action> [key=value ...]
@@ -247,7 +247,7 @@ pub fn current(args: &[String]) -> i32 {
 }
 
 const REPORT_USAGE: &str = "usage: unpeel report <summary> --to <id|super_agent> \
-[--status update|done|blocked] [--details TEXT]";
+[--status update|progress|done|blocked] [--details TEXT]";
 
 /// `unpeel report <summary> --to <id|super_agent> [--status S] [--details D] [--no-submit]`
 pub fn report(args: &[String]) -> i32 {
