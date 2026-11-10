@@ -42,9 +42,13 @@ reporters:
   older `unpeel-host` takes an unknown first argument for a launch file.
 - **A test switch that cannot reach a real home.** `UNPEEL_TEST=1` plus
   `UNPEEL_TEST_TRUST_SESSION_ENV=1` trusts the claim, for PTY cases that act
-  as a Session from outside it. It needs an explicit `UNPEEL_HOME`, and that
-  home must be neither the account's `~/.unpeel` nor inside it (both the
-  `$HOME` and the password-database home, canonicalized).
+  as a Session from outside it. It needs an explicit `UNPEEL_HOME` that is
+  neither a real home nor inside one: `~/.unpeel` under `$HOME` and under
+  the password-database home, and every workspace they register. Homes
+  compare by path once resolved and by directory identity, so an APFS
+  firmlink spelling (`/System/Volumes/Data/Users/…`) or a home not created
+  yet behind a symlink is refused too. The Host strips the switch from every
+  Session's shell, so a Session's own processes are always checked.
 
 ## Considered Options
 
