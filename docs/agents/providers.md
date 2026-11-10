@@ -82,11 +82,12 @@ Codex:
   app-server daemon (`codex app-server --managed-daemon`) under `CODEX_HOME`,
   and from 0.157 it also starts one (`daemon_auto_start`, on by default). That
   daemon starts the MCP servers and runs the hooks with the environment of
-  whoever started it. Once the `codex` that started it has exited, the gate
-  finds no Session and serves no tools; while it still runs in a Session, the
-  daemon's MCP servers and hooks trace up to that Session through it and act
-  as it (#74). Once that `codex` has exited, the daemon's hooks keep its
-  `UNPEEL_SESSION_ID` but are refused, so they move no Session (#70).
+  whoever started it. Its MCP servers get no tools: the daemon leads a POSIX
+  session of its own, and the gate refuses an ancestry match across one
+  (ADR 0014, #74). While the `codex` that started it still runs in a
+  Session, the daemon's hooks trace up to that Session through it and act as
+  it. Once that `codex` has exited, they keep its `UNPEEL_SESSION_ID` but
+  are refused, so they move no Session (#70).
   `--no-daemon` keeps the app-server embedded in the TUI, inside the Session,
   and `codex resume <id> --no-daemon` keeps it there. Nothing appends the flag
   at launch, so a preset made before this change, or a `codex` typed by hand,

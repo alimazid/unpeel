@@ -4,8 +4,9 @@
 //! (`integrations::install::mcp_shim_path`), which starts this gate. The gate
 //! resolves the calling Session (`session_identity`: the exported
 //! `UNPEEL_SESSION_ID` once process ancestry backs it, or the Session
-//! ancestor for launchers that strip their MCP children's environment) and
-//! reads that Session's manifest grants to
+//! ancestor for launchers that strip their MCP children's environment, in
+//! both cases without a `setsid` helper such as a shared daemon between the
+//! gate and the Session) and reads that Session's manifest grants to
 //! decide which domains the unified server advertises. Outside a granted
 //! hosted Session — a plain terminal, an agent started elsewhere — the
 //! endpoint stays valid and serves no tools, so a global registration never
@@ -34,10 +35,10 @@ const PROTOCOL_VERSION_FALLBACK: &str = "2025-06-18";
 const LAUNCH_WAIT: std::time::Duration = std::time::Duration::from_secs(5);
 
 pub fn run_stdio(kind: &str) -> Result<(), String> {
-    // Fork-only (#71): the gate decides once, at startup, whether to serve
-    // tools; a Session still in its launch window has no pid to check yet,
-    // so ask until it does rather than settle on "unknown" for good.
-    let caller = crate::session_identity::current_waiting(LAUNCH_WAIT)
+    // Fork-only (#71, #74): the gate decides once, at startup, whether to
+    // serve tools; a Session still in its launch window has no pid to check
+    // yet, so ask until it does rather than settle on "unknown" for good.
+    let caller = crate::session_identity::current_for_gate(LAUNCH_WAIT)
         .session_id()
         .map(str::to_owned);
     // The calling Session's manifest is the authority for a shim-based

@@ -76,7 +76,11 @@ not bake “the other end is a PTY” into future channel semantics.
   process that kept the variable but left the tree (Codex's shared daemon)
   is refused, never redirected. When a launcher strips the environment from
   its MCP children (cursor-agent does), the nearest verified ancestor is the
-  identity. Writing into the calling session's own terminal is refused.
+  identity. The MCP gate also requires that every process between it and
+  that ancestor share the ancestor's POSIX session; the gate itself may lead
+  its own (ADR 0014). So a `setsid` helper such as a shared daemon that is
+  still a Session process's child gives its servers no tools. Writing into
+  the calling session's own terminal is refused.
 - `agents.read_transcript` uses the shared provider transcript API in
   `crates/unpeel-core/src/transcripts/mod.rs`, so adapter/parser changes affect
   MCP and remote clients together. It refuses a transcript when the observed
@@ -311,9 +315,9 @@ Registration per provider (all through the explicitly installed integration,
   exported `UNPEEL_HOST_BIN`.
 - Launchers that strip their MCP children's environment (codex, cursor-agent,
   muse) get identity from `self_session_id`'s nearest verified ancestor (for
-  Codex only under `--no-daemon`: its shared daemon starts MCP servers
-  outside the Session, where the gate serves no tools; see the Codex notes
-  in `providers.md`); Kiro v3 passes only a declared env block, so its entry
+  Codex only under `--no-daemon`: its shared daemon starts MCP servers in a
+  POSIX session of its own, where the gate serves no tools (ADR 0014); see
+  the Codex notes in `providers.md`); Kiro v3 passes only a declared env block, so its entry
   forwards the generic `UNPEEL_*` variables; fx and Claude inherit the
   hosted environment.
 - Per-Session grants never appear in any config file: the gate reads

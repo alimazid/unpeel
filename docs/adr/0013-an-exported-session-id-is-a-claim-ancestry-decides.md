@@ -70,7 +70,8 @@ tools, makes no CLI call as that Session, and moves none of its activity.
 
 While the `codex` that started a shared daemon still runs, the daemon is
 its descendant, so the daemon's hooks and servers still pass as that
-Session. `--no-daemon` (#54) avoids the daemon; #74 tracks closing the gap.
+Session. `--no-daemon` (#54) avoids the daemon. ADR 0014 closes the gap
+for the MCP gate; the daemon's hooks and CLI calls still pass.
 The omp extension posts from inside its process, without the reporter, and
 skips the check (#75). Reporters installed by an older build carry no check
 until the post-upgrade refresh rewrites them.

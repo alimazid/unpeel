@@ -220,7 +220,12 @@ transcript roots and format, and version-dependent behavior.
   [Session activity](../docs/agents/clients/session-activity.md#escape-cancellation-and-hook-delivery).
 - MCP registration is part of the installer, uses the provider's persistent
   additive mechanism, and always points at the MCP shim; the shim's gate
-  fail-closes outside a granted hosted Session. Registration evidence on a
+  fail-closes outside a granted hosted Session. The agent must start the
+  server itself, from inside the Session's POSIX session: the gate may lead
+  a new POSIX session of its own (the Python MCP SDK and Node's `detached`
+  do that), but it gets no tools when a `setsid` helper (a shared daemon or
+  a backend process) sits between it and the Session (ADR 0014). Check a new
+  runtime's process tree with a probe server before you rely on its tools. Registration evidence on a
   Session means "the integration is installed and the launch granted the
   domain" — a grant alone is not proof of a configured client.
 - Resume/restart code must preserve the original semantic command, support
