@@ -193,7 +193,7 @@ impl TerminalViewportSnapshot {
 
     /// The cursor's row as an index into `viewport_rows`; `None` when the
     /// cursor is outside them.
-    fn cursor_row_index(&self) -> Option<usize> {
+    pub fn cursor_row_index(&self) -> Option<usize> {
         self.cursor_absolute_row()
             .checked_sub(self.viewport_start_row)
             .map(|row| row as usize)

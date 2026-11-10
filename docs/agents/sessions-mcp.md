@@ -105,7 +105,9 @@ Advertised ownership (old mixed `sessions` spellings remain decode-only):
     written, and the result says `Not sent (typing)` or `Not sent (draft)`;
     `Not submitted (typing)` means a key landed after the paste, which waits
     on the line. `send_keys` stops at the refused key ("Sent 1 of 3 keys").
-    Suggested input is no draft, and a select menu takes keys over one. A
+    Suggested input is no draft, and a select menu takes keys over one
+    (one drawn under the cursor, or anywhere while the cursor is hidden;
+    output quoting a menu above the line is none, #72). A
     draft whose keys the user erased, or that a program took without Enter
     and moved on from (#65), is no draft either; one that wraps or whose
     input box moves still is. The call refuses rather than waits: send again

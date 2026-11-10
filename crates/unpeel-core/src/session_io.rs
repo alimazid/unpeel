@@ -17,6 +17,7 @@
 
 use super::core_reactor::{JournalMsg, ReactorHandle, Registry, TimerMsg};
 use super::*;
+use crate::menu_prompt::viewport_has_menu_prompt_below;
 use crate::program_status::{
     ProcessOwner, ProgramStatusScanner, ProgramStatusStore, ProgramStatusSummary, StreamEvent,
 };
@@ -1493,12 +1494,19 @@ enum Applied {
 }
 
 /// Fork-only (#61): what the draft guard reads off the screen. The lock order
-/// is the write paths' own, runtime then viewport.
+/// is the write paths' own, runtime then viewport. A menu counts only under
+/// a shown cursor (#72); a hidden one tells nothing about where it is.
 fn input_screen(viewport: &Mutex<TerminalViewportState>) -> crate::typed_input::InputScreen {
     let mut viewport = viewport.lock().unwrap();
     let snapshot = viewport.snapshot(0, None);
+    let screen_text = snapshot.screen_text();
+    let cursor_visible = viewport.cursor_visible();
+    let menu = match snapshot.cursor_row_index().filter(|_| cursor_visible) {
+        Some(row) => viewport_has_menu_prompt_below(&screen_text, row),
+        None => viewport_has_menu_prompt(&screen_text),
+    };
     crate::typed_input::InputScreen {
-        menu: viewport_has_menu_prompt(&snapshot.screen_text()),
+        menu,
         line: snapshot
             .cursor_row_text_without_suggestion()
             .unwrap_or_default(),
@@ -1510,9 +1518,7 @@ fn input_screen(viewport: &Mutex<TerminalViewportState>) -> crate::typed_input::
             alternate: snapshot.alternate_screen,
             row: u64::from(snapshot.cursor_absolute_row()),
         },
-        last_char_before_cursor: snapshot
-            .last_char_before_cursor
-            .filter(|_| viewport.cursor_visible()),
+        last_char_before_cursor: snapshot.last_char_before_cursor.filter(|_| cursor_visible),
         quiet: !viewport.drawn_within(crate::typed_input::QUIET_BEFORE_ENDING)
             && !viewport.synchronized_output_active(),
     }
@@ -2514,11 +2520,69 @@ mod input_screen_tests {
             None,
             "hidden"
         );
-        viewport
-            .lock()
-            .unwrap()
-            .feed("\x1b[?25h\r\n  1. Yes\r\n↑/↓ to navigate · Enter to select".as_bytes());
-        assert!(input_screen(&viewport).menu);
+        viewport.lock().unwrap().feed(
+            "\x1b[?25h\x1b[2J\x1b[H> hi\x1b7\r\n  1. Yes\r\n↑/↓ to navigate · Enter to select\x1b8"
+                .as_bytes(),
+        );
+        assert!(input_screen(&viewport).menu, "drawn under the line");
+    }
+
+    fn screen_of(cols: u16, rows: u16, drawn: &str) -> crate::typed_input::InputScreen {
+        let viewport = Mutex::new(TerminalViewportState::new(cols, rows));
+        viewport.lock().unwrap().feed(drawn.as_bytes());
+        input_screen(&viewport)
+    }
+
+    /// A menu's footer, as a program prints it.
+    const FOOTER: &str =
+        "Enter to select \u{b7} \u{2191}/\u{2193} to navigate \u{b7} Esc to cancel";
+
+    #[test]
+    fn a_footer_above_a_shown_cursor_is_no_menu_to_the_draft_guard() {
+        // #72: output that quotes a menu, then the prompt the user types on.
+        let quoted =
+            format!("\u{23fa} It printed:\r\n\u{276f} 1. Yes\r\n  2. No\r\n{FOOTER}\r\n\r\n> ");
+        assert!(!screen_of(60, 8, &format!("{quoted}draft")).menu);
+        assert!(
+            !screen_of(60, 8, &format!("{quoted}{FOOTER}")).menu,
+            "the user's own line is no footer"
+        );
+        // Hidden, the cursor tells nothing about where a menu is.
+        assert!(screen_of(60, 8, &format!("{quoted}draft\x1b[?25l")).menu);
+        // A real menu under the line counts, a quoted one above or not.
+        let under = format!("{quoted}draft\x1b7\r\n  1. Yes\r\n  2. No\r\n{FOOTER}\x1b8");
+        assert!(screen_of(60, 12, &under).menu);
+    }
+
+    /// A runtime's menu, as its package's fixture draws it.
+    fn fixture(path: &str) -> String {
+        let path = format!("{}/../../runtimes/{path}", env!("CARGO_MANIFEST_DIR"));
+        std::fs::read_to_string(&path)
+            .unwrap_or_else(|error| panic!("{path}: {error}"))
+            .replace('\n', "\r\n")
+    }
+
+    #[test]
+    fn the_runtimes_menus_stay_menus_to_the_draft_guard() {
+        // Claude Code parks its hidden cursor on the selected option, here
+        // the last, with its footer below (real journals, #72).
+        let approval = fixture("claude-code/fixtures/approval-menu.txt")
+            .replace("\u{276f} 1.", "  1.")
+            .replace("  3.", "\u{276f} 3.");
+        assert!(screen_of(80, 20, &format!("{approval}\x1b[?25l\x1b[14;1H")).menu);
+        // Its "Type something." option shows the cursor in the typed text.
+        let typing = format!(
+            "  1. Every address\r\n  2. Primary only\r\n\u{276f} 3. use the newest one\r\n\\
+             \u{2500}\u{2500}\u{2500}\r\n  4. Chat about this\r\n\r\n{FOOTER}\x1b[3;22H"
+        );
+        assert!(screen_of(80, 10, &typing).menu);
+        // Codex shows it in a picker's search field, above its rows.
+        let codex = "  Select Model\r\n  Search \u{203a} gp\r\n\r\n\u{203a} 1. gpt-5\r\n\\
+            \x20 2. gpt-5-mini\r\n\r\nPress enter to confirm or esc to go back\x1b[2;14H";
+        assert!(screen_of(60, 8, codex).menu);
+        // Codex hides it at the last cell it drew: below the footer too.
+        let update = fixture("codex/fixtures/update-menu.txt");
+        assert!(screen_of(80, 16, &format!("{update}\r\n x\x1b[?25l")).menu);
     }
 
     /// What the draft guard costs a key on the reactor thread (the attach
