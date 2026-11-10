@@ -77,8 +77,8 @@ idle_prompt = ["│❯"]
 # backstop). A compaction reports no busy (no `session_busy` hook; its
 # `turn_end` is `model_backed: false`, which the reporter settles as Idle), so
 # the Host never sees it start and the Router hears no `compacted` notice
-# (seen with the real v0.10.2 in a Host on 2026-11-09). Until #78 is fixed,
-# a Worker the Inbox gave its task sits on a message pager that takes the
+# (seen with the real v0.10.2 in a Host on 2026-11-09). The task's paste
+# ends with one Enter (`[input]` above, #78), so no message pager takes the
 # command as a search.
 [context]
 compact_command = "/compact"

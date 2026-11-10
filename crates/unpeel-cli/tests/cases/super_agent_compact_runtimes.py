@@ -14,12 +14,11 @@ so Codewhale's own estimate is the turn's token count. Its compaction is
 v0.10.2's: no `session_busy`, no `session_idle`, one `turn_end` with
 `model_backed: false`, and a smaller saved session. So the Host types
 `/compact`, but never sees it start and sends the Router no `compacted`
-notice (the deviation ADR 0012 records). The fake takes the task with the
-paste recipe's first Enter and ignores the second, which on the real TUI opens
-a pager that takes the Host's `/compact` (#78). Set
-UNPEEL_CODEWHALE_TEST_BINARY to an installed `codewhale` to run the real TUI
-against a local stub model instead, with `supervisor_compact_percent` at 25
-(its lowest step); that run closes the pager as the Router.
+notice (the deviation ADR 0012 records). Set UNPEEL_CODEWHALE_TEST_BINARY to
+an installed `codewhale` to run the real TUI against a local stub model
+instead, with `supervisor_compact_percent` at 25 (its lowest step). Its task's
+paste ends with one Enter (#78), so no message pager takes the Host's
+`/compact` as a search.
 """
 
 import json
@@ -494,18 +493,12 @@ def body(case):
 
         case.check("the real Codewhale draws its composer",
                    bool(service.wait_for(lambda: "Type a" in screen(), timeout=60)), screen())
-        # #78: the paste recipe's second Enter lands on Codewhale's empty
-        # composer and opens the submitted message's pager, which would take
-        # the Host's /compact as a search. Closed while the turn runs, so the
-        # compaction is observed as it would be without that bug.
-        if service.wait_for(lambda: "q/Esc close" in screen(), timeout=20):
-            case.note("the task's second Enter opened Codewhale's message pager; closing it")
-            # As the Router: after the same Escape typed as the user, the Host
-            # never typed /compact (#78 has the details).
-            mcp(router, "send_keys", {"session_id": worker, "keys": ["escape"]})
-            case.check("Esc closes the pager while the turn runs",
-                       bool(service.wait_for(lambda: "q/Esc close" not in screen(), timeout=4)),
-                       screen())
+        # #78: a second Enter after the task's paste would land on the empty
+        # composer and open the sent message's pager, which takes the Host's
+        # /compact as a search.
+        case.check("the task's paste opens no message pager",
+                   not service.wait_for(lambda: "q/Esc close" in screen(), timeout=10),
+                   screen())
         case.check("the Router hears the real Codewhale Worker finished",
                    bool(service.wait_for(lambda: "\"codewhale task\" finished." in router_log(),
                                          timeout=60)), router_log()[-1200:] + screen())

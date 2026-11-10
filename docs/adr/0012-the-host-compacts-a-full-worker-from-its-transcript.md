@@ -98,9 +98,9 @@ passes the setting; Codewhale's own auto-compaction at 80% is the
 backstop. A Codewhale compaction never reports busy, so the Host never
 sees it start: the Router gets no `compacted` notice and the Worker is not
 disarmed (a real Codewhale 0.10.2 run in a Host confirmed it on
-2026-11-09). Until #78 is fixed, the Host's paste of a Codewhale Worker's
-task leaves it on its message pager, which takes the command as a search,
-so such a Worker is not compacted in practice. Codex's command was checked
+2026-11-09). Until #78, the Host's paste of a Codewhale Worker's task left
+it on its message pager, which took the command as a search; since #78 that
+paste ends with one Enter, and the real Codewhale is compacted. Codex's command was checked
 against its source only, never the real CLI. A new Claude model family
 needs a line in `runtimes/claude-code/runtime.toml` before its Workers are
 compacted, and until then the Router is told. A Worker whose transcript the
