@@ -63,9 +63,10 @@ impl HostIo for HostTerminal {
         unless_draft: bool,
     ) -> Result<GuardedPaste, String> {
         if unless_draft {
-            unpeel_core::session_input::paste_unless_typed_or_draft(
+            unpeel_core::session_input::paste_unless_user_is_typing_within(
                 session_id,
                 text,
+                true,
                 since,
                 PASTE_TIMEOUT,
             )

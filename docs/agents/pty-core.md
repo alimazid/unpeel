@@ -166,7 +166,8 @@ write with Backspace, never at a text key (`input_screen_cost`, ignored,
 measures it). The lock order is runtime, then viewport, as on the other
 write paths. The core marks the manifest `draft_guard: true` at launch, so an
 agent's send can say when its target's core predates the guard
-(`crate::agent_send`).
+(`crate::agent_send`), and the Inbox drain knows it may leave a draft to the
+core (#69).
 
 Session end (PTY EOF/error, Kill followed by a final drain, or a failed
 journal write) detaches the fds on the reactor and runs the old epilogue on

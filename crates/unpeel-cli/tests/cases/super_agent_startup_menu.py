@@ -95,15 +95,14 @@ while True:
             break
         if data.startswith(b"2") or data == b"\\x1b":
             on_menu = False
-            event("SKIPPED")
             screen(composer())
+            event("SKIPPED")
         continue
     text += data
+    typed = text.split(b"\\r", 1)[0].replace(b"\\x1b[200~", b"").replace(b"\\x1b[201~", b"")
     if b"\\r" not in text:
-        typed = text.replace(b"\\x1b[200~", b"").replace(b"\\x1b[201~", b"")
         screen(composer(typed=typed.decode("utf-8", "replace")))
-    if b"\\r" in text:
-        typed = text.split(b"\\r", 1)[0].replace(b"\\x1b[200~", b"").replace(b"\\x1b[201~", b"")
+    else:
         text = b""
         if typed.strip():
             event("''' + SUBMITTED + '''")
@@ -271,6 +270,12 @@ def body(case):
                        bool(service.wait_for(lambda: "SKIPPED" in read(project, "events.log"),
                                              timeout=10)),
                        read(project, "events.log"))
+        # The core reads the screen at the draft's first key: the menu must
+        # be gone from its viewport by then, or the menu takes the key.
+        case.check(f"{WHO['t']}: the Host sees the menu go",
+                   bool(service.wait_for(lambda: not manifest(drafting).get("menu_prompt_active"),
+                                         timeout=10)),
+                   str(manifest(drafting).get("menu_prompt_active")))
         control(home, drafting, DRAFT)
         drafted_at = time.monotonic()
         case.check(f"{WHO['s']}: the task is pasted and submitted at the composer",
