@@ -114,6 +114,100 @@ struct ScheduledSectionModelTests {
         #expect(row?.nextRunText == "Tomorrow 09:43")
     }
 
+    // MARK: Order
+
+    @Test
+    func tasksListSoonestNextRunFirstThenUnscheduledThenPaused() {
+        let items = ScheduledSectionRows.resolve(
+            tasks: [
+                task("sch_off", "Archive", enabled: false),
+                task("sch_none", "Once, already ran"),
+                task("sch_later", "Weekly report", next: at(10, 8, 0)),
+                task("sch_unread", "Odd time", nextRun: .init(at: "next full moon", atMs: nil)),
+                task("sch_soon", "Morning briefing", next: at(7, 9, 43)),
+                // No instant: the Host's local date-time decides its place.
+                task("sch_local", "Lunch", nextRun: .init(at: "2026-11-07T12:00", atMs: nil)),
+                task("sch_off_with_next", "Backup", enabled: false, next: at(6, 23, 0)),
+            ],
+            runs: [:], expanded: [], keptSessionIDs: [], now: at(6, 22, 10), calendar: calendar
+        )
+        #expect(items.map(\.id) == [
+            "task:sch_soon", "task:sch_local", "task:sch_later",
+            "task:sch_unread", "task:sch_none",
+            "task:sch_off", "task:sch_off_with_next",
+        ])
+        #expect(items.compactMap(\.taskRow).map(\.nextRunText) == [
+            "Tomorrow 09:43", "Tomorrow 12:00", "Tue 08:00",
+            "next full moon", "Not scheduled",
+            "Off", "Off",
+        ])
+    }
+
+    @Test
+    func tasksDueAtTheSameTimeKeepTheirPlaceByNameThenID() {
+        let tasks = [
+            task("sch_u", " ", next: at(7, 9, 0)),
+            task("sch_2", "Briefing", next: at(7, 9, 0)),
+            task("sch_b", "  apple", next: at(7, 9, 0)),
+            task("sch_1", "Briefing", next: at(7, 9, 0)),
+            task("sch_y", "Zed"),
+            task("sch_x", "Zed"),
+            task("sch_p2", "Paused", enabled: false),
+            task("sch_p1", "Paused", enabled: false),
+        ]
+        let order = { (tasks: [RemoteScheduledTask]) in
+            ScheduledSectionRows.resolve(
+                tasks: tasks, runs: [:], expanded: [], keptSessionIDs: [],
+                now: at(6, 22, 10), calendar: calendar
+            ).map(\.id)
+        }
+        // Names compare as shown: trimmed, any case, a blank one as "Untitled task".
+        let expected = [
+            "task:sch_b", "task:sch_1", "task:sch_2", "task:sch_u",
+            "task:sch_x", "task:sch_y",
+            "task:sch_p1", "task:sch_p2",
+        ]
+        #expect(order(tasks) == expected)
+        #expect(order(tasks.reversed()) == expected, "the Host's order never decides a tie")
+    }
+
+    @Test
+    func anExpandedTaskKeepsItsRunsUnderItWhereverItSorts() {
+        let items = ScheduledSectionRows.resolve(
+            tasks: [
+                task("sch_off", "Off", enabled: false),
+                task("sch_mid", "Middle", next: at(8, 9, 0)),
+                task("sch_first", "First", next: at(7, 9, 0)),
+            ],
+            runs: ["sch_mid": [
+                RemoteScheduleRun(runID: "run_2", status: .done),
+                RemoteScheduleRun(runID: "run_1", status: .failed),
+            ]],
+            expanded: ["sch_mid", "sch_off"], keptSessionIDs: [],
+            now: at(6, 22, 10), calendar: calendar
+        )
+        #expect(items.map(\.id) == [
+            "task:sch_first", "task:sch_mid", "run:run_2", "run:run_1", "task:sch_off", "loading:sch_off",
+        ])
+    }
+
+    @Test
+    func theOrderFollowsAFiredPausedOrResumedTask() {
+        let order = { (tasks: [RemoteScheduledTask]) in
+            ScheduledSectionRows.resolve(
+                tasks: tasks, runs: [:], expanded: [], keptSessionIDs: [],
+                now: at(7, 9, 50), calendar: calendar
+            ).map(\.id)
+        }
+        let other = task("sch_b", "Backup", next: at(7, 18, 0))
+        #expect(order([other, task("sch_a", "Briefing", next: at(7, 9, 43))]) == ["task:sch_a", "task:sch_b"])
+        // It fired; the Host moved its next run to tomorrow.
+        #expect(order([other, task("sch_a", "Briefing", next: at(8, 9, 43))]) == ["task:sch_b", "task:sch_a"])
+        #expect(order([other, task("sch_a", "Briefing", enabled: false)]) == ["task:sch_b", "task:sch_a"])
+        // Resumed, with its next run before the other's.
+        #expect(order([other, task("sch_a", "Briefing", next: at(7, 10, 0))]) == ["task:sch_a", "task:sch_b"])
+    }
+
     // MARK: Reading the Host
 
     /// The runtime republishes its snapshot only when content changes; a
@@ -366,9 +460,19 @@ struct ScheduledSectionModelTests {
         next: Date? = nil,
         last: RemoteScheduleRunStatus? = nil
     ) -> RemoteScheduledTask {
+        task(id, name, enabled: enabled, nextRun: next.map { .init(at: "unused", atMs: ms($0)) }, last: last)
+    }
+
+    private func task(
+        _ id: String,
+        _ name: String,
+        enabled: Bool = true,
+        nextRun: RemoteScheduledTask.NextRun?,
+        last: RemoteScheduleRunStatus? = nil
+    ) -> RemoteScheduledTask {
         RemoteScheduledTask(
             id: id, name: name, enabled: enabled,
-            nextRun: next.map { .init(at: "unused", atMs: ms($0)) },
+            nextRun: nextRun,
             lastRun: last.map { RemoteScheduleRun(runID: "\(id)-last", status: $0) }
         )
     }
