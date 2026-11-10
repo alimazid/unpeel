@@ -316,7 +316,8 @@ progress if there is one, else the newest outcome, `schedules::current_run`,
 the same Run the worker follows, so an occurrence skipped behind a live Run
 never hides it) and `GET
 /mobile/schedules/runs?scheduleID=<id>[&limit=<n>]` (`schedule.runs`: the
-history, newest first). Both read the disk, never the scheduler: definitions
+history, newest first; a Run carries `report: {status, summary, atMs}`
+once its own Session reported, #81, additive). Both read the disk, never the scheduler: definitions
 from `app-state.json`, the next run from the `clock.json` the worker
 publishes and the Runs from `runs.jsonl`. Bootstrap's `schedulesRevision`
 moves whenever either route would answer differently, and the worker pings

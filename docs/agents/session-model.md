@@ -196,6 +196,24 @@ termination output is drained first. Never signal an unverified process group.
   exiting first is `failed` with its exit code. A Host restart while a Run
   starts fails it. `UNPEEL_AGENT_WORKING_TIMEOUT_MS` shortens the 60 s
   window on test Hosts (`UNPEEL_TEST=1`).
+- A `done` Run with instructions keeps following its Session while it is
+  the task's latest Run (`unpeel_serve::schedules::follow`, #81): each
+  later idle after the agent worked again — the worker saw it working
+  (a screen-tier agent's only trace), or a program, hook or report stamp is
+  newer than the Run's last line — moves `ended_at_ms` to now and the
+  snippet to the newer reply, if any. The status stays `done`, so "Notify
+  when done" fires once, at the first idle, and the next occurrence is never
+  held back; the Run cutoff (#62) still counts the Session's own idle time.
+  A report the Run Session sends (`sessions report` or `unpeel report`,
+  accepted) is written to `<session dir>/run-report.json`
+  (`schedules::run_report`, the last one wins) and the worker records it on
+  the Run as `report: {status, summary, at_ms}`, in progress or done. A
+  `blocked` report leaves the status alone; Controllers show it as needing
+  attention. A `done` report is the final word once the turn that sent it
+  ends (a line at or after its `at_ms`). Following stops when the Session
+  ends (the Run stays `done`), when a newer Run becomes the latest, and
+  after a done report's turn; a task without instructions is never
+  followed, its Session being the user's once its agent is ready.
 
 ### Recent ordering (sidebar + shared ⌘K/^K contract)
 
