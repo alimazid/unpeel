@@ -206,12 +206,13 @@ Cline (`cline` CLI):
   to that Session through it, so another Session's Cline turns move the
   starter's activity (the #70 shape). Once the starter has exited, they are
   refused. `CLINE_SESSION_BACKEND_MODE=local` keeps the runtime in the TUI's
-  process, inside the Session, and Cline's resume rewrite keeps the
-  assignment in front (`... cline --id <id>`). `--yolo` and sandbox mode
-  force the local backend too. Nothing adds the variable at launch, so a
-  preset made before this change, or a `cline` typed by hand, still uses the
-  hub. Runtime recognition skips leading `NAME=value` words everywhere a
-  command names its runtime, so the preset still reads as Cline.
+  process, inside the Session, and Resume keeps the assignment in front
+  (`... cline --id <id>`). `--yolo` and sandbox mode force the local backend
+  too. Nothing adds the variable at launch, so a preset made before this
+  change, or a `cline` typed by hand, still uses the hub. The Host's runtime
+  lookups (`integrations::command_head`, transcripts, plugins, the
+  observer's `sh -c` path), Resume, and the apps' runtime catalog skip
+  leading `NAME=value` words, so the preset still reads as Cline.
 - Does not use Cline 3.0.44's advertised `--hooks-dir`: current source assigns
   `CLINE_HOOKS_DIR` but never reads it when resolving hook paths
 - Cline exposes no approval-request hook, so custom `--auto-approve false`

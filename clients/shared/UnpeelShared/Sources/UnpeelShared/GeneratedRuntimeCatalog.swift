@@ -953,15 +953,34 @@ public enum UnpeelRuntimeCatalog {
     /// command's environment, as the shell reads them, so
     /// `CLINE_SESSION_BACKEND_MODE=local cline` names Cline (#79).
     public static func runtime(command: String) -> UnpeelRuntimeMetadata? {
-        let token = command
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-            .split(whereSeparator: { $0.isWhitespace })
+        let token = shellWords(command)
             .first(where: { !isEnvironmentAssignment($0) })
             .map(String.init)
         guard let token else { return nil }
         let head = (token as NSString).lastPathComponent.lowercased()
         guard let index = commandIndex[head] else { return nil }
         return runtimes[index]
+    }
+
+    /// Whitespace-separated words, quotes kept; a quoted space stays inside its word.
+    static func shellWords(_ command: String) -> [Substring] {
+        var words: [Substring] = []
+        var start: String.Index?
+        var quote: Character?
+        for index in command.indices {
+            let character = command[index]
+            if let open = quote {
+                if character == open { quote = nil }
+            } else if character.isWhitespace {
+                if let wordStart = start { words.append(command[wordStart..<index]) }
+                start = nil
+            } else {
+                if start == nil { start = index }
+                if character == "'" || character == "\"" { quote = character }
+            }
+        }
+        if let wordStart = start { words.append(command[wordStart...]) }
+        return words
     }
 
     /// A shell name (a letter or `_`, then letters, digits or `_`) and `=`.

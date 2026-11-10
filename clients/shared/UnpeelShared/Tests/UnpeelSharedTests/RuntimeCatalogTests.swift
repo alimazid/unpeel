@@ -101,6 +101,11 @@ final class RuntimeCatalogTests: XCTestCase {
             UnpeelRuntimeCatalog.runtime(command: " A=1 _B= /opt/homebrew/bin/codex --no-daemon")?.stableID,
             "com.openai.codex"
         )
+        XCTAssertEqual(
+            UnpeelRuntimeCatalog.runtime(command: "A='x y' B=\"1 2\" cline --plan")?.stableID,
+            "bot.cline.cli"
+        )
+        XCTAssertNil(UnpeelRuntimeCatalog.runtime(command: "'A=1 cline'"))
         XCTAssertNil(UnpeelRuntimeCatalog.runtime(command: "CLINE_SESSION_BACKEND_MODE=local"))
         XCTAssertNil(UnpeelRuntimeCatalog.runtime(command: "1A=x cline"))
         XCTAssertNil(UnpeelRuntimeCatalog.runtime(command: "A-B=x cline"))

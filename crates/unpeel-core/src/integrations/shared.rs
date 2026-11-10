@@ -15,18 +15,32 @@ pub fn command_head(command: &str) -> &str {
 }
 
 /// `command` from its first word that is not a leading `NAME=value`
-/// environment assignment. Words split on whitespace only, so a quoted
-/// assignment value holding a space is not skipped whole.
+/// environment assignment. A quoted value is one word (`A='x y' cline`).
 pub fn without_env_assignments(command: &str) -> &str {
     let mut rest = command.trim_start();
-    while let Some(word) = rest
-        .split_whitespace()
-        .next()
-        .filter(|word| is_env_assignment(word))
-    {
-        rest = rest[word.len()..].trim_start();
+    loop {
+        let (word, after) = split_first_word(rest);
+        if !is_env_assignment(word) {
+            return rest;
+        }
+        rest = after.trim_start();
     }
-    rest
+}
+
+/// The first shell word of a command that starts at a word (quotes kept),
+/// and the text after it.
+fn split_first_word(command: &str) -> (&str, &str) {
+    let mut quote = None;
+    for (index, character) in command.char_indices() {
+        match quote {
+            Some(open) if character == open => quote = None,
+            Some(_) => {}
+            None if character == '\'' || character == '"' => quote = Some(character),
+            None if character.is_whitespace() => return command.split_at(index),
+            None => {}
+        }
+    }
+    (command, "")
 }
 
 /// A `NAME=value` word a POSIX shell takes as an environment assignment for
@@ -69,6 +83,7 @@ mod tests {
             "codex"
         );
         assert_eq!(command_head("EMPTY= cline --plan"), "cline");
+        assert_eq!(command_head("A='x y' /tmp/bin/cline --plan"), "cline");
         assert_eq!(command_head("cline"), "cline");
         assert_eq!(command_head("FOO=bar"), "");
         assert_eq!(command_head(""), "");
@@ -86,6 +101,8 @@ mod tests {
         );
         assert_eq!(without_env_assignments("cline A=1"), "cline A=1");
         assert_eq!(without_env_assignments("A=1"), "");
+        assert_eq!(without_env_assignments("A='x y' B=\"1 2\" cline"), "cline");
+        assert_eq!(without_env_assignments("'A=1 cline'"), "'A=1 cline'");
     }
 
     #[test]

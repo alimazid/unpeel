@@ -101,15 +101,33 @@ pub fn can_resume_agent(command: &str, active_runtime_id: Option<&str>) -> bool 
 /// each runtime adapter owns its exact fallback and idempotency rules.
 pub fn resumed(command: &str, provider_session_id: Option<&str>) -> String {
     adapter(command)
-        .map(|adapter| (adapter.resumed)(command, provider_session_id))
+        .map(|adapter| {
+            keeping_env_assignments(command, |rest| (adapter.resumed)(rest, provider_session_id))
+        })
         .unwrap_or_else(|| command.to_string())
 }
 
 /// Strip the runtime's resume markers so the next launch starts fresh.
 pub fn fresh(command: &str) -> String {
     adapter(command)
-        .map(|adapter| (adapter.fresh)(command))
+        .map(|adapter| keeping_env_assignments(command, adapter.fresh))
         .unwrap_or_else(|| command.to_string())
+}
+
+/// Rewrite the command after its leading `NAME=value` words and put them
+/// back in front. Adapters read the executable as the first word, and the
+/// assignments are part of the launch: Cline's suggested
+/// `CLINE_SESSION_BACKEND_MODE=local` keeps a resumed Cline out of its hub
+/// (#79).
+fn keeping_env_assignments(command: &str, rewrite: impl FnOnce(&str) -> String) -> String {
+    let rest = crate::integrations::shared::without_env_assignments(command);
+    let assignments = command[..command.len() - rest.len()].trim();
+    let rewritten = rewrite(rest);
+    if assignments.is_empty() {
+        rewritten
+    } else {
+        format!("{assignments} {rewritten}")
+    }
 }
 
 /// Provider-verified markers for a precise-resume conversation-not-found
@@ -398,6 +416,55 @@ mod tests {
                     !can_resume_agent(alias, Some(&runtime.legacy_slug)),
                     "an active {} runtime must never be resume-agent eligible",
                     runtime.slug
+                );
+            }
+        }
+    }
+
+    /// Leading `NAME=value` words are part of the launch, so every
+    /// runtime's rewrite keeps them in front (#79): Cline's suggested
+    /// `CLINE_SESSION_BACKEND_MODE=local` must survive a Resume, or the
+    /// relaunch runs in its shared hub again.
+    #[test]
+    fn rewrites_keep_leading_environment_assignments() {
+        let preset = "CLINE_SESSION_BACKEND_MODE=local cline";
+        assert_eq!(
+            resumed(preset, Some("c1")),
+            "CLINE_SESSION_BACKEND_MODE=local cline --id 'c1'"
+        );
+        assert_eq!(
+            resumed(preset, None),
+            "CLINE_SESSION_BACKEND_MODE=local cline history"
+        );
+        assert_eq!(
+            fresh("CLINE_SESSION_BACKEND_MODE=local cline history --id=old --plan"),
+            "CLINE_SESSION_BACKEND_MODE=local cline --plan"
+        );
+        assert_eq!(
+            resumed("A='x y'  B=2 cline --id old", None),
+            "A='x y'  B=2 cline --id 'old'"
+        );
+        for runtime in
+            crate::runtime_catalog::builtin_runtime_catalog().current_platform_descriptors()
+        {
+            let commands = runtime
+                .suggested_presets
+                .iter()
+                .map(|preset| crate::integrations::shared::without_env_assignments(&preset.command))
+                .chain(runtime.detection.command_aliases.iter().map(String::as_str));
+            for command in commands.filter(|command| can_resume(command)) {
+                let assigned = format!("UNPEEL_TEST_MODE=1 {command}");
+                for id in [Some("id1"), None] {
+                    assert_eq!(
+                        resumed(&assigned, id),
+                        format!("UNPEEL_TEST_MODE=1 {}", resumed(command, id)),
+                        "{assigned} {id:?}"
+                    );
+                }
+                assert_eq!(
+                    fresh(&assigned),
+                    format!("UNPEEL_TEST_MODE=1 {}", fresh(command)),
+                    "{assigned}"
                 );
             }
         }
