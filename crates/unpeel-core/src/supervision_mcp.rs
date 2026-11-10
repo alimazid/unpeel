@@ -11,6 +11,9 @@ use crate::state::SessionInfo;
 mod inbox;
 mod workers;
 
+#[cfg(test)]
+pub(crate) use inbox::REPORT_STATUSES;
+
 /// An extra domain action: arguments in, the tool's text result out.
 pub(crate) type Handler = fn(&Value) -> Result<String, String>;
 
@@ -152,6 +155,12 @@ pub(crate) fn route_report(
     gate: &dyn Fn() -> Result<(), String>,
 ) -> Option<Result<String, String>> {
     inbox::route_report(args, caller, target, gate)
+}
+
+/// A `report` status check for upstream's paste path too, so `progress` is
+/// accepted with or without a Host (#86).
+pub(crate) fn check_report_status(status: &str) -> Result<(), String> {
+    inbox::check_report_status(status)
 }
 
 /// Upstream's immediate-paste `report` result, marked as such.

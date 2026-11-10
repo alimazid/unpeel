@@ -30,8 +30,11 @@ impl<'a> Caller<'a> {
     }
 }
 
-/// Upstream's statuses plus `progress`, the ride-along word.
-const REPORT_STATUSES: &[&str] = &["update", "progress", "done", "blocked"];
+/// Upstream's statuses plus `progress`, a Worker's mid-turn note: it rides
+/// along like `update`, but it is not the turn's result, so the Worker's
+/// Finished notice still reaches the Router (`reported_since` in
+/// `unpeel-serve`'s `supervisor/worker_alerts.rs`, #86).
+pub(crate) const REPORT_STATUSES: &[&str] = &["update", "progress", "done", "blocked"];
 /// A result or a block wakes the target; anything else rides along.
 const WAKE_STATUSES: &[&str] = &["done", "blocked"];
 /// The list sections of a report body, in upstream's order.
@@ -71,6 +74,17 @@ const PROMOTION_NOT_SHOWN: &[&str] = &[
     "unconfirmed",
 ];
 
+/// The error both `report` paths give for a status it doesn't accept.
+pub(super) fn check_report_status(status: &str) -> Result<(), String> {
+    if REPORT_STATUSES.contains(&status) {
+        return Ok(());
+    }
+    Err(format!(
+        "report status must be one of: {}",
+        REPORT_STATUSES.join(", ")
+    ))
+}
+
 /// A report as an Inbox item. The sender is always the calling Session: an
 /// MCP call can never speak as the Host. The summary leads the paste; the
 /// body carries the rest, in upstream's section order.
@@ -83,12 +97,9 @@ pub(super) fn report_item(args: &Value, caller: &Caller<'_>) -> Result<NewItem, 
         .ok_or("Missing required string argument 'summary'")?;
     let status = match args.get("status").and_then(Value::as_str).map(str::trim) {
         None | Some("") => "update",
-        Some(status) if REPORT_STATUSES.contains(&status) => status,
-        Some(_) => {
-            return Err(format!(
-                "report status must be one of: {}",
-                REPORT_STATUSES.join(", ")
-            ))
+        Some(status) => {
+            check_report_status(status)?;
+            status
         }
     };
     let mut sections: Vec<String> = caller
