@@ -48,6 +48,7 @@ fn task(trigger: ScheduleTrigger) -> TaskState {
         clock: ScheduleClock::default(),
         latest_run: None,
         observation: RunObservation::Idle,
+        report: None,
         run_now: None,
         launch: Ok(plan()),
     }
@@ -80,6 +81,8 @@ fn running(mut task: TaskState, observation: RunObservation) -> TaskState {
         snippet: None,
         phase: None,
         prompted_at_ms: None,
+        report: None,
+        session_ended: false,
     });
     task.observation = observation;
     task

@@ -3,7 +3,7 @@ use crate::schedules::agent_run::AgentStatus;
 use jiff::civil::date;
 use jiff::tz::{self, TimeZone};
 use std::sync::Mutex;
-use unpeel_core::schedules::{RunPhase, ScheduleTrigger};
+use unpeel_core::schedules::{RunPhase, RunReport, ScheduleTrigger};
 
 /// Records what the store held when each Session was started.
 #[derive(Default)]
@@ -21,6 +21,8 @@ struct Recording {
     held_delivery: Option<Mutex<mpsc::Receiver<()>>>,
     /// What the agent's screen shows as its reply.
     screen: Option<String>,
+    /// Each Run Session's last report (#81).
+    reports: Mutex<HashMap<String, RunReport>>,
     /// Tasks whose definition has left the saved Scheduled Tasks.
     deleted: Mutex<HashSet<String>>,
     /// A delete that lands mid-sweep: the definition leaves once this many
@@ -58,6 +60,10 @@ impl Effects for Recording {
 
     fn screen_reply(&self, _session_id: &str, _instructions: &str) -> Option<String> {
         self.screen.clone()
+    }
+
+    fn run_report(&self, session_id: &str) -> Option<RunReport> {
+        self.reports.lock().unwrap().get(session_id).cloned()
     }
 
     fn session(&self, session_id: &str) -> (SessionSeen, Option<i32>) {
@@ -713,6 +719,113 @@ fn an_agent_run_types_its_instructions_and_follows_the_rows_to_done() {
     });
 }
 
+/// Sweep the agent task at `at` with its Session's row showing `status`;
+/// the statuses the recorded lines say they came from.
+fn follow_sweep(
+    scheduler: &mut Scheduler,
+    session_id: &str,
+    status: AgentStatus,
+    at: &Zoned,
+) -> Vec<(RunStatus, Option<RunStatus>)> {
+    recorded(&sweep_seeing(
+        scheduler,
+        &[agent_schedule()],
+        &seeing(session_id, status),
+        at,
+    ))
+}
+
+#[test]
+fn a_done_agent_run_follows_its_sessions_later_turns_and_reports() {
+    with_scheduler(Recording::default(), |scheduler, effects| {
+        let session_id = start_agent_run(scheduler, effects);
+        for (status, second) in [(AgentStatus::Idle, 2), (AgentStatus::Working, 5)] {
+            follow_sweep(scheduler, &session_id, status, &now(9, 0, second));
+        }
+        follow_sweep(scheduler, &session_id, AgentStatus::Idle, &now(9, 1, 0));
+        let first = latest(scheduler);
+        assert_eq!(first.status, RunStatus::Done);
+
+        // A screen-tier agent works again, then idles: only the Host's own
+        // sighting of it working tells the later turn apart.
+        assert_eq!(
+            follow_sweep(scheduler, &session_id, AgentStatus::Idle, &now(9, 2, 0)),
+            vec![],
+            "an idle agent that did not work again records nothing"
+        );
+        follow_sweep(scheduler, &session_id, AgentStatus::Working, &now(9, 3, 0));
+        assert_eq!(
+            follow_sweep(scheduler, &session_id, AgentStatus::Idle, &now(9, 4, 0)),
+            vec![(RunStatus::Done, Some(RunStatus::Done))],
+            "a done line again, so no second notice"
+        );
+        assert_eq!(
+            latest(scheduler).ended_at_ms,
+            Some(clock::epoch_ms(&now(9, 4, 0)))
+        );
+        assert_eq!(
+            follow_sweep(scheduler, &session_id, AgentStatus::Idle, &now(9, 5, 0)),
+            vec![],
+            "the sighting was used up by its line"
+        );
+
+        // A blocked report lands on the Run; it stays done.
+        let blocked = RunReport {
+            status: "blocked".into(),
+            summary: "Waiting on a signing key".into(),
+            at_ms: clock::epoch_ms(&now(9, 6, 0)),
+        };
+        effects
+            .reports
+            .lock()
+            .unwrap()
+            .insert(session_id.clone(), blocked.clone());
+        follow_sweep(scheduler, &session_id, AgentStatus::Idle, &now(9, 6, 1));
+        let reported = latest(scheduler);
+        assert_eq!(
+            (reported.status, reported.report.clone()),
+            (RunStatus::Done, Some(blocked))
+        );
+        let store = TaskStore::open(root_of(scheduler), "sch_1").unwrap();
+        assert_eq!(
+            store.clock().unwrap().last_run_status,
+            Some(RunStatus::Done)
+        );
+
+        // Its Session stops: one line says so, the Run as it was otherwise,
+        // and following ends even if the Session comes back.
+        effects
+            .seen
+            .lock()
+            .unwrap()
+            .insert(session_id.clone(), (SessionSeen::Stopped, None));
+        assert_eq!(
+            follow_sweep(scheduler, &session_id, AgentStatus::Idle, &now(9, 7, 0)),
+            vec![(RunStatus::Done, Some(RunStatus::Done))]
+        );
+        let ended = latest(scheduler);
+        assert!(ended.session_ended);
+        assert_eq!(
+            ScheduleRun {
+                session_ended: false,
+                ..ended
+            },
+            reported
+        );
+        effects
+            .seen
+            .lock()
+            .unwrap()
+            .insert(session_id.clone(), (SessionSeen::Live, None));
+        follow_sweep(scheduler, &session_id, AgentStatus::Working, &now(9, 8, 0));
+        assert_eq!(
+            follow_sweep(scheduler, &session_id, AgentStatus::Idle, &now(9, 9, 0)),
+            vec![],
+            "a resumed Session is the user's"
+        );
+    });
+}
+
 #[test]
 fn an_agent_preset_task_without_instructions_is_done_once_its_agent_is_ready() {
     let effects = Recording {
@@ -799,6 +912,8 @@ fn a_host_restart_while_a_run_starts_fails_it() {
             snippet: None,
             phase: Some(RunPhase::WaitingReady),
             prompted_at_ms: None,
+            report: None,
+            session_ended: false,
         };
         store.append_run(&interrupted).unwrap();
         effects

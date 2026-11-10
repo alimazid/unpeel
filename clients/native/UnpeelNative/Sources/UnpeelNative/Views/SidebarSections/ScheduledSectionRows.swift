@@ -33,6 +33,17 @@ enum ScheduledRunIndicator: Equatable, Sendable {
         }
     }
 
+    /// A Run's dot: needs you when the Host says it needs attention (its own
+    /// Session reported `blocked`, #81), whatever its status.
+    init(_ run: RemoteScheduleRun) {
+        self = run.needsAttention ? .needsYou : Self(run.status)
+    }
+
+    /// A Run's status in words, "Blocked" when it needs attention.
+    static func statusText(_ run: RemoteScheduleRun) -> String {
+        run.needsAttention ? "Blocked" : statusText(run.status)
+    }
+
     /// The status in words; an unknown one as the Host wrote it.
     static func statusText(_ status: RemoteScheduleRunStatus) -> String {
         switch status {
@@ -65,7 +76,8 @@ struct ScheduledRunRow: Equatable, Identifiable, Sendable {
     let scheduledText: String
     let startedText: String?
     let isLate: Bool
-    /// The reply snippet, or why the Run failed or was skipped.
+    /// What its Session last reported, else the reply snippet; or why the
+    /// Run failed or was skipped.
     let detail: String?
     /// The Run's Session, only while the Host still keeps it.
     let openableSessionID: String?
@@ -174,8 +186,8 @@ enum ScheduledSectionRows {
             id: task.id,
             title: title(task),
             nextRunText: nextRunText(task, now: now, calendar: calendar),
-            indicator: task.lastRun.map { ScheduledRunIndicator($0.status) },
-            lastRunText: task.lastRun.map { ScheduledRunIndicator.statusText($0.status) },
+            indicator: task.lastRun.map { ScheduledRunIndicator($0) },
+            lastRunText: task.lastRun.map { ScheduledRunIndicator.statusText($0) },
             isExpanded: isExpanded
         )
     }
@@ -207,7 +219,7 @@ enum ScheduledSectionRows {
         now: Date,
         calendar: Calendar
     ) -> ScheduledRunRow {
-        let indicator = ScheduledRunIndicator(run.status)
+        let indicator = ScheduledRunIndicator(run)
         let scheduled = run.scheduledFor.map { raw in
             ScheduledTimeText.localDateTime(raw, calendar: calendar)
                 .map { ScheduledTimeText.relative($0, now: now, calendar: calendar) } ?? raw
@@ -218,14 +230,14 @@ enum ScheduledSectionRows {
             )
         }
         let explains = [.failed, .skipped, .unknown].contains(indicator)
-        let detail = (explains ? [run.reason, run.snippet] : [run.snippet, run.reason])
+        let detail = (explains ? [run.reason, run.snippet] : [run.report?.summary, run.snippet, run.reason])
             .compactMap { $0?.trimmingCharacters(in: .whitespacesAndNewlines) }
             .first { !$0.isEmpty }
         return ScheduledRunRow(
             id: run.runID,
             taskID: taskID,
             indicator: indicator,
-            statusText: ScheduledRunIndicator.statusText(run.status),
+            statusText: ScheduledRunIndicator.statusText(run),
             scheduledText: scheduled.map { "Scheduled \($0)" } ?? "Run now",
             startedText: started.map { "Started \($0)" },
             isLate: run.late,

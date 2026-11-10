@@ -58,6 +58,7 @@ fn task(trigger: ScheduleTrigger, created: u64) -> TaskState {
         clock: ScheduleClock::default(),
         latest_run: None,
         observation: RunObservation::Idle,
+        report: None,
         run_now: None,
         launch: Ok(LaunchPlan {
             project_id: "p".into(),

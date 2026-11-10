@@ -46,6 +46,7 @@ fn agent_task() -> TaskState {
         clock: ScheduleClock::default(),
         latest_run: None,
         observation: RunObservation::Idle,
+        report: None,
         run_now: None,
         launch: Ok(LaunchPlan {
             project_id: "p".into(),
@@ -86,6 +87,8 @@ fn run_in(phase: RunPhase, status: RunStatus) -> ScheduleRun {
         snippet: None,
         phase: Some(phase),
         prompted_at_ms: prompted.then(prompted_at),
+        report: None,
+        session_ended: false,
     }
 }
 
@@ -102,6 +105,7 @@ fn agent(delivery: Option<Delivery>, activity: AgentActivity) -> RunObservation 
         delivery,
         activity,
         working_timeout_ms: WORKING_TIMEOUT_MS,
+        seen_working: false,
     })
 }
 

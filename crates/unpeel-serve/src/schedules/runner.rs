@@ -16,11 +16,12 @@ use jiff::Zoned;
 use unpeel_core::controller_api::{HostCreatePreset, HostCreateProject};
 use unpeel_core::controller_schedules::{unknown_task_message, RunNowRefusal};
 use unpeel_core::schedule_store::{TaskStore, TaskWrite};
-use unpeel_core::schedules::{RunStatus, Schedule, ScheduleClock, ScheduleRun};
+use unpeel_core::schedules::{RunReport, RunStatus, Schedule, ScheduleClock, ScheduleRun};
 use unpeel_core::state::Preset;
 
-use super::agent_run::{self, AgentActivity, AgentObservation, Delivery};
+use super::agent_run::{self, AgentActivity, AgentObservation, AgentStatus, Delivery};
 use super::clock;
+use super::follow;
 use super::launch;
 use super::step::{self, Action, LaunchPlan, RunObservation, TaskState};
 
@@ -69,6 +70,8 @@ pub trait Effects: Send + Sync {
     /// The agent's reply as its screen shows it, for a finished agent Run
     /// whose agent reported none.
     fn screen_reply(&self, session_id: &str, instructions: &str) -> Option<String>;
+    /// The last `sessions report` a Run's Session sent (#81).
+    fn run_report(&self, session_id: &str) -> Option<RunReport>;
     /// Turn a task off in `app-state.json`.
     fn disable(&self, schedule_id: &str) -> Result<(), String>;
     /// Whether the task is still among the saved Scheduled Tasks, read
@@ -162,6 +165,9 @@ pub struct Scheduler {
     spawn_failures: HashMap<String, String>,
     /// How long an agent has to show a working signal after its prompt.
     working_timeout_ms: u64,
+    /// Followed Runs (`follow`) whose agent was seen working since their
+    /// last line: a screen-tier agent's later turn leaves no other trace.
+    seen_working: HashSet<String>,
     /// Accepted Run now requests: task id → Run id.
     run_now: HashMap<String, String>,
     /// The last warning per task, so a lasting problem warns once.
@@ -193,6 +199,7 @@ impl Scheduler {
             deliveries: HashMap::new(),
             spawn_failures: HashMap::new(),
             working_timeout_ms: agent_run::WORKING_TIMEOUT_MS,
+            seen_working: HashSet::new(),
             run_now: HashMap::new(),
             warned: HashMap::new(),
             outcomes_tx,
@@ -277,6 +284,7 @@ impl Scheduler {
             }
         }
         self.forget_settled_deliveries(&tasks);
+        self.forget_unfollowed(&tasks);
         let before = tasks
             .iter()
             .filter_map(|task| task.latest_run.as_ref())
@@ -331,6 +339,17 @@ impl Scheduler {
         });
     }
 
+    /// A Run seen working is forgotten once it is no longer followed.
+    fn forget_unfollowed(&mut self, tasks: &[TaskState]) {
+        self.seen_working.retain(|run_id| {
+            tasks.iter().any(|task| {
+                task.latest_run
+                    .as_ref()
+                    .is_some_and(|run| run.run_id == *run_id && follow::is_followed(run))
+            })
+        });
+    }
+
     fn task_state(
         &mut self,
         schedule: &Schedule,
@@ -367,11 +386,17 @@ impl Scheduler {
             .as_ref()
             .map(|run| self.observe(run, activity, now_ms))
             .unwrap_or(RunObservation::Idle);
+        let report = latest_run
+            .as_ref()
+            .filter(|run| follow::follows_session(run))
+            .and_then(|run| run.session_id.as_deref())
+            .and_then(|session_id| self.effects.run_report(session_id));
         Ok(TaskState {
             schedule: schedule.clone(),
             clock,
             latest_run,
             observation,
+            report,
             run_now: self.run_now.remove(&schedule.id),
             launch: launch::resolve(
                 schedule,
@@ -388,7 +413,7 @@ impl Scheduler {
         activity: &HashMap<String, AgentActivity>,
         now_ms: u64,
     ) -> RunObservation {
-        if !run.status.is_in_progress() {
+        if !follow::follows_session(run) {
             return RunObservation::Idle;
         }
         if let Some(error) = self.spawn_failures.remove(&run.run_id) {
@@ -406,9 +431,11 @@ impl Scheduler {
         match self.effects.session(session_id) {
             (_, Some(code)) => RunObservation::Exited(code),
             (SessionSeen::Live, None) if run.is_agent_run() => {
+                let activity = activity.get(session_id).cloned().unwrap_or_default();
                 RunObservation::Agent(AgentObservation {
                     delivery: self.delivery_of(run),
-                    activity: activity.get(session_id).cloned().unwrap_or_default(),
+                    seen_working: self.track_working(run, &activity),
+                    activity,
                     working_timeout_ms: self.working_timeout_ms,
                 })
             }
@@ -423,6 +450,21 @@ impl Scheduler {
                 }
             }
         }
+    }
+
+    /// Note a followed Run's agent working or asking; whether it was seen so
+    /// since the Run's last line, this sweep included.
+    fn track_working(&mut self, run: &ScheduleRun, activity: &AgentActivity) -> bool {
+        if !follow::is_followed(run) {
+            return false;
+        }
+        if matches!(
+            activity.status,
+            AgentStatus::Working | AgentStatus::Attention
+        ) {
+            self.seen_working.insert(run.run_id.clone());
+        }
+        self.seen_working.contains(&run.run_id)
     }
 
     /// While an agent Run starts: what its helper reported. A Run still
@@ -532,7 +574,7 @@ impl Scheduler {
     /// Append a Run line (a finished agent Run first takes its reply from
     /// the screen when its agent reported none).
     fn record(
-        &self,
+        &mut self,
         schedule_id: &str,
         run: ScheduleRun,
         schedules: &[Schedule],
@@ -542,6 +584,8 @@ impl Scheduler {
         let run = self.with_screen_reply(run, schedules, schedule_id);
         let recorded = self.store(schedule_id)?.append_run(&run)?;
         if recorded == TaskWrite::Written {
+            // A line the Run's later turn wrote starts the next wait afresh.
+            self.seen_working.remove(&run.run_id);
             events.push(SweepEvent::Recorded {
                 previous: before.get(&run.run_id).copied(),
                 schedule_id: schedule_id.to_string(),
@@ -730,6 +774,10 @@ impl Effects for HostEffects {
             }
             (InitialTextOutcome::DeliveryFailed(error), _) => Delivery::Failed(error),
         }
+    }
+
+    fn run_report(&self, session_id: &str) -> Option<RunReport> {
+        unpeel_core::schedules::run_report::read(session_id)
     }
 
     fn screen_reply(&self, session_id: &str, instructions: &str) -> Option<String> {

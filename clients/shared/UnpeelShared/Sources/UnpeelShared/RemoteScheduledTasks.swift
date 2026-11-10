@@ -155,6 +155,13 @@ public struct RemoteScheduleRun: Decodable, Equatable, Sendable, Identifiable {
     public let exitCode: Int?
     public let reason: String?
     public let snippet: String?
+    /// The Run's own Session's last report (#81); nil until it sends one,
+    /// and from an older Host.
+    public let report: RemoteScheduleRunReport?
+    /// The Host's word that the Run needs the user (#81): its report is
+    /// `blocked` and it has not failed. Shown so whatever its status; false
+    /// from an older Host.
+    public let needsAttention: Bool
 
     public var id: String { runID }
 
@@ -168,7 +175,9 @@ public struct RemoteScheduleRun: Decodable, Equatable, Sendable, Identifiable {
         sessionID: String? = nil,
         exitCode: Int? = nil,
         reason: String? = nil,
-        snippet: String? = nil
+        snippet: String? = nil,
+        report: RemoteScheduleRunReport? = nil,
+        needsAttention: Bool = false
     ) {
         self.runID = runID
         self.scheduledFor = scheduledFor
@@ -180,10 +189,13 @@ public struct RemoteScheduleRun: Decodable, Equatable, Sendable, Identifiable {
         self.exitCode = exitCode
         self.reason = reason
         self.snippet = snippet
+        self.report = report
+        self.needsAttention = needsAttention
     }
 
     private enum CodingKeys: String, CodingKey {
         case runID, scheduledFor, startedAtMs, endedAtMs, status, late, sessionID, exitCode, reason, snippet
+        case report, needsAttention
     }
 
     public init(from decoder: Decoder) throws {
@@ -199,6 +211,24 @@ public struct RemoteScheduleRun: Decodable, Equatable, Sendable, Identifiable {
         exitCode = try container.decodeIfPresent(Int.self, forKey: .exitCode)
         reason = try container.decodeIfPresent(String.self, forKey: .reason)
         snippet = try container.decodeIfPresent(String.self, forKey: .snippet)
+        report = try? container.decodeIfPresent(RemoteScheduleRunReport.self, forKey: .report)
+        needsAttention = try container.decodeIfPresent(Bool.self, forKey: .needsAttention) ?? false
+    }
+}
+
+/// What a Run's own agent last said came of it: its Session's
+/// `sessions report` during the Run. `status` is an open set (`done`,
+/// `blocked`, `update`, `progress` today); whether the Run needs attention
+/// is the Host's `RemoteScheduleRun.needsAttention`, never read from it.
+public struct RemoteScheduleRunReport: Decodable, Equatable, Sendable {
+    public let status: String
+    public let summary: String
+    public let atMs: Int64?
+
+    public init(status: String, summary: String, atMs: Int64? = nil) {
+        self.status = status
+        self.summary = summary
+        self.atMs = atMs
     }
 }
 
