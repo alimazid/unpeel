@@ -189,6 +189,18 @@ fn command_parsing_detects_provider_and_resume_ids() {
         Some(provider("cline"))
     );
     assert_eq!(
+        transcript_provider_for_command("CLINE_SESSION_BACKEND_MODE=local cline"),
+        Some(provider("cline"))
+    );
+    assert_eq!(
+        transcript_provider_for_command("A='x y' /tmp/bin/cline --plan"),
+        Some(provider("cline"))
+    );
+    assert_eq!(
+        provider_label_for_command("DEBUG=1 ./run-things.sh"),
+        "run-things.sh"
+    );
+    assert_eq!(
         transcript_provider_for_command("/tmp/bin/codex resume 019abc"),
         Some(provider("codex"))
     );

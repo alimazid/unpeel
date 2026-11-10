@@ -7,6 +7,7 @@
 //! catalog; observations continue to publish the compatibility `legacy_slug`
 //! until the Host/Controller protocol migrates to stable runtime IDs.
 
+use crate::integrations::shared::{is_env_assignment, without_env_assignments};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
@@ -495,13 +496,13 @@ fn runtime_from_shell_argv(argv: &[String]) -> Option<(&'static str, usize)> {
             matches!(arg.as_str(), "-c" | "--command").then_some(index + 1)
         })?;
     let command = argv.get(command_index)?;
-    let token = first_shell_token(command)?;
+    let token = first_shell_token(without_env_assignments(command))?;
     runtime_id_for_executable(token).map(|runtime_id| (runtime_id, command_index + 1))
 }
 
 fn runtime_from_prefix_argv(argv: &[String]) -> Option<(&'static str, usize)> {
     for (index, arg) in argv.iter().enumerate().skip(1) {
-        if arg == "--" || arg.starts_with('-') || is_safe_env_assignment(arg) {
+        if arg == "--" || arg.starts_with('-') || is_env_assignment(arg) {
             continue;
         }
         return runtime_id_for_executable(arg).map(|runtime_id| (runtime_id, index + 1));
@@ -589,17 +590,6 @@ fn first_shell_token(command: &str) -> Option<&str> {
     }
     let end = command.find(char::is_whitespace).unwrap_or(command.len());
     command.get(..end).filter(|token| !token.is_empty())
-}
-
-fn is_safe_env_assignment(token: &str) -> bool {
-    let Some((name, _)) = token.split_once('=') else {
-        return false;
-    };
-    let mut chars = name.chars();
-    chars
-        .next()
-        .is_some_and(|first| first == '_' || first.is_ascii_alphabetic())
-        && chars.all(|character| character == '_' || character.is_ascii_alphanumeric())
 }
 
 fn bounded_evidence_argv(argv: Option<&[String]>, evidence_len: usize) -> Option<Vec<String>> {
@@ -1326,5 +1316,17 @@ mod tests {
             "foo && claude".to_string(),
         ];
         assert_eq!(runtime_from_wrapper_argv(&compound), None);
+        let assigned = vec![
+            "/bin/sh".to_string(),
+            "-c".to_string(),
+            "CLINE_SESSION_BACKEND_MODE=local cline".to_string(),
+        ];
+        assert_eq!(runtime_from_wrapper_argv(&assigned), Some(("cline", 3)));
+        let assignment_only = vec![
+            "/bin/sh".to_string(),
+            "-c".to_string(),
+            "CLINE_SESSION_BACKEND_MODE=local".to_string(),
+        ];
+        assert_eq!(runtime_from_wrapper_argv(&assignment_only), None);
     }
 }
