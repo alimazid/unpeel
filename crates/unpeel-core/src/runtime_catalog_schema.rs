@@ -7,9 +7,9 @@ use std::path::{Path, PathBuf};
 pub const RUNTIME_DESCRIPTOR_SCHEMA_VERSION: u32 = 1;
 const MAX_RUNTIME_ICON_BYTES: u64 = 128 * 1024;
 const MAX_WINDOW_PADDING_X: u8 = 48;
-/// Fork-only (#78): the Enters after a paste unless a runtime declares
-/// fewer, and the most it may declare.
+/// Fork-only (#78): the Enters after a paste unless a runtime declares one.
 pub const DEFAULT_ENTERS_AFTER_PASTE: u8 = 2;
+const MAX_ENTERS_AFTER_PASTE: u8 = 2;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -1171,9 +1171,9 @@ pub fn validate_runtime_descriptors(
             }
         }
 
-        if !(1..=DEFAULT_ENTERS_AFTER_PASTE).contains(&descriptor.input.enters_after_paste) {
+        if !(1..=MAX_ENTERS_AFTER_PASTE).contains(&descriptor.input.enters_after_paste) {
             errors.push(format!(
-                "{prefix}: input.enters_after_paste must be 1 or {DEFAULT_ENTERS_AFTER_PASTE}"
+                "{prefix}: input.enters_after_paste must be 1 or {MAX_ENTERS_AFTER_PASTE}"
             ));
         }
 

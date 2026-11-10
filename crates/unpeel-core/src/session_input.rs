@@ -20,8 +20,8 @@ pub const TEXT_SETTLE_DELAY_MS: u64 = 250;
 /// asynchronously before the prompt can be submitted.
 pub const TEXT_SETTLE_DELAY_PATH_MS: u64 = 900;
 /// Some full-screen agent TUIs swallow the first Enter after a paste, so
-/// the recipe presses a second one this long after it, unless the
-/// Session's runtime declares one Enter (fork-only, #78).
+/// the recipe presses a second one this long after it. Fork-only (#78):
+/// unless the Session's runtime declares one Enter.
 pub const ENTER_FOLLOWUP_DELAY_MS: u64 = 80;
 
 /// Provider-neutral request used by every Host implementation.
@@ -267,7 +267,7 @@ fn paste_recipe(
         }
         for _ in 1..enters {
             thread::sleep(Duration::from_millis(ENTER_FOLLOWUP_DELAY_MS));
-            // The first Enter submitted the paste; a refused second one only
+            // The first Enter submitted the paste; a refused later one only
             // keeps the user's new keys from being submitted too.
             write("\r")?;
         }
@@ -333,7 +333,8 @@ mod tests {
         allowed: usize,
         refusal: Refusal,
     ) -> (Result<GuardedPaste, String>, Vec<String>) {
-        enters_with_refusals_after(text, 2, allowed, refusal)
+        let enters = crate::runtime_catalog::DEFAULT_ENTERS_AFTER_PASTE;
+        enters_with_refusals_after(text, enters, allowed, refusal)
     }
 
     fn enters_with_refusals_after(
