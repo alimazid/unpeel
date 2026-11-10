@@ -12,7 +12,7 @@ pub(crate) const COPILOT_HOOK_SCRIPT: &str = include_str!(concat!(
 
 pub fn install() -> Result<(), String> {
     let script_path = copilot_hook_script_path();
-    write_executable_script(&script_path, COPILOT_HOOK_SCRIPT, "Copilot hook script")?;
+    write_executable_script(&script_path, &crate::hook_assets::reporter_script(COPILOT_HOOK_SCRIPT), "Copilot hook script")?;
     Ok(())
 }
 pub fn prepare_copilot_project_hooks(cwd: &str) -> Result<(), String> {

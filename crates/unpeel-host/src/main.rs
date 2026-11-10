@@ -35,6 +35,9 @@
 //!   narrow local system-SSH askpass helper and prints only that secret.
 //! - `unpeel-host __compact_output_journals__` reclaims evicted physical
 //!   blocks from stopped legacy Session journals without touching live Hosts.
+//! - `unpeel-host __session_identity__` tells a hook reporter whether it runs
+//!   inside the Session its environment names (exit 0), provably does not
+//!   (exit 3), or cannot tell yet (exit 4).
 //!
 //! The launch file is the JSON `SessionHostLaunch` written by
 //! `session_host::write_launch_file`; the host deletes it after reading.
@@ -60,6 +63,12 @@ fn main() {
     if let Some(secret) = std::env::var_os("UNPEEL_SSH_ASKPASS_SECRET") {
         println!("{}", secret.to_string_lossy());
         return;
+    }
+
+    // Fork-only (#70): hook reporters ask this before they write a marker or
+    // post: is this process inside the Session its environment names?
+    if args.as_slice() == [unpeel_core::session_identity::CHECK_ARG] {
+        std::process::exit(unpeel_core::session_identity::run_check());
     }
 
     if args.as_slice() == [unpeel_serve::service::SERVICE_ARG] {

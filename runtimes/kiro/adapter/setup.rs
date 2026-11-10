@@ -11,7 +11,7 @@ pub(crate) const KIRO_HOOK_SCRIPT: &str = include_str!(concat!(
 
 pub fn install() -> Result<(), String> {
     let script_path = kiro_hook_script_path();
-    write_executable_script(&script_path, KIRO_HOOK_SCRIPT, "Kiro hook script")?;
+    write_executable_script(&script_path, &crate::hook_assets::reporter_script(KIRO_HOOK_SCRIPT), "Kiro hook script")?;
     write_kiro_v3_hooks(&script_path)?;
     write_kiro_v2_agent(&script_path)?;
     write_kiro_mcp_config()?;

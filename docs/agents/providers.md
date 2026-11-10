@@ -84,8 +84,9 @@ Codex:
   daemon starts the MCP servers and runs the hooks with the environment of
   whoever started it. Once the `codex` that started it has exited, the gate
   finds no Session and serves no tools; while it still runs in a Session, the
-  daemon's MCP servers trace up to that Session through it (#71). The hooks
-  report to the Session that started the daemon, or to none (#70).
+  daemon's MCP servers and hooks trace up to that Session through it and act
+  as it (#74). Once that `codex` has exited, the daemon's hooks keep its
+  `UNPEEL_SESSION_ID` but are refused, so they move no Session (#70).
   `--no-daemon` keeps the app-server embedded in the TUI, inside the Session,
   and `codex resume <id> --no-daemon` keeps it there. Nothing appends the flag
   at launch, so a preset made before this change, or a `codex` typed by hand,
@@ -474,7 +475,10 @@ The short checklist:
    the MCP shim (`integrations::install::write_mcp_shim`) through the
    provider's persistent mechanism, and never depend on a launch-time
    environment, wrapper, or flag. Every owned reporter includes numeric
-   `unpeel_runtime_generation` in both the event and durable seed.
+   `unpeel_runtime_generation` in both the event and durable seed, and
+   writes the script through `hook_assets::reporter_script` so the
+   identity check (`{{UNPEEL_HOST_BIN}} __session_identity__`, ADR 0013)
+   runs before the seed or any post; exit 3 drops the event.
 4. Registration evidence on a Session is "the user installed this runtime's
    integration and the launch granted the domain", never a synonym for the
    Session's saved grants.

@@ -173,7 +173,9 @@ The recipe is five files, each optional after the first:
    (`crate::integrations::install::write_mcp_shim()`) through the
    provider's persistent MCP mechanism. Use the shared primitives in
    `hook_assets` (`read_mergeable_json_object`, `write_file_atomic`,
-   `write_executable_script`). Declare `lifecycle_hooks` / `mcp_*`
+   `write_executable_script`); write a lifecycle reporter through
+   `hook_assets::reporter_script`, which names the installing `unpeel-host`
+   for its identity check. Declare `lifecycle_hooks` / `mcp_*`
    capabilities only when this file provides them.
 3. `adapter/resume.rs` — `pub(super) const ADAPTER: ResumeAdapter`: how a
    hook-captured conversation id becomes a resume command, and the
@@ -202,7 +204,13 @@ transcript roots and format, and version-dependent behavior.
   the provider conversation ID/path fields the Host knows how to validate.
   The reporter reads its Session from the generic hosted environment (or,
   for launchers that scrub it, from its parent process); it never depends on
-  a launch-time wrapper or provider variable.
+  a launch-time wrapper or provider variable. That environment is only a
+  claim (ADR 0013): before it writes the seed or posts, the reporter runs
+  the shared identity check (`_unpeel_identity_bin={{UNPEEL_HOST_BIN}}` …
+  `__session_identity__`, copied from `hook_assets/scripts.rs`) and drops
+  the event on exit 3, so a process that kept a Session's environment after
+  leaving its process tree moves nothing. `runtimes/hook_reporter_tests.rs`
+  holds every shell reporter to it.
   Finish bounded delivery before returning; provider-level asynchronous
   hooks can reorder opening and closing events even when the script waits
   for its own HTTP requests. An adapter may opt into

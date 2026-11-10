@@ -16,7 +16,7 @@ import sys
 import time
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from harness import CRATES, run, run_cli  # noqa: E402
+from harness import CRATES, run, run_cli, TRUST_SESSION_ENV  # noqa: E402
 
 
 def read_json(path):
@@ -113,6 +113,7 @@ while True:
         manifest = home.manifests()[session_id]
         env = dict(os.environ, **environment, UNPEEL_HOME=home.root,
                    UNPEEL_SESSION_ID=session_id, UNPEEL_SESSION_DIR=session_dir,
+                   UNPEEL_TEST="1", **TRUST_SESSION_ENV,
                    UNPEEL_RUNTIME_GENERATION=str(manifest["runtime_launch_generation"]),
                    UNPEEL_APP_PORT=str(ready["hookPort"]) if deliver else "",
                    UNPEEL_APP_PORT_REGISTRY_FILE=home.path("no-ports"),

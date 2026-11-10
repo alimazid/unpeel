@@ -33,7 +33,7 @@ import sys
 import time
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from harness import BINARY, CRATES, run, run_cli, wait_running  # noqa: E402
+from harness import BINARY, CRATES, run, run_cli, wait_running, TRUST_SESSION_ENV  # noqa: E402
 from hook_cancellation import control, fixture_started, read_json  # noqa: E402
 
 HEADER = "[unpeel inbox for id:"
@@ -172,7 +172,7 @@ def body(case):
     home.write_state(state)
 
     def mcp(session_id, action, args):
-        env = dict(os.environ, UNPEEL_HOME=home.root, UNPEEL_TEST="1", UNPEEL_SESSION_ID=session_id)
+        env = dict(os.environ, UNPEEL_HOME=home.root, UNPEEL_TEST="1", UNPEEL_SESSION_ID=session_id, **TRUST_SESSION_ENV)
         done = subprocess.run([BINARY, "mcp", "sessions", action, "--json", json.dumps(args)],
                               capture_output=True, text=True, timeout=60, env=env, cwd=CRATES)
         try:

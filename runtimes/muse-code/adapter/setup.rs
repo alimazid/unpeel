@@ -28,7 +28,7 @@ pub fn install() -> Result<(), String> {
     })?;
 
     for (_, file) in MUSE_HOOK_EVENT_FILES {
-        write_executable_script(&hooks_dir.join(file), MUSE_HOOK_SCRIPT, "Muse hook script")?;
+        write_executable_script(&hooks_dir.join(file), &crate::hook_assets::reporter_script(MUSE_HOOK_SCRIPT), "Muse hook script")?;
     }
 
     let manifest = muse_plugin_manifest_json()?;

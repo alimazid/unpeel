@@ -31,7 +31,7 @@ const CODEWHALE_HOOK_SCRIPT_NAME: &str = "codewhale-hook.sh";
 /// Unpeel MCP shim in the mcp.json it reads.
 pub fn install() -> Result<(), String> {
     let script_path = codewhale_hook_script_path();
-    write_executable_script(&script_path, CODEWHALE_HOOK_SCRIPT, "Codewhale hook script")?;
+    write_executable_script(&script_path, &crate::hook_assets::reporter_script(CODEWHALE_HOOK_SCRIPT), "Codewhale hook script")?;
     let config_path =
         codewhale_config_path().ok_or("Could not resolve Codewhale's config.toml location")?;
     ensure_codewhale_hooks_at(&config_path, &script_path)?;

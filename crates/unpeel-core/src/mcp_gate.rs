@@ -2,9 +2,10 @@
 //!
 //! Each installed integration registers the same stable shim
 //! (`integrations::install::mcp_shim_path`), which starts this gate. The gate
-//! resolves the calling Session (`mcp_host::self_session_id`: exported
-//! `UNPEEL_SESSION_ID`, or process ancestry for launchers that strip their
-//! MCP children's environment) and reads that Session's manifest grants to
+//! resolves the calling Session (`session_identity`: the exported
+//! `UNPEEL_SESSION_ID` once process ancestry backs it, or the Session
+//! ancestor for launchers that strip their MCP children's environment) and
+//! reads that Session's manifest grants to
 //! decide which domains the unified server advertises. Outside a granted
 //! hosted Session — a plain terminal, an agent started elsewhere — the
 //! endpoint stays valid and serves no tools, so a global registration never
@@ -28,13 +29,23 @@ pub const SESSIONS_ENABLED_ENV: &str = "UNPEEL_SESSIONS_MCP_ENABLED";
 pub const BROWSER_ENABLED_ENV: &str = "UNPEEL_BROWSER_MCP_ENABLED";
 pub const COMPUTER_ENABLED_ENV: &str = "UNPEEL_COMPUTER_MCP_ENABLED";
 const PROTOCOL_VERSION_FALLBACK: &str = "2025-06-18";
+/// How long a gate that starts while its Session is still launching waits
+/// for the Host to record the Session's pid before it decides.
+const LAUNCH_WAIT: std::time::Duration = std::time::Duration::from_secs(5);
 
 pub fn run_stdio(kind: &str) -> Result<(), String> {
+    // Fork-only (#71): the gate decides once, at startup, whether to serve
+    // tools; a Session still in its launch window has no pid to check yet,
+    // so ask until it does rather than settle on "unknown" for good.
+    let caller = crate::session_identity::current_waiting(LAUNCH_WAIT)
+        .session_id()
+        .map(str::to_owned);
     // The calling Session's manifest is the authority for a shim-based
     // registration. The generic environment grants remain honored for
     // configurations older builds scoped around a launch.
-    let manifest =
-        crate::mcp_host::self_session_id().and_then(|id| crate::session_host::load_manifest(&id));
+    let manifest = caller
+        .as_deref()
+        .and_then(crate::session_host::load_manifest);
     let manifest_sessions = manifest
         .as_ref()
         .is_some_and(|manifest| manifest.sessions_mcp_enabled());
@@ -62,7 +73,7 @@ pub fn run_stdio(kind: &str) -> Result<(), String> {
         _ => return Err(format!("Unknown gated MCP kind: {kind}")),
     };
 
-    let enabled = granted && crate::mcp_host::self_session_id().is_some();
+    let enabled = granted && caller.is_some();
     if enabled {
         return match kind {
             UNIFIED_KIND => crate::mcp_host::run_stdio_with_domains(unified_domains),

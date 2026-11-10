@@ -600,7 +600,11 @@ fn blank_terminal_never_claims_mcp_registration_or_agent_restart() {
     let mut mcp = Command::new(env!("CARGO_BIN_EXE_unpeel-host"))
         .arg("__mcp__")
         .env("UNPEEL_HOME", &home)
+        // This test process is outside the Session's tree; the private home lets
+        // it act as the Session from here (ADR 0013).
         .env("UNPEEL_SESSION_ID", session_id)
+        .env("UNPEEL_TEST", "1")
+        .env("UNPEEL_TEST_TRUST_SESSION_ENV", "1")
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -650,7 +654,11 @@ fn blank_terminal_never_claims_mcp_registration_or_agent_restart() {
     let mut legacy_kiro_mcp = Command::new(env!("CARGO_BIN_EXE_unpeel-host"))
         .arg("__kiro_mcp__")
         .env("UNPEEL_HOME", &home)
+        // This test process is outside the Session's tree; the private home lets
+        // it act as the Session from here (ADR 0013).
         .env("UNPEEL_SESSION_ID", session_id)
+        .env("UNPEEL_TEST", "1")
+        .env("UNPEEL_TEST_TRUST_SESSION_ENV", "1")
         .env("UNPEEL_KIRO_SESSIONS_MCP_ENABLED", "yes")
         .env("UNPEEL_KIRO_BROWSER_MCP_ENABLED", "1")
         .stdin(Stdio::piped())

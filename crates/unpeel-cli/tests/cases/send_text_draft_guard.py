@@ -30,7 +30,7 @@ import sys
 import time
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from harness import BINARY, CRATES, run, run_cli, wait_running  # noqa: E402
+from harness import BINARY, CRATES, run, run_cli, wait_running, TRUST_SESSION_ENV  # noqa: E402
 from hook_cancellation import control, read_json  # noqa: E402
 
 # Past the guard's 3 s "is typing" window.
@@ -176,7 +176,7 @@ def body(case):
         return
 
     def as_caller(*words):
-        env = dict(os.environ, UNPEEL_HOME=home.root, UNPEEL_TEST="1", UNPEEL_SESSION_ID=caller)
+        env = dict(os.environ, UNPEEL_HOME=home.root, UNPEEL_TEST="1", UNPEEL_SESSION_ID=caller, **TRUST_SESSION_ENV)
         return subprocess.run([BINARY, *words], capture_output=True, text=True, timeout=60,
                               env=env, cwd=CRATES)
 

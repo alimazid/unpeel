@@ -15,7 +15,7 @@ pub(crate) const OPENCODE_PLUGIN_SCRIPT: &str = include_str!(concat!(
 /// environment. The plugin no-ops outside an Unpeel session.
 pub fn install() -> Result<(), String> {
     let notify_path = notify_hook_script_path();
-    write_executable_script(&notify_path, NOTIFY_HOOK_SCRIPT, "notify hook script")?;
+    write_executable_script(&notify_path, &crate::hook_assets::reporter_script(NOTIFY_HOOK_SCRIPT), "notify hook script")?;
 
     let plugin_dir = opencode_plugin_dir();
     fs::create_dir_all(&plugin_dir).map_err(|e| {

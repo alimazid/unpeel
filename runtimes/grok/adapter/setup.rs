@@ -17,7 +17,7 @@ pub fn install() -> Result<(), String> {
     // session_start cannot latch busy. Real attention comes from
     // Notification/PreToolUse in unpeel.json.
     let script_path = grok_hook_script_path();
-    write_executable_script(&script_path, GROK_HOOK_SCRIPT, "Grok hook script")?;
+    write_executable_script(&script_path, &crate::hook_assets::reporter_script(GROK_HOOK_SCRIPT), "Grok hook script")?;
     ensure_grok_hooks(&script_path)?;
     Ok(())
 }

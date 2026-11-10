@@ -133,7 +133,11 @@ fn cancelled_wait_unblocks_without_response_while_reader_stays_live() {
         .arg("__mcp__")
         .env("UNPEEL_HOME", &home)
         .env("HOME", &home)
+        // This test process is outside the Session's tree; the private home lets
+        // it act as the Session from here (ADR 0013).
         .env("UNPEEL_SESSION_ID", caller_id)
+        .env("UNPEEL_TEST", "1")
+        .env("UNPEEL_TEST_TRUST_SESSION_ENV", "1")
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())

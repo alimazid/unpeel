@@ -16,7 +16,7 @@ import time
 import uuid
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from harness import BINARY, CRATES, run, run_cli  # noqa: E402
+from harness import BINARY, CRATES, run, run_cli, TRUST_SESSION_ENV  # noqa: E402
 
 
 def git(repo, *words):
@@ -54,7 +54,7 @@ def body(case):
                  running=True, extra_manifest={"mcp_enabled": True})
 
     def mcp(*words):
-        env = dict(os.environ, UNPEEL_HOME=home.root, UNPEEL_TEST="1", UNPEEL_SESSION_ID=caller)
+        env = dict(os.environ, UNPEEL_HOME=home.root, UNPEEL_TEST="1", UNPEEL_SESSION_ID=caller, **TRUST_SESSION_ENV)
         return subprocess.run(
             [BINARY, "mcp", "workspace", *words],
             capture_output=True, text=True, timeout=60, env=env, cwd=CRATES,

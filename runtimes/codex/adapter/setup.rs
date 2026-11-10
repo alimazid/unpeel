@@ -21,7 +21,7 @@ pub fn install() -> Result<(), String> {
     let transport_path = notify_hook_script_path();
     write_executable_script(
         &transport_path,
-        NOTIFY_HOOK_SCRIPT,
+        &crate::hook_assets::reporter_script(NOTIFY_HOOK_SCRIPT),
         "shared notify transport",
     )?;
     let notify_path = codex_notify_hook_script_path();

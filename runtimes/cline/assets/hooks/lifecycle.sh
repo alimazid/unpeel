@@ -5,6 +5,25 @@ INPUT="${2:-$(cat)}"
 # Global provider hooks must be inert outside a hosted Unpeel Session.
 [ -n "${UNPEEL_SESSION_ID:-}" ] || exit 0
 TRACE_FILE="${UNPEEL_HOOK_TRACE_FILE:-${UNPEEL_HOME:-$HOME/.unpeel}/hooks/trace.log}"
+# A process that inherited a Session's environment is not that Session's
+# process: Codex's shared daemon keeps the environment of the Session that
+# started it and runs other clients' hooks with it (#70). Before writing a
+# marker or posting, the installing Host checks that this process descends
+# from the Session it names. Only a definite refusal (exit 3) stops the hook;
+# a missing or failing checker keeps the old behavior.
+_unpeel_identity_bin={{UNPEEL_HOST_BIN}}
+if [ -x "$_unpeel_identity_bin" ]; then
+  # Explicit, for reporters that recovered the identity into shell variables.
+  _unpeel_identity=$(UNPEEL_SESSION_ID="$UNPEEL_SESSION_ID" \
+    UNPEEL_SESSION_DIR="${UNPEEL_SESSION_DIR:-}" \
+    "$_unpeel_identity_bin" __session_identity__ 2>/dev/null)
+  if [ "$?" = "3" ]; then
+    mkdir -p "$(dirname "$TRACE_FILE")" >/dev/null 2>&1 || true
+    printf '%s hook-refused session=%s reason=%s\n' "$(date '+%Y-%m-%d %H:%M:%S')" \
+      "$UNPEEL_SESSION_ID" "$_unpeel_identity" >> "$TRACE_FILE" 2>/dev/null || true
+    exit 0
+  fi
+fi
 UNPEEL_PORT_REGISTRY_FILE="${UNPEEL_APP_PORT_REGISTRY_FILE:-${UNPEEL_HOME:-$HOME/.unpeel}/app-ports}"
 mkdir -p "$(dirname "$TRACE_FILE")" >/dev/null 2>&1 || true
 
