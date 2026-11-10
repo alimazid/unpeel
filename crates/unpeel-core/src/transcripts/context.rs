@@ -4,7 +4,7 @@
 //! that compacts come from the runtime package's `[context]` table.
 
 use super::{
-    read_jsonl_lines_before, resolve_provider_transcript, TranscriptProvider,
+    read_head_utf8, read_jsonl_lines_before, resolve_provider_transcript, TranscriptProvider,
     DEFAULT_TRANSCRIPT_TAIL_BYTES,
 };
 use crate::session_host::HostedSessionManifest;
@@ -29,14 +29,22 @@ pub struct ContextReading {
     /// What to type, then Enter, to compact it; `None` when the runtime
     /// package names none.
     pub compact_command: Option<String>,
+    /// Fork-only (#68): what the agent's own percent leaves out of both the
+    /// tokens and the window (the runtime package's `baseline_tokens`).
+    pub baseline: u64,
 }
 
 impl ContextReading {
-    /// Percent of the window, rounded as Claude Code's status line rounds
-    /// it; `None` without a window.
+    /// Percent of the window above the baseline, rounded as Claude Code's
+    /// status line rounds it; `None` without a window larger than the
+    /// baseline.
     pub fn percent(&self) -> Option<u8> {
-        let window = u128::from(self.window.filter(|window| *window > 0)?);
-        let percent = (u128::from(self.tokens) * 100 + window / 2) / window;
+        let window = self.window.filter(|window| *window > self.baseline)? - self.baseline;
+        let (tokens, window) = (
+            u128::from(self.tokens.saturating_sub(self.baseline)),
+            u128::from(window),
+        );
+        let percent = (tokens * 100 + window / 2) / window;
         Some(u8::try_from(percent.min(100)).unwrap_or(100))
     }
 }
@@ -60,6 +68,11 @@ pub fn compact_command(provider: TranscriptProvider) -> Option<String> {
     runtime_context(provider)?.compact_command.clone()
 }
 
+/// The provider's `baseline_tokens`, from its runtime package (#68).
+pub fn context_baseline(provider: TranscriptProvider) -> u64 {
+    runtime_context(provider).map_or(0, |context| context.baseline_tokens)
+}
+
 fn runtime_context(
     provider: TranscriptProvider,
 ) -> Option<&'static crate::runtime_catalog::RuntimeContext> {
@@ -68,15 +81,22 @@ fn runtime_context(
         .map(|descriptor| &descriptor.context)
 }
 
-/// How full the Session's context is, from the tail of its transcript.
-/// `None` without a transcript, a reader, or a reply yet.
+/// How full the Session's context is, from the tail of its transcript (a
+/// JSON document, such as a Codewhale saved session, is read whole and
+/// handed to the reader as its one line). `None` without a transcript, a
+/// reader, or a reply yet.
 pub fn read_context(manifest: &HostedSessionManifest) -> Option<ContextReading> {
     let transcript = resolve_provider_transcript(manifest).ok()?;
     transcript.provider.adapter().context_usage?;
-    let read =
-        read_jsonl_lines_before(&transcript.path, None, DEFAULT_TRANSCRIPT_TAIL_BYTES).ok()?;
-    let lines: Vec<&str> = read.lines.iter().map(|(_, line)| line.as_str()).collect();
-    let usage = context_usage_in_lines(transcript.provider, &lines)?;
+    let usage = if transcript.path.extension().and_then(|ext| ext.to_str()) == Some("json") {
+        let document = read_head_utf8(&transcript.path, u64::MAX).ok()?;
+        context_usage_in_lines(transcript.provider, &[document.as_str()])?
+    } else {
+        let read =
+            read_jsonl_lines_before(&transcript.path, None, DEFAULT_TRANSCRIPT_TAIL_BYTES).ok()?;
+        let lines: Vec<&str> = read.lines.iter().map(|(_, line)| line.as_str()).collect();
+        context_usage_in_lines(transcript.provider, &lines)?
+    };
     let window = usage
         .model
         .as_deref()
@@ -86,5 +106,6 @@ pub fn read_context(manifest: &HostedSessionManifest) -> Option<ContextReading> 
         model: usage.model,
         window,
         compact_command: compact_command(transcript.provider),
+        baseline: context_baseline(transcript.provider),
     })
 }

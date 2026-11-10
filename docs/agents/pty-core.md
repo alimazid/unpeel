@@ -153,7 +153,10 @@ Fork-only (#61): at the first key the user has not sent, `typing` keeps the
 input line as it was (the cursor's row without suggested input), read
 before the key reaches the PTY; plain Enter clears it, and so does a new
 runtime observation. A select menu on screen neither starts a draft nor
-refuses a write. A `Write` with `unless_draft` is refused with the error
+refuses a write; since #72 only one whose footer is below a shown cursor
+counts (`menu_prompt::viewport_has_menu_prompt_below`), and with the
+cursor hidden one anywhere, so output that quotes a menu above the line
+disarms nothing. A `Write` with `unless_draft` is refused with the error
 `draft` while the line differs from the kept one; finding it equal ends the
 draft. Fork-only (#65): while only text and Backspace typed the draft,
 `typing` also keeps that text; erasing all of it ends the draft, and so
@@ -166,7 +169,8 @@ write with Backspace, never at a text key (`input_screen_cost`, ignored,
 measures it). The lock order is runtime, then viewport, as on the other
 write paths. The core marks the manifest `draft_guard: true` at launch, so an
 agent's send can say when its target's core predates the guard
-(`crate::agent_send`).
+(`crate::agent_send`), and the Inbox drain knows it may leave a draft to the
+core (#69).
 
 Session end (PTY EOF/error, Kill followed by a final drain, or a failed
 journal write) detaches the fds on the reactor and runs the old epilogue on

@@ -9,10 +9,11 @@ import XCTest
 /// takes the path a swipe takes: the neighbor's pooled page first, then the
 /// scope switch, then the live page.
 ///
-/// A local-site globe's whole page isn't compared: only the current instance's
-/// own Local scope wears one, and landing there needs a real Host, which a store
-/// test must not run. A globed header is, from one store already in Local; the
-/// swipe recordings on #57 cover the landing.
+/// A local-site globe's whole page is compared on a local workspace (#77), which
+/// a store test can land on. Landing on the current instance's own Local scope
+/// needs a real Host, which a store test must not run, so there only a globed
+/// header is, from one store already in Local; the swipe recordings on #57
+/// cover that landing.
 @MainActor
 final class SidebarRowPixelParityTests: XCTestCase {
     /// The live page with its whole interaction layer, at rest: what the user
@@ -117,14 +118,7 @@ final class SidebarRowPixelParityTests: XCTestCase {
 
     /// A true remote Host's live page shows no tints, whatever it publishes.
     func testARemoteHostsPageStaysUntinted() throws {
-        let swipe = try WorkspaceSwipe(neighborKind: .ssh(SSHHostRecord(
-            id: "ssh-parity",
-            name: "Parity",
-            target: "ssh://parity",
-            hostID: WorkspaceSwipe.macID,
-            mode: .command,
-            usesStoredSecret: false
-        )))
+        let swipe = try WorkspaceSwipe(neighborKind: Self.remoteHost)
         defer { swipe.finish() }
 
         let content = try XCTUnwrap(SidebarListContentBuilder.content(for: swipe.neighbor, store: swipe.store))
@@ -132,32 +126,89 @@ final class SidebarRowPixelParityTests: XCTestCase {
         XCTAssertTrue(content.inputs.folderColors.isEmpty)
     }
 
-    // MARK: The local-site globe (#57)
+    // MARK: The local-site globe (#57, #73)
 
     private static let site = "http://localhost:5173/"
     private static let currentInstance = WorkspaceListRowModel.Kind.local(
         record: nil, isDefault: true, isCurrentInstance: true, isRunning: true
     )
 
-    /// Swiping back to this instance's own Local page: its top-level project
-    /// wears the globe before the swap, from a verdict already in hand.
-    func testTheCurrentInstancesPageWearsItsProjectsGlobe() throws {
-        let swipe = try WorkspaceSwipe(neighborKind: Self.currentInstance)
+    /// Swiping back to this instance's own Local page after a site started
+    /// while another workspace was selected: Local's own index never saw it,
+    /// but the pooled snapshot the page's rows come from serves it. The
+    /// top-level project wears the globe before the swap, from a verdict
+    /// already in hand.
+    func testTheCurrentInstancesPageWearsASiteThatStartedWhileAway() throws {
+        let swipe = try WorkspaceSwipe(neighborKind: Self.currentInstance, servedSite: Self.site)
         defer { swipe.finish() }
         swipe.scopeAway()
-        swipe.store.noteLocalSiteForTesting(url: Self.site, sessionID: "alpha-plain", projectID: "alpha", probePassed: true)
+        swipe.store.noteLocalURLVerdictForTesting(url: Self.site, probePassed: true)
         SidebarListContentBuilder.invalidate()
 
         let content = try XCTUnwrap(SidebarListContentBuilder.content(for: swipe.neighbor, store: swipe.store))
 
+        XCTAssertTrue(swipe.store.localSites.isEmpty, "Local's own index never saw the site")
         XCTAssertEqual(content.inputs.localSites, ["alpha": [Self.site]])
+    }
+
+    /// The swipe never probes, so the verdict has to be in hand before it
+    /// starts: each pooled Local snapshot that lands while another workspace
+    /// is selected has its sites probed.
+    func testALocalSnapshotThatLandsWhileAwayHasItsSitesProbed() throws {
+        let swipe = try WorkspaceSwipe(neighborKind: Self.currentInstance)
+        defer { swipe.finish() }
+        let site = Self.site
+        swipe.store.useLocalURLCheckForTesting { $0 == site }
+        let ownLocal = WorkspaceListRowModel(
+            id: swipe.store.currentScopeWorkspaceKey, name: "Local", detail: "", icon: "", badge: nil,
+            home: nil, tint: .none, kind: Self.currentInstance
+        )
+        swipe.scopeAway()
+
+        swipe.store.workspacePool.noteExternalSnapshot(
+            WorkspaceSwipe.tree(servingSite: Self.site), forKey: ownLocal.id, name: ownLocal.name
+        )
+        var sites: [String: [String]] = [:]
+        let deadline = Date().addingTimeInterval(5)
+        repeat {
+            RunLoop.main.run(until: Date().addingTimeInterval(0.01))
+            SidebarListContentBuilder.invalidate()
+            sites = try XCTUnwrap(SidebarListContentBuilder.content(for: ownLocal, store: swipe.store)).inputs.localSites
+        } while sites.isEmpty && Date() < deadline
+
+        XCTAssertEqual(sites, ["alpha": [Self.site]])
+    }
+
+    /// The swipe's own path probes nothing, even with a site it has no
+    /// verdict for (#57). A verdict that lands mid-gesture still reaches the
+    /// page, so the commit swap shows no globe appearing.
+    func testThePageProbesNothingAndPaintsAVerdictThatLandsMidGesture() throws {
+        let swipe = try WorkspaceSwipe(neighborKind: Self.currentInstance, servedSite: Self.site)
+        defer { swipe.finish() }
+        let probes = ProbeCount()
+        swipe.store.useLocalURLCheckForTesting { _ in
+            probes.add()
+            return true
+        }
+        swipe.scopeAway()
+        SidebarListContentBuilder.invalidate()
+
+        let before = try XCTUnwrap(SidebarListContentBuilder.content(for: swipe.neighbor, store: swipe.store))
+        RunLoop.main.run(until: Date().addingTimeInterval(0.2))
+        swipe.store.noteLocalURLVerdictForTesting(url: Self.site, probePassed: true)
+        let after = try XCTUnwrap(SidebarListContentBuilder.content(for: swipe.neighbor, store: swipe.store))
+
+        XCTAssertEqual(before.inputs.localSites, [:])
+        XCTAssertEqual(probes.value, 0, "building the page started a probe")
+        XCTAssertEqual(after.inputs.localSites, ["alpha": [Self.site]])
     }
 
     /// Landing on Local takes a real Host, but a store already there can paint a
     /// project's header both ways.
     func testAGlobedHeaderPaintsTheSameFromBothPagesInputs() throws {
+        let tree = WorkspaceSwipe.tree(servingSite: Self.site)
         let store = UnpeelStore.sidebarFixture(
-            snapshot: WorkspaceSwipe.workspaceTree,
+            snapshot: tree,
             expandedProjectIDs: Set(WorkspaceSwipe.expanded)
         )
         let page = WorkspaceListRowModel(
@@ -170,9 +221,9 @@ final class SidebarRowPixelParityTests: XCTestCase {
             store.workspacePool.stop()
             SidebarListContentBuilder.invalidate()
         }
-        store.workspacePool.noteExternalSnapshot(WorkspaceSwipe.workspaceTree, forKey: page.id, name: page.name)
+        store.workspacePool.noteExternalSnapshot(tree, forKey: page.id, name: page.name)
         // A verdict stays fresh for 5 s, so the live row below never probes.
-        store.noteLocalSiteForTesting(url: Self.site, sessionID: "alpha-plain", projectID: "alpha", probePassed: true)
+        store.noteLocalURLVerdictForTesting(url: Self.site, probePassed: true)
         SidebarListContentBuilder.invalidate()
 
         let content = try XCTUnwrap(SidebarListContentBuilder.content(for: page, store: store))
@@ -192,10 +243,10 @@ final class SidebarRowPixelParityTests: XCTestCase {
 
     /// A site that failed its probe stays hidden, as on the live page.
     func testAGlobeNeedsASiteThatPassedItsProbe() throws {
-        let swipe = try WorkspaceSwipe(neighborKind: Self.currentInstance)
+        let swipe = try WorkspaceSwipe(neighborKind: Self.currentInstance, servedSite: Self.site)
         defer { swipe.finish() }
         swipe.scopeAway()
-        swipe.store.noteLocalSiteForTesting(url: Self.site, sessionID: "alpha-plain", projectID: "alpha", probePassed: false)
+        swipe.store.noteLocalURLVerdictForTesting(url: Self.site, probePassed: false)
         SidebarListContentBuilder.invalidate()
 
         let content = try XCTUnwrap(SidebarListContentBuilder.content(for: swipe.neighbor, store: swipe.store))
@@ -203,11 +254,102 @@ final class SidebarRowPixelParityTests: XCTestCase {
         XCTAssertEqual(content.inputs.localSites, [:])
     }
 
-    /// Another workspace's page never does: its live page has no globe.
-    func testAnotherWorkspacesPageHasNoGlobe() throws {
-        let swipe = try WorkspaceSwipe()
+    /// Another local workspace's Sessions run on this Mac too, so its page
+    /// wears the globe its live page will (#77), and the swap shows no globe
+    /// appearing.
+    func testALocalWorkspacesGlobedPageIsPixelIdenticalToTheLivePageItBecomes() throws {
+        let swipe = try WorkspaceSwipe(servedSite: Self.site, probe: { _ in true })
         defer { swipe.finish() }
-        swipe.store.noteLocalSiteForTesting(url: Self.site, sessionID: "alpha-plain", projectID: "alpha", probePassed: true)
+        swipe.store.noteLocalURLVerdictForTesting(url: Self.site, probePassed: true)
+        SidebarListContentBuilder.invalidate()
+        let content = try XCTUnwrap(SidebarListContentBuilder.content(for: swipe.neighbor, store: swipe.store))
+        XCTAssertEqual(content.inputs.localSites, ["alpha": [Self.site]], "the page has a globe to compare")
+
+        let pooled = try Pixels.appearances.map { appearance in
+            try Pixels.settled(
+                of: Self.page(SidebarListPage(source: .pooled(swipe.neighbor), store: swipe.store)),
+                appearance: appearance
+            )
+        }
+        swipe.commit()
+        let live = try Pixels.appearances.map { appearance in
+            try Pixels.settled(of: Self.page(swipe.livePanel()), appearance: appearance)
+        }
+
+        for (appearance, (pooledPage, livePage)) in zip(Pixels.appearances, zip(pooled, live)) {
+            Pixels.assertEqual(pooledPage, livePage, "globed page, \(appearance.rawValue)")
+        }
+    }
+
+    /// Its live rows wear it from the workspace's own snapshot, which Local's
+    /// index never takes (#77).
+    func testALocalWorkspacesLiveRowWearsItsSite() throws {
+        let swipe = try WorkspaceSwipe(servedSite: Self.site, probe: { _ in true })
+        defer { swipe.finish() }
+        swipe.store.noteLocalURLVerdictForTesting(url: Self.site, probePassed: true)
+        swipe.commit()
+
+        let row = try XCTUnwrap(swipe.store.sidebarTreeRows.first { $0.id == "folder:alpha" })
+        guard case let .projectHeader(node, isExpanded) = row.content else {
+            return XCTFail("alpha is a project header")
+        }
+        let view = SidebarLiveTreeList(store: swipe.store, dragState: SidebarDragState())
+            .headerRowView(node, row: row, isExpanded: isExpanded, inputs: SidebarLiveRowInputs(store: swipe.store))
+
+        XCTAssertEqual(view.localSiteURLs, [Self.site])
+        XCTAssertTrue(swipe.store.localSites.isEmpty, "Local's own index never takes them")
+    }
+
+    /// A verdict that lands mid-gesture gets past a local workspace's page memo
+    /// too.
+    func testALocalWorkspacesPagePaintsAVerdictThatLandsMidGesture() throws {
+        let swipe = try WorkspaceSwipe(servedSite: Self.site)
+        defer { swipe.finish() }
+        // The pool's probe of the site, answered no, lands first.
+        RunLoop.main.run(until: Date().addingTimeInterval(0.2))
+
+        let before = try XCTUnwrap(SidebarListContentBuilder.content(for: swipe.neighbor, store: swipe.store))
+        swipe.store.noteLocalURLVerdictForTesting(url: Self.site, probePassed: true)
+        let after = try XCTUnwrap(SidebarListContentBuilder.content(for: swipe.neighbor, store: swipe.store))
+
+        XCTAssertEqual(before.inputs.localSites, [:])
+        XCTAssertEqual(after.inputs.localSites, ["alpha": [Self.site]])
+    }
+
+    /// The swipe never probes (#57), so a local workspace's snapshot that lands
+    /// while it isn't shown has its sites probed (#77).
+    func testAnotherLocalWorkspacesSnapshotHasItsSitesProbed() throws {
+        let site = Self.site
+        let swipe = try WorkspaceSwipe(probe: { $0 == site })
+        defer { swipe.finish() }
+
+        swipe.store.workspacePool.noteExternalSnapshot(
+            WorkspaceSwipe.tree(servingSite: Self.site), forKey: swipe.neighbor.id, name: swipe.neighbor.name
+        )
+        var sites: [String: [String]] = [:]
+        let deadline = Date().addingTimeInterval(5)
+        repeat {
+            RunLoop.main.run(until: Date().addingTimeInterval(0.01))
+            SidebarListContentBuilder.invalidate()
+            sites = try XCTUnwrap(SidebarListContentBuilder.content(for: swipe.neighbor, store: swipe.store)).inputs.localSites
+        } while sites.isEmpty && Date() < deadline
+
+        XCTAssertEqual(sites, ["alpha": [Self.site]])
+    }
+
+    /// A remote Host's page never does: a loopback URL there names a port on
+    /// that machine, not this one. Nothing probes it either.
+    func testARemoteHostsPageHasNoGlobeAndIsNeverProbed() throws {
+        let probes = ProbeCount()
+        let swipe = try WorkspaceSwipe(neighborKind: Self.remoteHost, servedSite: Self.site, probe: { _ in
+            probes.add()
+            return true
+        })
+        defer { swipe.finish() }
+        // With no verdict in hand yet, so a probe would really run.
+        RunLoop.main.run(until: Date().addingTimeInterval(0.2))
+        XCTAssertEqual(probes.value, 0, "a remote Host's site was probed")
+        swipe.store.noteLocalURLVerdictForTesting(url: Self.site, probePassed: true)
         SidebarListContentBuilder.invalidate()
 
         let content = try XCTUnwrap(SidebarListContentBuilder.content(for: swipe.neighbor, store: swipe.store))
@@ -257,14 +399,7 @@ final class SidebarRowPixelParityTests: XCTestCase {
     /// A true remote Host's path means nothing on this Mac, and its live label
     /// shows what the Host reports.
     func testARemoteHostsPageNamesWhatItsHostReports() throws {
-        let swipe = try WorkspaceSwipe(neighborKind: .ssh(SSHHostRecord(
-            id: "ssh-parity",
-            name: "Parity",
-            target: "ssh://parity",
-            hostID: WorkspaceSwipe.macID,
-            mode: .command,
-            usesStoredSecret: false
-        )))
+        let swipe = try WorkspaceSwipe(neighborKind: Self.remoteHost)
         defer { swipe.finish() }
 
         let content = try XCTUnwrap(SidebarListContentBuilder.content(for: swipe.neighbor, store: swipe.store))
@@ -407,6 +542,17 @@ final class SidebarRowPixelParityTests: XCTestCase {
 
     // MARK: Helpers
 
+    /// A true remote Host's row: its paths and loopback URLs mean nothing on
+    /// this Mac.
+    private static let remoteHost = WorkspaceListRowModel.Kind.ssh(SSHHostRecord(
+        id: "ssh-parity",
+        name: "Parity",
+        target: "ssh://parity",
+        hostID: WorkspaceSwipe.macID,
+        mode: .command,
+        usesStoredSecret: false
+    ))
+
     private static func page(_ content: some View) -> some View {
         content
             .frame(width: 260, height: 760, alignment: .top)
@@ -478,6 +624,8 @@ final class SidebarRowPixelParityTests: XCTestCase {
 
         let store: UnpeelStore
         let neighbor: WorkspaceListRowModel
+        /// The neighbor's pooled snapshot, which the commit lands on.
+        private let tree: RemoteBootstrapSnapshot
         private let expansionKey = UnpeelStore.expandedProjectsKey + "." + WorkspaceSwipe.macID
 
         init(
@@ -485,11 +633,17 @@ final class SidebarRowPixelParityTests: XCTestCase {
                 record: nil, isDefault: false, isCurrentInstance: false, isRunning: true
             ),
             repoHead: String = "ref: refs/heads/feature-branch\n",
-            paneGroup: (representative: String, member: String) = (representative: "pane-main", member: "pane-member")
+            paneGroup: (representative: String, member: String) = (representative: "pane-main", member: "pane-member"),
+            servedSite: String? = nil,
+            probe: @escaping @Sendable (String) -> Bool = { _ in false }
         ) throws {
+            tree = servedSite.map { Self.tree(servingSite: $0) } ?? Self.workspaceTree
             try Self.writeRepo(head: repoHead)
             AppDefaults.shared.set(Self.expanded, forKey: expansionKey)
             store = UnpeelStore.sidebarFixture(snapshot: Self.localTree, expandedProjectIDs: [])
+            // A local page's sites are probed as its snapshot lands (#77), and
+            // the test bundle's Host runs nothing: the test says what it answers.
+            store.useLocalURLCheckForTesting(probe)
             // The neighbor's pane group, where both pages read it.
             let panes = store.paneLayoutController
             panes.switchScope(to: "workspace:\(Self.home)")
@@ -512,7 +666,7 @@ final class SidebarRowPixelParityTests: XCTestCase {
             // The foreground key keeps the fixture's attention rows from posting
             // a real notification.
             store.workspacePool.start(targetsProvider: { [] }, excludedKeys: { [key] }, foregroundKey: { key })
-            store.workspacePool.noteExternalSnapshot(Self.workspaceTree, forKey: key, name: neighbor.name)
+            store.workspacePool.noteExternalSnapshot(tree, forKey: key, name: neighbor.name)
             if WorkspaceListOrder.isLocalKey(key), repoHead.contains("refs/heads/feature-branch") {
                 try awaitTheCheckoutRead()
             }
@@ -540,7 +694,7 @@ final class SidebarRowPixelParityTests: XCTestCase {
         }
 
         func commit() {
-            scope(to: Self.workspaceTree)
+            scope(to: tree)
             store.selectedSessionID = Self.selected
         }
 
@@ -582,7 +736,10 @@ final class SidebarRowPixelParityTests: XCTestCase {
         /// the first blocked one, which makes it the workspace's default
         /// selection on the pooled page. It sits two groups deep to light both
         /// washes.
-        static let workspaceTree: RemoteBootstrapSnapshot = {
+        static let workspaceTree = tree(servingSite: nil)
+
+        /// The same tree, with `alpha-plain` serving `site` when there is one.
+        static func tree(servingSite site: String?) -> RemoteBootstrapSnapshot {
             let threeDaysAgo = Int64(Date().timeIntervalSince1970 * 1000) - 3 * 86_400_000
             func session(
                 _ id: String,
@@ -590,7 +747,8 @@ final class SidebarRowPixelParityTests: XCTestCase {
                 status: RemoteSessionStatus = .running,
                 activity: RemoteActivityState = .idle,
                 unread: Bool = false,
-                pinned: Bool = false
+                pinned: Bool = false,
+                urls: [String] = []
             ) -> RemoteSessionSummary {
                 RemoteSessionSummary(
                     id: id,
@@ -601,7 +759,8 @@ final class SidebarRowPixelParityTests: XCTestCase {
                     status: status,
                     activity: activity,
                     unread: unread,
-                    pinned: pinned
+                    pinned: pinned,
+                    detectedLocalURLs: urls
                 )
             }
             return RemoteBootstrapSnapshot(
@@ -624,7 +783,7 @@ final class SidebarRowPixelParityTests: XCTestCase {
                 sessions: [
                     session(selected, in: "inner", activity: .blocked),
                     session("inner-plain", in: "inner"),
-                    session("alpha-plain", in: "alpha"),
+                    session("alpha-plain", in: "alpha", urls: site.map { [$0] } ?? []),
                     session("alpha-pinned", in: "alpha", pinned: true),
                     session("alpha-unread", in: "alpha", unread: true),
                     session("alpha-stopped", in: "alpha", status: .exited),
@@ -639,7 +798,25 @@ final class SidebarRowPixelParityTests: XCTestCase {
                 ],
                 capturedAtUnixMs: 2
             )
-        }()
+        }
+    }
+}
+
+/// Probes counted from the background queue they run on.
+private final class ProbeCount: @unchecked Sendable {
+    private let lock = NSLock()
+    private var count = 0
+
+    var value: Int {
+        lock.lock()
+        defer { lock.unlock() }
+        return count
+    }
+
+    func add() {
+        lock.lock()
+        count += 1
+        lock.unlock()
     }
 }
 

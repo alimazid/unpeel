@@ -145,6 +145,7 @@ impl Fixture {
                     model: Some(model.into()),
                     window,
                     compact_command: Some("/compact".into()),
+                    baseline: 0,
                 },
             )
         });

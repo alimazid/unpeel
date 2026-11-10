@@ -1130,6 +1130,9 @@ enum SidebarListContentBuilder {
         let content: SidebarListContent?
         // Fork-only (#57): a branch mark's name lives outside the snapshot.
         let branches = store.workspacePool.checkouts.nameGeneration
+        // Fork-only (#73, #77): so does a site's verdict, on a page on this
+        // Mac.
+        let verdicts = isLocalMachine(row) ? store.localSiteVerdictGeneration : 0
         if isCurrentInstance(row) {
             // As a Host client, Local truth is the worker's snapshot — the
             // pool mirrors it under this instance's own key while the
@@ -1142,13 +1145,13 @@ enum SidebarListContentBuilder {
                 localHostServed: store.localScopeIsHostServed,
                 pooledSnapshotAvailable: store.workspacePool.snapshot(forKey: row.id) != nil
             ) ? store.workspacePool.snapshot(forKey: row.id) : nil
-            key = "current:\(row.id):\(hostSnapshot?.capturedAtUnixMs ?? 0):\(branches)"
+            key = "current:\(row.id):\(hostSnapshot?.capturedAtUnixMs ?? 0):\(branches):\(verdicts)"
             if cacheKey == key { return cached }
             content = hostSnapshot.map {
                 snapshotContent($0, row: row, store: store, isLocalScope: true)
             } ?? localContent(store: store)
         } else if let snapshot = store.workspacePool.snapshot(forKey: row.id) {
-            key = "\(row.id):\(snapshot.capturedAtUnixMs):\(branches)"
+            key = "\(row.id):\(snapshot.capturedAtUnixMs):\(branches):\(verdicts)"
             if cacheKey == key { return cached }
             content = snapshotContent(snapshot, row: row, store: store)
         } else {
@@ -1244,7 +1247,7 @@ enum SidebarListContentBuilder {
                 colors[node.id] = store.projectFolderColor(for: node.id)
             },
             activeBranch: localActiveBranch(selectedSessionID: selectedSessionID, store: store),
-            localSites: localSites(on: store.nodes, store: store)
+            localSites: localSites(on: store.nodes, in: store.localSites, store: store)
         )
         return SidebarListContent(rows: rows, inputs: inputs)
     }
@@ -1518,7 +1521,16 @@ enum SidebarListContentBuilder {
                 row: row,
                 store: store
             ),
-            localSites: isLocalScope ? localSites(on: rootNodes, store: store) : [:]
+            // Fork-only (#73): from the snapshot the rows come from, which
+            // knows a site that started while another workspace was selected.
+            // Fork-only (#77): any workspace on this Mac, as its live page.
+            localSites: isLocalMachine(row)
+                ? localSites(
+                    on: rootNodes,
+                    in: .fromHost(sessions: snapshot.sessions, projects: snapshot.projects),
+                    store: store
+                )
+                : [:]
         )
         return SidebarListContent(rows: rows, inputs: inputs)
     }
@@ -1552,13 +1564,17 @@ enum SidebarListContentBuilder {
         return SidebarActiveBranch(projectID: project.id, name: name)
     }
 
-    // Fork-only (#57): the globes the current instance's live page wears, on
-    // top-level projects only, as there.
-    private static func localSites(on nodes: [ProjectNode], store: UnpeelStore) -> [String: [String]] {
-        guard !store.localSites.isEmpty else { return [:] }
+    // Fork-only (#57): the globes the live page wears, on top-level projects
+    // only, as there. Fork-only (#77): any page on this Mac.
+    private static func localSites(
+        on nodes: [ProjectNode],
+        in index: LocalSiteIndex,
+        store: UnpeelStore
+    ) -> [String: [String]] {
+        guard !index.isEmpty else { return [:] }
         return nodes.reduce(into: [:]) { sites, node in
             guard node.project.parentProjectID == nil else { return }
-            let urls = store.knownLocalSiteURLs(forProjectFamilyOf: node.id)
+            let urls = store.knownLocalSiteURLs(forProjectFamilyOf: node.id, in: index)
             if !urls.isEmpty { sites[node.id] = urls }
         }
     }

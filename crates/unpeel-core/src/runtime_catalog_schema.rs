@@ -7,6 +7,9 @@ use std::path::{Path, PathBuf};
 pub const RUNTIME_DESCRIPTOR_SCHEMA_VERSION: u32 = 1;
 const MAX_RUNTIME_ICON_BYTES: u64 = 128 * 1024;
 const MAX_WINDOW_PADDING_X: u8 = 48;
+/// Fork-only (#78): the Enters after a paste unless a runtime declares one.
+pub const DEFAULT_ENTERS_AFTER_PASTE: u8 = 2;
+const MAX_ENTERS_AFTER_PASTE: u8 = 2;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -49,6 +52,10 @@ pub struct RuntimeDescriptor {
     /// asked (`bypassesApprovals` on a preset row).
     #[serde(default)]
     pub approvals: RuntimeApprovals,
+    /// Fork-only (#78): how the Host's paste recipe submits into this
+    /// runtime (`crate::session_input`).
+    #[serde(default)]
+    pub input: RuntimeInput,
     /// Fork-only (#64): each model's context window and the command that
     /// compacts, for the Host's Worker compaction. A model none of the
     /// windows names, or a runtime with no command, is never compacted.
@@ -270,6 +277,29 @@ pub struct RuntimeApprovals {
     pub bypass_flags: Vec<String>,
 }
 
+/// Fork-only (#78): how many Enters follow the Host's bracketed paste. Two
+/// by default, because some full-screen agent TUIs swallow the first; one
+/// for a runtime whose second Enter lands on an empty composer that does
+/// something with it (Codewhale opens the sent message's pager).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RuntimeInput {
+    #[serde(default = "default_enters_after_paste")]
+    pub enters_after_paste: u8,
+}
+
+impl Default for RuntimeInput {
+    fn default() -> Self {
+        Self {
+            enters_after_paste: DEFAULT_ENTERS_AFTER_PASTE,
+        }
+    }
+}
+
+fn default_enters_after_paste() -> u8 {
+    DEFAULT_ENTERS_AFTER_PASTE
+}
+
 /// Fork-only (#64): context windows by model id prefix, and how to compact.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -279,6 +309,11 @@ pub struct RuntimeContext {
     /// Typed as keys, then Enter, into an idle prompt (`/compact`).
     #[serde(default)]
     pub compact_command: Option<String>,
+    /// Fork-only (#68): tokens the agent's own percent leaves out of both
+    /// the count and the window (Codex's footer has one), so the Host's
+    /// percent is the one the agent shows. Below every window.
+    #[serde(default)]
+    pub baseline_tokens: u64,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -1127,6 +1162,11 @@ pub fn validate_runtime_descriptors(
                 errors.push(format!(
                     "{prefix}: context window for '{model_prefix}' must be at least 1 token"
                 ));
+            } else if window.tokens <= descriptor.context.baseline_tokens {
+                errors.push(format!(
+                    "{prefix}: context window for '{model_prefix}' must be larger than \
+                     context.baseline_tokens"
+                ));
             }
         }
         if let Some(command) = &descriptor.context.compact_command {
@@ -1139,6 +1179,12 @@ pub fn validate_runtime_descriptors(
                      surrounding space or control characters"
                 ));
             }
+        }
+
+        if !(1..=MAX_ENTERS_AFTER_PASTE).contains(&descriptor.input.enters_after_paste) {
+            errors.push(format!(
+                "{prefix}: input.enters_after_paste must be 1 or {MAX_ENTERS_AFTER_PASTE}"
+            ));
         }
 
         for flag in &descriptor.approvals.bypass_flags {
@@ -2198,10 +2244,31 @@ attention_reliable = true
         }
     }
 
+    /// Fork-only (#68).
+    #[test]
+    fn a_baseline_is_below_every_window() {
+        let mut runtime = parsed("alpha", "com.example.alpha");
+        runtime.descriptor.context.windows = vec![RuntimeContextWindow {
+            model_prefix: "model-5".into(),
+            tokens: 12_001,
+        }];
+        runtime.descriptor.context.baseline_tokens = 12_000;
+        assert!(validate_runtime_descriptors(vec![runtime.clone()]).is_ok());
+        runtime.descriptor.context.windows[0].tokens = 12_000;
+        let error = validate_runtime_descriptors(vec![runtime])
+            .unwrap_err()
+            .to_string();
+        assert!(
+            error.contains("larger than context.baseline_tokens"),
+            "{error}"
+        );
+    }
+
     #[test]
     fn a_models_context_window_is_its_longest_matching_prefix() {
         let context = RuntimeContext {
             compact_command: None,
+            baseline_tokens: 0,
             windows: vec![
                 RuntimeContextWindow {
                     model_prefix: "model".into(),
@@ -2217,6 +2284,36 @@ attention_reliable = true
         assert_eq!(context.window_for("model-4"), Some(100));
         assert_eq!(context.window_for("other"), None);
         assert_eq!(RuntimeContext::default().window_for("model-5"), None);
+    }
+
+    /// Fork-only (#78): a runtime that submits a paste on the first Enter
+    /// declares one; every other keeps the second.
+    #[test]
+    fn enters_after_paste_defaults_to_two_and_takes_one_or_two() {
+        let enters = |section: &str| {
+            let raw = format!("{}{section}", descriptor("alpha", "com.example.alpha"));
+            let runtime = parse_runtime_descriptor("alpha", "/alpha/runtime.toml", &raw).unwrap();
+            let enters = runtime.descriptor.input.enters_after_paste;
+            (enters, validate_runtime_descriptors(vec![runtime]))
+        };
+        for (section, wanted) in [
+            ("", 2),
+            ("\n[input]\n", 2),
+            ("\n[input]\nenters_after_paste = 1\n", 1),
+            ("\n[input]\nenters_after_paste = 2\n", 2),
+        ] {
+            let (enters, result) = enters(section);
+            assert_eq!(enters, wanted, "{section:?}");
+            assert!(result.is_ok(), "{section:?}");
+        }
+        for count in [0, 3] {
+            let (_, result) = enters(&format!("\n[input]\nenters_after_paste = {count}\n"));
+            let error = result.unwrap_err().to_string();
+            assert!(
+                error.contains("input.enters_after_paste"),
+                "{count}: {error}"
+            );
+        }
     }
 
     #[test]

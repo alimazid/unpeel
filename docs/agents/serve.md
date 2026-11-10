@@ -407,8 +407,12 @@ A running Session that serves a local site carries `detectedLocalURLs`
 Local scope reads it into `LocalSiteIndex` on every snapshot, since its disk
 scan stops once the Host answers. That index feeds the project row's globe
 and the title strip's site chip, so a site that starts after launch shows up
-too. Only a Controller on the Host's own machine can open these URLs, so
-other Controllers ignore the field.
+too. A scoped local workspace's chip and project globes read that
+workspace's own snapshots the same way (#73, #77). A page a swipe brings in,
+Local or another workspace on this Mac, builds its globes from the pooled
+snapshot its rows come from, with verdicts probed as each snapshot lands
+(#73, #77). Only a Controller on the Host's own machine can open these URLs,
+so other Controllers ignore the field.
 
 ### Browser engine install (`serve.json.browserEngine`)
 

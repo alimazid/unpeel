@@ -542,7 +542,8 @@ protocol or Host implementation.
 `POST /mobile/request-screenshot` accepts `{ "sessionID": "…" }` and returns
 an acknowledgement timestamp. Both Hosts translate that semantic request into
 the same provider-neutral prompt through `session_input`: sanitized bracketed
-paste, settle, then the proven double-Enter submission. Controllers never
+paste, settle, then the proven double-Enter submission (one Enter for a
+runtime that declares it, #78). Controllers never
 construct terminal escapes. The prompt asks the active agent to use Unpeel
 Browser's screenshot action with `gallery=true` and save a session screenshot
 artifact, while explicitly allowing the agent to report that a non-visual task

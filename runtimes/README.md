@@ -97,7 +97,10 @@ Important fields:
   only to rank an existing user's agents during first-run preset seeding.
 - `context` (fork-only, #64): optional `windows`, `{ model_prefix, tokens }`
   context windows (a model id takes its longest matching prefix's), and
-  `compact_command`, typed as keys and then Enter to compact an idle prompt.
+  `compact_command`, typed as keys and then Enter to compact an idle prompt,
+  and `baseline_tokens` (default 0, #68): fixed overhead the agent leaves
+  out of its own percent, which the Host takes off both the reading and the
+  window (every window must be larger).
   The Host compacts a Super Agent Worker by them, together with the
   transcript adapter's `context_usage` reader, and never compacts a model
   none of the windows names or a runtime with no command. Not generated into
@@ -124,6 +127,13 @@ Important fields:
   spelling as its own entry). The Host publishes `bypassesApprovals` on
   every preset row from them, so a Controller warns that a Scheduled Task's
   Runs ask no one, without parsing a command itself.
+- `input` (fork-only, #78): optional `enters_after_paste`, 1 or 2 (default
+  2), the Enters the Host presses after it pastes text into this runtime
+  (the Inbox, `send_text`, typed Host actions). Two, because some
+  full-screen TUIs swallow the first; declare 1 when a second Enter on the
+  empty composer does something (Codewhale opens the sent message's pager).
+  The Host reads it from the Session's recognized runtime and presses two
+  when none is recognized. Not generated into the client catalog.
 - `integration`: user-facing copy for Settings ▸ Agents ▸ Install integration
   agents — `summary` says which of the provider's own files the installer
   edits; optional `manual_command` is the provider's documented way to

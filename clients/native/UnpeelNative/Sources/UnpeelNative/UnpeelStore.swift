@@ -829,6 +829,12 @@ final class UnpeelStore: ObservableObject {
     /// globe aggregate it per project family via
     /// `localSiteURLs(forProjectFamilyOf:)`.
     @Published private(set) var localSites = LocalSiteIndex.empty
+    /// Fork-only (#73): the same for a scoped local workspace, from each of
+    /// its Host snapshots: its Sessions run on this Mac too, so the title
+    /// strip's chip, and its project globes (#77), can open their sites.
+    /// Empty in every other scope. Never folded into `localSites`, which the
+    /// Local pooled page reads while this scope is selected.
+    @Published private(set) var scopedLocalSites = LocalSiteIndex.empty
     /// The last disk scan's URLs per session, indexed once that scan's
     /// session and project maps are in place.
     private var scannedLocalURLs: [String: [String]] = [:]
@@ -841,6 +847,12 @@ final class UnpeelStore: ObservableObject {
     /// single-sourced in Rust) before showing it.
     private var localURLVerdicts: [String: (ok: Bool, at: Date)] = [:]
     private var localURLChecksInFlight: Set<String> = []
+    /// Fork-only (#73): holds one URL to the current rules, off the main
+    /// thread. Tests swap it: the test bundle's Host command runs nothing.
+    private var checkLocalURL: @Sendable (String) -> Bool = UnpeelStore.hostChecksLocalURL
+    /// Fork-only (#73): moves only when a verdict changes. The Local pooled
+    /// page's memo keys on it, so a verdict that lands mid-gesture paints.
+    private(set) var localSiteVerdictGeneration = 0
     /// Bumped when a verdict lands so SwiftUI re-renders the chip.
     @Published private var localURLVerdictRevision = 0
     /// URLs already announced with a toast; cleared when the site goes down
@@ -856,23 +868,12 @@ final class UnpeelStore: ObservableObject {
         let fresh = cached.map { Date().timeIntervalSince($0.at) < 5 } ?? false
         if !fresh, !localURLChecksInFlight.contains(url) {
             localURLChecksInFlight.insert(url)
+            let check = checkLocalURL
             DispatchQueue.global(qos: .utility).async { [weak self] in
-                let process = Process()
-                process.executableURL = URL(fileURLWithPath: LaunchConfig.hostBinary)
-                process.arguments = ["__check_local_url__", url]
-                let pipe = Pipe()
-                process.standardOutput = pipe
-                process.standardError = FileHandle.nullDevice
-                var ok = false
-                if (try? process.run()) != nil {
-                    let data = pipe.fileHandleForReading.readDataToEndOfFile()
-                    process.waitUntilExit()
-                    ok = String(data: data, encoding: .utf8)?
-                        .contains("\ttrue") ?? false
-                }
+                let ok = check(url)
                 DispatchQueue.main.async {
                     guard let self else { return }
-                    self.localURLVerdicts[url] = (ok, Date())
+                    self.recordLocalURLVerdict(url, ok: ok)
                     self.localURLChecksInFlight.remove(url)
                     self.localURLVerdictRevision &+= 1
                     self.announceLocalURLIfNew(url, ok: ok)
@@ -880,6 +881,29 @@ final class UnpeelStore: ObservableObject {
             }
         }
         return cached?.ok ?? false
+    }
+
+    private func recordLocalURLVerdict(_ url: String, ok: Bool) {
+        if localURLVerdicts[url]?.ok != ok {
+            localSiteVerdictGeneration &+= 1
+        }
+        localURLVerdicts[url] = (ok, Date())
+    }
+
+    /// `unpeel-host __check_local_url__`: true when the URL is an openable
+    /// site under the current rules. Fork-only (#73): moved out of
+    /// `localURLVerdict` so tests can swap it (`checkLocalURL`).
+    nonisolated static func hostChecksLocalURL(_ url: String) -> Bool {
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: LaunchConfig.hostBinary)
+        process.arguments = ["__check_local_url__", url]
+        let pipe = Pipe()
+        process.standardOutput = pipe
+        process.standardError = FileHandle.nullDevice
+        guard (try? process.run()) != nil else { return false }
+        let data = pipe.fileHandleForReading.readDataToEndOfFile()
+        process.waitUntilExit()
+        return String(data: data, encoding: .utf8)?.contains("\ttrue") ?? false
     }
 
     /// Toast the first time a local site verifies live (mirrors the phone
@@ -913,20 +937,46 @@ final class UnpeelStore: ObservableObject {
     /// same project family (`LocalSiteIndex.candidates`), held to the
     /// current-rules probe. Project-scoped, not session-scoped: the dev
     /// server usually runs in one session while the user watches another.
+    /// Fork-only (#73): from the shown scope's index.
     func localSiteURLs(forProjectFamilyOf projectID: String) -> [String] {
-        localSites.candidates(forProjectFamilyOf: projectID).filter { localURLVerdict($0) }
+        let index = selectedHostScope == .local ? localSites : scopedLocalSites
+        return index.candidates(forProjectFamilyOf: projectID).filter { localURLVerdict($0) }
     }
 
     /// Fork-only (#57): the same list from the verdicts already in hand. A
     /// pooled page reads it in the swipe's path, so it starts no probe and
-    /// publishes nothing.
-    func knownLocalSiteURLs(forProjectFamilyOf projectID: String) -> [String] {
-        localSites.candidates(forProjectFamilyOf: projectID).filter { localURLVerdicts[$0]?.ok == true }
+    /// publishes nothing. Fork-only (#73): from the index the page's rows
+    /// come from.
+    func knownLocalSiteURLs(forProjectFamilyOf projectID: String, in index: LocalSiteIndex) -> [String] {
+        index.candidates(forProjectFamilyOf: projectID).filter { localURLVerdicts[$0]?.ok == true }
     }
 
     private func publishLocalSites(_ next: LocalSiteIndex) {
         if next != localSites {
             localSites = next
+        }
+    }
+
+    private func publishScopedLocalSites(_ next: LocalSiteIndex) {
+        if next != scopedLocalSites {
+            scopedLocalSites = next
+        }
+    }
+
+    /// Fork-only (#73): while another workspace is selected nothing probes
+    /// Local's sites, and the swipe onto the Local pooled page never does
+    /// (#57). Probe each site a pooled Local snapshot serves as it lands, so
+    /// one that started while away has its verdict before the next swipe.
+    /// Fork-only (#77): the same for every other workspace on this Mac, whose
+    /// pages wear globes too. The shown one's live rows probe their own, and
+    /// a remote Host's loopback URLs name ports on that machine.
+    private func probeSitesOfLandedPooledSnapshots(_ landed: [String: RemoteBootstrapSnapshot]) {
+        let shownKey = currentScopeWorkspaceKey
+        for (key, snapshot) in landed where WorkspaceListOrder.isLocalKey(key) && key != shownKey {
+            let index = LocalSiteIndex.fromHost(sessions: snapshot.sessions, projects: snapshot.projects)
+            for url in index.candidatesOfEveryFamily {
+                _ = localURLVerdict(url)
+            }
         }
     }
 
@@ -1860,6 +1910,17 @@ final class UnpeelStore: ObservableObject {
                 )
             }
             .store(in: &remoteScopeCancellables)
+        // Fork-only (#73, #77): each pooled snapshot as it lands, for the
+        // sites of the workspace on this Mac it belongs to.
+        workspacePool.$snapshots
+            .scan(([String: RemoteBootstrapSnapshot](), [String: RemoteBootstrapSnapshot]())) { ($0.1, $1) }
+            .map { previous, current in current.filter { previous[$0.key] != $0.value } }
+            .filter { !$0.isEmpty }
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] landed in
+                self?.probeSitesOfLandedPooledSnapshots(landed)
+            }
+            .store(in: &remoteScopeCancellables)
         // The pool itself starts later — ~2s after the first window paint
         // (`startWorkspacePoolAfterFirstPaint`, called from RootView) — so
         // its reconcile and gateway children never compete with first-frame
@@ -2056,21 +2117,14 @@ final class UnpeelStore: ObservableObject {
         localHostClientStarted = true
     }
 
-    /// Fork-only (#57): a local site this Mac has already probed, without a Host
-    /// or a probe: a Session in `projectID` serving `url`, with its verdict.
-    func noteLocalSiteForTesting(url: String, sessionID: String, projectID: String, probePassed: Bool) {
-        localSites = LocalSiteIndex(
-            servers: localSites.servers.filter { $0.sessionID != sessionID } + [
-                LocalSiteIndex.Server(sessionID: sessionID, projectID: projectID, createdAt: 1, urls: [url]),
-            ],
-            parentByProjectID: localSites.parentByProjectID.filter { $0.key != projectID }
-        )
-        noteLocalURLVerdictForTesting(url: url, probePassed: probePassed)
-    }
-
     /// Fork-only (#63): a verdict already in hand for `url`, without a probe.
     func noteLocalURLVerdictForTesting(url: String, probePassed: Bool) {
-        localURLVerdicts[url] = (probePassed, Date())
+        recordLocalURLVerdict(url, ok: probePassed)
+    }
+
+    /// Fork-only (#73): how URLs are held to the current rules from now on.
+    func useLocalURLCheckForTesting(_ check: @escaping @Sendable (String) -> Bool) {
+        checkLocalURL = check
     }
 
     /// Pull `name` from `app-state.json` into the native project records for
@@ -16223,6 +16277,12 @@ extension UnpeelStore {
                 applyHostPublishedPhoneFits(snapshot.sessions)
             }
         }
+        // Fork-only (#73): a scoped local workspace's sites, for its chip.
+        publishScopedLocalSites(
+            !projectsLocalHost && selectedHostScope.isLocalMachine
+                ? .fromHost(sessions: Array(summaries.values), projects: snapshotProjects)
+                : .empty
+        )
 
         // Entering a non-local Host: swap the expansion set to the Host's own
         // persisted state so open/closed folders are remembered per Host.
@@ -16363,6 +16423,7 @@ extension UnpeelStore {
         remotePresetSummaries = []
         remotePresets = []
         remoteQuickPresetGroups = []
+        publishScopedLocalSites(.empty) // Fork-only (#73)
     }
 
     /// Shared remote-summary → display-entry mapping. Also used by the

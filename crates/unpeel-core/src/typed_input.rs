@@ -89,7 +89,8 @@ pub(crate) struct CursorAt {
 /// What the draft guard reads off the screen.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct InputScreen {
-    /// A select menu is up: keys answer it, not the input line.
+    /// A select menu is up: keys answer it, not the input line. Only one
+    /// under a shown cursor counts, or anywhere while it is hidden (#72).
     pub(crate) menu: bool,
     /// The cursor's row without suggested input: a proposed reply comes and
     /// goes on its own and is never the user's.
