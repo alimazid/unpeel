@@ -4,6 +4,7 @@
 pub mod agent_run;
 pub mod clock;
 pub mod cron;
+pub mod follow;
 pub(crate) mod host;
 pub mod launch;
 pub mod notice;

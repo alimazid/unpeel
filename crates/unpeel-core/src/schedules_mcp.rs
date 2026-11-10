@@ -138,8 +138,8 @@ pub fn action_docs() -> Vec<Value> {
             "name": "list_schedules",
             "description": "List the workspace's Scheduled Tasks, read-only: each task's id, \
         name, projectID, presetID, trigger, enabled, nextRun (null when paused or nothing is \
-        due) and lastRun (the Run in progress, else the latest: its status, times, late marker \
-        and snippet). Only the user and the Super Agent change tasks.",
+        due) and lastRun (the Run in progress, else the latest: its status, times, late marker, \
+        snippet and report). Only the user and the Super Agent change tasks.",
             "inputSchema": { "type": "object", "properties": {}, "additionalProperties": false },
         }),
         json!({
@@ -147,7 +147,11 @@ pub fn action_docs() -> Vec<Value> {
             "description": format!("Read one Scheduled Task's Run history, newest first: each \
         Run's status (running, needs_you, done, failed, failed_to_start, skipped; others may \
         appear), scheduledFor (null for Run now), startedAtMs and endedAtMs, late (started over \
-        2 minutes after its time), sessionID, exitCode, reason and snippet. Returns {RUNS_DEFAULT_LIMIT} Runs \
+        2 minutes after its time), sessionID, exitCode, reason, snippet, and report once the Run's \
+        own Session sent one ({{status, summary, atMs}}, the last one; status blocked means the Run \
+        needs attention whatever its status). A done agent Run keeps following its Session: each \
+        later idle moves endedAtMs and snippet to the latest reply, until the Session ends, a newer \
+        Run starts, or a done report's turn ends. Returns {RUNS_DEFAULT_LIMIT} Runs \
         unless limit says otherwise."),
             "inputSchema": {
                 "type": "object",

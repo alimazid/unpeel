@@ -13,6 +13,8 @@
 
 use serde::{Deserialize, Deserializer, Serialize};
 
+#[cfg(feature = "native-host")]
+pub mod run_report;
 pub mod run_sessions;
 #[cfg(feature = "native-host")]
 pub mod save;
@@ -319,6 +321,39 @@ pub struct ScheduleRun {
     /// When an agent Run's instructions were typed.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub prompted_at_ms: Option<u64>,
+    /// The Run Session's last `sessions report` during the Run (#81);
+    /// absent until it sends one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub report: Option<RunReport>,
+}
+
+/// What a Run's own agent said came of it, from its Session's last
+/// `sessions report` (#81). `status` is the report's: `done`, `blocked`,
+/// `update` or `progress` today, an open set like [`RunStatus`]. A
+/// `blocked` report shows the Run as needing attention; a `done` one is
+/// the final word.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RunReport {
+    #[serde(default)]
+    pub status: String,
+    #[serde(default)]
+    pub summary: String,
+    /// When the Session sent it.
+    #[serde(default)]
+    pub at_ms: u64,
+}
+
+impl RunReport {
+    pub const DONE: &'static str = "done";
+    pub const BLOCKED: &'static str = "blocked";
+
+    pub fn is_done(&self) -> bool {
+        self.status == Self::DONE
+    }
+
+    pub fn is_blocked(&self) -> bool {
+        self.status == Self::BLOCKED
+    }
 }
 
 impl ScheduleRun {
@@ -684,6 +719,7 @@ mod tests {
             snippet: None,
             phase: None,
             prompted_at_ms: None,
+            report: None,
         }
     }
 
@@ -743,6 +779,7 @@ mod tests {
             snippet: None,
             phase: None,
             prompted_at_ms: None,
+            report: None,
         };
         let folded = fold_runs([
             line("run_a", RunStatus::Running),

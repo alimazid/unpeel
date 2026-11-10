@@ -142,6 +142,9 @@ pub(crate) mod test_support {
         fn screen_reply(&self, _: &str, _: &str) -> Option<String> {
             unreachable!("Run now reads no screen")
         }
+        fn run_report(&self, _: &str) -> Option<unpeel_core::schedules::RunReport> {
+            unreachable!("Run now reads no report")
+        }
         fn disable(&self, _: &str) -> Result<(), String> {
             unreachable!("Run now turns nothing off")
         }

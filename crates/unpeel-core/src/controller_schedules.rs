@@ -346,7 +346,7 @@ fn row_at(schedule: Schedule, root: &Path) -> Value {
 }
 
 fn run_wire(run: &ScheduleRun) -> Value {
-    json!({
+    let mut wire = json!({
         "runID": run.run_id,
         "scheduledFor": run.scheduled_for,
         "startedAtMs": run.started_at_ms,
@@ -357,7 +357,16 @@ fn run_wire(run: &ScheduleRun) -> Value {
         "exitCode": run.exit_code,
         "reason": run.reason,
         "snippet": run.snippet,
-    })
+    });
+    // What the Run's own Session last reported (#81); absent until then.
+    if let Some(report) = &run.report {
+        wire["report"] = json!({
+            "status": report.status,
+            "summary": report.summary,
+            "atMs": report.at_ms,
+        });
+    }
+    wire
 }
 
 /// FNV-1a over every task's wire row and its whole history.

@@ -61,6 +61,21 @@ struct RemoteScheduledTasksTests {
         #expect(late.startedAtMs == 1_793_976_300_000 && late.endedAtMs == 1_793_976_360_000)
         #expect(late.snippet?.hasPrefix("Morning briefing ready") == true)
         #expect(history.runs[1].scheduledFor == nil, "a Run now has no occurrence")
+        // What the Run's own Session last reported (#81); absent until then.
+        #expect(late.report == RemoteScheduleRunReport(
+            status: "blocked",
+            summary: "Two replies need your answer before they go out",
+            atMs: 1_793_976_350_000
+        ))
+        #expect(late.report?.isBlocked == true)
+        #expect(history.runs[0].report == nil)
+    }
+
+    /// A report this Controller cannot read costs the report, never its Run.
+    @Test func aRunWhoseReportWillNotDecodeKeepsTheRest() throws {
+        let body = #"{"runID":"run_1","status":"done","report":{"status":7}}"#
+        let run = try JSONDecoder().decode(RemoteScheduleRun.self, from: Data(body.utf8))
+        #expect(run.status == .done && run.report == nil)
     }
 
     @Test func everyRunStatusTheHostWritesHasAName() throws {

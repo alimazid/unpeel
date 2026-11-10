@@ -164,6 +164,17 @@ fn the_revision_moves_with_every_change_a_controller_can_see() {
         let after_run = revision_at(state, root);
         assert_ne!(first, after_run, "an older Run's new line");
 
+        // A report landing on a Run, with nothing else about it changed (#81).
+        let mut raw = fs::read(&log).unwrap();
+        raw.extend_from_slice(
+            br#"{"run_id":"run_now","status":"failed","reason":"superseded","report":{"status":"blocked","summary":"stuck","at_ms":5}}"#,
+        );
+        raw.push(b'\n');
+        fs::write(&log, raw).unwrap();
+        let after_report = revision_at(state, root);
+        assert_ne!(after_run, after_report, "a Run's new report");
+        let after_run = after_report;
+
         fs::write(
             root.join("sch_daily").join("clock.json"),
             br#"{"next_occurrence":"2026-11-08T09:43","next_occurrence_ms":1794148980000}"#,

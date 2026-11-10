@@ -1223,7 +1223,9 @@ fn run_sessions_tool(name: &str, arguments: &Value) -> Result<String, String> {
         "send_text" => tool_send_text(arguments),
         "send_keys" => tool_send_keys(arguments),
         "list_group" | "list_children" => tool_list_group(arguments),
-        "report_to_group" | "report_to_parent" => tool_report(arguments),
+        // Fork-only (#81): an accepted report from a Run Session is its Run's.
+        "report_to_group" | "report_to_parent" => tool_report(arguments)
+            .inspect(|_| crate::schedules::run_report::record(caller_manifest(), arguments)),
         "add_to_gallery" => tool_add_to_gallery(arguments),
         "list_presets" => tool_list_presets(arguments),
         "create_worktree" => tool_create_worktree(arguments),

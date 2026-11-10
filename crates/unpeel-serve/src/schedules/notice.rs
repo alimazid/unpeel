@@ -174,6 +174,7 @@ mod tests {
             snippet: None,
             phase: None,
             prompted_at_ms: None,
+            report: None,
         }
     }
 
@@ -244,6 +245,23 @@ mod tests {
         let run = line(RunStatus::Failed, None);
         let notice = for_recorded(&task(true), &run, Some(RunStatus::Running), quiet());
         assert_eq!(notice.map(|notice| notice.body), Some("Failed".into()));
+    }
+
+    /// A followed Run's later lines (#81) stay done: "Notify when done"
+    /// fired at its first idle and never again, a report included.
+    #[test]
+    fn a_done_runs_later_turn_or_report_is_no_new_notice() {
+        let later = ScheduleRun {
+            snippet: Some("Build 135 installed.".into()),
+            report: Some(unpeel_core::schedules::RunReport {
+                status: "blocked".into(),
+                summary: "Waiting on a signing key".into(),
+                at_ms: 3,
+            }),
+            ..prompted(line(RunStatus::Done, None), RunPhase::Working)
+        };
+        let previous = Some(RunStatus::Done);
+        assert_eq!(for_recorded(&task(true), &later, previous, quiet()), None);
     }
 
     #[test]

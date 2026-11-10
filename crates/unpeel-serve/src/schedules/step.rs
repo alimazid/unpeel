@@ -12,10 +12,13 @@
 //! still in progress is recorded as skipped.
 
 use jiff::Zoned;
-use unpeel_core::schedules::{RunPhase, RunStatus, Schedule, ScheduleClock, ScheduleRun};
+use unpeel_core::schedules::{
+    RunPhase, RunReport, RunStatus, Schedule, ScheduleClock, ScheduleRun,
+};
 
 use super::agent_run::{self, AgentObservation};
 use super::clock;
+use super::follow;
 use super::trigger::Trigger;
 
 /// A Run that starts later than this after its occurrence is late.
@@ -86,6 +89,9 @@ pub struct TaskState {
     pub clock: ScheduleClock,
     pub latest_run: Option<ScheduleRun>,
     pub observation: RunObservation,
+    /// The latest Run's Session's last report, while the Run still takes
+    /// one (`follow::takes_reports`).
+    pub report: Option<RunReport>,
     /// An accepted Run now request: its Run id.
     pub run_now: Option<String>,
     /// Where a Run would start, or why it cannot.
@@ -218,7 +224,12 @@ fn step_task(
 /// The latest Run's next line, once its Session (or agent) says how it
 /// ended or where it is; it becomes the latest as the clock publishes it.
 fn finish_latest(task: &TaskState, latest: &mut LatestRun, now_ms: u64) -> Option<Action> {
-    let finished = finish(task.latest_run.as_ref()?, &task.observation, now_ms)?;
+    let finished = finish(
+        task.latest_run.as_ref()?,
+        &task.observation,
+        task.report.as_ref(),
+        now_ms,
+    )?;
     latest.update(&finished);
     Some(record(&task.schedule.id, finished))
 }
@@ -301,9 +312,24 @@ fn fire(
     runs
 }
 
-/// The Run's next line, once its Session says how it ended (a script Run)
-/// or where its agent is (an agent Run, `agent_run`).
-fn finish(run: &ScheduleRun, observation: &RunObservation, now_ms: u64) -> Option<ScheduleRun> {
+/// The Run's next line: its Session's new report on it, then how the
+/// Session says it ended (a script Run) or where its agent is (an agent
+/// Run, `agent_run`; a done one it still follows, `follow`).
+fn finish(
+    run: &ScheduleRun,
+    observation: &RunObservation,
+    report: Option<&RunReport>,
+    now_ms: u64,
+) -> Option<ScheduleRun> {
+    let reported = follow::with_report(run, report);
+    let run = reported.as_ref().unwrap_or(run);
+    advance(run, observation, now_ms).or(reported)
+}
+
+fn advance(run: &ScheduleRun, observation: &RunObservation, now_ms: u64) -> Option<ScheduleRun> {
+    if follow::is_followed(run) {
+        return follow::advance(run, observation, now_ms);
+    }
     if run.is_agent_run() && run.status.is_in_progress() {
         return agent_run::advance(run, observation, now_ms);
     }
@@ -370,6 +396,7 @@ fn launch(
         snippet: None,
         phase: None,
         prompted_at_ms: None,
+        report: None,
     };
     match &task.launch {
         Ok(plan) => Action::Start {
@@ -411,6 +438,7 @@ fn skipped(
         snippet: None,
         phase: None,
         prompted_at_ms: None,
+        report: None,
     }
 }
 

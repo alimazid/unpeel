@@ -74,6 +74,38 @@ struct ScheduledSectionModelTests {
         #expect(rows.allSatisfy { $0.taskID == "sch_a" })
     }
 
+    /// A Run whose own Session reported `blocked` needs you whatever the Host
+    /// recorded it as (#81), unless it failed; a report's summary is the
+    /// Run's detail, ahead of its first reply.
+    @Test
+    func aBlockedReportShowsTheRunAsNeedingYouWithItsSummary() {
+        let blocked = RemoteScheduleRunReport(status: "blocked", summary: "Waiting on a signing key", atMs: 1)
+        let finished = RemoteScheduleRunReport(status: "done", summary: "Build 135 installed", atMs: 2)
+        let runs = [
+            RemoteScheduleRun(runID: "run_blocked", status: .done, snippet: "Still compiling.", report: blocked),
+            RemoteScheduleRun(runID: "run_working", status: .running, report: blocked),
+            RemoteScheduleRun(runID: "run_done", status: .done, snippet: "Still compiling.", report: finished),
+            RemoteScheduleRun(
+                runID: "run_failed", status: .failed,
+                reason: "the agent exited with status 1 before it was done", report: blocked
+            ),
+        ]
+        let task = RemoteScheduledTask(id: "sch_a", name: "Build", lastRun: runs[0])
+        let items = ScheduledSectionRows.resolve(
+            tasks: [task], runs: ["sch_a": runs], expanded: ["sch_a"], keptSessionIDs: [],
+            now: at(6, 22, 10), calendar: calendar
+        )
+        #expect(items.first?.taskRow?.indicator == .needsYou)
+        #expect(items.first?.taskRow?.lastRunText == "Blocked")
+        let rows = items.compactMap(\.runRow)
+        #expect(rows.map(\.indicator) == [.needsYou, .needsYou, .done, .failed])
+        #expect(rows.map(\.statusText) == ["Blocked", "Blocked", "Done", "Failed"])
+        #expect(rows.map(\.detail) == [
+            "Waiting on a signing key", "Waiting on a signing key", "Build 135 installed",
+            "the agent exited with status 1 before it was done",
+        ])
+    }
+
     @Test
     func anExpandedRowWithoutItsRunsYetSaysSoAndOneWithNoneSaysThat() {
         let items = ScheduledSectionRows.resolve(
