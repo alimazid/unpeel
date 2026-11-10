@@ -100,6 +100,7 @@ pub fn viewport_has_menu_prompt_below(screen_text: &str, row: usize) -> bool {
     has_menu_footer_from(screen_text, row + 1)
 }
 
+/// Fork-only (#72): the scan, for footers from row `first_row` down.
 fn has_menu_footer_from(screen_text: &str, first_row: usize) -> bool {
     let lines: Vec<String> = screen_text
         .lines()

@@ -55,7 +55,7 @@ def write_fixture(path, log, submitted):
         handle.write(f"#!{sys.executable}\n" + f'''
 import os, time, tty
 tty.setraw(0)
-line, ghost, menu = "", False, False
+line, ghost, menu = "", False, None
 slow_enter, one_key, box, rows_drawn = False, False, False, 0
 def rows_of(text):
     rows = []
@@ -85,7 +85,7 @@ while True:
     log({log!r}, data)
     if menu:
         if b"\\r" in data:
-            menu = False
+            menu = None
             log({submitted!r}, b"CHOSE\\n")
             os.write(1, b"\\x1b8\\x1b[?25h\\x1b7\\r\\n\\x1b[J\\x1b8")
         elif menu == "hidden" and data == b"\\x1b[B":
@@ -455,6 +455,9 @@ def body(case):
         done = send_keys("x")
         case.check("send_keys onto it is refused too",
                    done.returncode != 0 and "Not sent (draft)" in done.stderr, said(done))
+        done = cli_keys("x")
+        case.check("`unpeel keys` onto it is refused too",
+                   done.returncode != 0 and "Not sent (draft)" in done.stderr, said(done))
         case.check("none of them was written",
                    "onto-a-quoted-draft" not in read(log) and not read(log).endswith("x"),
                    read(log)[-200:])
@@ -465,7 +468,7 @@ def body(case):
         # keys (#72): Down there starts no draft, so the agent's Enter
         # answers it.
         program("\x0b")
-        case.check("the menu with a hidden cursor is drawn",
+        case.check("a menu that hides the cursor opens",
                    until(lambda: "selected 1" in screen(), timeout=5), screen()[-300:])
         typed_on_attach(b"\x1b[B")
         case.check("Down moves its selection",

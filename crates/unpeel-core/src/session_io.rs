@@ -1500,10 +1500,8 @@ fn input_screen(viewport: &Mutex<TerminalViewportState>) -> crate::typed_input::
     let mut viewport = viewport.lock().unwrap();
     let snapshot = viewport.snapshot(0, None);
     let screen_text = snapshot.screen_text();
-    let menu = match snapshot
-        .cursor_row_index()
-        .filter(|_| viewport.cursor_visible())
-    {
+    let cursor_visible = viewport.cursor_visible();
+    let menu = match snapshot.cursor_row_index().filter(|_| cursor_visible) {
         Some(row) => viewport_has_menu_prompt_below(&screen_text, row),
         None => viewport_has_menu_prompt(&screen_text),
     };
@@ -1520,9 +1518,7 @@ fn input_screen(viewport: &Mutex<TerminalViewportState>) -> crate::typed_input::
             alternate: snapshot.alternate_screen,
             row: u64::from(snapshot.cursor_absolute_row()),
         },
-        last_char_before_cursor: snapshot
-            .last_char_before_cursor
-            .filter(|_| viewport.cursor_visible()),
+        last_char_before_cursor: snapshot.last_char_before_cursor.filter(|_| cursor_visible),
         quiet: !viewport.drawn_within(crate::typed_input::QUIET_BEFORE_ENDING)
             && !viewport.synchronized_output_active(),
     }
@@ -2558,27 +2554,35 @@ mod input_screen_tests {
         assert!(screen_of(60, 12, &under).menu);
     }
 
+    /// A runtime's menu, as its package's fixture draws it.
+    fn fixture(path: &str) -> String {
+        let path = format!("{}/../../runtimes/{path}", env!("CARGO_MANIFEST_DIR"));
+        std::fs::read_to_string(&path)
+            .unwrap_or_else(|error| panic!("{path}: {error}"))
+            .replace('\n', "\r\n")
+    }
+
     #[test]
     fn the_runtimes_menus_stay_menus_to_the_draft_guard() {
         // Claude Code parks its hidden cursor on the selected option, here
         // the last, with its footer below (real journals, #72).
-        let claude = "Do you want to proceed?\r\n  1. Yes\r\n\u{276f} 2. No\r\n\r\n\
-            Esc to cancel \u{b7} Tab to amend\x1b[?25l\x1b[3;1H";
-        assert!(screen_of(60, 8, claude).menu);
+        let approval = fixture("claude-code/fixtures/approval-menu.txt")
+            .replace("\u{276f} 1.", "  1.")
+            .replace("  3.", "\u{276f} 3.");
+        assert!(screen_of(80, 20, &format!("{approval}\x1b[?25l\x1b[14;1H")).menu);
         // Its "Type something." option shows the cursor in the typed text.
         let typing = format!(
-            "  1. Every address\r\n  2. Primary only\r\n\u{276f} 3. use the newest one\r\n\
+            "  1. Every address\r\n  2. Primary only\r\n\u{276f} 3. use the newest one\r\n\\
              \u{2500}\u{2500}\u{2500}\r\n  4. Chat about this\r\n\r\n{FOOTER}\x1b[3;22H"
         );
         assert!(screen_of(80, 10, &typing).menu);
         // Codex shows it in a picker's search field, above its rows.
-        let codex = "  Select Model\r\n  Search \u{203a} gp\r\n\r\n\u{203a} 1. gpt-5\r\n\
+        let codex = "  Select Model\r\n  Search \u{203a} gp\r\n\r\n\u{203a} 1. gpt-5\r\n\\
             \x20 2. gpt-5-mini\r\n\r\nPress enter to confirm or esc to go back\x1b[2;14H";
         assert!(screen_of(60, 8, codex).menu);
         // Codex hides it at the last cell it drew: below the footer too.
-        let update = "\u{203a} 1. Update now\r\n  2. Skip\r\n\r\n\
-            \x20 enter continue \u{b7} esc skip\r\n\r\n x\x1b[?25l";
-        assert!(screen_of(60, 8, update).menu);
+        let update = fixture("codex/fixtures/update-menu.txt");
+        assert!(screen_of(80, 16, &format!("{update}\r\n x\x1b[?25l")).menu);
     }
 
     /// What the draft guard costs a key on the reactor thread (the attach

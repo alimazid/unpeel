@@ -83,15 +83,15 @@ os.write(1, b"HOOK_FIXTURE_PROCESS_STARTED\\r\\n")
 screen(MENU)
 on_menu, pasting, text = True, False, b""
 clear, unquote = os.path.join(here, "clear"), os.path.join(here, "unquote")
-def shown(text):
-    typed = text.split(b"\\r", 1)[0].replace(b"\\x1b[200~", b"").replace(b"\\x1b[201~", b"")
-    return typed.decode("utf-8", "replace")
+def typed_text(text):
+    # What is typed before Enter, without paste markers.
+    return text.split(b"\\r", 1)[0].replace(b"\\x1b[200~", b"").replace(b"\\x1b[201~", b"")
 while True:
     if not select.select([0], [], [], 0.2)[0]:
         if os.path.exists(unquote):
             os.remove(unquote)
             os.remove(os.path.join(here, "quote"))
-            screen(composer(typed=shown(text)))
+            screen(composer(typed=typed_text(text).decode("utf-8", "replace")))
             event("UNQUOTED")
         # The test's cue: the program clears its own composer, as one that
         # took the keys would, so the draft ends with no key.
@@ -126,7 +126,7 @@ while True:
             event("SKIPPED")
         continue
     text += data
-    typed = text.split(b"\\r", 1)[0].replace(b"\\x1b[200~", b"").replace(b"\\x1b[201~", b"")
+    typed = typed_text(text)
     if b"\\r" not in text:
         screen(composer(typed=typed.decode("utf-8", "replace")))
     else:
@@ -306,7 +306,7 @@ def body(case):
         def core_screen():
             return mcp(router, "read_screen", {"session_id": drafting})[1].stdout
 
-        case.check(f"{WHO['t']}: the core's screen shows the composer under the quote",
+        case.check(f"{WHO['t']}: the composer comes up under output quoting a menu",
                    bool(service.wait_for(lambda: "Ask Codex" in core_screen()
                                          and "Update now" not in core_screen(), timeout=10))
                    and "esc to cancel" in core_screen(),

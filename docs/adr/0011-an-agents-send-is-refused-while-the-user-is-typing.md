@@ -92,10 +92,12 @@ core holds it until a clean turn, as before.
 
 Real journals (`output.bin`, 60 Sessions on this machine and its backups)
 replayed through the core's `TerminalViewportState` at 400×100, sampled at
-the end of each update. The Sessions ran at 120 to 352 columns; Claude
-Code's alternate-screen renderer places every row itself, so the rows below
-are as drawn and only wrapping differs. Rows count from the top of the
-screen, from 0.
+the end of each update. The Sessions ran Claude Code 2.1 (2.1.312 at the
+time of the survey) at 120 to 352 columns; its alternate-screen renderer
+places every row itself, so the rows below are as drawn and only wrapping
+differs. Rows and columns count from the top left of the screen, from 0.
+The replay helper was not kept: it fed a journal in pieces split at each
+update's end and ran the menu detector on every piece.
 
 - Claude Code's question menu (AskUserQuestion), four Sessions: each update
   ends by moving the cursor to the bottom row, then to column 0 of the
@@ -105,9 +107,10 @@ screen, from 0.
 - Its permission prompt (`Esc to cancel · Tab to amend`): hidden, column 1
   of ` ❯ 1. Yes` on row 76; options 76–77, footer 79.
 - Its "Type something." option, while the user typed an answer: shown and
-  blinking, in the typed text on that option's row 72; footer on 76.
-- Its idle prompt: every update ends on the input row, column 3, and shows
-  the cursor (`CUP rows-3;3`, `?25h`).
+  blinking, at column 128 in the typed text on that option's row 72;
+  options 64–74, footer 76.
+- Its idle prompt: every update ends on the input row, column 2, and shows
+  the cursor (`CUP rows-3;3`, 1-based, then `?25h`).
 - Codex: no journal holds a Codex menu (the one Codex Session ran with
   approvals bypassed, and the real `codex` is not run here). Its source
   (`codex-rs/tui`, `custom_terminal.rs` `draw_with_size`) hides the cursor
