@@ -327,7 +327,9 @@ have instead of polling, and a list read between a write and that sweep is
 corrected.
 `protocol/schedules-samples-v1.json` pins both bodies for the Host and the
 Swift DTOs. The Mac app's SCHEDULED section (`ScheduledSectionModel`) is the
-reader.
+reader. The list route keeps the Host's order; the section shows the
+soonest next run first, then tasks with none, then paused ones
+(`ScheduledSectionRows`).
 
 The user's writes (and the Super Agent's, which the MCP server sends over
 the local socket after checking the caller is the Router; see

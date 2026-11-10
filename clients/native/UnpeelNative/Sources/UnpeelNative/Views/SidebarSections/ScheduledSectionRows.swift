@@ -100,7 +100,7 @@ enum ScheduledSectionItem: Equatable, Identifiable, Sendable {
 }
 
 enum ScheduledSectionRows {
-    /// Tasks in the Host's order, each expanded one followed by its Runs
+    /// Tasks in `displayOrder`, each expanded one followed by its Runs
     /// (newest first, as the Host sends them).
     static func resolve(
         tasks: [RemoteScheduledTask],
@@ -110,7 +110,7 @@ enum ScheduledSectionRows {
         now: Date,
         calendar: Calendar
     ) -> [ScheduledSectionItem] {
-        tasks.flatMap { task -> [ScheduledSectionItem] in
+        displayOrder(tasks, calendar: calendar).flatMap { task -> [ScheduledSectionItem] in
             let isExpanded = expanded.contains(task.id)
             let row = ScheduledSectionItem.task(taskRow(task, isExpanded: isExpanded, now: now, calendar: calendar))
             guard isExpanded else { return [row] }
@@ -122,21 +122,67 @@ enum ScheduledSectionRows {
         }
     }
 
+    /// Display only; the Host's list keeps its own order. Ties go by the
+    /// shown name, then id, so rows sharing a time keep their places
+    /// between refreshes.
+    private static func displayOrder(_ tasks: [RemoteScheduledTask], calendar: Calendar) -> [RemoteScheduledTask] {
+        tasks
+            .map { task in (task: task, key: SortKey(task, calendar: calendar)) }
+            .sorted { $0.key.precedes($1.key) }
+            .map(\.task)
+    }
+
+    private struct SortKey {
+        /// In list order. A dated next run sorts soonest first; one whose
+        /// time can't be read here comes after those.
+        enum Group: Comparable { case dated, unreadable, notScheduled, paused }
+
+        let group: Group
+        let date: Date?
+        let name: String
+        let id: String
+
+        init(_ task: RemoteScheduledTask, calendar: Calendar) {
+            let date = task.enabled ? task.nextRun.flatMap { nextRunDate($0, calendar: calendar) } : nil
+            self.date = date
+            self.name = title(task)
+            self.id = task.id
+            if !task.enabled {
+                group = .paused
+            } else if task.nextRun == nil {
+                group = .notScheduled
+            } else {
+                group = date == nil ? .unreadable : .dated
+            }
+        }
+
+        func precedes(_ other: SortKey) -> Bool {
+            if group != other.group { return group < other.group }
+            if let date, let otherDate = other.date, date != otherDate { return date < otherDate }
+            let order = name.localizedCaseInsensitiveCompare(other.name)
+            return order == .orderedSame ? id < other.id : order == .orderedAscending
+        }
+    }
+
     private static func taskRow(
         _ task: RemoteScheduledTask,
         isExpanded: Bool,
         now: Date,
         calendar: Calendar
     ) -> ScheduledTaskRow {
-        let name = task.name.trimmingCharacters(in: .whitespacesAndNewlines)
-        return ScheduledTaskRow(
+        ScheduledTaskRow(
             id: task.id,
-            title: name.isEmpty ? "Untitled task" : name,
+            title: title(task),
             nextRunText: nextRunText(task, now: now, calendar: calendar),
             indicator: task.lastRun.map { ScheduledRunIndicator($0.status) },
             lastRunText: task.lastRun.map { ScheduledRunIndicator.statusText($0.status) },
             isExpanded: isExpanded
         )
+    }
+
+    private static func title(_ task: RemoteScheduledTask) -> String {
+        let name = task.name.trimmingCharacters(in: .whitespacesAndNewlines)
+        return name.isEmpty ? "Untitled task" : name
     }
 
     /// The next run as the Host published it. The instant is worded in this
@@ -145,9 +191,13 @@ enum ScheduledSectionRows {
     private static func nextRunText(_ task: RemoteScheduledTask, now: Date, calendar: Calendar) -> String {
         guard task.enabled else { return "Off" }
         guard let next = task.nextRun else { return "Not scheduled" }
-        let date = next.atMs.map { Date(timeIntervalSince1970: TimeInterval($0) / 1000) }
+        return nextRunDate(next, calendar: calendar)
+            .map { ScheduledTimeText.relative($0, now: now, calendar: calendar) } ?? next.at
+    }
+
+    private static func nextRunDate(_ next: RemoteScheduledTask.NextRun, calendar: Calendar) -> Date? {
+        next.atMs.map { Date(timeIntervalSince1970: TimeInterval($0) / 1000) }
             ?? ScheduledTimeText.localDateTime(next.at, calendar: calendar)
-        return date.map { ScheduledTimeText.relative($0, now: now, calendar: calendar) } ?? next.at
     }
 
     private static func runRow(
