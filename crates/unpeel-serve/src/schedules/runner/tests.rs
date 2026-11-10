@@ -812,7 +812,11 @@ fn a_done_agent_run_follows_its_sessions_later_turns_and_reports() {
             },
             reported
         );
-        effects.seen.lock().unwrap().remove(&session_id);
+        effects
+            .seen
+            .lock()
+            .unwrap()
+            .insert(session_id.clone(), (SessionSeen::Live, None));
         follow_sweep(scheduler, &session_id, AgentStatus::Working, &now(9, 8, 0));
         assert_eq!(
             follow_sweep(scheduler, &session_id, AgentStatus::Idle, &now(9, 9, 0)),
