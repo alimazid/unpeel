@@ -30,6 +30,22 @@ final class LocalSiteIndexTests: XCTestCase {
         XCTAssertEqual(index.candidates(forProjectFamilyOf: "unknown"), [])
     }
 
+    /// #73: what a pooled Local snapshot has probed while away: each family
+    /// once, one URL per origin.
+    func testEveryFamilysCandidatesAreListedOnce() {
+        let index = LocalSiteIndex(
+            servers: [
+                Server(sessionID: "deep", projectID: "group", createdAt: 1, urls: ["http://localhost:5173/docs/"]),
+                Server(sessionID: "root", projectID: "site", createdAt: 2, urls: ["http://localhost:5173/"]),
+                Server(sessionID: "other", projectID: "elsewhere", createdAt: 3, urls: ["http://localhost:3000/"]),
+            ],
+            parentByProjectID: ["group": "site"]
+        )
+
+        XCTAssertEqual(index.candidatesOfEveryFamily, ["http://localhost:5173/", "http://localhost:3000/"])
+        XCTAssertEqual(LocalSiteIndex.empty.candidatesOfEveryFamily, [])
+    }
+
     func testOrderAndEqualityDoNotDependOnTheOrderServersArrive() {
         let first = Server(sessionID: "a", projectID: "site", createdAt: 5, urls: ["http://localhost:1111/"])
         let second = Server(sessionID: "b", projectID: "site", createdAt: 5, urls: ["http://localhost:2222/"])

@@ -1142,7 +1142,9 @@ enum SidebarListContentBuilder {
                 localHostServed: store.localScopeIsHostServed,
                 pooledSnapshotAvailable: store.workspacePool.snapshot(forKey: row.id) != nil
             ) ? store.workspacePool.snapshot(forKey: row.id) : nil
-            key = "current:\(row.id):\(hostSnapshot?.capturedAtUnixMs ?? 0):\(branches)"
+            // Fork-only (#73): so does a site's verdict.
+            let verdicts = store.localSiteVerdictGeneration
+            key = "current:\(row.id):\(hostSnapshot?.capturedAtUnixMs ?? 0):\(branches):\(verdicts)"
             if cacheKey == key { return cached }
             content = hostSnapshot.map {
                 snapshotContent($0, row: row, store: store, isLocalScope: true)

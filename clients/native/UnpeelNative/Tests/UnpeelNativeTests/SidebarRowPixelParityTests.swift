@@ -164,7 +164,7 @@ final class SidebarRowPixelParityTests: XCTestCase {
         let swipe = try WorkspaceSwipe(neighborKind: Self.currentInstance)
         defer { swipe.finish() }
         let site = Self.site
-        swipe.store.checkLocalURL = { $0 == site }
+        swipe.store.useLocalURLCheckForTesting { $0 == site }
         let ownLocal = WorkspaceListRowModel(
             id: swipe.store.currentScopeWorkspaceKey, name: "Local", detail: "", icon: "", badge: nil,
             home: nil, tint: .none, kind: Self.currentInstance
@@ -183,6 +183,30 @@ final class SidebarRowPixelParityTests: XCTestCase {
         } while sites.isEmpty && Date() < deadline
 
         XCTAssertEqual(sites, ["alpha": [Self.site]])
+    }
+
+    /// The swipe's own path probes nothing, even with a site it has no
+    /// verdict for (#57). A verdict that lands mid-gesture still reaches the
+    /// page, so the commit swap shows no globe appearing.
+    func testThePageProbesNothingAndPaintsAVerdictThatLandsMidGesture() throws {
+        let swipe = try WorkspaceSwipe(neighborKind: Self.currentInstance, servedSite: Self.site)
+        defer { swipe.finish() }
+        let probes = ProbeCount()
+        swipe.store.useLocalURLCheckForTesting { _ in
+            probes.add()
+            return true
+        }
+        swipe.scopeAway()
+        SidebarListContentBuilder.invalidate()
+
+        let before = try XCTUnwrap(SidebarListContentBuilder.content(for: swipe.neighbor, store: swipe.store))
+        RunLoop.main.run(until: Date().addingTimeInterval(0.2))
+        swipe.store.noteLocalURLVerdictForTesting(url: Self.site, probePassed: true)
+        let after = try XCTUnwrap(SidebarListContentBuilder.content(for: swipe.neighbor, store: swipe.store))
+
+        XCTAssertEqual(before.inputs.localSites, [:])
+        XCTAssertEqual(probes.value, 0, "building the page started a probe")
+        XCTAssertEqual(after.inputs.localSites, ["alpha": [Self.site]])
     }
 
     /// Landing on Local takes a real Host, but a store already there can paint a
@@ -682,6 +706,24 @@ final class SidebarRowPixelParityTests: XCTestCase {
                 capturedAtUnixMs: 2
             )
         }
+    }
+}
+
+/// Probes counted from the background queue they run on.
+private final class ProbeCount: @unchecked Sendable {
+    private let lock = NSLock()
+    private var count = 0
+
+    var value: Int {
+        lock.lock()
+        defer { lock.unlock() }
+        return count
+    }
+
+    func add() {
+        lock.lock()
+        count += 1
+        lock.unlock()
     }
 }
 

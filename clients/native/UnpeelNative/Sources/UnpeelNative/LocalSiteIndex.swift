@@ -94,6 +94,17 @@ struct LocalSiteIndex: Equatable {
         return byOrigin.map(\.url)
     }
 
+    /// Fork-only (#73): every family's candidates, each family once: what a
+    /// globe or chip anywhere on this index could show.
+    var candidatesOfEveryFamily: [String] {
+        var roots: [String] = []
+        for server in servers {
+            let root = rootID(server.projectID)
+            if !roots.contains(root) { roots.append(root) }
+        }
+        return roots.flatMap { candidates(forProjectFamilyOf: $0) }
+    }
+
     private func rootID(_ id: String) -> String {
         var current = id
         var hops = 0

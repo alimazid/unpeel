@@ -849,7 +849,10 @@ final class UnpeelStore: ObservableObject {
     private var localURLChecksInFlight: Set<String> = []
     /// Fork-only (#73): holds one URL to the current rules, off the main
     /// thread. Tests swap it: the test bundle's Host command runs nothing.
-    var checkLocalURL: @Sendable (String) -> Bool = UnpeelStore.hostChecksLocalURL
+    private var checkLocalURL: @Sendable (String) -> Bool = UnpeelStore.hostChecksLocalURL
+    /// Fork-only (#73): moves only when a verdict changes. The Local pooled
+    /// page's memo keys on it, so a verdict that lands mid-gesture paints.
+    private(set) var localSiteVerdictGeneration = 0
     /// Bumped when a verdict lands so SwiftUI re-renders the chip.
     @Published private var localURLVerdictRevision = 0
     /// URLs already announced with a toast; cleared when the site goes down
@@ -870,7 +873,7 @@ final class UnpeelStore: ObservableObject {
                 let ok = check(url)
                 DispatchQueue.main.async {
                     guard let self else { return }
-                    self.localURLVerdicts[url] = (ok, Date())
+                    self.recordLocalURLVerdict(url, ok: ok)
                     self.localURLChecksInFlight.remove(url)
                     self.localURLVerdictRevision &+= 1
                     self.announceLocalURLIfNew(url, ok: ok)
@@ -880,8 +883,16 @@ final class UnpeelStore: ObservableObject {
         return cached?.ok ?? false
     }
 
+    private func recordLocalURLVerdict(_ url: String, ok: Bool) {
+        if localURLVerdicts[url]?.ok != ok {
+            localSiteVerdictGeneration &+= 1
+        }
+        localURLVerdicts[url] = (ok, Date())
+    }
+
     /// `unpeel-host __check_local_url__`: true when the URL is an openable
-    /// site under the current rules.
+    /// site under the current rules. Fork-only (#73): moved out of
+    /// `localURLVerdict` so tests can swap it (`checkLocalURL`).
     nonisolated static func hostChecksLocalURL(_ url: String) -> Bool {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: LaunchConfig.hostBinary)
@@ -959,10 +970,8 @@ final class UnpeelStore: ObservableObject {
     private func probeSitesOfPooledLocalSnapshot(_ snapshot: RemoteBootstrapSnapshot) {
         guard selectedHostScope != .local else { return }
         let index = LocalSiteIndex.fromHost(sessions: snapshot.sessions, projects: snapshot.projects)
-        for projectID in Set(index.servers.map(\.projectID)) {
-            for url in index.candidates(forProjectFamilyOf: projectID) {
-                _ = localURLVerdict(url)
-            }
+        for url in index.candidatesOfEveryFamily {
+            _ = localURLVerdict(url)
         }
     }
 
@@ -1901,6 +1910,7 @@ final class UnpeelStore: ObservableObject {
         workspacePool.$snapshots
             .compactMap { $0[ownLocalKey] }
             .removeDuplicates()
+            .receive(on: DispatchQueue.main)
             .sink { [weak self] snapshot in
                 self?.probeSitesOfPooledLocalSnapshot(snapshot)
             }
@@ -2103,7 +2113,12 @@ final class UnpeelStore: ObservableObject {
 
     /// Fork-only (#63): a verdict already in hand for `url`, without a probe.
     func noteLocalURLVerdictForTesting(url: String, probePassed: Bool) {
-        localURLVerdicts[url] = (probePassed, Date())
+        recordLocalURLVerdict(url, ok: probePassed)
+    }
+
+    /// Fork-only (#73): how URLs are held to the current rules from now on.
+    func useLocalURLCheckForTesting(_ check: @escaping @Sendable (String) -> Bool) {
+        checkLocalURL = check
     }
 
     /// Pull `name` from `app-state.json` into the native project records for
