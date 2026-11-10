@@ -324,7 +324,7 @@ def body(case):
         case.check(f"{WHO['t']}: the refusal still holds the task with nobody writing",
                    listing.get("hold") == "draft" and HEADER not in read("t", "stdin.log"),
                    str(listing)[:400])
-        sent, done = mcp(router, "send_keys", {"session_id": drafting, "keys": ["enter"]})
+        _, done = mcp(router, "send_keys", {"session_id": drafting, "keys": ["enter"]})
         case.check(f"{WHO['t']}: the Router's Enter lands on the cleared composer",
                    done.returncode == 0, (done.stdout + done.stderr)[:400])
         case.check(f"{WHO['t']}: then the task is pasted and submitted at the composer",

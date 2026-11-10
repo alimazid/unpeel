@@ -580,7 +580,7 @@ fn an_older_core_keeps_the_task_held_after_a_person_answers_a_startup_menu() {
 }
 
 #[test]
-fn a_draft_the_core_refuses_is_asked_about_again_only_after_the_user_types() {
+fn a_draft_the_core_refuses_is_asked_about_again_once_the_user_types() {
     let mut fx = fixture();
     let idle = a_person_answers_a_startup_menu(&mut fx);
     fx.io.with(|world| world.core_draft = true);

@@ -165,12 +165,8 @@ enum Outcome {
     },
     /// The line changed since the step looked, or the user typed.
     Draft,
-    /// The PTY core refused the paste asked at `asked_at` over a draft of
-    /// the typing stamped at `typed_at` (#69).
-    CoreDraft {
-        typed_at: u64,
-        asked_at: u64,
-    },
+    /// The PTY core refused the paste over a draft (#69).
+    CoreDraft(CoreRefusal),
     Failed(String),
     /// Nothing was left to claim.
     Empty,
@@ -408,9 +404,9 @@ impl Drain {
                 }
             }
             Outcome::Draft => target.held_for_draft(now),
-            Outcome::CoreDraft { typed_at, asked_at } => {
+            Outcome::CoreDraft(refusal) => {
                 target.held_for_draft(now);
-                target.core_refusal = Some(CoreRefusal { typed_at, asked_at });
+                target.core_refusal = Some(refusal);
             }
             Outcome::Failed(error) => {
                 target.retry_at = now + RETRY_MS;
@@ -706,10 +702,10 @@ fn deliver(
         Ok(GuardedPaste::NotPasted(refusal)) => {
             release_claim(store, io, id, &batch.batch_id);
             return match (refusal, guarded.ask_core) {
-                (Refusal::Draft, Some(typed_at)) => Outcome::CoreDraft {
+                (Refusal::Draft, Some(typed_at)) => Outcome::CoreDraft(CoreRefusal {
                     typed_at,
                     asked_at: now,
-                },
+                }),
                 (Refusal::Draft, None) | (Refusal::Typing, _) => Outcome::Draft,
             };
         }

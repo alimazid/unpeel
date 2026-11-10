@@ -53,7 +53,8 @@ pub(super) struct Guarded {
 }
 
 impl Target {
-    /// A paste held for a draft: the next step looks at the line again.
+    /// A paste held for a draft: the next step reads the line again, unless
+    /// the core's refusal is kept (`core_refusal`).
     pub(super) fn held_for_draft(&mut self, now: u64) {
         self.checked = None;
         if let Some(episode) = self.episode.as_mut() {
