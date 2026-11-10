@@ -831,9 +831,9 @@ final class UnpeelStore: ObservableObject {
     @Published private(set) var localSites = LocalSiteIndex.empty
     /// Fork-only (#73): the same for a scoped local workspace, from each of
     /// its Host snapshots: its Sessions run on this Mac too, so the title
-    /// strip's chip can open their sites. Empty in every other scope. Never
-    /// folded into `localSites`, which the Local pooled page reads while this
-    /// scope is selected.
+    /// strip's chip, and its project globes (#77), can open their sites.
+    /// Empty in every other scope. Never folded into `localSites`, which the
+    /// Local pooled page reads while this scope is selected.
     @Published private(set) var scopedLocalSites = LocalSiteIndex.empty
     /// The last disk scan's URLs per session, indexed once that scan's
     /// session and project maps are in place.
@@ -967,11 +967,16 @@ final class UnpeelStore: ObservableObject {
     /// Local's sites, and the swipe onto the Local pooled page never does
     /// (#57). Probe each site a pooled Local snapshot serves as it lands, so
     /// one that started while away has its verdict before the next swipe.
-    private func probeSitesOfPooledLocalSnapshot(_ snapshot: RemoteBootstrapSnapshot) {
-        guard selectedHostScope != .local else { return }
-        let index = LocalSiteIndex.fromHost(sessions: snapshot.sessions, projects: snapshot.projects)
-        for url in index.candidatesOfEveryFamily {
-            _ = localURLVerdict(url)
+    /// Fork-only (#77): the same for every other workspace on this Mac, whose
+    /// pages wear globes too. The shown one's live rows probe their own, and
+    /// a remote Host's loopback URLs name ports on that machine.
+    private func probeSitesOfLandedPooledSnapshots(_ landed: [String: RemoteBootstrapSnapshot]) {
+        let shownKey = currentScopeWorkspaceKey
+        for (key, snapshot) in landed where WorkspaceListOrder.isLocalKey(key) && key != shownKey {
+            let index = LocalSiteIndex.fromHost(sessions: snapshot.sessions, projects: snapshot.projects)
+            for url in index.candidatesOfEveryFamily {
+                _ = localURLVerdict(url)
+            }
         }
     }
 
@@ -1905,14 +1910,15 @@ final class UnpeelStore: ObservableObject {
                 )
             }
             .store(in: &remoteScopeCancellables)
-        // Fork-only (#73): the pool's own Local snapshots, for their sites.
-        let ownLocalKey = WorkspaceListOrder.localKey(home: Self.currentInstanceNormalizedHome())
+        // Fork-only (#73, #77): each pooled snapshot as it lands, for the
+        // sites of the workspace on this Mac it belongs to.
         workspacePool.$snapshots
-            .compactMap { $0[ownLocalKey] }
-            .removeDuplicates()
+            .scan(([String: RemoteBootstrapSnapshot](), [String: RemoteBootstrapSnapshot]())) { ($0.1, $1) }
+            .map { previous, current in current.filter { previous[$0.key] != $0.value } }
+            .filter { !$0.isEmpty }
             .receive(on: DispatchQueue.main)
-            .sink { [weak self] snapshot in
-                self?.probeSitesOfPooledLocalSnapshot(snapshot)
+            .sink { [weak self] landed in
+                self?.probeSitesOfLandedPooledSnapshots(landed)
             }
             .store(in: &remoteScopeCancellables)
         // The pool itself starts later — ~2s after the first window paint
