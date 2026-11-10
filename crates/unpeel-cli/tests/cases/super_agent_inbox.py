@@ -263,4 +263,5 @@ def body(case):
                 run_cli(home, ["rm", session_id], env=environment, timeout=45)
 
 
-run("super_agent_inbox", body)
+if __name__ == "__main__":
+    run("super_agent_inbox", body)
