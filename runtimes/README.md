@@ -225,9 +225,14 @@ transcript roots and format, and version-dependent behavior.
   a new POSIX session of its own (the Python MCP SDK and Node's `detached`
   do that), but it gets no tools when a `setsid` helper (a shared daemon or
   a backend process) sits between it and the Session (ADR 0014). Check a new
-  runtime's process tree with a probe server before you rely on its tools. Registration evidence on a
-  Session means "the integration is installed and the launch granted the
-  domain" — a grant alone is not proof of a configured client.
+  runtime's process tree with a probe server before you rely on its tools.
+  That check is not done for Cursor Agent, Muse Code, Antigravity, fx or
+  Kiro v3 (closed binaries), and the risk is accepted: if one of them starts
+  its servers from such a helper, it gets no tools, never another Session's.
+  Cline 3.x does, once its hub daemon runs (#79).
+  Registration evidence on a Session means "the integration is installed
+  and the launch granted the domain" — a grant alone is not proof of a
+  configured client.
 - Resume/restart code must preserve the original semantic command, support
   only verified identity modes (hook-captured exact ID, documented
   continue-last, or picker), and never turn passive process observation

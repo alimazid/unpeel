@@ -57,7 +57,8 @@ reporters:
   Session on the next scan.
 - **Require the caller's POSIX session to match the Session's.** Rejected:
   Claude Code starts every hook and every Bash-tool command with `setsid`,
-  so its own processes would be cut off. A narrower form is #74.
+  so its own processes would be cut off. A narrower form, for the MCP gate
+  only, is ADR 0014 (#74).
 - **A launcher file beside the reporters.** Rejected: one more installed
   file to keep in step with the Host; baking the path into the reporter at
   install needs nothing new, and the post-upgrade refresh rewrites it.

@@ -22,7 +22,8 @@ A fake Codex runs in Session A with the installed Codex integration:
 * its MCP gate also leads a POSIX session of its own when the fake starts it
   with `setsid` (the Python MCP SDK's shape) and still gets the tools, but a
   gate started by a `setsid` helper that is still the fake's child (Codex's
-  shared daemon while the `codex` that started it lives, #74) gets none;
+  shared daemon while the `codex` that started it lives, #74) gets none,
+  with or without the exported id, and the trace records the refusal;
 * after a Host restart the adopted Session's own processes still pass.
 
 The Host itself runs with the test switch that trusts an exported id: the
@@ -76,13 +77,17 @@ def registration():
     return server
 
 
-def gate(new_session=False):
+def gate(new_session=False, claim=True):
     # The registered server with this process's whole environment, exported
     # Session id included: what a launcher that forwards it would start.
+    # Without the claim, as Codex starts its servers, the gate falls back to
+    # the nearest Session ancestor.
     server = registration()
+    env = {key: value for key, value in os.environ.items()
+           if claim or key not in ("UNPEEL_SESSION_ID", "UNPEEL_SESSION_DIR")}
     child = subprocess.Popen([server["command"]] + server.get("args", []),
                              stdin=subprocess.PIPE, stdout=subprocess.PIPE,
-                             stderr=subprocess.DEVNULL, start_new_session=new_session)
+                             stderr=subprocess.DEVNULL, start_new_session=new_session, env=env)
     shape = {"gate_pid": child.pid, "gate_sid": os.getsid(child.pid), "starter": os.getpid(),
              "starter_sid": os.getsid(0)}
     requests = [
@@ -169,18 +174,18 @@ def setsid_probe():
                      "parent": os.getppid(), "fake": FAKE_PID, "cli": cli()})
 
 
-def setsid_helper_probe():
+def setsid_helper_probe(name, claim):
     # Codex's shared daemon while its starter lives (#74): a helper started
     # with setsid but no double fork, still this process's child, starts the
     # gate, which inherits the helper's POSIX session.
-    in_new_posix_session(lambda: write("setsid-helper", dict(
-        gate(), parent=os.getppid(), fake=FAKE_PID, shell_sid=os.getsid(FAKE_PID))))
+    in_new_posix_session(lambda: write(name, dict(
+        gate(claim=claim), parent=os.getppid(), fake=FAKE_PID)))
 
 
 def leading_gate_probe():
     # The Python MCP SDK's shape (Kimi): the agent starts the gate itself
     # with setsid.
-    write("leading-gate", dict(gate(new_session=True), shell_sid=os.getsid(0)))
+    write("leading-gate", gate(new_session=True))
 
 
 def detached_run(event):
@@ -202,7 +207,8 @@ actions = {
     b"s": lambda: hook("Stop"),
     b"p": probe,
     b"q": lambda: in_new_posix_session(setsid_probe),
-    b"h": setsid_helper_probe,
+    b"h": lambda: setsid_helper_probe("setsid-helper", claim=True),
+    b"k": lambda: setsid_helper_probe("setsid-helper-unclaimed", claim=False),
     b"l": leading_gate_probe,
     b"u": lambda: in_new_posix_session(lambda: hook("UserPromptSubmit")),
     b"t": lambda: in_new_posix_session(lambda: hook("Stop")),
@@ -224,6 +230,14 @@ def output_has(session_dir, needle):
     try:
         with open(os.path.join(session_dir, "output.bin"), "rb") as output:
             return output.read().count(needle)
+    except OSError:
+        return 0
+
+
+def output_lines(path, needle):
+    try:
+        with open(path) as handle:
+            return sum(needle in line for line in handle)
     except OSError:
         return 0
 
@@ -286,19 +300,24 @@ def body(case):
         return read_json(home.path("fake-codex", name + ".json")) if done else {}
 
     def refusals():
-        try:
-            with open(trace) as handle:
-                return sum(f"hook-refused session={session_id} reason=not-an-ancestor" in line
-                           for line in handle)
-        except OSError:
-            return 0
+        return output_lines(trace, f"hook-refused session={session_id} reason=not-an-ancestor")
+
+    def gate_serves(subject, result):
+        case.check(f"{subject} lists the Unpeel tools",
+                   "sessions" in result.get("tools", []), str(result.get("tools")))
+        case.check(f"{subject}: its tools act as this Session",
+                   session_id in result.get("current", ""), result.get("current", "")[:300])
+
+    def gate_refused(subject, result):
+        case.check(f"{subject} lists no tools",
+                   result.get("tools") == [], str(result.get("tools")))
+        case.check(f"{subject}: its tool call is refused",
+                   session_id not in result.get("current", "")
+                   and '"error"' in result.get("current", ""), result.get("current", "")[:300])
 
     def own_processes_pass(when):
         probe = act("p", "probe")
-        case.check(f"{when}: the Session's own MCP gate lists the Unpeel tools",
-                   "sessions" in probe.get("tools", []), str(probe.get("tools")))
-        case.check(f"{when}: its tools act as this Session",
-                   session_id in probe.get("current", ""), probe.get("current", "")[:300])
+        gate_serves(f"{when}: the Session's own MCP gate", probe)
         cli = probe.get("cli", {})
         case.check(f"{when}: its `unpeel` CLI call works",
                    cli.get("rc") == 0 and session_id in cli.get("out", ""), str(cli)[:400])
@@ -327,29 +346,32 @@ def body(case):
         control(home, session_id, "t")
         expect("from a new POSIX session the Stop still applies", "idle", True)
 
-        helper = act("h", "setsid-helper")
-        case.check("the setsid helper's gate sits in the helper's POSIX session, not its own",
-                   helper.get("parent") == helper.get("fake")
-                   and helper.get("gate_sid") == helper.get("starter") == helper.get("starter_sid")
-                   and helper.get("gate_sid") not in (helper.get("gate_pid"), helper.get("shell_sid")),
-                   str({key: helper.get(key) for key in (
-                       "gate_pid", "gate_sid", "starter", "starter_sid", "parent", "fake",
-                       "shell_sid")}))
-        case.check("a gate under a setsid helper of the Session's process lists no tools",
-                   helper.get("tools") == [], str(helper.get("tools")))
-        case.check("and its tool call is refused",
-                   session_id not in helper.get("current", "")
-                   and '"error"' in helper.get("current", ""), helper.get("current", "")[:300])
+        shell_sid = os.getsid(home.manifests()[session_id]["pid"])
+        for key, name, subject in (
+                ("h", "setsid-helper", "a gate under a setsid helper of the Session's process"),
+                ("k", "setsid-helper-unclaimed", "the same gate without the exported id")):
+            helper = act(key, name)
+            case.check(f"{name}: the helper is the fake's child and the gate is in its "
+                       "POSIX session, neither the gate's own nor the Session shell's",
+                       helper.get("parent") == helper.get("fake")
+                       and helper.get("gate_sid") == helper.get("starter")
+                       == helper.get("starter_sid")
+                       and helper.get("gate_sid") not in (helper.get("gate_pid"), shell_sid),
+                       str(dict({field: helper.get(field) for field in (
+                           "gate_pid", "gate_sid", "starter", "starter_sid", "parent",
+                           "fake")}, shell_sid=shell_sid)))
+            gate_refused(subject, helper)
+        refused = output_lines(trace, f"mcp gate refused session={session_id} "
+                               "reason=other-posix-session")
+        case.check("the trace records both gate refusals", refused == 2, str(refused))
         leading = act("l", "leading-gate")
-        case.check("a gate the agent starts with setsid leads its own POSIX session",
+        case.check("a gate the agent starts with setsid leads its own POSIX session, "
+                   "and the agent is in the Session shell's",
                    leading.get("gate_sid") == leading.get("gate_pid")
-                   and leading.get("starter_sid") == leading.get("shell_sid"),
-                   str({key: leading.get(key) for key in (
-                       "gate_pid", "gate_sid", "starter_sid", "shell_sid")}))
-        case.check("and still lists the Unpeel tools",
-                   "sessions" in leading.get("tools", []), str(leading.get("tools")))
-        case.check("and its tools act as this Session",
-                   session_id in leading.get("current", ""), leading.get("current", "")[:300])
+                   and leading.get("starter_sid") == shell_sid,
+                   str(dict({field: leading.get(field) for field in (
+                       "gate_pid", "gate_sid", "starter_sid")}, shell_sid=shell_sid)))
+        gate_serves("a gate the agent starts with setsid", leading)
 
         seed = marker(session_dir)
         case.check("the Session has a durable hook marker", seed is not None)
@@ -364,11 +386,7 @@ def body(case):
                    str(env))
         stays("a detached runner's opening hook leaves the Session idle", "idle", True)
         case.check("and leaves its durable marker untouched", marker(session_dir) == seed)
-        case.check("the detached runner's MCP gate lists no tools",
-                   opening.get("tools") == [], str(opening.get("tools")))
-        case.check("and its tool call is refused",
-                   session_id not in opening.get("current", "")
-                   and '"error"' in opening.get("current", ""), opening.get("current", "")[:300])
+        gate_refused("the detached runner's MCP gate", opening)
         cli = opening.get("cli", {})
         case.check("the detached runner's `unpeel` CLI call does not act as the Session",
                    session_id not in cli.get("out", "") and cli.get("rc") != 0, str(cli)[:400])

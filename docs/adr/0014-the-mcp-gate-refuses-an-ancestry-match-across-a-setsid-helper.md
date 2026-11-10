@@ -35,8 +35,7 @@ Checked on 2026-11-10:
 | Kimi 1.52 | gate leads its own POSIX session | fastmcp + mcp SDK source |
 | OMP 18.18.6 | macOS: shell's session; Linux: gate leads its own | published package source |
 | Cline 3.0.74 | process keeps the session, but sessions run in a shared hub daemon once one is running (#79) | published bundle |
-| Kiro | predecessor `aws/amazon-q-developer-cli` uses `process_group(0)` | predecessor source only |
-| Cursor Agent, Muse Code, Antigravity, fx | not checked (closed binaries) | — |
+| Cursor Agent, Muse Code, Antigravity, fx, Kiro v3 | not checked (closed binaries); Kiro's open-source predecessor `aws/amazon-q-developer-cli` uses `process_group(0)` | — |
 
 Gemini registers no Unpeel MCP server.
 
@@ -74,5 +73,6 @@ way to keep Codex's tools.
 A runtime that starts its MCP servers from any `setsid` helper gets no
 Unpeel tools: a per-Session backend as well as a shared daemon. The process
 tree cannot tell the two apart. The failure is visible as missing tools,
-never a wrong Session. The runtimes not checked above carry that risk
-(`runtimes/README.md`), and Cline's hub is one such helper (#79).
+never a wrong Session. The runtimes not checked above carry that risk,
+accepted and noted in `runtimes/README.md`; Cline's hub is one such helper
+(#79).

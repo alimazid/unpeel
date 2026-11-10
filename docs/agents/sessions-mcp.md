@@ -317,9 +317,9 @@ Registration per provider (all through the explicitly installed integration,
   muse) get identity from `self_session_id`'s nearest verified ancestor (for
   Codex only under `--no-daemon`: its shared daemon starts MCP servers in a
   POSIX session of its own, where the gate serves no tools (ADR 0014); see
-  the Codex notes in `providers.md`); Kiro v3 passes only a declared env block, so its entry
-  forwards the generic `UNPEEL_*` variables; fx and Claude inherit the
-  hosted environment.
+  the Codex notes in `providers.md`); Kiro v3 passes only a declared env
+  block, so its entry forwards the generic `UNPEEL_*` variables; fx and
+  Claude inherit the hosted environment.
 - Per-Session grants never appear in any config file: the gate reads
   `sessions_mcp_enabled()`/`browser_mcp_enabled()` from the calling Session's
   manifest per call. The older `UNPEEL_*_MCP_ENABLED` environment grants and

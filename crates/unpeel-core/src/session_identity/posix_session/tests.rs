@@ -8,6 +8,8 @@ const GATE: u32 = 102;
 /// shared app-server daemon while the `codex` that started it lives.
 const DAEMON: u32 = 103;
 const OUTSIDE: u32 = 999;
+/// Above any pid the kernel hands out.
+const NO_SUCH_PID: u32 = i32::MAX as u32;
 
 /// GATE → (DAEMON →) AGENT → SHELL.
 fn parents(through_daemon: bool) -> impl Fn(u32) -> Option<u32> {
@@ -95,5 +97,5 @@ fn sid_of_reads_the_kernel_session() {
     // SAFETY: getsid(0) only reads this process's own session id.
     let own = unsafe { libc::getsid(0) } as u32;
     assert_eq!(sid_of(this), Some(own));
-    assert_eq!(sid_of(u32::MAX >> 1), None);
+    assert_eq!(sid_of(NO_SUCH_PID), None);
 }

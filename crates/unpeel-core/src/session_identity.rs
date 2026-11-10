@@ -56,7 +56,8 @@ pub enum Identity {
     /// The process does not speak for the claimed Session (or for any
     /// Session, without a claim). The hook check refuses only for
     /// [`Refusal::NotAnAncestor`] and [`Refusal::UnverifiedPid`]; see
-    /// [`run_check`].
+    /// [`run_check`]. Only the gate's [`current_for_gate`] gives
+    /// [`Refusal::OtherPosixSession`].
     Refused(Refusal),
     /// The claimed Session is still launching: its manifest has no pid yet
     /// while its Host is alive. Ask again shortly.
@@ -111,6 +112,8 @@ pub fn run_check() -> i32 {
             println!("{id}");
             0
         }
+        // `current` never gives `OtherPosixSession`; it sits here because
+        // it, too, would mean the process provably is not the Session's.
         Identity::Refused(
             refusal
             @ (Refusal::NotAnAncestor | Refusal::UnverifiedPid | Refusal::OtherPosixSession),
@@ -162,10 +165,13 @@ pub fn current_for_gate(budget: Duration) -> Identity {
         return identity;
     }
     let pid = std::process::id();
-    let session_pid = claimed_manifest(id).and_then(|manifest| manifest.pid);
-    if session_pid.is_some_and(|session_pid| {
-        posix_session::stays_in_session(pid, session_pid, parent_pid, posix_session::sid_of)
-    }) {
+    // Read again rather than threaded out of `current`: the walk passes only
+    // if the pid it reaches is still on this process's ancestry, which a
+    // Session relaunched in between can never give, so a stale read refuses.
+    let Some(session_pid) = claimed_manifest(id).and_then(|manifest| manifest.pid) else {
+        return Identity::Refused(Refusal::NotRunning);
+    };
+    if posix_session::stays_in_session(pid, session_pid, parent_pid, posix_session::sid_of) {
         return identity;
     }
     crate::mcp_host::trace(&format!(
