@@ -97,6 +97,11 @@ def body(case):
         return mcp(caller, "report", f"session_id={agent}", f"summary={summary}",
                    "status=progress")
 
+    def queued_at(item_id):
+        # The item's stored queue time: the clock the drain promotes by.
+        return next((item.get("at") for item in inbox().get("pending", [])
+                     if item.get("id") == item_id), None)
+
     try:
         case.check("the agent is idle from its own report",
                    bool(service.wait_for(published("idle"), timeout=15)), str(activity()))
@@ -107,18 +112,27 @@ def body(case):
 
         # 1. Idle: a lone progress report rides along, then goes out once
         #    it has waited the promotion age.
-        queued_at = time.monotonic()
         queued, done = progress("halfway there")
         case.check("a progress report rides along", queued.get("queued") is True
                    and queued.get("delivery") == "held:ride_along", (done.stdout + done.stderr)[:300])
+        stored_at = queued_at(queued.get("item_id")) or 0
         case.check("it is held as a ride-along item while it is young",
                    bool(service.wait_for(lambda: hold().get("reason") == "ride_along", timeout=5))
                    and HEADER not in pasted(), str(hold()))
+        # The paste landed after the last look that did not find it.
+        last_absent = [0.0]
+
+        def paste_landed():
+            if HEADER in pasted():
+                return True
+            last_absent[0] = time.time() * 1000
+            return False
         case.check("the promoted item is pasted once it is old enough",
-                   bool(service.wait_for(lambda: HEADER in pasted(), timeout=PROMOTE_MS / 1000 + 20)),
+                   bool(service.wait_for(paste_landed, timeout=PROMOTE_MS / 1000 + 20)),
                    pasted()[-300:])
-        waited = time.monotonic() - queued_at
-        case.check("never before the promotion age", waited >= PROMOTE_MS / 1000, f"{waited:.1f}s")
+        age_unpasted = last_absent[0] - stored_at
+        case.check("never before the promotion age",
+                   stored_at > 0 and age_unpasted >= PROMOTE_MS - 500, f"{age_unpasted:.0f} ms")
         text = pasted()
         case.check("one paste carries it", text.count(HEADER) == 1 and "halfway there" in text,
                    text[-600:])
@@ -132,16 +146,18 @@ def body(case):
         signal("w")
         case.check("the agent turns busy", bool(service.wait_for(published("busy"), timeout=10)),
                    str(activity()))
-        queued_at = time.monotonic()
-        progress("still going")
+        queued = progress("still going")[0]
+        stored_at = queued_at(queued.get("item_id")) or 0
         case.check("a young item on a busy agent is held as ride-along",
                    bool(service.wait_for(lambda: hold().get("reason") == "ride_along", timeout=5)),
                    str(hold()))
         case.check("once promoted it is held for the busy agent",
                    bool(service.wait_for(lambda: hold().get("reason") == "busy",
                                          timeout=PROMOTE_MS / 1000 + 10)), str(hold()))
-        waited = time.monotonic() - queued_at
-        case.check("promoted no earlier than its age", waited >= PROMOTE_MS / 1000, f"{waited:.1f}s")
+        # A hold's `since` is when the drain first held for that reason.
+        promoted_after = (hold().get("since") or 0) - stored_at
+        case.check("promoted no earlier than its age",
+                   stored_at > 0 and promoted_after >= PROMOTE_MS, f"{promoted_after} ms")
         case.check("nothing is pasted while the agent is busy", pasted().count(HEADER) == 1,
                    pasted()[-300:])
 

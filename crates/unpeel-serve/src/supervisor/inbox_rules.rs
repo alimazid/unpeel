@@ -27,7 +27,7 @@ pub enum HoldReason {
     /// The terminal has not enabled bracketed paste (mode 2004).
     NoBracketedPaste,
     /// Only ride-along items, none waiting long enough to be promoted:
-    /// they go out with the next wake batch.
+    /// they go out with the next wake batch, or once promoted.
     RideAlong,
     /// The screen changed too recently.
     Quiet,

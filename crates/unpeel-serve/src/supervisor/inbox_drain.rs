@@ -58,7 +58,7 @@ pub trait HostIo: Send + Sync {
     /// Session ids that still have a manifest (Inbox GC).
     fn live_session_ids(&self) -> HashSet<String>;
     /// The supervisor's settings and the app-wide write policy, from one
-    /// app-state read, and the ride-along promotion age.
+    /// app-state read, plus this Host's ride-along promotion age.
     fn settings(&self) -> Settings;
     /// Shared Inbox state changed (items delivered, a hold published, an
     /// Inbox collected): announce `SessionMarkers` on the state bus.
@@ -316,7 +316,7 @@ impl Drain {
             id,
             row,
             stats,
-            wakes: stats.wake
+            starts_delivery: stats.wake
                 || inbox_rules::promoted(stats.oldest_at, now, settings.ride_along_promote_ms),
             settings,
             now,
@@ -523,7 +523,7 @@ struct Candidate<'a> {
     stats: PendingStats,
     /// A wake item is pending, or ride-along items were promoted (#83):
     /// only then does a delivery start.
-    wakes: bool,
+    starts_delivery: bool,
     settings: &'a Settings,
     now: u64,
     turn_began_at: u64,
@@ -565,7 +565,7 @@ fn ready_to_paste(
     if line == Err(HoldReason::Snapshot) {
         return Err(HoldReason::Snapshot);
     }
-    if !candidate.wakes {
+    if !candidate.starts_delivery {
         return Err(HoldReason::RideAlong);
     }
     let guarded = line.map_err(|hold| draft_hold(target, candidate, hold, notices))?;
@@ -607,7 +607,7 @@ fn readiness(
             if reason.ends_idle_episode() {
                 target.episode = None;
             }
-            Err(if candidate.wakes {
+            Err(if candidate.starts_delivery {
                 reason
             } else {
                 HoldReason::RideAlong
