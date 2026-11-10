@@ -50,6 +50,13 @@ def detail(result):
     return (result.stderr or result.stdout)[-500:]
 
 
+def as_json(text):
+    try:
+        return json.loads(text)
+    except ValueError:
+        return {}
+
+
 def write_fake(home):
     folder = home.path("agents")
     os.makedirs(folder, exist_ok=True)
@@ -110,16 +117,18 @@ def mcp(home, session_id, action, args, timeout=30):
     started = time.monotonic()
     done = subprocess.run([BINARY, "mcp", "sessions", action, "--json", json.dumps(args)],
                           capture_output=True, text=True, timeout=timeout, env=env, cwd=CRATES)
-    try:
-        parsed = json.loads(done.stdout)
-    except ValueError:
-        parsed = {}
-    return parsed, done, time.monotonic() - started
+    return as_json(done.stdout), done, time.monotonic() - started
 
 
 def report(home, caller, summary, timeout=30):
-    return mcp(home, caller, "report", {"session_id": ADDRESS, "summary": summary,
-                                        "status": "done"}, timeout=timeout)
+    """`(parsed, exit code, output, seconds)` of a report to the address; the
+    exit code is None when the call was still waiting at `timeout`."""
+    try:
+        parsed, done, took = mcp(home, caller, "report", {
+            "session_id": ADDRESS, "summary": summary, "status": "done"}, timeout=timeout)
+    except subprocess.TimeoutExpired:
+        return {}, None, f"still waiting after {timeout} s (an approval prompt?)", float(timeout)
+    return parsed, done.returncode, (done.stdout + done.stderr)[:300], took
 
 
 def inbox_items(home, session_id, summary):
@@ -133,10 +142,10 @@ def mark(home):
 
 
 def check_reaches(case, home, run_session, router, summary, label):
-    reported, done, took = report(home, run_session, summary)
+    reported, _, output, took = report(home, run_session, summary)
     case.check(f"{label}: the Run's report to super_agent is queued for {router[:8]} at once",
                reported.get("queued") is True and reported.get("session_id") == router
-               and took < 20, f"{took:.1f}s " + (done.stdout + done.stderr)[:300])
+               and took < 20, f"{took:.1f}s {output}")
     items = inbox_items(home, router, summary)
     case.check(f"{label}: the Super Agent's Inbox holds it, from the Run, as a report",
                len(items) == 1 and items[0].get("sender") == {"session": run_session}
@@ -154,10 +163,15 @@ def check_list_mark(case, home, caller, router):
 
 def check_cli_reaches(case, home, run_session, router):
     summary = "From unpeel report"
-    done = cli(home, "report", summary, "--to", ADDRESS, "--status", "done",
-               env={"UNPEEL_SESSION_ID": run_session})
+    try:
+        done = cli(home, "report", summary, "--to", ADDRESS, "--status", "done",
+                   env={"UNPEEL_SESSION_ID": run_session})
+    except subprocess.TimeoutExpired:
+        case.check("unpeel report --to super_agent from the Run is queued for the Super Agent",
+                   False, "still waiting after 45 s (an approval prompt?)")
+        return
     case.check("unpeel report --to super_agent from the Run is queued for the Super Agent",
-               done.returncode == 0 and json.loads(done.stdout or "{}").get("session_id") == router,
+               done.returncode == 0 and as_json(done.stdout).get("session_id") == router,
                detail(done))
     case.check("and the Super Agent's Inbox holds it",
                len(inbox_items(home, router, summary)) == 1)
@@ -165,22 +179,18 @@ def check_cli_reaches(case, home, run_session, router):
 
 def check_user_still_asks(case, home, user, router):
     summary = "From the user's Session"
-    try:
-        _, done, _ = report(home, user, summary, timeout=8)
-        waited, output = False, (done.stdout + done.stderr)[:300]
-    except subprocess.TimeoutExpired:
-        waited, output = True, "still waiting after 8 s"
+    _, code, output, _ = report(home, user, summary, timeout=8)
     case.check("the user's own Session's report to super_agent waits on the approval prompt",
-               waited, output)
+               code is None, output)
     case.check("and nothing of it reaches the Inbox", inbox_items(home, router, summary) == [])
 
 
 def check_refused(case, home, run_session, label):
-    reported, done, took = report(home, run_session, f"No Super Agent ({label})")
+    reported, code, output, took = report(home, run_session, f"No Super Agent ({label})")
     case.check(f"{label}: a report to super_agent fails at once with a clear error",
-               done.returncode != 0 and reported == {} and took < 10
-               and "No Super Agent" in done.stderr and "nothing was sent" in done.stderr,
-               f"{took:.1f}s rc={done.returncode} " + (done.stdout + done.stderr)[:300])
+               code not in (0, None) and reported == {} and took < 10
+               and "No Super Agent" in output and "nothing was sent" in output,
+               f"{took:.1f}s rc={code} {output}")
 
 
 def resume(case, service, home, router):

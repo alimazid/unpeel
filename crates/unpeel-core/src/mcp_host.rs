@@ -2079,7 +2079,8 @@ pub(crate) fn legacy_sessions_tool_definitions() -> Vec<Value> {
             "description": "List running Unpeel terminal sessions (agents and shells). \
         Use this only to choose a target, then call inspect_session before deeper reads. \
         The calling session is marked with \"self\": true and cannot be written to. \
-        The workspace's Super Agent is marked with \"super_agent\": true.",
+        The workspace's Super Agent is marked with \"super_agent\": true; report to \
+        session_id \"super_agent\" reaches it.",
             "inputSchema": {
                 "type": "object",
                 "properties": {},
@@ -2277,7 +2278,8 @@ pub(crate) fn legacy_sessions_tool_definitions() -> Vec<Value> {
         Host runs a report to the Super Agent from its Worker or a Scheduled Task's Run needs no \
         approval. session_id \"super_agent\" reaches the workspace's Super Agent, whatever its \
         id is when the report is sent (it changes on every Resume), through the same policy as \
-        its id; with no Super Agent the report fails at once and nothing is sent. \
+        its id; with no Super Agent the report fails at once and nothing is sent. list marks \
+        the Super Agent's row \"super_agent\": true. \
         With no Host running the report is typed at once, and it fails like \
         send_text with 'Not sent (typing)' or 'Not sent (draft)' while the user is typing there \
         or has unsent input on its line: nothing was written, so report again once they are \
@@ -2849,7 +2851,6 @@ fn tool_list_sessions(_args: &Value) -> Result<String, String> {
     let caller_group = caller
         .as_ref()
         .map(|manifest| effective_group_id(manifest, &known_projects));
-    let router_id = crate::supervision::router_id(); // Fork-only (#82): one read for the mark
     let mut manifests = session_host::list_manifests();
     // Show every running session to an enabled, known caller. Write access is
     // reported separately per target and never inferred from sidebar groups.
@@ -2894,9 +2895,8 @@ fn tool_list_sessions(_args: &Value) -> Result<String, String> {
                 "self": self_id.as_deref() == Some(session.id.as_str()),
             })
         })
-        // Fork-only (#82)
-        .map(|row| crate::supervision_mcp::mark_super_agent(row, router_id.as_deref()))
         .collect();
+    let sessions = crate::supervision_mcp::mark_router_rows(sessions); // Fork-only (#82)
 
     serde_json::to_string_pretty(&json!({ "sessions": sessions }))
         .map_err(|e| format!("Failed to encode session list: {e}"))

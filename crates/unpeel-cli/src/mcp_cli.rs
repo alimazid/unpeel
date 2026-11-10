@@ -31,7 +31,7 @@ Family verbs over the same dispatcher:
                  | wait [selector=… | load=… | ms=…] | <action> [key=value ...]
   unpeel artifacts publish <image-path>
   unpeel current                      you and your pane neighbors (App context)
-  unpeel report <summary> --to <session id|super_agent>
+  unpeel report <summary> --to <id|super_agent>
                  [--status update|done|blocked] [--details TEXT]
   unpeel worktree create <name> [--branch B] [--base REF] [--project ID]
   unpeel agents <action> [key=value ...]
@@ -246,19 +246,19 @@ pub fn current(args: &[String]) -> i32 {
     call("sessions", arguments, Some("current"))
 }
 
+const REPORT_USAGE: &str = "usage: unpeel report <summary> --to <id|super_agent> \
+[--status update|done|blocked] [--details TEXT]";
+
 /// `unpeel report <summary> --to <id|super_agent> [--status S] [--details D] [--no-submit]`
 pub fn report(args: &[String]) -> i32 {
     let Some(arguments) = report_arguments(args) else {
-        eprintln!(
-            "usage: unpeel report <summary> --to <session id|super_agent> \
-[--status update|done|blocked] [--details TEXT]"
-        );
+        eprintln!("{REPORT_USAGE}");
         return 1;
     };
     call("sessions", arguments, Some("report"))
 }
 
-/// The `report` arguments in `args`; `None` without a summary.
+/// The `report` arguments in `args`; `None` without a summary or a target.
 fn report_arguments(args: &[String]) -> Option<Map<String, Value>> {
     let mut arguments = Map::new();
     let mut summary: Vec<String> = Vec::new();
@@ -296,7 +296,7 @@ fn report_arguments(args: &[String]) -> Option<Map<String, Value>> {
     if !summary.is_empty() {
         arguments.insert("summary".into(), Value::String(summary.join(" ")));
     }
-    Some(arguments)
+    arguments.contains_key("session_id").then_some(arguments)
 }
 
 /// `unpeel worktree create <name> [--branch B] [--base REF] [--project ID]`
@@ -442,7 +442,8 @@ mod tests {
         // --json still names any argument, the target included.
         let words = ["hi", "--json", "{\"session_id\":\"abc\"}"].map(String::from);
         assert_eq!(report_arguments(&words).unwrap()["session_id"], "abc");
-        // A summary is still required.
+        // A summary and a target are both required.
         assert!(report_arguments(&["--to".to_string(), "abc".to_string()]).is_none());
+        assert!(report_arguments(&["hi".to_string()]).is_none());
     }
 }
