@@ -180,7 +180,8 @@ pub struct Listing {
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct PendingStats {
     pub items: usize,
-    /// At least one wake item: only those start a delivery.
+    /// At least one wake item. Only those start a delivery, until the drain
+    /// promotes ride-along items by `oldest_at` (#83).
     pub wake: bool,
     pub oldest_at: Option<u64>,
     pub newest_at: Option<u64>,

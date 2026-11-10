@@ -70,8 +70,8 @@ impl Store {
         })
     }
 
-    /// Whether anything pending should start a delivery: ride-along items
-    /// only ever go out with a wake batch (or by pull).
+    /// Whether a wake item is pending: ride-along items go out with a wake
+    /// batch, by pull, or once the drain promotes them by age (#83).
     pub fn has_wake_pending(&self, session_id: &str) -> bool {
         let Ok(dir) = self.dir(session_id) else {
             return false;

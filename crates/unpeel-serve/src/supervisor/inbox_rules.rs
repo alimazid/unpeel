@@ -26,7 +26,8 @@ pub enum HoldReason {
     LowConfidence,
     /// The terminal has not enabled bracketed paste (mode 2004).
     NoBracketedPaste,
-    /// Only ride-along items: they go out with the next wake batch.
+    /// Only ride-along items, none waiting long enough to be promoted:
+    /// they go out with the next wake batch.
     RideAlong,
     /// The screen changed too recently.
     Quiet,
@@ -172,6 +173,9 @@ pub const BEST_GUESS_QUIET_MS: u64 = 10_000;
 pub const DEBOUNCE_NEWEST_MS: u64 = 2_000;
 /// …unless the oldest has already waited this long.
 pub const DEBOUNCE_OLDEST_MS: u64 = 30_000;
+/// Ride-along items whose oldest has waited this long start a delivery as
+/// if they were a wake item (#83).
+pub const RIDE_ALONG_PROMOTE_MS: u64 = 15 * 60_000;
 
 /// The quiet window (§4.2): `screen_changed_at` (manifest) old enough.
 pub fn quiet_hold(confident: bool, now: u64, screen_changed_at: Option<u64>) -> Option<HoldReason> {
@@ -182,6 +186,13 @@ pub fn quiet_hold(confident: bool, now: u64, screen_changed_at: Option<u64>) -> 
     };
     let quiet = screen_changed_at.is_none_or(|changed| changed <= now && now - changed >= window);
     (!quiet).then_some(HoldReason::Quiet)
+}
+
+/// Whether ride-along items have waited `promote_ms` since the oldest was
+/// queued. The stored queue time is the clock, so a Host restart does not
+/// start it over.
+pub fn promoted(oldest_at: Option<u64>, now: u64, promote_ms: u64) -> bool {
+    oldest_at.is_some_and(|at| at <= now && now - at >= promote_ms)
 }
 
 /// What the send gates read once the screen is quiet.
@@ -544,6 +555,16 @@ mod tests {
             send_hold(&timing(29_999, 100, 0)),
             Some(HoldReason::Debounce)
         );
+    }
+
+    #[test]
+    fn ride_along_items_are_promoted_once_the_oldest_has_waited() {
+        let promote = RIDE_ALONG_PROMOTE_MS;
+        assert!(promoted(Some(NOW - promote), NOW, promote));
+        assert!(!promoted(Some(NOW - promote + 1), NOW, promote));
+        assert!(!promoted(None, NOW, promote));
+        // A queue time from a clock ahead of this one is not old.
+        assert!(!promoted(Some(NOW + 1), NOW, promote));
     }
 
     #[test]
