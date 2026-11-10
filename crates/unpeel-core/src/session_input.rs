@@ -160,6 +160,23 @@ pub fn paste_unless_user_is_typing(
     deliver_sanitized_text_with_timeout(session_id, sanitized, submit, WriteTerms::guarded(since))
 }
 
+/// Fork-only (#69): the Inbox's paste where only the PTY core can tell a
+/// draft, under the same guards, bounded so a wedged session host cannot
+/// hold the delivery thread.
+pub fn paste_unless_user_is_typing_within(
+    session_id: &str,
+    sanitized: &str,
+    submit: bool,
+    since: u64,
+    timeout: Duration,
+) -> Result<GuardedPaste, String> {
+    let terms = WriteTerms {
+        timeout: Some(timeout),
+        ..WriteTerms::guarded(since)
+    };
+    deliver_sanitized_text_with_timeout(session_id, sanitized, submit, terms)
+}
+
 /// Fork-only (#61): one key of an agent's `send_keys`, under the same guards.
 /// A menu takes the keys, so a draft under one does not refuse them.
 pub fn write_key_unless_user_is_typing(

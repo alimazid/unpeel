@@ -66,6 +66,18 @@ the same results. It used to retry a failed paste for up to 20 s; it now
 fails at once like `send_text`, since a draft seldom clears that fast and a
 paste left unsubmitted would be typed a second time.
 
+The Inbox asks the core too where its own guard has nothing to compare
+with (#69). After the user typed, ADR 0008's guard pastes only onto the
+target's known-empty prompt, which the drain learns at a clean turn. A
+Worker's first task can meet the user's typing before any: a person answers
+its startup menu. The menu took those keys, so the core started no draft.
+With no known-empty prompt, on a core with `draft_guard`, the Inbox's
+paste carries `unless_draft` as well, and a `draft` refusal holds the task
+`draft` until the user types again or the Router writes to the Worker: its
+`send_text` or `send_keys` asks the core once more, so a refusal the core
+would no longer give cannot strand a Worker nobody types into. An older
+core holds it until a clean turn, as before.
+
 ## Considered Options
 
 - **Hold the send and deliver it when the box is clear.** Rejected: the
@@ -80,6 +92,12 @@ paste left unsubmitted would be typed a second time.
   #61 names.
 - **Refuse only on recent typing.** Rejected: a paused draft is the case
   the issue reports.
+- **Take a Worker's first idle line after its menu as its empty prompt
+  (#69).** Rejected: the person who answered the menu may have typed there
+  already, the paused draft #38 fixed.
+- **Ask the core again every 10 s while a draft holds the Inbox (#69).**
+  Rejected: a draft can sit for hours, and each ask claims the batch,
+  writes, releases it and announces on the state bus.
 
 ## Consequences
 
@@ -105,5 +123,7 @@ draft hidden for 500 ms behind something that is no menu, with the cursor
 shown elsewhere, that comes back while the screen is still busy. Menu-like text anywhere on screen reads as a menu, so a draft under
 it does not refuse (#72).
 
-The Inbox keeps ADR 0008's guard; `report` without a Host worker takes this
+The Inbox keeps ADR 0008's guard and asks this one only while it knows no
+empty prompt (#69), so that paste inherits the early ends above, menu-like
+text on screen included (#72). `report` without a Host worker takes this
 one (#66).
