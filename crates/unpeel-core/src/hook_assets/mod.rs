@@ -566,6 +566,23 @@ pub(crate) fn reporter_script(contents: &str) -> String {
     contents.replace(REPORTER_HOST_BIN_PLACEHOLDER, &host)
 }
 
+/// An owned in-process reporter module as installed (the omp extension,
+/// #75): the same identity guard as [`reporter_script`], whose quoted
+/// placeholder becomes the installing Host binary as a JavaScript string.
+pub(crate) fn reporter_module(contents: &str) -> String {
+    let host = crate::integrations::install::installing_host_binary().ok();
+    reporter_module_with(contents, host.as_deref())
+}
+
+/// [`reporter_module`] for a given checker; `None` leaves the guard inert.
+pub(crate) fn reporter_module_with(contents: &str, host: Option<&Path>) -> String {
+    // A JSON string is a JavaScript string literal.
+    let literal = host
+        .and_then(|path| serde_json::to_string(&path.to_string_lossy()).ok())
+        .unwrap_or_else(|| "\"\"".to_string());
+    contents.replace(&format!("\"{REPORTER_HOST_BIN_PLACEHOLDER}\""), &literal)
+}
+
 /// Shared reporter path used by runtime-owned setup adapters.
 pub(crate) fn notify_hook_script_path() -> PathBuf {
     crate::app_paths::machine_home()

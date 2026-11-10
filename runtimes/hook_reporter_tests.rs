@@ -648,30 +648,41 @@ fn installed_reporters_name_the_installing_host_binary() {
 }
 
 #[test]
-fn every_shell_reporter_that_posts_carries_the_identity_check() {
+fn every_owned_reporter_that_posts_carries_the_identity_check() {
+    // Shell reporters and in-process modules alike (the omp extension, #75):
+    // anything shipped under a runtime's assets that posts `/hook/` itself.
     let runtimes = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../runtimes");
-    let mut checked = 0;
-    for runtime in fs::read_dir(&runtimes).expect("runtimes").flatten() {
-        let Ok(assets) = fs::read_dir(runtime.path().join("assets").join("hooks")) else {
+    let mut pending: Vec<PathBuf> = fs::read_dir(&runtimes)
+        .expect("runtimes")
+        .flatten()
+        .map(|runtime| runtime.path().join("assets"))
+        .collect();
+    let (mut shell, mut modules) = (0, 0);
+    while let Some(path) = pending.pop() {
+        if let Ok(entries) = fs::read_dir(&path) {
+            pending.extend(entries.flatten().map(|entry| entry.path()));
+            continue;
+        }
+        let Ok(script) = fs::read_to_string(&path) else {
             continue;
         };
-        for asset in assets.flatten() {
-            let path = asset.path();
-            let Ok(script) = fs::read_to_string(&path) else {
-                continue;
-            };
-            if path.extension().is_some_and(|ext| ext == "sh") && script.contains("/hook/") {
-                assert_eq!(
-                    script.matches(super::REPORTER_HOST_BIN_PLACEHOLDER).count(),
-                    1,
-                    "{} posts hooks, so it runs the identity check first (ADR 0013)",
-                    path.display()
-                );
-                checked += 1;
-            }
+        if !script.contains("/hook/") {
+            continue;
+        }
+        assert_eq!(
+            script.matches(super::REPORTER_HOST_BIN_PLACEHOLDER).count(),
+            1,
+            "{} posts hooks, so it runs the identity check first (ADR 0013)",
+            path.display()
+        );
+        if path.extension().is_some_and(|ext| ext == "sh") {
+            shell += 1;
+        } else {
+            modules += 1;
         }
     }
-    assert!(checked >= 10, "found only {checked} shell reporters");
+    assert!(shell >= 10, "found only {shell} shell reporters");
+    assert!(modules >= 1, "found no in-process reporter module");
 }
 
 #[test]

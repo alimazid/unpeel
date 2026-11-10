@@ -226,6 +226,13 @@ OMP (oh-my-pi's `omp`, omp.sh; npm `@oh-my-pi/pi-coding-agent`):
   Stop, suppressed while `willContinue` reports a scheduled continuation;
   `tool_approval_requested` → PermissionRequest with `tool_name`;
   `session_shutdown` → Stop.
+- The extension runs inside OMP's own process, so it carries the shell
+  reporters' identity check itself (#75, ADR 0013): before every event it
+  spawns the installing `unpeel-host __session_identity__` (baked in at
+  install), and on exit 3 it drops the event and traces `hook-refused`.
+  The answer is never cached, because OMP outlives a parent shell that
+  exits and keeps the Session's environment. The check costs a few
+  milliseconds per event.
 - Escape aborts the foreground turn and OMP still emits `turn_end` and
   `agent_end` (measured on 18.2.3: Escape sent 10.0 s into a 90 s `sleep`, both
   events 0.27 s later), so an interrupted turn settles without the Host's
@@ -477,7 +484,8 @@ The short checklist:
    provider's persistent mechanism, and never depend on a launch-time
    environment, wrapper, or flag. Every owned reporter includes numeric
    `unpeel_runtime_generation` in both the event and durable seed, and
-   writes the script through `hook_assets::reporter_script` so the
+   writes the script through `hook_assets::reporter_script` (an
+   in-process module through `hook_assets::reporter_module`) so the
    identity check (`{{UNPEEL_HOST_BIN}} __session_identity__`, ADR 0013)
    runs before the seed or any post; exit 3 drops the event.
 4. Registration evidence on a Session is "the user installed this runtime's
