@@ -111,7 +111,11 @@ def body(case):
                        timeout=10)), str(manifest().get("terminal_modes")))
 
         # 1. Idle: a lone progress report rides along, then goes out once
-        #    it has waited the promotion age.
+        #    it has waited the promotion age. The screen is quiet first, so
+        #    the hold shows `ride_along`, not `quiet`, while it is young.
+        service.wait_for(
+            lambda: time.time() * 1000 - (manifest().get("screen_changed_at") or 0) >= 3_500,
+            timeout=10)
         queued, done = progress("halfway there")
         case.check("a progress report rides along", queued.get("queued") is True
                    and queued.get("delivery") == "held:ride_along", (done.stdout + done.stderr)[:300])
