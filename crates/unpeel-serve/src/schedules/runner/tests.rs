@@ -783,7 +783,7 @@ fn a_done_agent_run_follows_its_sessions_later_turns_and_reports() {
         follow_sweep(scheduler, &session_id, AgentStatus::Idle, &now(9, 6, 1));
         let reported = latest(scheduler);
         assert_eq!(
-            (reported.status, reported.report),
+            (reported.status, reported.report.clone()),
             (RunStatus::Done, Some(blocked))
         );
         let store = TaskStore::open(root_of(scheduler), "sch_1").unwrap();
@@ -792,7 +792,8 @@ fn a_done_agent_run_follows_its_sessions_later_turns_and_reports() {
             Some(RunStatus::Done)
         );
 
-        // Its Session stops: following ends and the Run stays as it was.
+        // Its Session stops: one line says so, the Run as it was otherwise,
+        // and following ends even if the Session comes back.
         effects
             .seen
             .lock()
@@ -800,9 +801,24 @@ fn a_done_agent_run_follows_its_sessions_later_turns_and_reports() {
             .insert(session_id.clone(), (SessionSeen::Stopped, None));
         assert_eq!(
             follow_sweep(scheduler, &session_id, AgentStatus::Idle, &now(9, 7, 0)),
-            vec![]
+            vec![(RunStatus::Done, Some(RunStatus::Done))]
         );
-        assert_eq!(latest(scheduler).status, RunStatus::Done);
+        let ended = latest(scheduler);
+        assert!(ended.session_ended);
+        assert_eq!(
+            ScheduleRun {
+                session_ended: false,
+                ..ended
+            },
+            reported
+        );
+        effects.seen.lock().unwrap().remove(&session_id);
+        follow_sweep(scheduler, &session_id, AgentStatus::Working, &now(9, 8, 0));
+        assert_eq!(
+            follow_sweep(scheduler, &session_id, AgentStatus::Idle, &now(9, 9, 0)),
+            vec![],
+            "a resumed Session is the user's"
+        );
     });
 }
 
@@ -893,6 +909,7 @@ fn a_host_restart_while_a_run_starts_fails_it() {
             phase: Some(RunPhase::WaitingReady),
             prompted_at_ms: None,
             report: None,
+            session_ended: false,
         };
         store.append_run(&interrupted).unwrap();
         effects

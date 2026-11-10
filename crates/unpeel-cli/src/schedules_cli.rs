@@ -257,6 +257,9 @@ fn run_line(run: &ScheduleRun) -> String {
     if run.late {
         line.push_str("  late");
     }
+    if run.needs_attention() {
+        line.push_str("  needs attention");
+    }
     if let Some(started) = run.started_at_ms.and_then(local_time) {
         line.push_str(&format!("  started {started}"));
     }
@@ -275,7 +278,6 @@ fn run_line(run: &ScheduleRun) -> String {
     if let Some(snippet) = &run.snippet {
         line.push_str(&format!("\n    {snippet}"));
     }
-    // Fork-only (#81): what the Run's own Session last reported.
     if let Some(report) = &run.report {
         line.push_str(&format!(
             "\n    reported {}: {}",

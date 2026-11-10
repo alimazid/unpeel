@@ -201,19 +201,25 @@ termination output is drained first. Never signal an unverified process group.
   later idle after the agent worked again — the worker saw it working
   (a screen-tier agent's only trace), or a program, hook or report stamp is
   newer than the Run's last line — moves `ended_at_ms` to now and the
-  snippet to the newer reply, if any. The status stays `done`, so "Notify
+  snippet to the newer reply, if any (a screen-tier agent has no reply of
+  its own, so its snippet stays as at the first idle). The status stays
+  `done`, so "Notify
   when done" fires once, at the first idle, and the next occurrence is never
   held back; the Run cutoff (#62) still counts the Session's own idle time.
   A report the Run Session sends (`sessions report` or `unpeel report`,
   accepted) is written to `<session dir>/run-report.json`
   (`schedules::run_report`, the last one wins) and the worker records it on
   the Run as `report: {status, summary, at_ms}`, in progress or done. A
-  `blocked` report leaves the status alone; Controllers show it as needing
-  attention. A `done` report is the final word once the turn that sent it
+  `blocked` report leaves the status alone; the Host publishes the Run
+  with `needsAttention: true` (`ScheduleRun::needs_attention`, unless the
+  Run failed) and Controllers show that, never reading the report
+  themselves. A `done` report is the final word once the turn that sent it
   ends (a line at or after its `at_ms`). Following stops when the Session
-  ends (the Run stays `done`), when a newer Run becomes the latest, and
-  after a done report's turn; a task without instructions is never
-  followed, its Session being the user's once its agent is ready.
+  ends (exits, is stopped, or goes away: one line records
+  `session_ended: true` and the Run stays `done`, so a Session resumed
+  under the same id is never followed again), when a newer Run becomes the
+  latest, and after a done report's turn; a task without instructions is
+  never followed, its Session being the user's once its agent is ready.
 
 ### Recent ordering (sidebar + shared ⌘K/^K contract)
 

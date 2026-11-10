@@ -82,6 +82,7 @@ fn running(mut task: TaskState, observation: RunObservation) -> TaskState {
         phase: None,
         prompted_at_ms: None,
         report: None,
+        session_ended: false,
     });
     task.observation = observation;
     task

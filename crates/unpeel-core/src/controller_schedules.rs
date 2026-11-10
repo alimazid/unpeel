@@ -366,6 +366,9 @@ fn run_wire(run: &ScheduleRun) -> Value {
             "atMs": report.at_ms,
         });
     }
+    if run.needs_attention() {
+        wire["needsAttention"] = json!(true);
+    }
     wire
 }
 

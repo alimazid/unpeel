@@ -263,11 +263,11 @@ fn follow(run: &ScheduleRun, agent: &AgentObservation, now_ms: u64) -> Option<Sc
 /// The turn's reply: the program's own summary, else the Stop hook's final
 /// reply, either only from `since` on (the paste, or a followed Run's last
 /// line).
-pub(super) fn reply_since(activity: &AgentActivity, prompted_at: u64) -> Option<String> {
+pub(super) fn reply_since(activity: &AgentActivity, since: u64) -> Option<String> {
     let after = |reply: &Option<(String, u64)>| {
         reply
             .as_ref()
-            .filter(|(_, at)| *at >= prompted_at)
+            .filter(|(_, at)| *at >= since)
             .map(|(text, _)| text.clone())
     };
     crate::completion_snippet::finished_body(

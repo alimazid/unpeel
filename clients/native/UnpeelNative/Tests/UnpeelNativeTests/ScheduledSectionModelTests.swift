@@ -74,16 +74,20 @@ struct ScheduledSectionModelTests {
         #expect(rows.allSatisfy { $0.taskID == "sch_a" })
     }
 
-    /// A Run whose own Session reported `blocked` needs you whatever the Host
-    /// recorded it as (#81), unless it failed; a report's summary is the
-    /// Run's detail, ahead of its first reply.
+    /// A Run the Host says needs attention (its own Session reported
+    /// `blocked`, #81) needs you whatever its status; a report's summary is
+    /// the Run's detail, ahead of its first reply, and a failure explains
+    /// itself.
     @Test
     func aBlockedReportShowsTheRunAsNeedingYouWithItsSummary() {
         let blocked = RemoteScheduleRunReport(status: "blocked", summary: "Waiting on a signing key", atMs: 1)
         let finished = RemoteScheduleRunReport(status: "done", summary: "Build 135 installed", atMs: 2)
         let runs = [
-            RemoteScheduleRun(runID: "run_blocked", status: .done, snippet: "Still compiling.", report: blocked),
-            RemoteScheduleRun(runID: "run_working", status: .running, report: blocked),
+            RemoteScheduleRun(
+                runID: "run_blocked", status: .done, snippet: "Still compiling.", report: blocked,
+                needsAttention: true
+            ),
+            RemoteScheduleRun(runID: "run_working", status: .running, report: blocked, needsAttention: true),
             RemoteScheduleRun(runID: "run_done", status: .done, snippet: "Still compiling.", report: finished),
             RemoteScheduleRun(
                 runID: "run_failed", status: .failed,

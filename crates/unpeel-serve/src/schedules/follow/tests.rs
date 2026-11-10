@@ -73,6 +73,7 @@ fn done_run() -> ScheduleRun {
         phase: Some(RunPhase::Working),
         prompted_at_ms: Some(ms(1, 0)),
         report: None,
+        session_ended: false,
     }
 }
 
@@ -221,19 +222,35 @@ fn an_idle_agent_with_nothing_newer_records_nothing() {
 }
 
 #[test]
-fn following_stops_when_the_session_ends_and_the_run_stays_done() {
+fn following_stops_for_good_when_the_session_ends_and_the_run_stays_done() {
     for gone in [
         RunObservation::Exited(0),
         RunObservation::Exited(1),
         RunObservation::Ended,
         RunObservation::Missing,
-        RunObservation::Live,
-        RunObservation::Idle,
     ] {
+        let ended = line(done_run(), gone.clone(), None, &now(9, 0)).expect("{gone:?}");
         assert_eq!(
-            line(done_run(), gone.clone(), None, &now(9, 0)),
+            ended,
+            ScheduleRun {
+                session_ended: true,
+                ..done_run()
+            },
+            "{gone:?}: only the end of following is recorded"
+        );
+        assert!(!is_followed(&ended));
+        // The Session resumed under its id, the user working in it: the
+        // Run is not followed again, and takes no report.
+        let resumed = agent(replied("the user's own turn", ms(20, 0)), true);
+        assert_eq!(line(ended.clone(), resumed, None, &now(20, 1)), None);
+        let report = Some(report("blocked", "?", ms(20, 2)));
+        assert_eq!(line(ended, agent(idle(), false), report, &now(20, 3)), None);
+    }
+    for still in [RunObservation::Live, RunObservation::Idle] {
+        assert_eq!(
+            line(done_run(), still.clone(), None, &now(9, 0)),
             None,
-            "{gone:?}"
+            "{still:?}"
         );
     }
 }
@@ -328,8 +345,8 @@ fn a_report_lands_on_the_run_line_whatever_the_run_is_doing() {
     )
     .expect("kept");
     assert_eq!(
-        (exited.status, exited.report),
-        (RunStatus::Done, Some(blocked))
+        (exited.status, exited.report, exited.session_ended),
+        (RunStatus::Done, Some(blocked), true)
     );
 }
 

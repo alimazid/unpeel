@@ -388,7 +388,7 @@ impl Scheduler {
             .unwrap_or(RunObservation::Idle);
         let report = latest_run
             .as_ref()
-            .filter(|run| follow::takes_reports(run))
+            .filter(|run| follow::follows_session(run))
             .and_then(|run| run.session_id.as_deref())
             .and_then(|session_id| self.effects.run_report(session_id));
         Ok(TaskState {
@@ -413,7 +413,7 @@ impl Scheduler {
         activity: &HashMap<String, AgentActivity>,
         now_ms: u64,
     ) -> RunObservation {
-        if !run.status.is_in_progress() && !follow::is_followed(run) {
+        if !follow::follows_session(run) {
             return RunObservation::Idle;
         }
         if let Some(error) = self.spawn_failures.remove(&run.run_id) {
@@ -434,7 +434,7 @@ impl Scheduler {
                 let activity = activity.get(session_id).cloned().unwrap_or_default();
                 RunObservation::Agent(AgentObservation {
                     delivery: self.delivery_of(run),
-                    seen_working: self.saw_working(run, &activity),
+                    seen_working: self.track_working(run, &activity),
                     activity,
                     working_timeout_ms: self.working_timeout_ms,
                 })
@@ -452,9 +452,9 @@ impl Scheduler {
         }
     }
 
-    /// Whether a followed Run's agent was seen working or asking since its
-    /// last line, this sweep included.
-    fn saw_working(&mut self, run: &ScheduleRun, activity: &AgentActivity) -> bool {
+    /// Note a followed Run's agent working or asking; whether it was seen so
+    /// since the Run's last line, this sweep included.
+    fn track_working(&mut self, run: &ScheduleRun, activity: &AgentActivity) -> bool {
         if !follow::is_followed(run) {
             return false;
         }

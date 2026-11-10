@@ -178,7 +178,7 @@ Advertised ownership (old mixed `sessions` spellings remain decode-only):
     `list_schedule_runs` returns the newest 10 Runs unless `limit` says
     otherwise. A Run Session's accepted `report` is also kept for its Run
     (`schedules::run_report`, #81): the Run shows it as `report`, and a
-    `blocked` one as needing attention.
+    `blocked` one as `needsAttention: true` unless the Run failed.
   - `create_schedule {name, project_id, preset, trigger, instructions?,
     enabled?, notify_when_done?}`, `edit_schedule {schedule_id, …any of
     those}` (pause and resume are `enabled`; `instructions=""` removes

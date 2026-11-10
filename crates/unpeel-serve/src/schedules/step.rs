@@ -89,8 +89,8 @@ pub struct TaskState {
     pub clock: ScheduleClock,
     pub latest_run: Option<ScheduleRun>,
     pub observation: RunObservation,
-    /// The latest Run's Session's last report, while the Run still takes
-    /// one (`follow::takes_reports`).
+    /// The latest Run's Session's last report, while the Host still
+    /// follows that Session (`follow::follows_session`).
     pub report: Option<RunReport>,
     /// An accepted Run now request: its Run id.
     pub run_now: Option<String>,
@@ -397,6 +397,7 @@ fn launch(
         phase: None,
         prompted_at_ms: None,
         report: None,
+        session_ended: false,
     };
     match &task.launch {
         Ok(plan) => Action::Start {
@@ -439,6 +440,7 @@ fn skipped(
         phase: None,
         prompted_at_ms: None,
         report: None,
+        session_ended: false,
     }
 }
 

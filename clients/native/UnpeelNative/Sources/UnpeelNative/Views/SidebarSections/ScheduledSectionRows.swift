@@ -33,19 +33,15 @@ enum ScheduledRunIndicator: Equatable, Sendable {
         }
     }
 
-    /// A Run's dot: needs you when its own Session reported `blocked` while
-    /// it ran or after it was done (#81); a failure still shows as one.
+    /// A Run's dot: needs you when the Host says it needs attention (its own
+    /// Session reported `blocked`, #81), whatever its status.
     init(_ run: RemoteScheduleRun) {
-        self = Self.isBlocked(run) ? .needsYou : Self(run.status)
+        self = run.needsAttention ? .needsYou : Self(run.status)
     }
 
-    /// A Run's status in words, "Blocked" for a blocked report.
+    /// A Run's status in words, "Blocked" when it needs attention.
     static func statusText(_ run: RemoteScheduleRun) -> String {
-        isBlocked(run) ? "Blocked" : statusText(run.status)
-    }
-
-    private static func isBlocked(_ run: RemoteScheduleRun) -> Bool {
-        run.report?.isBlocked == true && [.running, .done].contains(run.status)
+        run.needsAttention ? "Blocked" : statusText(run.status)
     }
 
     /// The status in words; an unknown one as the Host wrote it.

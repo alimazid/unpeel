@@ -175,6 +175,7 @@ mod tests {
             phase: None,
             prompted_at_ms: None,
             report: None,
+            session_ended: false,
         }
     }
 

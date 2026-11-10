@@ -12,8 +12,8 @@ compiling in the background.":
   `list_schedule_runs`; a done report's turn ends the Run for good, and a
   turn after it changes nothing;
 * the quiet one never reports and never works again: its Run stays as its
-  first idle left it while its Session sits live, and after its agent
-  exits.
+  first idle left it while its Session sits live; when its agent exits, one
+  line says the Session ended and nothing else about the Run changes.
 """
 
 import base64
@@ -214,8 +214,8 @@ def check_blocked_report(case, service, home, task_id, run_id, session_id, route
     except ValueError:
         runs = []
     row = next((row for row in runs if row.get("runID") == run_id), {})
-    case.check("busy: list_schedule_runs shows the Run done with its blocked report",
-               row.get("status") == "done"
+    case.check("busy: list_schedule_runs shows the Run done, needing attention, with its report",
+               row.get("status") == "done" and row.get("needsAttention") is True
                and (row.get("report") or {}).get("status") == "blocked"
                and (row.get("report") or {}).get("summary") == BLOCKED,
                detail(listed))
@@ -252,9 +252,11 @@ def check_quiet(case, service, home, task_id, run_id, session_id, first):
     service.wait_for(lambda: os.path.exists(home.path("app-sessions", session_id, "startup-exit")),
                      timeout=15)
     service.read_for(4)
-    case.check("quiet: after its agent exits the Run is still done, nothing appended",
-               run_entry(home, task_id, run_id) == first
-               and len(run_lines(home, task_id, run_id)) == lines,
+    ended = service.wait_for(lambda: run_entry(home, task_id, run_id).get("session_ended"),
+                             timeout=15)
+    case.check("quiet: after its agent exits one line says so; the Run is otherwise as it was",
+               bool(ended) and run_entry(home, task_id, run_id) == {**first, "session_ended": True}
+               and len(run_lines(home, task_id, run_id)) == lines + 1,
                json.dumps(run_lines(home, task_id, run_id))[-600:])
 
 

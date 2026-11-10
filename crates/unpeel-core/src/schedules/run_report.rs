@@ -71,6 +71,10 @@ fn write_in(session_dir: &Path, report: &RunReport) -> Result<(), String> {
     }
     let bytes = serde_json::to_vec(report).map_err(|error| error.to_string())?;
     let tmp = session_dir.join(format!(".{FILE}.{}.tmp", std::process::id()));
-    std::fs::write(&tmp, bytes).map_err(|error| error.to_string())?;
-    std::fs::rename(&tmp, session_dir.join(FILE)).map_err(|error| error.to_string())
+    std::fs::write(&tmp, bytes)
+        .and_then(|()| std::fs::rename(&tmp, session_dir.join(FILE)))
+        .map_err(|error| {
+            let _ = std::fs::remove_file(&tmp);
+            error.to_string()
+        })
 }

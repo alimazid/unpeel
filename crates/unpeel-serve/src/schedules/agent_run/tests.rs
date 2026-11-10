@@ -88,6 +88,7 @@ fn run_in(phase: RunPhase, status: RunStatus) -> ScheduleRun {
         phase: Some(phase),
         prompted_at_ms: prompted.then(prompted_at),
         report: None,
+        session_ended: false,
     }
 }
 

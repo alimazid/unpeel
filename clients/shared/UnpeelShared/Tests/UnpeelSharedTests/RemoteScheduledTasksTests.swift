@@ -67,8 +67,8 @@ struct RemoteScheduledTasksTests {
             summary: "Two replies need your answer before they go out",
             atMs: 1_793_976_350_000
         ))
-        #expect(late.report?.isBlocked == true)
-        #expect(history.runs[0].report == nil)
+        #expect(late.needsAttention, "the Host's word, not the Controller's reading of the report")
+        #expect(history.runs[0].report == nil && !history.runs[0].needsAttention)
     }
 
     /// A report this Controller cannot read costs the report, never its Run.

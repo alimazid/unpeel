@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "note": "Fork-only: Scheduled Tasks. Host state on disk (`seed`) and the exact `GET /mobile/schedules` and `GET /mobile/schedules/runs` bodies a Host answers from it (`responses`). The Rust Host test seeds a private root from `seed` and compares its answer to `responses` (except `revision`, whose value is opaque); the Swift tests decode `responses` with the shared DTOs. Run status and Trigger kind are open sets: a Controller renders a value it does not know generically. A Run's `report` (#81, additive, absent until there is one) is its own Session's last `sessions report` during the Run: `status` (an open set; `blocked` shows the Run as needing attention, whatever its Run status) and `summary`, with `atMs` when it was sent.",
+  "note": "Fork-only: Scheduled Tasks. Host state on disk (`seed`) and the exact `GET /mobile/schedules` and `GET /mobile/schedules/runs` bodies a Host answers from it (`responses`). The Rust Host test seeds a private root from `seed` and compares its answer to `responses` (except `revision`, whose value is opaque); the Swift tests decode `responses` with the shared DTOs. Run status and Trigger kind are open sets: a Controller renders a value it does not know generically. A Run's `report` (#81, additive, absent until there is one) is its own Session's last `sessions report` during the Run: `status` (an open set) and `summary`, with `atMs` when it was sent. `needsAttention` (#81, additive, `true` or absent) is the Host's word that the Run needs the user: its report is `blocked` and the Run has not failed. A Controller shows it as needing attention whatever its Run status, and never derives that from `report` itself.",
   "seed": {
     "appState": {
       "schedules": [
@@ -337,7 +337,8 @@
               "status": "blocked",
               "summary": "Two replies need your answer before they go out",
               "atMs": 1793976350000
-            }
+            },
+            "needsAttention": true
           }
         ]
       }
