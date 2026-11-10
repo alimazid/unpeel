@@ -19,7 +19,8 @@ Host has no empty prompt of the Worker's to compare with yet, so the PTY
 core decides whether its line holds a draft. A third Worker whose menu a
 person skips gets its task at the composer; a fourth, whose person then
 types into the composer without sending, keeps it queued, held `draft`, and
-nothing is pasted on that line.
+nothing is pasted on that line. When the program then clears that line by
+itself, the task stays held until the Router writes to the Worker.
 """
 
 import json
@@ -54,7 +55,7 @@ def write_fixture(path):
         menu = handle.read()
     with open(path, "w") as handle:
         handle.write(f"#!{sys.executable}\nMENU = {menu!r}\n" + '''
-import os, time, tty
+import os, select, time, tty
 tty.setraw(0)
 here = os.getcwd()
 def event(word):
@@ -73,7 +74,17 @@ os.write(1, b"\\x1b[?2004h")
 os.write(1, b"HOOK_FIXTURE_PROCESS_STARTED\\r\\n")
 screen(MENU)
 on_menu, pasting, text = True, False, b""
+clear = os.path.join(here, "clear")
 while True:
+    if not select.select([0], [], [], 0.2)[0]:
+        # The test's cue: the program clears its own composer, as one that
+        # took the keys would, so the draft ends with no key.
+        if not on_menu and os.path.exists(clear):
+            os.remove(clear)
+            text = b""
+            screen(composer())
+            event("CLEARED")
+        continue
     data = os.read(0, 4096)
     if not data or data == b"q":
         break
@@ -299,6 +310,28 @@ def body(case):
         case.check(f"{WHO['t']}: the task stays queued, held for the draft",
                    len(listing.get("pending", [])) == 1 and listing.get("hold") == "draft",
                    str(listing)[:400])
+
+        # 4. The draft ends with no key: the program clears its composer.
+        # The core's refusal is not asked again until someone writes, so
+        # the task stays held; a Router write asks once more and it lands.
+        with open(os.path.join(folders["t"], "clear"), "w"):
+            pass
+        case.check(f"{WHO['t']}: the program clears its composer",
+                   bool(service.wait_for(lambda: "CLEARED" in read("t", "events.log"), timeout=10)),
+                   read("t", "events.log"))
+        service.read_for(HOLD_WINDOW)
+        listing = inbox(drafting)
+        case.check(f"{WHO['t']}: the refusal still holds the task with nobody writing",
+                   listing.get("hold") == "draft" and HEADER not in read("t", "stdin.log"),
+                   str(listing)[:400])
+        sent, done = mcp(router, "send_keys", {"session_id": drafting, "keys": ["enter"]})
+        case.check(f"{WHO['t']}: the Router's Enter lands on the cleared composer",
+                   done.returncode == 0, (done.stdout + done.stderr)[:400])
+        case.check(f"{WHO['t']}: then the task is pasted and submitted at the composer",
+                   bool(service.wait_for(lambda: SUBMITTED in read("t", "events.log"), timeout=40))
+                   and f"{HEADER}{drafting}" in read("t", "stdin.log"),
+                   read("t", "events.log") + repr(read("t", "stdin.log")[-300:])
+                   + str(inbox(drafting))[:300])
     finally:
         for session_id in [router, *workers]:
             if session_id and os.path.isdir(home.path("app-sessions", session_id)):

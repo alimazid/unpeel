@@ -19,7 +19,7 @@ use crate::sessions::{SessionRow, Status};
 
 mod draft_guard;
 mod host;
-use draft_guard::{guarded_line, EmptyCheck, Guarded};
+use draft_guard::{guarded_line, CoreRefusal, EmptyCheck, GuardFacts, Guarded};
 #[cfg(test)]
 use host::cursor_line;
 pub use host::HostTerminal;
@@ -118,10 +118,12 @@ struct Target {
     /// The last baseline taken with nobody typing since the turn began:
     /// the agent's own empty prompt, kept across episodes.
     known_empty: Option<CursorLine>,
-    /// The line read against `known_empty` after the latest typing, or the
-    /// PTY core's refusal over a draft (#69); asked again only once the user
-    /// types again.
+    /// The line read against `known_empty` after the latest typing; read
+    /// again only once the user types again.
     checked: Option<EmptyCheck>,
+    /// The PTY core's last refusal over a draft while no `known_empty` was
+    /// known (#69).
+    core_refusal: Option<CoreRefusal>,
 }
 
 #[derive(Debug, Default)]
@@ -163,10 +165,11 @@ enum Outcome {
     },
     /// The line changed since the step looked, or the user typed.
     Draft,
-    /// The PTY core refused the paste over a draft of the typing stamped
-    /// at `typed_at` (#69).
+    /// The PTY core refused the paste asked at `asked_at` over a draft of
+    /// the typing stamped at `typed_at` (#69).
     CoreDraft {
         typed_at: u64,
+        asked_at: u64,
     },
     Failed(String),
     /// Nothing was left to claim.
@@ -310,6 +313,9 @@ impl Drain {
         };
         let turn_began_at = self.turns.get(id).map_or(now, |turn| turn.began_at);
         let target = self.targets.entry(id.to_owned()).or_default();
+        let router_touched_at = target
+            .core_refusal
+            .and_then(|_| self.store.router_touched_at(id));
         let candidate = Candidate {
             id,
             row,
@@ -317,6 +323,7 @@ impl Drain {
             settings,
             now,
             turn_began_at,
+            router_touched_at,
         };
         let ready = match ready_to_paste(target, self.io.as_ref(), &candidate, notices) {
             Ok(ready) => ready,
@@ -400,13 +407,10 @@ impl Drain {
                     });
                 }
             }
-            Outcome::Draft => target.held_for_draft(None, now),
-            Outcome::CoreDraft { typed_at } => {
-                let found = EmptyCheck {
-                    typed_at,
-                    empty: false,
-                };
-                target.held_for_draft(Some(found), now);
+            Outcome::Draft => target.held_for_draft(now),
+            Outcome::CoreDraft { typed_at, asked_at } => {
+                target.held_for_draft(now);
+                target.core_refusal = Some(CoreRefusal { typed_at, asked_at });
             }
             Outcome::Failed(error) => {
                 target.retry_at = now + RETRY_MS;
@@ -520,6 +524,8 @@ struct Candidate<'a> {
     settings: &'a Settings,
     now: u64,
     turn_began_at: u64,
+    /// Read only while the core's refusal is kept (#69).
+    router_touched_at: Option<u64>,
 }
 
 /// Everything a paste needs once nothing holds it.
@@ -543,13 +549,16 @@ fn ready_to_paste(
     if let Some(reason) = inbox_rules::quiet_hold(confident, candidate.now, screen_changed_at) {
         return Err(reason);
     }
-    let facts = DraftFacts {
-        now: candidate.now,
-        turn_began_at: candidate.turn_began_at,
-        last_input_at: terminal.and_then(|terminal| terminal.last_input_at),
+    let facts = GuardFacts {
+        typing: DraftFacts {
+            now: candidate.now,
+            turn_began_at: candidate.turn_began_at,
+            last_input_at: terminal.and_then(|terminal| terminal.last_input_at),
+        },
+        core_guard: terminal.is_some_and(|terminal| terminal.draft_guard),
+        router_touched_at: candidate.router_touched_at,
     };
-    let core_guard = terminal.is_some_and(|terminal| terminal.draft_guard);
-    let line = guarded_line(target, io, candidate.id, &facts, core_guard);
+    let line = guarded_line(target, io, candidate.id, &facts);
     if line == Err(HoldReason::Snapshot) {
         return Err(HoldReason::Snapshot);
     }
@@ -697,7 +706,10 @@ fn deliver(
         Ok(GuardedPaste::NotPasted(refusal)) => {
             release_claim(store, io, id, &batch.batch_id);
             return match (refusal, guarded.ask_core) {
-                (Refusal::Draft, Some(typed_at)) => Outcome::CoreDraft { typed_at },
+                (Refusal::Draft, Some(typed_at)) => Outcome::CoreDraft {
+                    typed_at,
+                    asked_at: now,
+                },
                 (Refusal::Draft, None) | (Refusal::Typing, _) => Outcome::Draft,
             };
         }

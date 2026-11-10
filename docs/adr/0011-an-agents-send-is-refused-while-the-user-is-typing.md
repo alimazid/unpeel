@@ -73,8 +73,10 @@ Worker's first task can meet the user's typing before any: a person answers
 its startup menu. The menu took those keys, so the core started no draft.
 With no known-empty prompt, on a core with `draft_guard`, the Inbox's
 paste carries `unless_draft` as well, and a `draft` refusal holds the task
-`draft` until the user types again; an older core holds it until a clean
-turn, as before.
+`draft` until the user types again or the Router writes to the Worker: its
+`send_text` or `send_keys` asks the core once more, so a refusal the core
+would no longer give cannot strand a Worker nobody types into. An older
+core holds it until a clean turn, as before.
 
 ## Considered Options
 
@@ -93,6 +95,9 @@ turn, as before.
 - **Take a Worker's first idle line after its menu as its empty prompt
   (#69).** Rejected: the person who answered the menu may have typed there
   already, the paused draft #38 fixed.
+- **Ask the core again every 10 s while a draft holds the Inbox (#69).**
+  Rejected: a draft can sit for hours, and each ask claims the batch,
+  writes, releases it and announces on the state bus.
 
 ## Consequences
 

@@ -607,6 +607,36 @@ fn a_draft_the_core_refuses_is_asked_about_again_only_after_the_user_types() {
 }
 
 #[test]
+fn a_router_write_after_a_core_refusal_asks_the_core_once_more() {
+    let mut fx = fixture();
+    let idle = a_person_answers_a_startup_menu(&mut fx);
+    let asked = |fx: &Fixture| fx.io.with(|world| world.paste_since.len());
+    fx.store.touch_router("router", T0 + 7_000).unwrap();
+    fx.io.with(|world| world.core_draft = true);
+    fx.step_and_settle(&idle, T0 + 8_000);
+    fx.step(&idle, T0 + 9_000);
+    assert_eq!(asked(&fx), 1, "a write before the refusal does not count");
+
+    // `send_text` or `send_keys` from the Router: the core still has the
+    // draft, so it refuses once more and the hold stays, without a loop.
+    fx.store.touch_router("router", T0 + 20_000).unwrap();
+    fx.step_and_settle(&idle, T0 + 21_000);
+    for at in [T0 + 22_000, T0 + 30_000] {
+        fx.step(&idle, at);
+        assert_eq!(fx.hold().as_deref(), Some("draft"));
+    }
+    assert_eq!(asked(&fx), 2);
+
+    // The draft ended with no key (a program cleared its line): the next
+    // Router write lets the paste through.
+    fx.io.with(|world| world.core_draft = false);
+    fx.store.touch_router("router", T0 + 40_000).unwrap();
+    fx.step_and_settle(&idle, T0 + 41_000);
+    assert_eq!(asked(&fx), 3);
+    assert_eq!(fx.pastes().len(), 1);
+}
+
+#[test]
 fn a_draft_held_by_the_core_tells_the_user_once_it_has_held_long_enough() {
     let mut fx = fixture();
     let idle = a_person_answers_a_startup_menu(&mut fx);
