@@ -1308,12 +1308,43 @@ fn context_percent_rounds_like_claude_codes_status_line() {
         model: None,
         window,
         compact_command: None,
+        baseline: 0,
     };
     assert_eq!(reading(151_221, Some(1_000_000)).percent(), Some(15));
     assert_eq!(reading(395_000, Some(1_000_000)).percent(), Some(40));
     assert_eq!(reading(394_999, Some(1_000_000)).percent(), Some(39));
     assert_eq!(reading(250_000, Some(200_000)).percent(), Some(100));
     assert_eq!(reading(1, None).percent(), None, "unknown window");
+}
+
+/// Fork-only (#68): Codex's footer counts the window above a 12,000-token
+/// baseline (`tui/src/token_usage.rs` at rust-v0.167.0), so 40% used is
+/// 110,560 of a 258,400 window, "60% context left".
+#[test]
+fn context_percent_leaves_the_baseline_out_of_tokens_and_window() {
+    let reading = |tokens| ContextReading {
+        tokens,
+        model: None,
+        window: Some(258_400),
+        compact_command: None,
+        baseline: 12_000,
+    };
+    assert_eq!(reading(110_560).percent(), Some(40));
+    assert_eq!(
+        reading(103_360).percent(),
+        Some(37),
+        "40% of the raw window"
+    );
+    assert_eq!(reading(9_000).percent(), Some(0), "under the baseline");
+    let no_room = ContextReading {
+        window: Some(12_000),
+        ..reading(20_000)
+    };
+    assert_eq!(
+        no_room.percent(),
+        None,
+        "a window no larger than the baseline"
+    );
 }
 
 #[test]
@@ -1335,5 +1366,263 @@ fn claude_context_windows_come_from_its_runtime_package() {
     }
     assert_eq!(context_window(provider("codex"), "claude-opus-5-5"), None);
     assert_eq!(compact_command(claude).as_deref(), Some("/compact"));
-    assert_eq!(compact_command(provider("codex")), None);
+    assert_eq!(compact_command(provider("cline")), None);
+    assert_eq!(context_baseline(claude), 0);
+}
+
+/// Fork-only (#68): Codex lines as rust-v0.167.0 writes them.
+fn codex_token_count(last_total: u64) -> String {
+    serde_json::json!({
+        "type": "event_msg",
+        "payload": {
+            "type": "token_count",
+            "info": {
+                "total_token_usage": { "input_tokens": 900_000, "total_tokens": 950_000 },
+                "last_token_usage": {
+                    "input_tokens": last_total - 2_000,
+                    "cached_input_tokens": 90_000,
+                    "cache_write_input_tokens": 0,
+                    "output_tokens": 2_000,
+                    "reasoning_output_tokens": 500,
+                    "total_tokens": last_total,
+                },
+                "model_context_window": 258_400,
+            },
+            "rate_limits": null,
+        },
+    })
+    .to_string()
+}
+
+fn codex_turn_context(model: &str) -> String {
+    serde_json::json!({
+        "type": "turn_context",
+        "payload": { "turn_id": "turn-1", "cwd": "/tmp/p", "model": model },
+    })
+    .to_string()
+}
+
+fn codex_context_in(lines: &[String]) -> Option<ContextUsage> {
+    let lines: Vec<&str> = lines.iter().map(String::as_str).collect();
+    context_usage_in_lines(provider("codex"), &lines)
+}
+
+/// Codex's own figure: the newest `token_count`'s `last_token_usage`, not
+/// billing records or rate-limit-only lines; the model is the newest
+/// `turn_context`'s.
+#[test]
+fn codex_context_is_the_latest_responses_last_token_usage() {
+    let rate_limits_only =
+        r#"{"type":"event_msg","payload":{"type":"token_count","info":null,"rate_limits":{}}}"#;
+    let billing = r#"{"type":"token_usage_record","payload":{"usage":{"total_tokens":700000}}}"#;
+    let lines = [
+        codex_turn_context("gpt-5.5"),
+        codex_token_count(90_000),
+        codex_turn_context("gpt-5.6-sol"),
+        codex_token_count(131_234),
+        rate_limits_only.to_owned(),
+        billing.to_owned(),
+        r#"{"type":"event_msg","payload":{"type":"task_complete","turn_id":"turn-1"}}"#.to_owned(),
+        "not json".to_owned(),
+    ];
+    assert_eq!(
+        codex_context_in(&lines),
+        Some(ContextUsage {
+            tokens: 131_234,
+            model: Some("gpt-5.6-sol".into()),
+        })
+    );
+    assert_eq!(
+        codex_context_in(&[codex_turn_context("gpt-5.5")]),
+        None,
+        "no response yet"
+    );
+    assert_eq!(
+        codex_context_in(&[codex_token_count(5_000)]),
+        Some(ContextUsage {
+            tokens: 5_000,
+            model: None,
+        }),
+        "no turn_context in the tail"
+    );
+}
+
+/// A `compacted` line newer than every `token_count` is a compaction whose
+/// estimate is not written yet: unknown, not the old figure.
+#[test]
+fn codex_context_during_a_compaction_is_unknown() {
+    let compacted = r#"{"type":"compacted","payload":{"message":"summary"}}"#.to_owned();
+    let lines = [
+        codex_turn_context("gpt-5.6-sol"),
+        codex_token_count(200_000),
+        compacted.clone(),
+    ];
+    assert_eq!(codex_context_in(&lines), None);
+    let after = [
+        codex_turn_context("gpt-5.6-sol"),
+        codex_token_count(200_000),
+        compacted,
+        codex_turn_context("gpt-5.6-sol"),
+        codex_token_count(18_000),
+    ];
+    assert_eq!(
+        codex_context_in(&after).map(|usage| usage.tokens),
+        Some(18_000)
+    );
+}
+
+/// A rollout constructed from rust-v0.167.0's own line shapes (no real
+/// rollout is read for this fork): a turn, then a `/compact`, whose
+/// `token_count` after the `compacted` line holds Codex's estimate.
+#[test]
+fn codex_context_reads_a_constructed_rollout() {
+    let raw = std::fs::read_to_string(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../runtimes/codex/fixtures/context-compaction-constructed.jsonl"
+    ))
+    .expect("fixture");
+    let lines: Vec<String> = raw.lines().map(str::to_owned).collect();
+    let compacted = lines
+        .iter()
+        .position(|line| line.contains("\"type\":\"compacted\""))
+        .expect("a compaction");
+    let sol = Some("gpt-5.6-sol".to_owned());
+    assert_eq!(
+        codex_context_in(&lines[..compacted]),
+        Some(ContextUsage {
+            tokens: 131_234,
+            model: sol.clone(),
+        })
+    );
+    assert_eq!(codex_context_in(&lines[..=compacted]), None);
+    assert_eq!(
+        codex_context_in(&lines),
+        Some(ContextUsage {
+            tokens: 18_532,
+            model: sol,
+        })
+    );
+}
+
+#[test]
+fn codex_context_windows_and_command_come_from_its_runtime_package() {
+    let codex = provider("codex");
+    for (model, window) in [
+        ("gpt-6-astra", Some(258_400)),
+        ("gpt-6-sol", Some(258_400)),
+        ("gpt-6.1-sol", Some(258_400)),
+        ("gpt-6.1-terra", Some(475_000)),
+        ("gpt-5.6-luna", Some(258_400)),
+        ("gpt-5.5", Some(258_400)),
+        ("gpt-daybreak-red-latest", Some(353_400)),
+        ("codex-auto-review", Some(258_400)),
+        ("gpt-5", None),
+        ("o3", None),
+        ("claude-opus-5-5", None),
+    ] {
+        assert_eq!(context_window(codex, model), window, "{model}");
+    }
+    assert_eq!(compact_command(codex).as_deref(), Some("/compact"));
+    assert_eq!(context_baseline(codex), 12_000);
+    let reading = ContextReading {
+        tokens: 131_234,
+        model: Some("gpt-5.6-sol".into()),
+        window: context_window(codex, "gpt-5.6-sol"),
+        compact_command: compact_command(codex),
+        baseline: context_baseline(codex),
+    };
+    // Codex's footer: 52% context left.
+    assert_eq!(reading.percent(), Some(48));
+}
+
+fn codewhale_fixture(name: &str) -> String {
+    std::fs::read_to_string(format!(
+        "{}/../../runtimes/codewhale/fixtures/{name}",
+        env!("CARGO_MANIFEST_DIR")
+    ))
+    .expect("fixture")
+}
+
+/// Real Codewhale 0.10.2 saved sessions (a turn against a local stub model,
+/// then `/compact`; paths replaced by ones of the same length). Codewhale's
+/// own estimate for them is in its "Made room: 2 → 4 messages (0 removed),
+/// ~6236 → ~6634 tokens" note.
+#[test]
+fn codewhale_context_is_its_own_estimate_of_a_real_session() {
+    let codewhale = provider("codewhale");
+    let flash = Some("deepseek-flash".to_owned());
+    let before = codewhale_fixture("context-before-compact.json");
+    assert_eq!(
+        context_usage_in_lines(codewhale, &[before.as_str()]),
+        Some(ContextUsage {
+            tokens: 6_236,
+            model: flash.clone(),
+        })
+    );
+    let after = codewhale_fixture("context-after-compact.json");
+    assert_eq!(
+        context_usage_in_lines(codewhale, &[after.as_str()]),
+        Some(ContextUsage {
+            tokens: 6_634,
+            model: flash,
+        })
+    );
+}
+
+/// Each block's estimate: a quarter of its text's bytes, a tool call's
+/// compact JSON, a tool result's content plus 1,000 per image; the system
+/// prompt's conservative estimate per saved block; 12 per message plus 48.
+#[test]
+fn codewhale_context_counts_blocks_like_codewhale() {
+    let document = serde_json::json!({
+        "metadata": { "model": "auto" },
+        "last_auto_route": { "model": "deepseek-v4-pro" },
+        "system_prompt": "abcdefghi\n\n---\n\nééé",
+        "messages": [
+            { "role": "user", "content": [{ "type": "text", "text": "12345678" }] },
+            { "role": "assistant", "content": [
+                { "type": "thinking", "thinking": "1234" },
+                { "type": "tool_use", "id": "t", "name": "bash", "input": { "a": 1 } },
+            ] },
+            { "role": "user", "content": [
+                { "type": "tool_result", "tool_use_id": "t", "content": "12345678",
+                  "content_blocks": [{ "type": "image" }, { "type": "text" }] },
+                { "type": "image_url", "image_url": { "url": "x" } },
+            ] },
+        ],
+    })
+    .to_string();
+    // text 2, thinking 1, tool_use `{"a":1}` 1, tool_result 2 + 1000,
+    // image 1000; system 3 + max(1, 2); framing 36 + 48.
+    assert_eq!(
+        context_usage_in_lines(provider("codewhale"), &[document.as_str()]),
+        Some(ContextUsage {
+            tokens: 2 + 1 + 1 + 1_002 + 1_000 + 5 + 84,
+            model: Some("deepseek-v4-pro".into()),
+        })
+    );
+    let empty = r#"{"metadata":{"model":"deepseek-flash"},"messages":[]}"#;
+    assert_eq!(
+        context_usage_in_lines(provider("codewhale"), &[empty]),
+        None,
+        "no conversation yet"
+    );
+}
+
+#[test]
+fn codewhale_context_windows_and_command_come_from_its_runtime_package() {
+    let codewhale = provider("codewhale");
+    for (model, window) in [
+        ("deepseek-flash", Some(1_000_000)),
+        ("deepseek-v4-pro", Some(1_000_000)),
+        ("deepseek-v4-flash", Some(1_000_000)),
+        ("deepseek-reasoner", Some(1_000_000)),
+        ("deepseek-ai/deepseek-v4-pro", Some(1_000_000)),
+        ("deepseek-coder", None),
+        ("gpt-5.5", None),
+    ] {
+        assert_eq!(context_window(codewhale, model), window, "{model}");
+    }
+    assert_eq!(compact_command(codewhale).as_deref(), Some("/compact"));
+    assert_eq!(context_baseline(codewhale), 0);
 }
