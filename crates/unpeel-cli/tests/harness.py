@@ -1564,6 +1564,7 @@ class Case:
             "CLINE_DATA_DIR": self.home.path(".cline", "data"),
             "CLINE_SESSION_DATA_DIR": self.home.path(".cline", "data", "sessions"),
             "CODEWHALE_HOME": self.home.path(".codewhale"),
+            "PI_CODING_AGENT_DIR": self.home.path(".omp", "agent"),
         })
         for key in (
             "UNPEEL_SESSION_ID", "UNPEEL_SESSION_DIR", "UNPEEL_APP_PORT",

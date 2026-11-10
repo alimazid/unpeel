@@ -1,6 +1,6 @@
 import { afterEach, expect, test } from "bun:test";
 import { createServer } from "node:http";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { UnpeelNotifyPlugin } from "./opencode/assets/hooks/plugin.js";
@@ -10,6 +10,8 @@ const originalSession = process.env.UNPEEL_SESSION_ID;
 const originalAppPort = process.env.UNPEEL_APP_PORT;
 const originalSessionDir = process.env.UNPEEL_SESSION_DIR;
 const originalGeneration = process.env.UNPEEL_RUNTIME_GENERATION;
+const originalTraceFile = process.env.UNPEEL_HOOK_TRACE_FILE;
+const originalRegistryFile = process.env.UNPEEL_APP_PORT_REGISTRY_FILE;
 const originalSpawn = Bun.spawn;
 afterEach(() => {
   if (originalSession === undefined) delete process.env.UNPEEL_SESSION_ID;
@@ -20,6 +22,10 @@ afterEach(() => {
   else process.env.UNPEEL_SESSION_DIR = originalSessionDir;
   if (originalGeneration === undefined) delete process.env.UNPEEL_RUNTIME_GENERATION;
   else process.env.UNPEEL_RUNTIME_GENERATION = originalGeneration;
+  if (originalTraceFile === undefined) delete process.env.UNPEEL_HOOK_TRACE_FILE;
+  else process.env.UNPEEL_HOOK_TRACE_FILE = originalTraceFile;
+  if (originalRegistryFile === undefined) delete process.env.UNPEEL_APP_PORT_REGISTRY_FILE;
+  else process.env.UNPEEL_APP_PORT_REGISTRY_FILE = originalRegistryFile;
   Bun.spawn = originalSpawn;
   delete globalThis.__unpeelOpencodeNotifyPluginV1;
 });
@@ -114,7 +120,7 @@ for (const [status, expected] of [["done", "Stop"], ["cancelled", "StopCancelled
  * events, and assert the wire payload, the durable seed, and the inert
  * outside-session behavior.
  */
-async function loadOmpReporter(env) {
+async function loadOmpReporter(env, module = "./omp/assets/extensions/unpeel-lifecycle.ts") {
   const directory = mkdtempSync(join(tmpdir(), "unpeel-omp-hook-"));
   Object.assign(process.env, {
     UNPEEL_SESSION_ID: "omp-extension-test",
@@ -122,7 +128,7 @@ async function loadOmpReporter(env) {
     UNPEEL_RUNTIME_GENERATION: "7",
     ...env,
   });
-  const reporters = await import(`./omp/assets/extensions/unpeel-lifecycle.ts?${crypto.randomUUID()}`);
+  const reporters = await import(`${module}?${crypto.randomUUID()}`);
   const handlers = {};
   const registered = [];
   const pi = {
@@ -259,4 +265,141 @@ test("OMP reporter is inert outside a hosted Session", async () => {
   const registered = [];
   reporters.default({ on: name => registered.push(name) });
   expect(registered).toEqual([]);
+});
+
+const OMP_ASSET = new URL("./omp/assets/extensions/unpeel-lifecycle.ts", import.meta.url);
+const CHECKER_PLACEHOLDER = '"{{UNPEEL_HOST_BIN}}"';
+
+/**
+ * The extension as the installer writes it (`hook_assets::reporter_module`):
+ * the identity checker baked in as a string literal.
+ */
+function installedOmpReporter(checker) {
+  const root = mkdtempSync(join(tmpdir(), "unpeel-omp-installed-"));
+  const module = join(root, "unpeel-lifecycle.ts");
+  const source = readFileSync(OMP_ASSET, "utf8");
+  writeFileSync(module, source.replace(CHECKER_PLACEHOLDER, JSON.stringify(checker)));
+  return { module, cleanup: () => rmSync(root, { recursive: true, force: true }) };
+}
+
+/**
+ * A stand-in for `unpeel-host __session_identity__` that records every call
+ * and answers with the exit code in its `exit` file, so a test can change the
+ * verdict between events.
+ */
+function fakeIdentityChecker(exitCode) {
+  const root = mkdtempSync(join(tmpdir(), "unpeel-omp-checker-"));
+  const checker = join(root, "unpeel-host");
+  const calls = join(root, "calls");
+  const exitFile = join(root, "exit");
+  writeFileSync(exitFile, String(exitCode));
+  writeFileSync(checker, [
+    "#!/bin/bash",
+    `printf '%s|%s|%s\\n' "$1" "$UNPEEL_SESSION_ID" "$UNPEEL_SESSION_DIR" >> '${calls}'`,
+    "printf 'not-an-ancestor\\n'",
+    `exit "$(cat '${exitFile}')"`,
+    "",
+  ].join("\n"));
+  chmodSync(checker, 0o755);
+  return {
+    checker,
+    answer: code => writeFileSync(exitFile, String(code)),
+    calls: () => existsSync(calls) ? readFileSync(calls, "utf8").trim().split("\n") : [],
+    cleanup: () => rmSync(root, { recursive: true, force: true }),
+  };
+}
+
+function refusalsIn(trace) {
+  if (!existsSync(trace)) return 0;
+  return readFileSync(trace, "utf8").split("\n")
+    .filter(line => / hook-refused session=omp-extension-test reason=not-an-ancestor$/.test(line))
+    .length;
+}
+
+test("OMP names its identity checker once, for the installer to fill in", () => {
+  expect(readFileSync(OMP_ASSET, "utf8").split(CHECKER_PLACEHOLDER).length).toBe(2);
+});
+
+// ADR 0013: only a definite refusal (exit 3) drops the event; a verified
+// caller, an undecided one, a failing checker and a missing one deliver.
+for (const [exitCode, delivered] of [[3, false], [0, true], [4, true], [1, true]]) {
+  test(`OMP ${delivered ? "delivers" : "drops"} an event when the identity checker exits ${exitCode}`, async () => {
+    const capture = await capturePort();
+    const fake = fakeIdentityChecker(exitCode);
+    const installed = installedOmpReporter(fake.checker);
+    const trace = join(mkdtempSync(join(tmpdir(), "unpeel-omp-trace-")), "trace.log");
+    const omp = await loadOmpReporter({
+      UNPEEL_APP_PORT: String(capture.port),
+      UNPEEL_APP_PORT_REGISTRY_FILE: join(fake.checker, "..", "no-ports"),
+      UNPEEL_HOOK_TRACE_FILE: trace,
+    }, installed.module);
+    try {
+      await omp.handlers.before_agent_start[0]({ type: "before_agent_start", prompt: "hi" }, ompContext);
+      expect(fake.calls()).toEqual([`__session_identity__|omp-extension-test|${omp.directory}`]);
+      expect(existsSync(join(omp.directory, "last-hook-event.json"))).toBe(delivered);
+      expect(capture.posts.length).toBe(delivered ? 1 : 0);
+      expect(refusalsIn(trace)).toBe(delivered ? 0 : 1);
+    } finally {
+      capture.close();
+      fake.cleanup();
+      installed.cleanup();
+      rmSync(trace, { force: true });
+      omp.cleanup();
+    }
+  });
+}
+
+test("OMP delivers when the installed identity checker is missing", async () => {
+  const capture = await capturePort();
+  const installed = installedOmpReporter(join(tmpdir(), "unpeel-omp-no-such-host", "unpeel-host"));
+  const omp = await loadOmpReporter({
+    UNPEEL_APP_PORT: String(capture.port),
+    UNPEEL_APP_PORT_REGISTRY_FILE: join(installed.module, "..", "no-ports"),
+    UNPEEL_HOOK_TRACE_FILE: join(installed.module, "..", "trace.log"),
+  }, installed.module);
+  try {
+    await omp.handlers.agent_end[0]({ type: "agent_end", messages: [] }, ompContext);
+    expect(capture.posts.map(post => post.payload.hook_event_name)).toEqual(["Stop"]);
+    expect(existsSync(join(omp.directory, "last-hook-event.json"))).toBe(true);
+  } finally {
+    capture.close();
+    installed.cleanup();
+    omp.cleanup();
+  }
+});
+
+// A verified answer is never reused: OMP outlives its parent shell when that
+// exits, and the reparented process keeps the Session's environment.
+test("OMP asks the identity checker again for every event", async () => {
+  const capture = await capturePort();
+  const fake = fakeIdentityChecker(0);
+  const installed = installedOmpReporter(fake.checker);
+  const trace = join(mkdtempSync(join(tmpdir(), "unpeel-omp-trace-")), "trace.log");
+  const omp = await loadOmpReporter({
+    UNPEEL_APP_PORT: String(capture.port),
+    UNPEEL_APP_PORT_REGISTRY_FILE: join(fake.checker, "..", "no-ports"),
+    UNPEEL_HOOK_TRACE_FILE: trace,
+  }, installed.module);
+  try {
+    await omp.handlers.session_start[0]({ type: "session_start" }, ompContext);
+    await omp.handlers.before_agent_start[0]({ type: "before_agent_start", prompt: "hi" }, ompContext);
+    fake.answer(3);
+    await omp.handlers.agent_end[0]({ type: "agent_end", messages: [] }, ompContext);
+    await omp.handlers.session_shutdown[0]({ type: "session_shutdown" }, ompContext);
+    fake.answer(0);
+    await omp.handlers.before_agent_start[0]({ type: "before_agent_start", prompt: "again" }, ompContext);
+    expect(fake.calls().length).toBe(5);
+    expect(capture.posts.map(post => post.payload.hook_event_name)).toEqual([
+      "HookSeen",
+      "UserPromptSubmit",
+      "UserPromptSubmit",
+    ]);
+    expect(refusalsIn(trace)).toBe(2);
+  } finally {
+    capture.close();
+    fake.cleanup();
+    installed.cleanup();
+    rmSync(trace, { force: true });
+    omp.cleanup();
+  }
 });
