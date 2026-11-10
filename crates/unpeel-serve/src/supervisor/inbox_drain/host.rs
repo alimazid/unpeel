@@ -40,6 +40,7 @@ impl HostIo for HostTerminal {
             screen_changed_at: manifest.screen_changed_at,
             menu_prompt: manifest.menu_prompt_active,
             last_input_at: manifest.last_input_at,
+            draft_guard: manifest.draft_guard,
         })
     }
 
@@ -54,8 +55,24 @@ impl HostIo for HostTerminal {
         Some(cursor_line(&snapshot))
     }
 
-    fn paste(&self, session_id: &str, text: &str, since: u64) -> Result<GuardedPaste, String> {
-        unpeel_core::session_input::paste_unless_typed(session_id, text, since, PASTE_TIMEOUT)
+    fn paste(
+        &self,
+        session_id: &str,
+        text: &str,
+        since: u64,
+        unless_draft: bool,
+    ) -> Result<GuardedPaste, String> {
+        if unless_draft {
+            unpeel_core::session_input::paste_unless_user_is_typing_within(
+                session_id,
+                text,
+                true,
+                since,
+                PASTE_TIMEOUT,
+            )
+        } else {
+            unpeel_core::session_input::paste_unless_typed(session_id, text, since, PASTE_TIMEOUT)
+        }
     }
 
     fn live_session_ids(&self) -> HashSet<String> {
