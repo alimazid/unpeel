@@ -77,6 +77,8 @@ extension SidebarLiveTreeList {
             onConfirmRemove: { store.removeProject(node.id) },
             onCancelRemove: { store.cancelRemoveProjectConfirm() },
             onRenameWorktree: { store.promptRenameWorktreeProject(node.id) },
+            canRenameProject: isTopLevel && store.canRenameTopLevelProject(node.id),
+            onRenameProject: { store.promptRenameProject(node.id) },
             onRemoveWorktree: { store.removeWorktreeProject(node.id) },
             onSetFolderColor: { color in
                 store.setProjectFolderColor(color, for: node.id)

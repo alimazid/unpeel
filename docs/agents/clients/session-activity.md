@@ -225,6 +225,18 @@ Agent-drawn select menus (attention, host-side):
 
 Unread badges integrate with hook events and activity transitions (settles while unobserved → unread).
 
+Host truth can also mark the row already on screen unread with no
+observation edge: a Session that settles while its row stays selected (app
+in the background, then brought forward or reached through its
+notification), or a late child finish that advances the lifecycle clock past
+an earlier receipt. Every observation change and every Host projection
+therefore re-checks the observed row: Local writes a shared read receipt
+without consulting the Swift clock (the Host already judged it unread),
+other scopes send the Host's mark-read. The activity dropdowns' "Mark all as
+read" clears the Done rows of the foreground workspace and of this
+instance's Local workspace; other pooled workspaces are read-only background
+connections, so their rows clear when visited.
+
 Fork-only: **Mark as Unread / Mark as Read** (session context menu in the
 sidebar and on the All recent page) are Host verbs. `session.mark_unread`
 (`POST /mobile/mark-unread`) writes `unread.json` (`{"unread_at": ms}`) in the
@@ -235,9 +247,11 @@ The next explicit read receipt retires it; a paired Controller's output polls
 (presence) do not. A mark made on the selected or viewed session holds until
 another session is observed (the store's `heldUnreadSessionID`, the runtime's
 `heldUnreadSessionIDs`), so leaving the app, Settings, or All recent and
-coming back does not read it. The AGENTS section also lists pinned
-sessions that are in no activity group, after the groups; the titlebar and
-menu-bar dropdowns do not.
+coming back does not read it; the observed-row re-check above skips a held
+mark (`clearObservedHostUnreadIfNeeded`), and "Mark all as read" ends one.
+The AGENTS section also lists pinned sessions that are in no activity group,
+after the groups; the titlebar and menu-bar dropdowns do not. Only the
+dropdowns carry the "Mark all as read" footer row.
 
 Fork-only: the AGENTS section lists the **current workspace only**
 (`GlobalActivityMenuModel.currentWorkspaceActivity`, the store's foreground
