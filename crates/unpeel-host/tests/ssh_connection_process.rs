@@ -152,11 +152,11 @@ impl Fixture {
 }
 
 /// Writes `script` to `path` as an executable without this process ever
-/// opening it for writing. Tests here run in parallel and fork (the fake ssh,
-/// `/bin/kill`, the purity child); a child forked while this process holds a
-/// writable descriptor shares it until it execs, and on Linux an exec of the
-/// script in that window fails with ETXTBSY (#87). A `/bin/sh` child writes the
-/// file instead and has exited before anything runs it.
+/// opening it for writing. Tests here run in parallel and fork; a child forked
+/// while this process holds a writable descriptor shares it until it execs,
+/// and on Linux an exec of the script in that window fails with ETXTBSY (#87).
+/// A `/bin/sh` child writes the file instead and has exited before anything
+/// runs it.
 fn install_executable(path: &Path, script: &str) {
     let mut writer = Command::new("/bin/sh")
         .arg("-c")
@@ -166,18 +166,14 @@ fn install_executable(path: &Path, script: &str) {
         .stdin(Stdio::piped())
         .spawn()
         .unwrap();
-    writer
-        .stdin
-        .take()
-        .unwrap()
-        .write_all(script.as_bytes())
-        .unwrap();
+    let written = writer.stdin.take().unwrap().write_all(script.as_bytes());
     let status = writer.wait().unwrap();
     assert!(
         status.success(),
         "could not install {}: {status}",
         path.display()
     );
+    written.unwrap();
 }
 
 fn shell_quote(path: &Path) -> String {
@@ -560,26 +556,32 @@ fn structured_ssh_argv_and_out_of_order_responses() {
     fixture.cleanup();
 }
 
-// Every fixture runs a script right after installing it, while sibling tests
-// fork. On Linux, exec of a file fails with ETXTBSY while any process holds it
-// open for writing, and a child forked mid-install shares the writer until it
-// execs (#87). These forkers pause between fork and exec to hold that window
-// open far longer than a real spawn does.
+// Every fixture runs its script right after `install_executable` writes it,
+// while sibling tests fork (#87). These forkers pause between fork and exec to
+// hold that window open far longer than a real spawn does.
 #[cfg(target_os = "linux")]
 #[test]
 fn installed_script_runs_while_sibling_threads_fork() {
     use std::os::unix::process::CommandExt;
 
+    // Stops the forkers however the test ends, so a failed assert cannot leave
+    // them forking under the rest of the binary (the scope joins them).
+    struct StopOnDrop<'a>(&'a AtomicBool);
+    impl Drop for StopOnDrop<'_> {
+        fn drop(&mut self) {
+            self.0.store(true, Ordering::Relaxed);
+        }
+    }
+
     const FORKERS: usize = 8;
     const INSTALLS: usize = 500;
     let fixture = Fixture::new("forking");
-    let stop = Arc::new(AtomicBool::new(false));
-    let forks = Arc::new(AtomicUsize::new(0));
-    let forkers: Vec<_> = (0..FORKERS)
-        .map(|_| {
-            let stop = Arc::clone(&stop);
-            let forks = Arc::clone(&forks);
-            std::thread::spawn(move || {
+    let stop = AtomicBool::new(false);
+    let forks = AtomicUsize::new(0);
+    let text_busy = std::thread::scope(|scope| {
+        let _stop = StopOnDrop(&stop);
+        for _ in 0..FORKERS {
+            scope.spawn(|| {
                 while !stop.load(Ordering::Relaxed) {
                     let mut command = Command::new("/bin/true");
                     // SAFETY: the hook only sleeps, which is async-signal-safe
@@ -593,31 +595,28 @@ fn installed_script_runs_while_sibling_threads_fork() {
                     command.status().unwrap();
                     forks.fetch_add(1, Ordering::Relaxed);
                 }
-            })
-        })
-        .collect();
-    assert!(wait_until(Duration::from_secs(5), || forks
-        .load(Ordering::Relaxed)
-        >= FORKERS));
-
-    let script = fixture.root.join("probe");
-    let mut busy = 0;
-    for _ in 0..INSTALLS {
-        install_executable(&script, "#!/bin/sh\nexit 0\n");
-        match Command::new(&script).status() {
-            Ok(status) => assert!(status.success(), "probe exited with {status}"),
-            Err(error) if error.raw_os_error() == Some(libc::ETXTBSY) => busy += 1,
-            Err(error) => panic!("could not run the probe: {error}"),
+            });
         }
-    }
-    stop.store(true, Ordering::Relaxed);
-    for forker in forkers {
-        forker.join().unwrap();
-    }
+        assert!(wait_until(Duration::from_secs(5), || forks
+            .load(Ordering::Relaxed)
+            >= FORKERS));
+
+        let probe = fixture.root.join("probe");
+        let mut text_busy = 0;
+        for _ in 0..INSTALLS {
+            install_executable(&probe, "#!/bin/sh\nexit 0\n");
+            match Command::new(&probe).status() {
+                Ok(status) => assert!(status.success(), "probe exited with {status}"),
+                Err(error) if error.raw_os_error() == Some(libc::ETXTBSY) => text_busy += 1,
+                Err(error) => panic!("could not run the probe: {error}"),
+            }
+        }
+        text_busy
+    });
     fixture.cleanup();
     assert_eq!(
-        busy, 0,
-        "{busy} of {INSTALLS} just-installed scripts failed to exec with ETXTBSY"
+        text_busy, 0,
+        "{text_busy} of {INSTALLS} just-installed scripts failed to exec with ETXTBSY"
     );
 }
 
