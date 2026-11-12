@@ -1,10 +1,9 @@
 #![cfg(unix)]
 
 use std::io::{BufRead, BufReader, Write};
-use std::os::unix::fs::PermissionsExt;
 use std::os::unix::net::UnixListener;
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -93,10 +92,7 @@ impl Fixture {
             shell_quote(&host_home),
             shell_quote(Path::new(env!("CARGO_BIN_EXE_unpeel-host"))),
         );
-        std::fs::write(&ssh_program, script).unwrap();
-        let mut permissions = std::fs::metadata(&ssh_program).unwrap().permissions();
-        permissions.set_mode(0o755);
-        std::fs::set_permissions(&ssh_program, permissions).unwrap();
+        install_executable(&ssh_program, &script);
 
         Self {
             root,
@@ -117,10 +113,7 @@ impl Fixture {
     }
 
     fn replace_ssh_program(&self, script: &str) {
-        std::fs::write(&self.ssh_program, script).unwrap();
-        let mut permissions = std::fs::metadata(&self.ssh_program).unwrap().permissions();
-        permissions.set_mode(0o755);
-        std::fs::set_permissions(&self.ssh_program, permissions).unwrap();
+        install_executable(&self.ssh_program, script);
     }
 
     fn count(&self) -> usize {
@@ -156,6 +149,31 @@ impl Fixture {
             .is_some_and(|name| name.starts_with("u-sc-")));
         std::fs::remove_dir_all(self.root).unwrap();
     }
+}
+
+/// Writes `script` to `path` as an executable without this process ever
+/// opening it for writing. Tests here run in parallel and fork; a child forked
+/// while this process holds a writable descriptor shares it until it execs,
+/// and on Linux an exec of the script in that window fails with ETXTBSY (#87).
+/// A `/bin/sh` child writes the file instead and has exited before anything
+/// runs it.
+fn install_executable(path: &Path, script: &str) {
+    let mut writer = Command::new("/bin/sh")
+        .arg("-c")
+        .arg(r#"cat > "$1" && chmod 755 "$1""#)
+        .arg("sh")
+        .arg(path)
+        .stdin(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let written = writer.stdin.take().unwrap().write_all(script.as_bytes());
+    let status = writer.wait().unwrap();
+    assert!(
+        status.success(),
+        "could not install {}: {status}",
+        path.display()
+    );
+    written.unwrap();
 }
 
 fn shell_quote(path: &Path) -> String {
@@ -536,6 +554,70 @@ fn structured_ssh_argv_and_out_of_order_responses() {
     );
     drop(connection);
     fixture.cleanup();
+}
+
+// Every fixture runs its script right after `install_executable` writes it,
+// while sibling tests fork (#87). These forkers pause between fork and exec to
+// hold that window open far longer than a real spawn does.
+#[cfg(target_os = "linux")]
+#[test]
+fn installed_script_runs_while_sibling_threads_fork() {
+    use std::os::unix::process::CommandExt;
+
+    // Stops the forkers however the test ends, so a failed assert cannot leave
+    // them forking under the rest of the binary (the scope joins them).
+    struct StopOnDrop<'a>(&'a AtomicBool);
+    impl Drop for StopOnDrop<'_> {
+        fn drop(&mut self) {
+            self.0.store(true, Ordering::Relaxed);
+        }
+    }
+
+    const FORKERS: usize = 8;
+    const INSTALLS: usize = 500;
+    let fixture = Fixture::new("forking");
+    let stop = AtomicBool::new(false);
+    let forks = AtomicUsize::new(0);
+    let text_busy = std::thread::scope(|scope| {
+        let _stop = StopOnDrop(&stop);
+        for _ in 0..FORKERS {
+            scope.spawn(|| {
+                while !stop.load(Ordering::Relaxed) {
+                    let mut command = Command::new("/bin/true");
+                    // SAFETY: the hook only sleeps, which is async-signal-safe
+                    // and allocates nothing in the forked child.
+                    unsafe {
+                        command.pre_exec(|| {
+                            std::thread::sleep(Duration::from_millis(2));
+                            Ok(())
+                        });
+                    }
+                    command.status().unwrap();
+                    forks.fetch_add(1, Ordering::Relaxed);
+                }
+            });
+        }
+        assert!(wait_until(Duration::from_secs(5), || forks
+            .load(Ordering::Relaxed)
+            >= FORKERS));
+
+        let probe = fixture.root.join("probe");
+        let mut text_busy = 0;
+        for _ in 0..INSTALLS {
+            install_executable(&probe, "#!/bin/sh\nexit 0\n");
+            match Command::new(&probe).status() {
+                Ok(status) => assert!(status.success(), "probe exited with {status}"),
+                Err(error) if error.raw_os_error() == Some(libc::ETXTBSY) => text_busy += 1,
+                Err(error) => panic!("could not run the probe: {error}"),
+            }
+        }
+        text_busy
+    });
+    fixture.cleanup();
+    assert_eq!(
+        text_busy, 0,
+        "{text_busy} of {INSTALLS} just-installed scripts failed to exec with ETXTBSY"
+    );
 }
 
 #[test]
